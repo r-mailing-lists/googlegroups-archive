@@ -136,16 +136,18 @@ def parse_thread(page, thread):
 
 
 def parse_listing(page):
-    """The conversations on a group's first page: (id, messages, last activity)."""
+    """The conversations on a group's first page: (id, messages, last activity).
+    A pinned conversation comes in a block of its own, sometimes ahead of the
+    rest, so every block is read."""
+    total, out = None, {}
     for d in data_blocks(page):
         if (isinstance(d, list) and len(d) >= 3 and isinstance(d[1], int)
                 and isinstance(d[2], list) and d[2] and isinstance(d[2][0], list)):
-            out = []
+            total = d[1]
             for entry in d[2]:
                 t = entry[0]
-                out.append((t[1], t[6], iso(t[4][0])))
-            return d[1], out
-    return None, []
+                out.setdefault(t[1], (t[1], t[6], iso(t[4][0])))
+    return total, list(out.values())
 
 
 # -- files ------------------------------------------------------------------
@@ -170,6 +172,17 @@ def write_threads(group, ids):
     write_atomic(os.path.join(group, "threads.txt"), "".join(i + "\n" for i in ids))
 
 
+def google_name(group):
+    """The group's name at Google: its directory's name, unless config.json
+    gives another. Google allows "_" in a name, and the viewer's list names
+    do not."""
+    path = os.path.join(group, "config.json")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("google_group") or group
+    return group
+
+
 def source_path(group, thread):
     return os.path.join(group, "source", thread + ".json")
 
@@ -188,7 +201,7 @@ def fetch_thread(group, thread, tries=2):
     """Fetch and store one conversation. A page without its data is asked
     for again after a pause; Google now and then serves one."""
     for attempt in range(tries):
-        page = get(f"{BASE}{group}/c/{thread}")
+        page = get(f"{BASE}{google_name(group)}/c/{thread}")
         if page is None:
             print(f"  {thread}: gone", file=sys.stderr)
             return None
@@ -219,7 +232,7 @@ def cmd_list(group):
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(user_agent=UA, locale="en-US")
-        page.goto(BASE + group, wait_until="networkidle")
+        page.goto(BASE + google_name(group), wait_until="networkidle")
         while True:
             for href in page.eval_on_selector_all("a[href*='/c/']", "els => els.map(e => e.getAttribute('href'))"):
                 m = re.search(r"/c/([A-Za-z0-9_-]+)", href or "")
@@ -268,7 +281,7 @@ def cmd_fetch(group, everything):
 
 
 def cmd_recent(group):
-    page = get(BASE + group)
+    page = get(BASE + google_name(group))
     if page is None:
         sys.exit(f"{group}: the group's page is gone")
     total, listed = parse_listing(page)
@@ -442,7 +455,7 @@ def mbox_entry(group, thread, messages, i, parent=None):
         headers.append(f"In-Reply-To: {mid}")
         headers.append(f"References: {root}" + ("" if parent == 0 else f" {mid}"))
     headers += [
-        f"Archived-At: <{BASE}{group}/c/{thread}/m/{msg['id']}>",
+        f"Archived-At: <{BASE}{google_name(group)}/c/{thread}/m/{msg['id']}>",
         "MIME-Version: 1.0",
         'Content-Type: text/plain; charset="utf-8"',
         "Content-Transfer-Encoding: 8bit",
@@ -640,7 +653,7 @@ def cmd_mail(group):
     try:
         box.select('"[Gmail]/All Mail"', readonly=True)
         for g in groups:
-            typ, data = box.uid("SEARCH", None, "SINCE", since, "HEADER", "List-ID", f"{g}.googlegroups.com")
+            typ, data = box.uid("SEARCH", None, "SINCE", since, "HEADER", "List-ID", f"{google_name(g)}.googlegroups.com")
             uids = data[0].split() if typ == "OK" and data and data[0] else []
             new = unreadable = 0
             for uid in uids:
@@ -649,7 +662,7 @@ def cmd_mail(group):
                 # The run's log is public, so a header that will not parse is
                 # counted, never shown.
                 try:
-                    record = mail_record(raw, g) if raw else None
+                    record = mail_record(raw, google_name(g)) if raw else None
                 except Exception:
                     record, unreadable = None, unreadable + 1
                 if record is None:
@@ -717,14 +730,14 @@ def cmd_urls(group):
         for m in month.get("messages", []):
             hit = pat.match(m.get("message_id", ""))
             if hit:
-                m["source_url"] = f"{BASE}{group}/c/{hit.group(1)}/m/{hit.group(2)}"
+                m["source_url"] = f"{BASE}{google_name(group)}/c/{hit.group(1)}/m/{hit.group(2)}"
         write_atomic(path, json.dumps(month, ensure_ascii=False, indent=2) + "\n")
 
 
 def cmd_describe(group):
     """Print what a new group's config.json needs: its description, how many
     conversations it has, and when the newest one was active."""
-    page = get(BASE + group)
+    page = get(BASE + google_name(group))
     if page is None:
         sys.exit(f"{group}: no such group")
     title = description = ""

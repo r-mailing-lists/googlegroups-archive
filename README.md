@@ -51,7 +51,7 @@ The **Update Archive** workflow runs daily. For a group marked `"active": true` 
 RMAIL_PARSER=/path/to/rmail-parser scripts/update.sh
 ```
 
-To add a group, create `<group>/config.json` and list and fetch its conversations once. Until its `threads.txt` is in, the daily run only reads the group's mail. Listing pages through the group in a headless browser and needs [Playwright](https://playwright.dev/python/):
+To add a group, create `<group>/config.json` and list and fetch its conversations once. Until its `threads.txt` is in, the daily run only reads the group's mail. A group whose name at Google holds a character the viewer's list names cannot (Google allows `_`) keeps a name of its own here and gives Google's as `"google_group"` in its config.json. Listing pages through the group in a headless browser and needs [Playwright](https://playwright.dev/python/):
 
 ``` bash
 python3 scripts/gg.py list <group>

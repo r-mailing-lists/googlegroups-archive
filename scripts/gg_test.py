@@ -76,6 +76,16 @@ class ParseListing(unittest.TestCase):
         p = page([[GROUP_ID, "group"], 413, [[t, [GROUP_ID, "T9", 0, 0, 0]]]])
         self.assertEqual(gg.parse_listing(p), (413, [("T9", 7, "2020-09-13T12:26:40Z")]))
 
+    def test_a_pinned_conversation_does_not_hide_the_rest(self):
+        # A pinned conversation comes in a block of its own, sometimes first.
+        pinned = [GROUP_ID, "P1", "Read me", "snip", [1500000000, 0], [1500000000], 1, 0, 0]
+        newest = [GROUP_ID, "T9", "Subj", "snip", [1600000000, 5], [1600000000], 7, 0, 0]
+        p = page([[GROUP_ID, "group"], 413, [[pinned, [GROUP_ID, "P1", 0, 0, 0]]]],
+                 [[GROUP_ID, "group"], 413, [[newest, [GROUP_ID, "T9", 0, 0, 0]], [pinned, [GROUP_ID, "P1", 0, 0, 0]]]])
+        total, listed = gg.parse_listing(p)
+        self.assertEqual(total, 413)
+        self.assertEqual(sorted(listed), [("P1", 1, "2017-07-14T02:40:00Z"), ("T9", 7, "2020-09-13T12:26:40Z")])
+
 
 class HtmlToText(unittest.TestCase):
     def test_blocks_and_breaks_become_lines(self):
@@ -178,6 +188,38 @@ class Mbox(unittest.TestCase):
                 self.assertEqual(text.count("\nMessage-ID: "), 3)
                 self.assertLess(text.index("T1.M1@"), text.index("T1.M2@"))
             finally:
+                os.chdir(cwd)
+
+
+class GoogleName(unittest.TestCase):
+    def test_a_group_can_be_kept_under_another_name(self):
+        # Google allows "_" in a group's name; the viewer's list names do not.
+        with tempfile.TemporaryDirectory() as d:
+            cwd, saved = os.getcwd(), {k: os.environ.get(k) for k in ("IMAP_USERNAME", "IMAP_PASSWORD")}
+            os.chdir(d)
+            headers = HEADERS.replace("<grp.googlegroups.com>", "<oscr_package.googlegroups.com>").encode()
+            real, gg.imaplib.IMAP4_SSL = gg.imaplib.IMAP4_SSL, FakeMailbox([headers])
+            os.environ.update(IMAP_USERNAME="member", IMAP_PASSWORD="secret")
+            err, sys.stderr = sys.stderr, __import__("io").StringIO()
+            try:
+                os.makedirs("oscr-package")
+                with open("oscr-package/config.json", "w") as f:
+                    json.dump({"list": "oscr-package", "google_group": "oscr_package"}, f)
+                self.assertEqual(gg.google_name("oscr-package"), "oscr_package")
+                self.assertEqual(gg.google_name("gsoc-r"), "gsoc-r", "no config.json: the same name")
+                msgs = [{"id": "M1", "from": "Al", "author": "a", "date": "2020-09-13T12:00:00Z", "subject": "Hi",
+                         "parts": [[1, "<div>x</div>"]]}]
+                _, entry = gg.mbox_entry("oscr-package", "T1", msgs, 0)
+                self.assertIn("Archived-At: <https://groups.google.com/g/oscr_package/c/T1/m/M1>", entry)
+                gg.cmd_mail("oscr-package")
+                self.assertEqual(os.listdir("oscr-package/mail"), [gg.short_hash("<reply-1@mail.example.org>") + ".json"])
+            finally:
+                sys.stderr, gg.imaplib.IMAP4_SSL = err, real
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
                 os.chdir(cwd)
 
 
