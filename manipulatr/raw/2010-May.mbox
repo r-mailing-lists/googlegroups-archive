@@ -1,0 +1,1095 @@
+From ufc22cb727156ff4f at groups.google.com  Mon May  3 15:55:22 2010
+From: ufc22cb727156ff4f at groups.google.com (JiHO)
+Date: Mon, 03 May 2010 15:55:22 +0000
+Subject: Performance of summarise (and plyr)
+Message-ID: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/7xlJ7mJkNas/m/nUPkL4QTFdIJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+Just today I was reading about the recent optimization work of Hadley
+on plyr and was trying things on a big dataset of mine. I remarked the
+following, although with plyr commit a35337d72618607096 because I
+could not install the freshest: 'split-indices.r' was missing from
+Collate and adding it caused issues down the line with C stuff. So
+those C optimizations are not taken in account here.
+
+	library(plyr)
+
+	# let's build a dataset
+	n <- 10^6
+	ng <- 60
+	X <- data.frame(a=cut(runif(n),
+		breaks=seq(0,1,length.out=ng+1)),
+		x=runif(n), y=runif(n), z=rnorm(n))
+
+Now compare summarise() with a function returning a named vector (the
+result of both constructions is the same):
+
+	system.time(ddply(X, ~a, function(Y) {
+	  	c(
+			s1=mean(Y$x),
+			s2=mean(Y$y),
+			s3=mean(Y$y) + sum(Y$z)
+		)
+	}))
+	 user  system elapsed
+	1.519   0.418   1.949
+
+	system.time(ddply(X, ~a, summarise,
+		s1=mean(x),
+		s2=mean(y),
+		s3=mean(y) + sum(z)
+	))
+	 user  system elapsed
+	1.568   0.437   2.018
+
+= Virtually no difference
+
+Now use a list rather than a data.frame that has to be split
+
+	XL <- split(X, X$a)
+
+	system.time(ldply(XL, function(Y) {
+	  	c(
+			s1=mean(Y$x),
+			s2=mean(Y$y),
+			s3=mean(Y$y) + sum(Y$z)
+		)
+	}))
+	 user  system elapsed
+	0.019   0.000   0.020
+
+	system.time(ldply(XL, summarise,
+		s1=mean(x),
+		s2=mean(y),
+		s3=mean(y) + sum(z)
+	))
+	 user  system elapsed
+	0.070   0.000   0.073
+
+First, the computation is much faster, which is to be expected since
+there is one less step (the splitting) to be done (but see
+post-scriptum). But, what is more surprising: summarise is much slower
+than the function(Y) construct. The times are small here but
+increasing the size of the data shows this just as clearly. I don't
+understand what is going on within plyr's insides but this might be a
+lead to follow for optimization.
+
+PS: I also tried to include the time to split the data.frame in the
+system.time call.
+
+	foo <- function() {
+		XL <- split(X, X$a)
+		ldply(XL, summarise,
+			s1=mean(x),
+			s2=mean(y),
+			s3=mean(y) + sum(z)
+		)
+	}
+	system.time(foo())
+ user  system elapsed
+0.491   0.303   0.798
+
+so it seems that ddply is three times slower than split+ldply (1.519 >
+0.491). But maybe this has been solved by the C stuff.
+
+JiHO
+---
+http://maururu.net
+
+--
+You received this message because you are subscribed to the Google Groups "manipulatr" group.
+To post to this group, send email to manip...@googlegroups.com.
+To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+From ub756a7daa2c2aa6d at groups.google.com  Mon May  3 16:41:45 2010
+From: ub756a7daa2c2aa6d at groups.google.com (hadley wickham)
+Date: Mon, 03 May 2010 16:41:45 +0000
+Subject: Re: Performance of summarise (and plyr)
+Message-ID: <7xlJ7mJkNas.m9asMHrFg5wJ@manipulatr.groups.google.com>
+In-Reply-To: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+References: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/7xlJ7mJkNas/m/m9asMHrFg5wJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jiho,
+
+Summarise is so much slower because it has to create a data frame.
+Next on my list of things to look at is ways to improve this.  So far
+I've been focussing on the splitting and iterating, not the processing
+and combining.
+
+Hadley
+
+On Mon, May 3, 2010 at 10:55 AM, JiHO <jo.l...@gmail.com> wrote:
+> Hi,
+>
+> Just today I was reading about the recent optimization work of Hadley
+> on plyr and was trying things on a big dataset of mine. I remarked the
+> following, although with plyr commit a35337d72618607096 because I
+> could not install the freshest: 'split-indices.r' was missing from
+> Collate and adding it caused issues down the line with C stuff. So
+> those C optimizations are not taken in account here.
+>
+>        library(plyr)
+>
+>        # let's build a dataset
+>        n <- 10^6
+>        ng <- 60
+>        X <- data.frame(a=cut(runif(n),
+>                breaks=seq(0,1,length.out=ng+1)),
+>                x=runif(n), y=runif(n), z=rnorm(n))
+>
+> Now compare summarise() with a function returning a named vector (the
+> result of both constructions is the same):
+>
+>        system.time(ddply(X, ~a, function(Y) {
+>                c(
+>                        s1=mean(Y$x),
+>                        s2=mean(Y$y),
+>                        s3=mean(Y$y) + sum(Y$z)
+>                )
+>        }))
+>         user  system elapsed
+>        1.519   0.418   1.949
+>
+>        system.time(ddply(X, ~a, summarise,
+>                s1=mean(x),
+>                s2=mean(y),
+>                s3=mean(y) + sum(z)
+>        ))
+>         user  system elapsed
+>        1.568   0.437   2.018
+>
+> = Virtually no difference
+>
+> Now use a list rather than a data.frame that has to be split
+>
+>        XL <- split(X, X$a)
+>
+>        system.time(ldply(XL, function(Y) {
+>                c(
+>                        s1=mean(Y$x),
+>                        s2=mean(Y$y),
+>                        s3=mean(Y$y) + sum(Y$z)
+>                )
+>        }))
+>         user  system elapsed
+>        0.019   0.000   0.020
+>
+>        system.time(ldply(XL, summarise,
+>                s1=mean(x),
+>                s2=mean(y),
+>                s3=mean(y) + sum(z)
+>        ))
+>         user  system elapsed
+>        0.070   0.000   0.073
+>
+> First, the computation is much faster, which is to be expected since
+> there is one less step (the splitting) to be done (but see
+> post-scriptum). But, what is more surprising: summarise is much slower
+> than the function(Y) construct. The times are small here but
+> increasing the size of the data shows this just as clearly. I don't
+> understand what is going on within plyr's insides but this might be a
+> lead to follow for optimization.
+>
+> PS: I also tried to include the time to split the data.frame in the
+> system.time call.
+>
+>        foo <- function() {
+>                XL <- split(X, X$a)
+>                ldply(XL, summarise,
+>                        s1=mean(x),
+>                        s2=mean(y),
+>                        s3=mean(y) + sum(z)
+>                )
+>        }
+>        system.time(foo())
+>  user  system elapsed
+> 0.491   0.303   0.798
+>
+> so it seems that ddply is three times slower than split+ldply (1.519 >
+> 0.491). But maybe this has been solved by the C stuff.
+>
+> JiHO
+> ---
+> http://maururu.net
+>
+> --
+> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> To post to this group, send email to manip...@googlegroups.com.
+> To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+> For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+>
+>
+
+--
+Assistant Professor / Dobelman Family Junior Chair
+Department of Statistics / Rice University
+http://had.co.nz/
+
+--
+You received this message because you are subscribed to the Google Groups "manipulatr" group.
+To post to this group, send email to manip...@googlegroups.com.
+To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+From ub756a7daa2c2aa6d at groups.google.com  Mon May  3 17:07:54 2010
+From: ub756a7daa2c2aa6d at groups.google.com (hadley wickham)
+Date: Mon, 03 May 2010 17:07:54 +0000
+Subject: Re: Performance of summarise (and plyr)
+Message-ID: <7xlJ7mJkNas.l1L7PeK3xqwJ@manipulatr.groups.google.com>
+In-Reply-To: <7xlJ7mJkNas.m9asMHrFg5wJ@manipulatr.groups.google.com>
+References: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com> <7xlJ7mJkNas.m9asMHrFg5wJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/7xlJ7mJkNas/m/l1L7PeK3xqwJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Oh and split-indices isn't missing, but I forgot to add it to the
+package collation.  With my new devtools package, I should pick up on
+these problems earlier, so the development package is more likely to
+run successfully.
+
+And here's a benchmark that illustrates best what I've been working on
+- big savings when you're processing large data sets with many groups.
+ I should have the code that powers this up by the end of the day.
+Working on documentation now and then I'll merge in the topic branch
+
+n <- 10^6
+X <- data.frame(
+ a = sample(60, n, rep = T),
+ b = sample(1000, n, rep = T),
+ x=runif(n), y=runif(n), z=rnorm(n)
+)
+iX <- idata.frame(X)
+
+f <- function(Y) {
+
+  c(
+   s1=mean(Y$x),
+   s2=mean(Y$y),
+   s3=mean(Y$y) + sum(Y$z)
+  )
+}
+
+# Small number of groups
+system.time(a <- dlply(X, ~a, f))
+system.time(b <- dlply(idata.frame(X), ~a, f))
+system.time({
+  lX <- split(X, X$a)
+  c <- llply(lX, f)
+  names(c)[1] <- "a"
+})
+
+# Large number of groups
+system.time(a <- dlply(X, ~b, f))
+system.time(b <- dlply(iX, ~b, f))
+system.time({
+  lX <- split(X, X$b)
+  c <- ldply(lX, f)
+  names(c)[1] <- "a"
+})
+
+Hadley
+
+On Mon, May 3, 2010 at 11:41 AM, hadley wickham <h.wi...@gmail.com> wrote:
+> Hi Jiho,
+>
+> Summarise is so much slower because it has to create a data frame.
+> Next on my list of things to look at is ways to improve this.  So far
+> I've been focussing on the splitting and iterating, not the processing
+> and combining.
+>
+> Hadley
+>
+> On Mon, May 3, 2010 at 10:55 AM, JiHO <jo.l...@gmail.com> wrote:
+>> Hi,
+>>
+>> Just today I was reading about the recent optimization work of Hadley
+>> on plyr and was trying things on a big dataset of mine. I remarked the
+>> following, although with plyr commit a35337d72618607096 because I
+>> could not install the freshest: 'split-indices.r' was missing from
+>> Collate and adding it caused issues down the line with C stuff. So
+>> those C optimizations are not taken in account here.
+>>
+>>        library(plyr)
+>>
+>>        # let's build a dataset
+>>        n <- 10^6
+>>        ng <- 60
+>>        X <- data.frame(a=cut(runif(n),
+>>                breaks=seq(0,1,length.out=ng+1)),
+>>                x=runif(n), y=runif(n), z=rnorm(n))
+>>
+>> Now compare summarise() with a function returning a named vector (the
+>> result of both constructions is the same):
+>>
+>>        system.time(ddply(X, ~a, function(Y) {
+>>                c(
+>>                        s1=mean(Y$x),
+>>                        s2=mean(Y$y),
+>>                        s3=mean(Y$y) + sum(Y$z)
+>>                )
+>>        }))
+>>         user  system elapsed
+>>        1.519   0.418   1.949
+>>
+>>        system.time(ddply(X, ~a, summarise,
+>>                s1=mean(x),
+>>                s2=mean(y),
+>>                s3=mean(y) + sum(z)
+>>        ))
+>>         user  system elapsed
+>>        1.568   0.437   2.018
+>>
+>> = Virtually no difference
+>>
+>> Now use a list rather than a data.frame that has to be split
+>>
+>>        XL <- split(X, X$a)
+>>
+>>        system.time(ldply(XL, function(Y) {
+>>                c(
+>>                        s1=mean(Y$x),
+>>                        s2=mean(Y$y),
+>>                        s3=mean(Y$y) + sum(Y$z)
+>>                )
+>>        }))
+>>         user  system elapsed
+>>        0.019   0.000   0.020
+>>
+>>        system.time(ldply(XL, summarise,
+>>                s1=mean(x),
+>>                s2=mean(y),
+>>                s3=mean(y) + sum(z)
+>>        ))
+>>         user  system elapsed
+>>        0.070   0.000   0.073
+>>
+>> First, the computation is much faster, which is to be expected since
+>> there is one less step (the splitting) to be done (but see
+>> post-scriptum). But, what is more surprising: summarise is much slower
+>> than the function(Y) construct. The times are small here but
+>> increasing the size of the data shows this just as clearly. I don't
+>> understand what is going on within plyr's insides but this might be a
+>> lead to follow for optimization.
+>>
+>> PS: I also tried to include the time to split the data.frame in the
+>> system.time call.
+>>
+>>        foo <- function() {
+>>                XL <- split(X, X$a)
+>>                ldply(XL, summarise,
+>>                        s1=mean(x),
+>>                        s2=mean(y),
+>>                        s3=mean(y) + sum(z)
+>>                )
+>>        }
+>>        system.time(foo())
+>>  user  system elapsed
+>> 0.491   0.303   0.798
+>>
+>> so it seems that ddply is three times slower than split+ldply (1.519 >
+>> 0.491). But maybe this has been solved by the C stuff.
+>>
+>> JiHO
+>> ---
+>> http://maururu.net
+>>
+>> --
+>> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+>> To post to this group, send email to manip...@googlegroups.com.
+>> To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+>> For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+>>
+>>
+>
+>
+>
+> --
+> Assistant Professor / Dobelman Family Junior Chair
+> Department of Statistics / Rice University
+> http://had.co.nz/
+>
+
+--
+Assistant Professor / Dobelman Family Junior Chair
+Department of Statistics / Rice University
+http://had.co.nz/
+
+--
+You received this message because you are subscribed to the Google Groups "manipulatr" group.
+To post to this group, send email to manip...@googlegroups.com.
+To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+From ub756a7daa2c2aa6d at groups.google.com  Mon May  3 17:09:56 2010
+From: ub756a7daa2c2aa6d at groups.google.com (hadley wickham)
+Date: Mon, 03 May 2010 17:09:56 +0000
+Subject: Re: Performance of summarise (and plyr)
+Message-ID: <7xlJ7mJkNas.twYlYJV4aTYJ@manipulatr.groups.google.com>
+In-Reply-To: <7xlJ7mJkNas.l1L7PeK3xqwJ@manipulatr.groups.google.com>
+References: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com> <7xlJ7mJkNas.l1L7PeK3xqwJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/7xlJ7mJkNas/m/twYlYJV4aTYJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+And here are the results:
+
+> # Small number of groups
+> system.time(a <- dlply(X, ~a, f))
+
+   user  system elapsed
+  0.756   0.406   1.166
+
+> system.time(b <- dlply(idata.frame(X), ~a, f))
+
+   user  system elapsed
+  0.415   0.097   0.512
+> system.time({
++   lX <- split(X, X$a)
++   c <- llply(lX, f)
++   names(c)[1] <- "a"
++ })
+   user  system elapsed
+  0.835   0.304   1.140
+
+>
+> # Large number of groups
+> system.time(a <- dlply(X, ~b, f))
+
+   user  system elapsed
+  3.053   2.802   5.857
+
+> system.time(b <- dlply(iX, ~b, f))
+
+   user  system elapsed
+  0.963   0.052   1.016
+> system.time({
++   lX <- split(X, X$b)
++   c <- ldply(lX, f)
++   names(c)[1] <- "a"
++ })
+   user  system elapsed
+  3.129   2.834   5.966
+
+dlply is now on par with split for data frames, and about 2x-5x faster
+when you use immutable data frames.
+
+Hadley
+
+On Mon, May 3, 2010 at 12:07 PM, hadley wickham <h.wi...@gmail.com> wrote:
+> Oh and split-indices isn't missing, but I forgot to add it to the
+> package collation.  With my new devtools package, I should pick up on
+> these problems earlier, so the development package is more likely to
+> run successfully.
+>
+> And here's a benchmark that illustrates best what I've been working on
+> - big savings when you're processing large data sets with many groups.
+>  I should have the code that powers this up by the end of the day.
+> Working on documentation now and then I'll merge in the topic branch
+>
+> n <- 10^6
+> X <- data.frame(
+>  a = sample(60, n, rep = T),
+>  b = sample(1000, n, rep = T),
+>  x=runif(n), y=runif(n), z=rnorm(n)
+> )
+> iX <- idata.frame(X)
+>
+> f <- function(Y) {
+>  c(
+>   s1=mean(Y$x),
+>   s2=mean(Y$y),
+>   s3=mean(Y$y) + sum(Y$z)
+>  )
+> }
+>
+> # Small number of groups
+> system.time(a <- dlply(X, ~a, f))
+> system.time(b <- dlply(idata.frame(X), ~a, f))
+> system.time({
+>  lX <- split(X, X$a)
+>  c <- llply(lX, f)
+>  names(c)[1] <- "a"
+> })
+>
+> # Large number of groups
+> system.time(a <- dlply(X, ~b, f))
+> system.time(b <- dlply(iX, ~b, f))
+> system.time({
+>  lX <- split(X, X$b)
+>  c <- ldply(lX, f)
+>  names(c)[1] <- "a"
+> })
+>
+>
+> Hadley
+>
+> On Mon, May 3, 2010 at 11:41 AM, hadley wickham <h.wi...@gmail.com> wrote:
+>> Hi Jiho,
+>>
+>> Summarise is so much slower because it has to create a data frame.
+>> Next on my list of things to look at is ways to improve this.  So far
+>> I've been focussing on the splitting and iterating, not the processing
+>> and combining.
+>>
+>> Hadley
+>>
+>> On Mon, May 3, 2010 at 10:55 AM, JiHO <jo.l...@gmail.com> wrote:
+>>> Hi,
+>>>
+>>> Just today I was reading about the recent optimization work of Hadley
+>>> on plyr and was trying things on a big dataset of mine. I remarked the
+>>> following, although with plyr commit a35337d72618607096 because I
+>>> could not install the freshest: 'split-indices.r' was missing from
+>>> Collate and adding it caused issues down the line with C stuff. So
+>>> those C optimizations are not taken in account here.
+>>>
+>>>        library(plyr)
+>>>
+>>>        # let's build a dataset
+>>>        n <- 10^6
+>>>        ng <- 60
+>>>        X <- data.frame(a=cut(runif(n),
+>>>                breaks=seq(0,1,length.out=ng+1)),
+>>>                x=runif(n), y=runif(n), z=rnorm(n))
+>>>
+>>> Now compare summarise() with a function returning a named vector (the
+>>> result of both constructions is the same):
+>>>
+>>>        system.time(ddply(X, ~a, function(Y) {
+>>>                c(
+>>>                        s1=mean(Y$x),
+>>>                        s2=mean(Y$y),
+>>>                        s3=mean(Y$y) + sum(Y$z)
+>>>                )
+>>>        }))
+>>>         user  system elapsed
+>>>        1.519   0.418   1.949
+>>>
+>>>        system.time(ddply(X, ~a, summarise,
+>>>                s1=mean(x),
+>>>                s2=mean(y),
+>>>                s3=mean(y) + sum(z)
+>>>        ))
+>>>         user  system elapsed
+>>>        1.568   0.437   2.018
+>>>
+>>> = Virtually no difference
+>>>
+>>> Now use a list rather than a data.frame that has to be split
+>>>
+>>>        XL <- split(X, X$a)
+>>>
+>>>        system.time(ldply(XL, function(Y) {
+>>>                c(
+>>>                        s1=mean(Y$x),
+>>>                        s2=mean(Y$y),
+>>>                        s3=mean(Y$y) + sum(Y$z)
+>>>                )
+>>>        }))
+>>>         user  system elapsed
+>>>        0.019   0.000   0.020
+>>>
+>>>        system.time(ldply(XL, summarise,
+>>>                s1=mean(x),
+>>>                s2=mean(y),
+>>>                s3=mean(y) + sum(z)
+>>>        ))
+>>>         user  system elapsed
+>>>        0.070   0.000   0.073
+>>>
+>>> First, the computation is much faster, which is to be expected since
+>>> there is one less step (the splitting) to be done (but see
+>>> post-scriptum). But, what is more surprising: summarise is much slower
+>>> than the function(Y) construct. The times are small here but
+>>> increasing the size of the data shows this just as clearly. I don't
+>>> understand what is going on within plyr's insides but this might be a
+>>> lead to follow for optimization.
+>>>
+>>> PS: I also tried to include the time to split the data.frame in the
+>>> system.time call.
+>>>
+>>>        foo <- function() {
+>>>                XL <- split(X, X$a)
+>>>                ldply(XL, summarise,
+>>>                        s1=mean(x),
+>>>                        s2=mean(y),
+>>>                        s3=mean(y) + sum(z)
+>>>                )
+>>>        }
+>>>        system.time(foo())
+>>>  user  system elapsed
+>>> 0.491   0.303   0.798
+>>>
+>>> so it seems that ddply is three times slower than split+ldply (1.519 >
+>>> 0.491). But maybe this has been solved by the C stuff.
+>>>
+>>> JiHO
+>>> ---
+>>> http://maururu.net
+>>>
+>>> --
+>>> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+>>> To post to this group, send email to manip...@googlegroups.com.
+>>> To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+>>> For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+>>>
+>>>
+>>
+>>
+>>
+>> --
+>> Assistant Professor / Dobelman Family Junior Chair
+>> Department of Statistics / Rice University
+>> http://had.co.nz/
+>>
+>
+>
+>
+> --
+> Assistant Professor / Dobelman Family Junior Chair
+> Department of Statistics / Rice University
+> http://had.co.nz/
+>
+
+--
+Assistant Professor / Dobelman Family Junior Chair
+Department of Statistics / Rice University
+http://had.co.nz/
+
+--
+You received this message because you are subscribed to the Google Groups "manipulatr" group.
+To post to this group, send email to manip...@googlegroups.com.
+To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+From ub756a7daa2c2aa6d at groups.google.com  Mon May  3 18:11:12 2010
+From: ub756a7daa2c2aa6d at groups.google.com (hadley wickham)
+Date: Mon, 03 May 2010 18:11:12 +0000
+Subject: Re: Performance of summarise (and plyr)
+Message-ID: <7xlJ7mJkNas.MepHMeDuUMoJ@manipulatr.groups.google.com>
+In-Reply-To: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+References: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/7xlJ7mJkNas/m/MepHMeDuUMoJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+And with the latest code on github:
+
+> # Small number of groups
+
+> system.time(a <- ddply(X, ~a, f))
+   user  system elapsed
+  0.790   0.413   1.219
+> system.time(b <- ddply(iX, ~a, f))
+   user  system elapsed
+  0.419   0.122   0.543
+
+> system.time({
++   lX <- split(X, X$a)
+
++   c <- ldply(lX, f)
++   names(c)[1] <- "a"
++ })
+   user  system elapsed
+
+  0.857   0.301   1.166
+
+>
+> # Large number of groups
+
+> system.time(a <- ddply(X, ~b, f))
+   user  system elapsed
+  3.318   2.107   5.566
+> system.time(b <- ddply(iX, ~b, f))
+   user  system elapsed
+  1.070   0.068   1.301
+
+> system.time({
++   lX <- split(X, X$b)
++   c <- ldply(lX, f)
++   names(c)[1] <- "a"
++ })
+   user  system elapsed
+
+  3.296   2.265   5.760
+
+:D
+
+Hadley
+
+--
+Assistant Professor / Dobelman Family Junior Chair
+Department of Statistics / Rice University
+http://had.co.nz/
+
+--
+You received this message because you are subscribed to the Google Groups "manipulatr" group.
+To post to this group, send email to manip...@googlegroups.com.
+To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+From ufc22cb727156ff4f at groups.google.com  Tue May  4 00:49:13 2010
+From: ufc22cb727156ff4f at groups.google.com (JiHO)
+Date: Tue, 04 May 2010 00:49:13 +0000
+Subject: Re: Performance of summarise (and plyr)
+Message-ID: <7xlJ7mJkNas.BcyLop6so-0J@manipulatr.groups.google.com>
+In-Reply-To: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+References: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/7xlJ7mJkNas/m/BcyLop6so-0J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+wow, thanks for all the benchmarks. That's pretty impressive.
+
+idata.frame is something new in plyr? I cannot find mention of it
+anywhere. I guess that the difference is that the data.frame cannot be
+altered ("immutable") but plyr never does, as far as I understand (it
+works on it and returns a *new* data.frame). If so, does that mean
+that they could become default in all d*ply functions? That would be
+really cool given the speed improvements you show here!
+
+JiHO
+---
+http://maururu.net
+
+--
+You received this message because you are subscribed to the Google Groups "manipulatr" group.
+To post to this group, send email to manip...@googlegroups.com.
+To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+From ub756a7daa2c2aa6d at groups.google.com  Tue May  4 02:01:20 2010
+From: ub756a7daa2c2aa6d at groups.google.com (hadley wickham)
+Date: Tue, 04 May 2010 02:01:20 +0000
+Subject: Re: Performance of summarise (and plyr)
+Message-ID: <7xlJ7mJkNas.5WrW0_AkSacJ@manipulatr.groups.google.com>
+In-Reply-To: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+References: <7xlJ7mJkNas.nUPkL4QTFdIJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/7xlJ7mJkNas/m/5WrW0_AkSacJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> idata.frame is something new in plyr? I cannot find mention of it
+> anywhere. I guess that the difference is that the data.frame cannot be
+> altered ("immutable") but plyr never does, as far as I understand (it
+> works on it and returns a *new* data.frame).
+
+Yes, it's new, and it brings big performance improvements because
+subsetting creates a reference to the origin dataset, instead of
+copying the contents into a new one.
+
+> If so, does that mean
+> that they could become default in all d*ply functions? That would be
+> really cool given the speed improvements you show here!
+
+Eventually, but currently I want to leave it optional because there
+are probably some data.frame features that I haven't captured
+perfectly in idata.frames.
+
+Hadley
+
+--
+Assistant Professor / Dobelman Family Junior Chair
+Department of Statistics / Rice University
+http://had.co.nz/
+
+--
+You received this message because you are subscribed to the Google Groups "manipulatr" group.
+To post to this group, send email to manip...@googlegroups.com.
+To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+From uc98c86addbf6b007 at groups.google.com  Tue May 18 18:58:53 2010
+From: uc98c86addbf6b007 at groups.google.com (DougB)
+Date: Tue, 18 May 2010 18:58:53 +0000
+Subject: as.matrix.cast_matrix strips identifiers
+Message-ID: <1YkNy8zQGqs.hnS5ykbiXb0J@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/1YkNy8zQGqs/m/hnS5ykbiXb0J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am using reshape to prepare some data for use with the Bioconductor
+package.
+I am using melt and then cast to produce a data frame with the format
+I want.
+I then converted the data frame to a matrix in order to create a
+Bioconductor ExpressionSet
+When I attempt to create the ExpressionSet I get an error indicating
+that Bioconductor cannot work with an object of the class
+cast_matrix.  I then used the method "as.matrix.cast_matrix" to
+convert the cast_matrix into a matrix and I am able to create the
+Bioconductor ExpressionSet.
+
+My problem is that when I use "as.matrix.cast_matrix" I lose the row
+names and column names.  Is there a way to use as.matrix.cast_matrix
+and maintain these identifiers?
+
+Thanks, Doug B
+
+--
+You received this message because you are subscribed to the Google Groups "manipulatr" group.
+To post to this group, send email to manip...@googlegroups.com.
+To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+From udc06d729e023580a at groups.google.com  Tue May 25 21:47:58 2010
+From: udc06d729e023580a at groups.google.com (Hadley Wickham)
+Date: Tue, 25 May 2010 21:47:58 +0000
+Subject: Re: as.matrix.cast_matrix strips identifiers
+Message-ID: <1YkNy8zQGqs.O8fr98i06WkJ@manipulatr.groups.google.com>
+In-Reply-To: <1YkNy8zQGqs.hnS5ykbiXb0J@manipulatr.groups.google.com>
+References: <1YkNy8zQGqs.hnS5ykbiXb0J@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/1YkNy8zQGqs/m/O8fr98i06WkJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Doug,
+
+Could you please provide a small reproducible example so I can further
+investigate the problem?
+
+Thanks,
+
+Hadley
+
+On Tue, May 18, 2010 at 1:58 PM, DougB <dou...@gmail.com> wrote:
+> I am using reshape to prepare some data for use with the Bioconductor
+> package.
+> I am using melt and then cast to produce a data frame with the format
+> I want.
+> I then converted the data frame to a matrix in order to create a
+> Bioconductor ExpressionSet
+> When I attempt to create the ExpressionSet I get an error indicating
+> that Bioconductor cannot work with an object of the class
+> cast_matrix.  I then used the method "as.matrix.cast_matrix" to
+> convert the cast_matrix into a matrix and I am able to create the
+> Bioconductor ExpressionSet.
+>
+> My problem is that when I use "as.matrix.cast_matrix" I lose the row
+> names and column names.  Is there a way to use as.matrix.cast_matrix
+> and maintain these identifiers?
+>
+> Thanks, Doug B
+>
+> --
+> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> To post to this group, send email to manip...@googlegroups.com.
+> To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+> For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+>
+>
+
+--
+Assistant Professor / Dobelman Family Junior Chair
+Department of Statistics / Rice University
+http://had.co.nz/
+
+From u7cb65577bc9b60a6 at groups.google.com  Fri May 28 04:22:52 2010
+From: u7cb65577bc9b60a6 at groups.google.com (LeonB)
+Date: Fri, 28 May 2010 04:22:52 +0000
+Subject: reshape: Getting NAs to appear in cast
+Message-ID: <jVbuHuq7sjA.JeZKWZh_GtMJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jVbuHuq7sjA/m/JeZKWZh_GtMJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+It's a while since I needed this behaviour, but cast now seems do
+things differently from what was documented in the JSS introductory
+article.
+
+Specifically, using the french_fries data set:
+
+library(reshape)
+# check no observations at time 10 for subject 3:
+subset(french_fries, subject ==3 & time==10)
+
+ff_d <- melt(french_fries, id=1:4, na.rm=TRUE)
+cast(ff_d, subject ~ time, length) # generates "0" instead of NAs
+shown at top of p.17
+
+# BTW, above output not generated by command at bottom of p. 16
+# but I guess you already knew that
+
+cast(ff_d, subject ~ time, length, fill=0) # supposed to replace NAs
+with zeroes?
+
+cast(ff_d, subject ~ time, function(x) 30 - length(x)) # now get "30"
+instead of NA
+
+cast(ff_d, subject ~ time, function(x) 30 - length(x), fill=30)  #
+supposed to replace NAs with "30"?
+
+I'm pretty sure that originally (i.e. a few versions of R ago) cast()
+did what it says on p. 17 of the JSS article, i.e. generate NAs where
+there were "missing cells", and the "fill" argument could be used to
+substitute a value for these NAs.
+
+Has something changed in the meantime? Is there a way to get cast() to
+behave in the way it did originally?
+
+Cheers,
+
+Leon
+
+From u0c39e60ddb38622b at groups.google.com  Fri May 28 13:38:20 2010
+From: u0c39e60ddb38622b at groups.google.com (Dennis Murphy)
+Date: Fri, 28 May 2010 13:38:20 +0000
+Subject: Re: reshape: Getting NAs to appear in cast
+Message-ID: <jVbuHuq7sjA.kco4xoT_q-MJ@manipulatr.groups.google.com>
+In-Reply-To: <jVbuHuq7sjA.JeZKWZh_GtMJ@manipulatr.groups.google.com>
+References: <jVbuHuq7sjA.JeZKWZh_GtMJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jVbuHuq7sjA/m/kco4xoT_q-MJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi:
+
+On Thu, May 27, 2010 at 9:22 PM, LeonB <Leon.B...@utas.edu.au> wrote:
+> Hi all,
+>
+> It's a while since I needed this behaviour, but cast now seems do
+> things differently from what was documented in the JSS introductory
+> article.
+>
+> Specifically, using the french_fries data set:
+>
+> library(reshape)
+> # check no observations at time 10 for subject 3:
+> subset(french_fries, subject ==3 & time==10)
+>
+> ff_d <- melt(french_fries, id=1:4, na.rm=TRUE)
+> cast(ff_d, subject ~ time, length) # generates "0" instead of NAs
+> shown at top of p.17
+
+As default behavior, this makes perfect sense to me - if there are no
+observations in a given cell, the length is 0, not NA.
+
+>
+> # BTW, above output not generated by command at bottom of p. 16
+> # but I guess you already knew that
+>
+> cast(ff_d, subject ~ time, length, fill=0) # supposed to replace NAs
+> with zeroes?
+
+If you want to replace the default zeros with NA, substitute fill = NA in
+the above statement.
+
+>
+> cast(ff_d, subject ~ time, function(x) 30 - length(x)) # now get "30"
+> instead of NA
+
+I can understand if you find this perplexing (I imagine you expected NA here,
+too), but this statement is asking for the number of missing values per cell,
+where 30 is the expected number of cell replicates to achieve full replication.
+This also makes sense as default behavior - a value of 30 means that no
+observations were taken in that cell (all missing), just as zero would represent no
+missing values. Many users (present company included) would expect NA in
+this context to mean 'can't be determined' or 'unobserved', which is not the
+case here. An empty cell informs us that there are 0 observations in that cell,
+or equivalently, that 30 are missing.
+
+>
+> cast(ff_d, subject ~ time, function(x) 30 - length(x), fill=30)  #
+> supposed to replace NAs with "30"?
+
+You can always try this:
+
+> cc <- cast(ff_d, subject ~ time, function(x) 30 - length(x))
+> cc[cc == 30L] <- NA
+> cc
+   subject 1 2 3 4 5 6 7 8  9 10
+1        3 0 0 0 0 0 0 0 0  0 NA
+2       10 0 0 0 0 0 0 0 0  0  0
+3       15 0 0 0 0 5 0 0 0  0  0
+4       16 0 0 0 0 0 0 0 1  0  0
+5       19 0 0 0 0 0 0 0 0  0  0
+6       31 0 0 0 0 0 0 0 0 NA  0
+7       51 0 0 0 0 0 0 0 0  0  0
+8       52 0 0 0 0 0 0 0 0  0  0
+9       63 0 0 0 0 0 0 0 0  0  0
+10      78 0 0 0 0 0 0 0 0  0  0
+11      79 0 0 0 0 0 0 1 2  0 NA
+12      86 0 0 0 0 0 0 0 0 NA  0
+
+HTH,
+Dennis
+
+>
+> I'm pretty sure that originally (i.e. a few versions of R ago) cast()
+> did what it says on p. 17 of the JSS article, i.e. generate NAs where
+> there were "missing cells", and the "fill" argument could be used to
+> substitute a value for these NAs.
+>
+> Has something changed in the meantime? Is there a way to get cast() to
+> behave in the way it did originally?
+
+> Cheers,
+>
+> Leon
+>
+> --
+> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> To post to this group, send email to manip...@googlegroups.com.
+> To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+> For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+>
+
+From udc06d729e023580a at groups.google.com  Fri May 28 13:45:12 2010
+From: udc06d729e023580a at groups.google.com (Hadley Wickham)
+Date: Fri, 28 May 2010 13:45:12 +0000
+Subject: Re: reshape: Getting NAs to appear in cast
+Message-ID: <jVbuHuq7sjA.sKj4luLA5OkJ@manipulatr.groups.google.com>
+In-Reply-To: <jVbuHuq7sjA.JeZKWZh_GtMJ@manipulatr.groups.google.com>
+References: <jVbuHuq7sjA.JeZKWZh_GtMJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jVbuHuq7sjA/m/sKj4luLA5OkJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> I can understand if you find this perplexing (I imagine you expected NA
+> here,
+> too), but this statement is asking for the number of missing values per
+> cell,
+> where 30 is the expected number of cell replicates to achieve full
+> replication.
+> This also makes sense as default behavior - a value of 30 means that no
+> observations were taken in that cell (all missing), just as zero would
+> represent no
+> missing values. Many users (present company included) would expect NA in
+> this context to mean 'can't be determined' or 'unobserved', which is not the
+> case here. An empty cell informs us that there are 0 observations in that
+> cell,
+> or equivalently, that 30 are missing.
+
+Yes, this is the reasoning behind the new(er) behaviour.  Instead of
+filling with NAs by default, I fill with the results of calling the
+function on a zero-length vector.
+
+Hadley
+
+--
+Assistant Professor / Dobelman Family Junior Chair
+Department of Statistics / Rice University
+http://had.co.nz/
+

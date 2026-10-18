@@ -1,0 +1,2161 @@
+From u27405c4b711a1080 at groups.google.com  Sun Jan  1 18:35:37 2017
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Sun, 01 Jan 2017 18:35:37 +0000
+Subject: Re: Applying different nls models to different facets/groups using geom_smooth
+Message-ID: <YgCqQX8JbPM.MbL8bCswEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <YgCqQX8JbPM.GAZRRPN6DAAJ@ggplot2.groups.google.com>
+References: <YgCqQX8JbPM.WkwWXsp5DAAJ@ggplot2.groups.google.com> <YgCqQX8JbPM.GAZRRPN6DAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/YgCqQX8JbPM/m/MbL8bCswEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hefin,
+
+I tried to solve this over the break a few times and couldn't get it myself so I reached out on Twitter and StackOverflow. Jenny Bryan used map2 and pmap to derive the solution to the setting start parameters independently for each model.
+https://stackoverflow.com/questions/41372191/apply-different-start-parameters-to-model-using-purrrmap-within-dplyrmutate/41373227
+
+The output after this is the models in a list-column.
+
+Sadly, plotting these models from here isn't as easy as I had hoped because there is an indication that you can't facet functions:
+https://stackoverflow.com/questions/25075428/ggplot2-stat-function-with-calculated-argument-for-different-data-subset-inside
+It says to use the functions to estimate values along the range of your data and plot those lines. Putting it all together it looks like this:
+This indicates that your starting values are bad and in order for this to work at all, Jenny replaced your B group values because with those start values, it failed miserably (or perhaps an nls is a bad choice for that data?).
+
+I don't know how to estimate start values automatically. Perhaps others do?
+
+library(tidyverse)
+# input data frame
+df <- tibble(Group = c(rep("A", 7), rep("B", 7), rep("C", 7)),
+
+                 Time = c(rep(c(1:7), 3)),
+                 Result = c(100, 96.9, 85.1, 62.0, 30.7, 15.2, 9.6,
+
+                            ## Jenny Bryan (I) replaced these values!!
+                            ## Group B initial values are NOT MY PROBLEM
+                            105, 90, 82, 55, 40, 23, 7,
+
+                            100, 55.61, 3.26, -4.77, -7.21, -3.2, -5.6))
+
+## ggplot(df, aes(x = Time, y = Result, group = Group)) + geom_line()
+
+df_p <-
+  df %>%
+  group_by(Group) %>%
+  #nest the values for modeling
+  nest() %>%
+  ## init vals are all the same, but this shows how to make them different
+  mutate(start = list(
+    list(a = -3, b = 85, c = 4, d = 10),
+    list(a = -3, b = 85, c = 4, d = 10),
+    list(a = -3, b = 85, c = 4, d = 10)),
+    # model using nls and start values defined above
+    model = map2(data, start,
+                       ~ nls(Result ~ a+(b-a)/(1+(Time/c)^d),
+                             data = .x, start = .y)),
+    # model quality measurements
+    glance = map(model, broom::glance),
+    # contains parameters from model
+    tidy = map(model, broom::tidy),
+    # estimates and errors
+    augment = map(model, broom::augment)
+    )
+
+# create tibble with 250 points along "Time" for each model
+lineplot = tibble(Group = rep(df_p$Group, each=250), x = rep(seq(min(df$Result), max(df$Result), len=250), length(df_p$Group)))
+
+# pull out the model parameter estimates and spread them wide for computing
+ModelParams <-
+unnest(df_p, tidy) %>%
+select(1:3) %>%
+spread(term, estimate)
+
+# compute model estimates for plotting
+Modelline <-
+lineplot %>%
+full_join(ModelParams, .) %>%
+mutate(y = (a+(b-a)/(1+x/c^d)))
+
+# plot and facet with model
+ggplot() +
+  # original points
+  geom_point(data = df, aes(x = Time, y = Result)) +
+  # model lines for plotting
+  geom_line(data = Modelline, aes(x = x, y = y)) +
+  facet_grid(~Group)
+
+HTH
+B
+
+On Tue, Dec 20, 2016 at 10:40 AM, Brandon Hurr <brando...@gmail.com> wrote:
+
+> I don't have time to look into this right now but as a guide this feels very purrr/broom to me.
+>
+> Maybe read the broom package vignette and r4ds.hadley.nz <http://r4ds.hadley.nz> purrr section on multiple models.
+>
+> I think split the dataframe apply the various models as a list using map(), extract the models and apply them as facets. I've never done this whole process since I haven't had a need, but there's lots of stuff on stackoverflow too.
+>
+> HTH,
+> B
+
+> On Tue, Dec 20, 2016 at 10:19 Hefin Rhys <hefin....@bath.edu> wrote:
+
+> > Hi all, suppose I have a data frame:
+> >
+> > df <- data.frame(Group = c(rep("A", 7), rep("B", 7), rep("C", 7)),
+> >                  Time = c(rep(c(1:7), 3)),
+> >                  Result = c(100, 96.9, 85.1, 62.0, 30.7, 15.2, 9.6,
+> >                             10.2, 14.8, 32.26, 45.85, 56.25, 70.1, 100,
+> >                             100, 55.61, 3.26, -4.77, -7.21, -3.2, -5.6))
+> >
+> > and I want to plot the data as Result vs Time, facetting by Group. I want to draw nls models to the plots using geom_smooth which when applying to only one group at a time (A) works well:
+> >
+> > ggplot(data = df[df$Group == "A",], aes(x = Time, y = Result)) +
+> >   facet_wrap(~ Group) +
+> >   geom_point() +
+> >   geom_smooth(method = "nls", formula = y ~ a+(b-a)/(1+(x/c)^d), se = FALSE,
+> >               method.args = list(start = c(a = -3, b = 85, c = 4, d = 10)))
+> >
+> > But the problem I face is that I only understand how to specify one formula, and one set of starting values in the call to geom_smooth, so if I want to draw models with very different formulae or starting values, I can't. For example, here if I try to draw a separate model for each facet/group, it fails on one of the facets:
+> >
+> > ggplot(data = df, aes(x = Time, y = Result)) +
+> >   facet_wrap(~ Group) +
+> >   geom_point() +
+> >   geom_smooth(method = "nls", formula = y ~ a+(b-a)/(1+(x/c)^d), se = FALSE,
+> >               method.args = list(start = c(a = -3, b = 85, c = 4, d = 10)))
+> >
+> > So my question is when applying geom_smooth by a grouping/facetting variable, is there a way to specify separate models? Or is the only option to simply model each in isolation and then use something like gridExtra to panel them together again afterwards?
+> >
+> > As an off topic aside, the nls() function is really bad at parameter estimation. There are online widgets which can estimate parameters without any user defined starting values, so why is nls() so far behind? Am I missing something?
+> >
+> > Thanks
+> > Hefin
+> >
+> > --
+> > --
+> > You received this message because you are subscribed to the ggplot2 mailing list.
+> > Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+> >
+> > To post: email ggp...@googlegroups.com
+
+> > To unsubscribe: email ggplot2+unsubscribe@googlegroups.com
+
+> >
+> > More options: http://groups.google.com/group/ggplot2
+> >
+> > ---
+> > You received this message because you are subscribed to the Google Groups "ggplot2" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+unsubscribe@googlegroups.com.
+
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u3ada5bc98608b5f2 at groups.google.com  Mon Jan  2 22:11:58 2017
+From: u3ada5bc98608b5f2 at groups.google.com (jyr...@gmail.com)
+Date: Mon, 02 Jan 2017 22:11:58 +0000
+Subject: Re: Adding a title after removed with a theme
+Message-ID: <1CrnlDEaJro.FpyfW46KEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <1CrnlDEaJro.m1m9T8ypDwAJ@ggplot2.groups.google.com>
+References: <1CrnlDEaJro.m1m9T8ypDwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/1CrnlDEaJro/m/FpyfW46KEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Turns out it's easy enough to make a custom theme. For your viewing pleasure, the final result:
+
+ <https://lh3.googleusercontent.com/-3Vf1P86jdjI/WGrQDNpgY3I/AAAAAAAACCk/F1yF13o5Px8yh-Z2PgJL0GwxF_BximqwACLcB/s1600/2016goalsbyteam.PNG>
+
+On Saturday, 31 December 2016 03:33:14 UTC+2, jyr...@gmail.com wrote:
+>
+> I have soccer goal and assist coordinates in a data frame, which I've plotted by teams with a facet_wrap. I've added theme_solid() which is a part of ggthemes to remove all the extra crap that aren't really useful with these data. Except the titles for each plot, which would be the team names above each plot that are very much needed here. Is there an easy way to add just the titles back?
+>  <https://lh3.googleusercontent.com/-cl8iMUVbMKk/WGcJJSmmJBI/AAAAAAAACB8/BpxeYhvSL1AW0suklsbSzo2NA8UrNJOpgCLcB/s1600/opponentgoals.PNG>
+
+From uddc91303cb21ac62 at groups.google.com  Mon Jan  2 23:26:54 2017
+From: uddc91303cb21ac62 at groups.google.com (Sam Albers)
+Date: Mon, 02 Jan 2017 23:26:54 +0000
+Subject: Re: Adding a title after removed with a theme
+Message-ID: <1CrnlDEaJro.tsQAF6WOEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <1CrnlDEaJro.FpyfW46KEAAJ@ggplot2.groups.google.com>
+References: <1CrnlDEaJro.m1m9T8ypDwAJ@ggplot2.groups.google.com> <1CrnlDEaJro.FpyfW46KEAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/1CrnlDEaJro/m/tsQAF6WOEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Is it possible for you to share your full code? I am curious how you did this.
+
+Sam
+
+On Mon, Jan 2, 2017 at 2:11 PM, <jyr...@gmail.com> wrote:
+
+> Turns out it's easy enough to make a custom theme. For your viewing pleasure, the final result:
+>
+>
+>  <https://lh3.googleusercontent.com/-3Vf1P86jdjI/WGrQDNpgY3I/AAAAAAAACCk/F1yF13o5Px8yh-Z2PgJL0GwxF_BximqwACLcB/s1600/2016goalsbyteam.PNG>
+>
+>
+> On Saturday, 31 December 2016 03:33:14 UTC+2, jyr...@gmail.com wrote:
+> >
+> > I have soccer goal and assist coordinates in a data frame, which I've plotted by teams with a facet_wrap. I've added theme_solid() which is a part of ggthemes to remove all the extra crap that aren't really useful with these data. Except the titles for each plot, which would be the team names above each plot that are very much needed here. Is there an easy way to add just the titles back?
+> >  <https://lh3.googleusercontent.com/-cl8iMUVbMKk/WGcJJSmmJBI/AAAAAAAACB8/BpxeYhvSL1AW0suklsbSzo2NA8UrNJOpgCLcB/s1600/opponentgoals.PNG>
+
+> --
+> --
+> You received this message because you are subscribed to the ggplot2 mailing list.
+> Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+unsubscribe@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google Groups "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+unsubscribe@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u3ada5bc98608b5f2 at groups.google.com  Mon Jan  2 23:45:19 2017
+From: u3ada5bc98608b5f2 at groups.google.com (jyr...@gmail.com)
+Date: Mon, 02 Jan 2017 23:45:19 +0000
+Subject: Re: Adding a title after removed with a theme
+Message-ID: <1CrnlDEaJro.J-1wZqaPEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <1CrnlDEaJro.m1m9T8ypDwAJ@ggplot2.groups.google.com>
+References: <1CrnlDEaJro.m1m9T8ypDwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/1CrnlDEaJro/m/J-1wZqaPEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Sure.
+
+library('ggplot2')
+ggplot(data=data.frame(x=1,y=1),aes(x,y))+
+  ###grass:
+  geom_rect(aes(xmin = -37, xmax = 37, ymin = -55.5, ymax = 55.5),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = 0, ymax = 6),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = 12, ymax = 18),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = 24, ymax = 30),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = 36, ymax = 41.5),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = 47, ymax = 52.5),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = -6, ymax = -12),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = -18, ymax = -24),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = -36, ymax = -30),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  geom_rect(aes(xmin = -34, xmax = 34, ymin = -47, ymax = -41.5),
+            fill = "darkolivegreen4", alpha = 0.7) +
+  ###pitch:
+  geom_path(data=data.frame(x=c(-34,-34,34,34,-34),y=c(-52.5,52.5,52.5,-52.5,-52.5)), colour = "white")+
+  ###halfway line:
+  geom_path(data=data.frame(x=c(-34,34),y=c(0,0)), colour = "white")+
+  ###centre circle:
+  geom_path(data=data.frame(x=c(-9150:(-1)/1000,1:9150/1000),y=c(sqrt(9.15^2-c(-9150:(-1)/1000,1:9150/1000)^2))),aes(x=x,y=y), colour = "white")+
+  geom_path(data=data.frame(x=c(-9150:(-1)/1000,1:9150/1000),y=-c(sqrt(9.15^2-c(-9150:(-1)/1000,1:9150/1000)^2))),aes(x=x,y=y), colour = "white")+
+  ##centre spot:
+  geom_point(aes(x = 0, y = 0), size = 0.5, colour = "white") +
+  ##penalty spots:
+  geom_point(aes(x = 0, y = 41.5), size = 0.5, colour = "white") +
+  geom_point(aes(x = 0, y = -41.5), size = 0.5, colour = "white") +
+  ###penalty arc:
+  geom_path(data=data.frame(x=c(-7280:(-1)/1000,1:7280/1000),y=c(41.5-sqrt(9.15^2-c(-7280:(-1)/1000,1:7280/1000)^2))),aes(x=x,y=y), colour = "white")+
+  geom_path(data=data.frame(x=c(-7280:(-1)/1000,1:7280/1000),y=-c(41.5-sqrt(9.15^2-c(-7280:(-1)/1000,1:7280/1000)^2))),aes(x=x,y=y), colour = "white")+
+  ###corner arcs:
+  geom_path(data=data.frame(x=c(0:1000/1000)-34,y=c(52.5-sqrt(1^2-c(0:1000/1000)^2))),aes(x=x,y=y), colour = "white")+
+  geom_path(data=data.frame(x=c(0:1000/1000)-34,y=c(-52.5+sqrt(1^2-c(0:1000/1000)^2))),aes(x=x,y=y), colour = "white")+
+  geom_path(data=data.frame(x=c(0:1000/1000)+33,y=c(52.5-sqrt(1^2-c(-1000:0/1000)^2))),aes(x=x,y=y), colour = "white")+
+  geom_path(data=data.frame(x=c(0:1000/1000)+33,y=c(-52.5+sqrt(1^2-c(-1000:0/1000)^2))),aes(x=x,y=y), colour = "white")+
+  ###corner lines:
+  geom_path(data=data.frame(x=c(-34,-34.5),y=c(43.35,43.35)), colour = "white") +
+  geom_path(data=data.frame(x=c(-34,-34.5),y=c(-43.35,-43.35)), colour = "white") +
+  geom_path(data=data.frame(x=c(34,34.5),y=c(43.35,43.35)), colour = "white") +
+  geom_path(data=data.frame(x=c(34,34.5),y=c(-43.35,-43.35)), colour = "white") +
+  geom_path(data=data.frame(x=c(-25.85,-25.85),y=c(52.5,53)), colour = "white") +
+  geom_path(data=data.frame(x=c(25.85,25.85),y=c(52.5,53)), colour = "white") +
+  geom_path(data=data.frame(x=c(-25.85,-25.85),y=c(-52.5,-53)), colour = "white") +
+  geom_path(data=data.frame(x=c(25.85,25.85),y=c(-52.5,-53)), colour = "white") +
+  ###6-yard box:
+  geom_path(data=data.frame(x=c(-9.16,-9.16,9.16,9.16),y=c(-52.5,-47,-47,-52.5)), colour = "white")+
+  geom_path(data=data.frame(x=-c(-9.16,-9.16,9.16,9.16),y=-c(-52.5,-47,-47,-52.5)), colour = "white")+
+  ###goals
+  geom_path(data=data.frame(x=c(-3.66,-3.66,3.66,3.66),y=c(-52.5,-53.5,-53.5,-52.5)), colour = "white")+
+  geom_path(data=data.frame(x=c(-3.66,-3.66,3.66,3.66),y=-c(-52.5,-53.5,-53.5,-52.5)), colour = "white")+
+  ###penalty areas:
+  geom_path(data=data.frame(x=c(-20.15,-20.15,20.15,20.15),y=c(-52.5,-36,-36,-52.5)), colour = "white")+
+  geom_path(data=data.frame(x=c(-20.15,-20.15,20.15,20.15),y=c(52.5,36,36,52.5)), colour = "white")+
+  ###fix aspect ratio to 1:1
+  coord_fixed() +
+  theme(line = element_blank(),   text = element_text(family = "Verdana", face = "bold",
+                                                      colour = "black", size = 14,
+                                                      lineheight = 0.9,  hjust = 0.5,
+                                                      vjust = 0.5, angle = 0,
+                                                      margin = margin(), debug = FALSE),
+        rect = element_rect(fill = NA, size = 12, colour = NA, linetype = 0),
+        panel.background = element_rect(fill = NA),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        strip.background = element_blank(),
+        complete = TRUE) +
+  geom_point(data = goals, aes(x=-20.15+x_ast, y=52.5-y_ast), colour = 'khaki1', size = 2) +
+  geom_point(data = goals, aes(x=-20.15+x_goal, y=52.5-y_goal), colour = 'lightcoral', size = 2) +
+  facet_wrap(~team, nrow = 2);
+
+On Tuesday, 3 January 2017 01:26:54 UTC+2, Sam wrote:
+
+> Is it possible for you to share your full code? I am curious how you did this.
+>
+> Sam
+
+> On Mon, Jan 2, 2017 at 2:11 PM, <jyr...@gmail.com> wrote:
+
+> > Turns out it's easy enough to make a custom theme. For your viewing pleasure, the final result:
+> >
+> >
+> >  <https://lh3.googleusercontent.com/-3Vf1P86jdjI/WGrQDNpgY3I/AAAAAAAACCk/F1yF13o5Px8yh-Z2PgJL0GwxF_BximqwACLcB/s1600/2016goalsbyteam.PNG>
+> >
+> >
+> > On Saturday, 31 December 2016 03:33:14 UTC+2, jyr...@gmail.com wrote:
+> > >
+> > > I have soccer goal and assist coordinates in a data frame, which I've plotted by teams with a facet_wrap. I've added theme_solid() which is a part of ggthemes to remove all the extra crap that aren't really useful with these data. Except the titles for each plot, which would be the team names above each plot that are very much needed here. Is there an easy way to add just the titles back?
+> > >  <https://lh3.googleusercontent.com/-cl8iMUVbMKk/WGcJJSmmJBI/AAAAAAAACB8/BpxeYhvSL1AW0suklsbSzo2NA8UrNJOpgCLcB/s1600/opponentgoals.PNG>
+
+> > --
+> > --
+> > You received this message because you are subscribed to the ggplot2 mailing list.
+> > Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+> >
+> > To post: email ggp...@googlegroups.com
+
+> > To unsubscribe: email ggplot2+u...@googlegroups.com
+
+> >
+> > More options: http://groups.google.com/group/ggplot2
+> >
+> > ---
+> > You received this message because you are subscribed to the Google Groups "ggplot2" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+u...@googlegroups.com.
+
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u7cd83d976d262e63 at groups.google.com  Tue Jan  3 08:28:14 2017
+From: u7cd83d976d262e63 at groups.google.com (Claude Vividsky)
+Date: Tue, 03 Jan 2017 08:28:14 +0000
+Subject: RE: Changed stacking behaviour in geom_bar as of ggplot2 version 2.2.0
+Message-ID: <buiKAb4RZJw.tVNmhi-sEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <buiKAb4RZJw.HSVLRpEoDAAJ@ggplot2.groups.google.com>
+References: <buiKAb4RZJw.HSVLRpEoDAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/buiKAb4RZJw/m/tVNmhi-sEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I added an example here: https://github.com/tidyverse/ggplot2/issues/1965
+
+Here is it too; please compare the plots generated by 2.1.0 to those
+generated by 2.2.0:
+
+    library(ggplot2)
+
+    x <- data.frame(
+      a=c("A", "A", "B", "B"),
+      b=c("x", "y", "x", "y"),
+      m=c(4, 8, 7, 3)
+    )
+
+    # Example 1: label at the top of the bar segment
+
+    ggplot(x, aes(x=a, y = m)) +
+      geom_bar(stat="identity", aes(fill=a, alpha=b)) +
+      geom_text(position = "stack", aes(label=m), vjust=-0.3, size = 3) +
+      scale_alpha_discrete(range=c(1, 0.5))
+
+    # Example 2: label at the center of the bar segment
+
+    x = x[order(x$a, x$b),]
+    x$p = ave(x$m, x$a, FUN = cumsum)
+    x$p = x$p - x$m * 0.5
+
+    # p is a calculated label pos for the second example such that within each x$a
+    # category the labels are centered for the stacked x$b;
+    # e.g x$p[2] = x$m[1] + x$m[2] / 2
+
+    ggplot(x, aes(x=a, y = m)) +
+      geom_bar(stat="identity", aes(fill=a, alpha=b)) +
+      geom_text(position = "identity", aes(y=p, label=m), size = 3) +
+      scale_alpha_discrete(range=c(1, 0.5))
+
+At least the second example goes wrong with ggplot2 2.2.0 (can't test the
+first one with 2.2.0 at the moment; will do it this evening).
+
+Of course it is possible to calculate x$p according to the new scheme. However,
+I do not think that this is intuitively, because in 2.1.0 all x$m from the first
+to the current must be summed up while in 2.2.0 all x$m from the last to the
+current must be regarded. This is not as easy as here, because x$b must at first
+be ordered descending to calculate the label pos and after that it must be
+reordered ascending to confirm to the new display behaviour of ggplot2 2.2.0.
+
+Thank you
+Michael
+
+> -----Original Message-----
+> From: Hadley Wickham [mailto:h.wi...@gmail.com]
+> Sent: Friday, December 30, 2016 10:58 PM
+> To: Claude Vividsky
+> Cc: ggplot2
+> Subject: Re: Changed stacking behaviour in geom_bar as of ggplot2 version
+> 2.2.0
+>
+> Please provide a reproducible example.
+>
+> Hadley
+>
+> On Mon, Dec 19, 2016 at 9:22 AM, Claude Vividsky
+> <claude....@gmail.com> wrote:
+> > I have some stacked bar charts with stacked text labels produced by
+> > geom_bar and geom_text. According to the blog
+> > https://blog.rstudio.org/2016/11/14/ggplot2-2-2-0/ the stacking
+> > behaviour of geom_bar has been reversed such that the order of items
+> > is the same as in the legend. Because geom_text seems not to be
+> > changed accordingly, the charts are wrongly formatted now.
+> >
+> >
+> > Is there a chance to change this? I suggest one of the following:
+> >
+> > revert to the old behaviour of geom_bar add an option to geom_bar to
+> > reverse the order (default is behaviour from
+> > 2.1.0: reverse = false)
+> > the new geom_col function may use the new ordering (default: reverse =
+> > true) Alternatively a less invasive change would be to reverse the
+> > order of the legend.
+> > If 1 - 4 are not an option please change geom_text according to
+> > geom_bar
+> >
+> > Thank you for your support (and sorry if the post is posted twice)!
+> >
+> > Claude
+> >
+> > --
+> > --
+> > You received this message because you are subscribed to the ggplot2
+> > mailing list.
+> > Please provide a reproducible example:
+> > https://github.com/hadley/devtools/wiki/Reproducibility
+> >
+> > To post: email ggp...@googlegroups.com To unsubscribe: email
+> > ggplot2+u...@googlegroups.com
+> > More options: http://groups.google.com/group/ggplot2
+> >
+> > ---
+> > You received this message because you are subscribed to the Google
+> > Groups "ggplot2" group.
+> > To unsubscribe from this group and stop receiving emails from it, send
+> > an email to ggplot2+u...@googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> http://hadley.nz
+
+From u78a2ae0f083eda65 at groups.google.com  Tue Jan  3 17:20:46 2017
+From: u78a2ae0f083eda65 at groups.google.com (Rodrigo Plei)
+Date: Tue, 03 Jan 2017 17:20:46 +0000
+Subject: Capital Greek Letters in ggplot legends
+Message-ID: <aXEBA8DPD7s.raNI2z7JEAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/aXEBA8DPD7s/m/raNI2z7JEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+I am working on a heatmap using ggplot2, and I need to put the greek letter "omega" in capital form in the legend.
+
+I tried several google searches and modified my script accordingly without success.
+
+Here my script (adapted from a public domain script took from R-bloggers:
+
+#------
+
+ggheatmap2 <- ggplot(AHM, aes(Var1, Var2, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "white", high = "blue4", mid = "white",
+                       space = "Lab",
+                       name="Grand Mean") +
+  #theme_minimal()+ # minimal theme
+  theme(legend.title = element_text(size = 12),legend.text=element_text(size=12))+
+  theme(axis.text.x = element_text(angle = 360, vjust = 1,
+                                   size = 12, hjust = 1))+
+  theme(axis.text.y = element_text(angle = 360, vjust = 1,
+                                   size = 12, hjust = 1))+
+  coord_fixed()
+# Print the heatmap
+print(ggheatmap2)
+
+#------
+
+Where "AHM" is my dataset.
+
+I tried several arguments to put the capital omega using the argument "name" as above, but all failed.
+
+I would greatly appreciate any help.
+
+Happy new year,
+
+Rodrigo
+
+From u98fc74ba56643c44 at groups.google.com  Tue Jan  3 21:03:46 2017
+From: u98fc74ba56643c44 at groups.google.com (Sherif Soliman)
+Date: Tue, 03 Jan 2017 21:03:46 +0000
+Subject: Re: Capital Greek Letters in ggplot legends
+Message-ID: <aXEBA8DPD7s.-hPxKmrVEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <aXEBA8DPD7s.raNI2z7JEAAJ@ggplot2.groups.google.com>
+References: <aXEBA8DPD7s.raNI2z7JEAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/aXEBA8DPD7s/m/-hPxKmrVEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Rodrigo,
+
+On 3 Jan 2017, at 11:49, Rodrigo Plei wrote:
+
+> Dear all,
+>
+> I am working on a heatmap using ggplot2, and I need to put the greek letter
+> "omega" in capital form in the legend.
+>
+> I tried several google searches and modified my script accordingly without
+> success.
+>
+> Here my script (adapted from a public domain script took from R-bloggers:
+>
+> #------
+>
+> ggheatmap2 <- ggplot(AHM, aes(Var1, Var2, fill = value))+
+> geom_tile(color = "white")+
+> scale_fill_gradient2(low = "white", high = "blue4", mid = "white",
+> space = "Lab",
+> name="Grand Mean") +
+> #theme_minimal()+ # minimal theme
+> theme(legend.title = element_text(size =
+> 12),legend.text=element_text(size=12))+
+> theme(axis.text.x = element_text(angle = 360, vjust = 1,
+> size = 12, hjust = 1))+
+> theme(axis.text.y = element_text(angle = 360, vjust = 1,
+> size = 12, hjust = 1))+
+> coord_fixed()
+> # Print the heatmap
+> print(ggheatmap2)
+>
+> #------
+>
+> Where "AHM" is my dataset.
+>
+> I tried several arguments to put the capital omega using the argument
+> "name" as above, but all failed.
+
+Did you come across this page?
+http://www.cookbook-r.com/Graphs/Legends_(ggplot2)/
+
+See the "Modifying the text of legend titles and labels" heading.
+
+We don't have your data so I can't try to reproduce your exact plot, but here is an example using the built-in iris dataset:
+ggplot(iris, aes(x = Sepal.Length, y = Sepal.Width)) +
+    geom_point(aes(color = Species)) +
+    scale_color_discrete(name="Ω")
+
+As you can see, the trick is to use the name argument in scale_color_discrete() or in your case since you're using scall_fill_gradient2 to use scale_fill_discrete() to set the legend title.
+
+Does this do what you need?
+
+Sherif
+
+From ufd4f3538f907404b at groups.google.com  Tue Jan  3 21:10:43 2017
+From: ufd4f3538f907404b at groups.google.com (Ben Bolker)
+Date: Tue, 03 Jan 2017 21:10:43 +0000
+Subject: Re: Capital Greek Letters in ggplot legends
+Message-ID: <aXEBA8DPD7s.MZVkK8vVEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <aXEBA8DPD7s.-hPxKmrVEAAJ@ggplot2.groups.google.com>
+References: <aXEBA8DPD7s.raNI2z7JEAAJ@ggplot2.groups.google.com> <aXEBA8DPD7s.-hPxKmrVEAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/aXEBA8DPD7s/m/MZVkK8vVEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+  For what it's worth I think I'd slightly prefer using the ?plotmath
+interface:
+
+g0 <- ggplot(iris, aes(x = Sepal.Length, y = Sepal.Width)) +
+   geom_point(aes(color = Species))
+g0 + scale_colour_discrete(name=~Omega)
+
+  The tilde (~) gets ggplot to interpret what follows as an
+*expression*, which means it gets handed to the parser used as in
+?plotmath; this is more flexible (and probably more robust
+cross-platform?), i.e. you could do something like
+
+g0 + scale_colour_discrete(name=~hat(Omega))
+
+  If you want to go to the next level of elegance, look into the tikz
+package, e.g.
+http://iltabiai.github.io/tips/latex/2015/09/15/latex-tikzdevice-r.html
+
+On 17-01-03 04:03 PM, Sherif Soliman wrote:
+> Hi Rodrigo,
+>
+> On 3 Jan 2017, at 11:49, Rodrigo Plei wrote:
+>
+>     Dear all,
+>
+>     I am working on a heatmap using ggplot2, and I need to put the greek
+>     letter
+>     "omega" in capital form in the legend.
+>
+>     I tried several google searches and modified my script accordingly
+>     without
+>     success.
+>
+>     Here my script (adapted from a public domain script took from
+>     R-bloggers:
+>
+>     #------
+>
+>     ggheatmap2 <- ggplot(AHM, aes(Var1, Var2, fill = value))+
+>     geom_tile(color = "white")+
+>     scale_fill_gradient2(low = "white", high = "blue4", mid = "white",
+>     space = "Lab",
+>     name="Grand Mean") +
+>     #theme_minimal()+ # minimal theme
+>     theme(legend.title = element_text(size =
+>     12),legend.text=element_text(size=12))+
+>     theme(axis.text.x = element_text(angle = 360, vjust = 1,
+>     size = 12, hjust = 1))+
+>     theme(axis.text.y = element_text(angle = 360, vjust = 1,
+>     size = 12, hjust = 1))+
+>     coord_fixed()
+>     # Print the heatmap
+>     print(ggheatmap2)
+>
+>     #------
+>
+>     Where "AHM" is my dataset.
+>
+>     I tried several arguments to put the capital omega using the argument
+>     "name" as above, but all failed.
+>
+> Did you come across this page?
+> http://www.cookbook-r.com/Graphs/Legends_(ggplot2)/
+>
+> See the "Modifying the text of legend titles and labels" heading.
+>
+> We don't have your data so I can't try to reproduce your exact plot, but
+> here is an example using the built-in |iris| dataset:
+>
+> |ggplot(iris, aes(x = Sepal.Length, y = Sepal.Width)) +
+> geom_point(aes(color = Species)) + scale_color_discrete(name="Ω") |
+>
+> As you can see, the trick is to use the |name| argument in
+> |scale_color_discrete()| or in your case since you're using
+> |scall_fill_gradient2| to use |scale_fill_discrete()| to set the legend
+> title.
+>
+> Does this do what you need?
+>
+> Sherif
+>
+
+> --
+> --
+> You received this message because you are subscribed to the ggplot2
+> mailing list.
+> Please provide a reproducible example:
+> https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+u...@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google
+> Groups "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send
+> an email to ggplot2+u...@googlegroups.com
+> <mailto:ggplot2+u...@googlegroups.com>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u98fc74ba56643c44 at groups.google.com  Tue Jan  3 21:26:36 2017
+From: u98fc74ba56643c44 at groups.google.com (Sherif Soliman)
+Date: Tue, 03 Jan 2017 21:26:36 +0000
+Subject: Re: Capital Greek Letters in ggplot legends
+Message-ID: <aXEBA8DPD7s.zgjvMKnWEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <aXEBA8DPD7s.MZVkK8vVEAAJ@ggplot2.groups.google.com>
+References: <aXEBA8DPD7s.raNI2z7JEAAJ@ggplot2.groups.google.com> <aXEBA8DPD7s.MZVkK8vVEAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/aXEBA8DPD7s/m/zgjvMKnWEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On 3 Jan 2017, at 16:08, Ben Bolker wrote:
+
+>   For what it's worth I think I'd slightly prefer using the ?plotmath
+> interface:
+>
+> g0 <- ggplot(iris, aes(x = Sepal.Length, y = Sepal.Width)) +
+>    geom_point(aes(color = Species))
+> g0 + scale_colour_discrete(name=~Omega)
+>
+>   The tilde (~) gets ggplot to interpret what follows as an
+> *expression*, which means it gets handed to the parser used as in
+> ?plotmath; this is more flexible (and probably more robust
+> cross-platform?), i.e. you could do something like
+>
+> g0 + scale_colour_discrete(name=~hat(Omega))
+>
+>   If you want to go to the next level of elegance, look into the tikz
+> package, e.g.
+> http://iltabiai.github.io/tips/latex/2015/09/15/latex-tikzdevice-r.html
+>
+>
+
+That's very cool. I had no idea this ability/interface existed.
+
+It does produce a different looking "Omega" though - a
+characteristically LaTeX-looking one. Still, very cool, thanks for
+sharing.
+
+Sherif
+
+From uf20966e9bc9cf5c7 at groups.google.com  Tue Jan  3 21:49:39 2017
+From: uf20966e9bc9cf5c7 at groups.google.com (Brian)
+Date: Tue, 03 Jan 2017 21:49:39 +0000
+Subject: Re: Capital Greek Letters in ggplot legends
+Message-ID: <aXEBA8DPD7s.hMVqQOvXEAAJ@ggplot2.groups.google.com>
+In-Reply-To: <aXEBA8DPD7s.raNI2z7JEAAJ@ggplot2.groups.google.com>
+References: <aXEBA8DPD7s.raNI2z7JEAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/aXEBA8DPD7s/m/hMVqQOvXEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Rodrigo,
+please check out ?plotmath to supply the correct "expression".
+
+>From the hip:
+
+name = expression(Omega)
+
+HTH,
+Brian
+
+El 3 de enero de 2017 17:49:54 CET, Rodrigo Plei <rodrig...@gmail.com> escribió:
+> Dear all,
+>
+> I am working on a heatmap using ggplot2, and I need to put the greek letter "omega" in capital form in the legend.
+>
+> I tried several google searches and modified my script accordingly without success.
+>
+> Here my script (adapted from a public domain script took from R-bloggers:
+>
+> #------
+>
+> ggheatmap2 <- ggplot(AHM, aes(Var1, Var2, fill = value))+
+>   geom_tile(color = "white")+
+>   scale_fill_gradient2(low = "white", high = "blue4", mid = "white",
+>                        space = "Lab",
+>                        name="Grand Mean") +
+>   #theme_minimal()+ # minimal theme
+>   theme(legend.title = element_text(size = 12),legend.text=element_text(size=12))+
+>   theme(axis.text.x = element_text(angle = 360, vjust = 1,
+>                                    size = 12, hjust = 1))+
+>   theme(axis.text.y = element_text(angle = 360, vjust = 1,
+>                                    size = 12, hjust = 1))+
+>   coord_fixed()
+> # Print the heatmap
+> print(ggheatmap2)
+>
+> #------
+>
+> Where "AHM" is my dataset.
+>
+> I tried several arguments to put the capital omega using the argument "name" as above, but all failed.
+>
+> I would greatly appreciate any help.
+>
+> Happy new year,
+>
+> Rodrigo
+>
+>
+
+From ub499b8a19aa6ac92 at groups.google.com  Wed Jan  4 17:47:11 2017
+From: ub499b8a19aa6ac92 at groups.google.com (Juan David Gomez Cadavid)
+Date: Wed, 04 Jan 2017 17:47:11 +0000
+Subject: ggmap problems graphs
+Message-ID: <I-FyKkFCuwo.cy68kEQZEQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/I-FyKkFCuwo/m/cy68kEQZEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, i'm trying to graph a map, but the ggmap function shows me The message below:
+«error in as.vector(y): attempt to apply a non-function»
+I can easyly to download the map with the code get_map and i know it beecause i graph the map with simple function «plot» but it does not works for me.
+
+Please help
+Thanks
+
+From uf4a32e9d1f274678 at groups.google.com  Thu Jan  5 14:32:53 2017
+From: uf4a32e9d1f274678 at groups.google.com (Carsten Kuenne)
+Date: Thu, 05 Jan 2017 14:32:53 +0000
+Subject: Heatmaps with dendrograms
+Message-ID: <7_sm3vBhp1Q._af5pz5dEQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/7_sm3vBhp1Q/m/_af5pz5dEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I recently wanted to switch from heatmap.2 to ggplot2 for drawing heatmaps, but found that the latter does not natively support dendrograms. I am aware of a few hacks including roughly arranging multiple plot layers/viewports to produce something like this, but that is not really flexible/exact enough for what I'm trying to do.
+
+Are there plans to natively support integrated dendrograms as part of the ggplot2 grammar in the future? This would not just be a valuable feature to improve heatmaps, but could be used for a variety of plots to denote similarity.
+
+Best,
+Carsten
+
+From u49a3118c00a11313 at groups.google.com  Tue Jan 10 14:44:30 2017
+From: u49a3118c00a11313 at groups.google.com (jeremy....@gmail.com)
+Date: Tue, 10 Jan 2017 14:44:30 +0000
+Subject: ggplot facet wrap y axis scale - control of olower bound only
+Message-ID: <Dv9q1774LqU.z3mBt8fmEgAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/Dv9q1774LqU/m/z3mBt8fmEgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello
+
+I am doing a facet plot and I want control of y axis lower bound only (I want to set it to zero). I want upper bound y axis to maintain its variability across the facets.
+
+This is to remove content below the y axis, which I don’t want to display.
+
+I have searched for work arounds [coord_cartesian(), geom_blank()] and can’t find one using ggplot functions.
+
+Is there another ggplot function that would do what I need?
+
+What I would like is a coord_cartesian() function that allows each limit be specified alone – i.e.:
+
+CURRENT: coord_cartesian(xlim = NULL, ylim = NULL, expand = TRUE)
+
+SUGGESTED: coord_cartesian(xlimLower = NULL, xlimUpper = NULL, ylimLower = NULL, ylimUpper = NULL, expand = TRUE)
+
+many thanks,
+
+Jeremy
+
+From u27405c4b711a1080 at groups.google.com  Tue Jan 10 16:20:05 2017
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Tue, 10 Jan 2017 16:20:05 +0000
+Subject: Re: ggplot facet wrap y axis scale - control of olower bound only
+Message-ID: <Dv9q1774LqU.9UziK__rEgAJ@ggplot2.groups.google.com>
+In-Reply-To: <Dv9q1774LqU.z3mBt8fmEgAJ@ggplot2.groups.google.com>
+References: <Dv9q1774LqU.z3mBt8fmEgAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/Dv9q1774LqU/m/9UziK__rEgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm afraid it's not entirely clear to me what you want. Could you send a reproducible example? See the footer of this email to know what that is.
+
+It sounds like you want to set ylim to 0, Inf and facet with free_y, but not sure.
+
+B
+
+On Tue, Jan 10, 2017 at 6:27 AM, <jeremy....@gmail.com> wrote:
+
+> Hello
+>
+>
+>
+> I am doing a facet plot and I want control of y axis lower bound only (I want to set it to zero). I want upper bound y axis to maintain its variability across the facets.
+>
+> This is to remove content below the y axis, which I don’t want to display.
+>
+>
+>
+> I have searched for work arounds [coord_cartesian(), geom_blank()] and can’t find one using ggplot functions.
+>
+> Is there another ggplot function that would do what I need?
+>
+>
+>
+> What I would like is a coord_cartesian() function that allows each limit be specified alone – i.e.:
+>
+>
+>
+> CURRENT: coord_cartesian(xlim = NULL, ylim = NULL, expand = TRUE)
+>
+>
+>
+> SUGGESTED: coord_cartesian(xlimLower = NULL, xlimUpper = NULL, ylimLower = NULL, ylimUpper = NULL, expand = TRUE)
+>
+>
+>
+> many thanks,
+>
+> Jeremy
+>
+>
+>
+>
+
+> --
+> --
+> You received this message because you are subscribed to the ggplot2 mailing list.
+> Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+unsubscribe@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google Groups "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+unsubscribe@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uda835ad8b892e4f9 at groups.google.com  Thu Jan 12 23:03:49 2017
+From: uda835ad8b892e4f9 at groups.google.com (Tristan Goodbody)
+Date: Thu, 12 Jan 2017 23:03:49 +0000
+Subject: Pie Chart with continuous Z axis.
+Message-ID: <1lTNVDOX5jc.H59PWzCfEwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/1lTNVDOX5jc/m/H59PWzCfEwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello!
+
+I have recently created a vast number of pie charts using ggplot (they look fantastic), but am wondering if its possible to add a continuous z axis to them.
+I have 3 classes that I am representing the proportions of, but each class also has a height variable that I would like to display in the pie chart.
+Is it possible to have a continuous Z axis that allows each section of the pie to individually have a Z value that is equal to its corresponding height variable?
+In laymen terms, I want a pie that is divided into 3 colours and each colour will have a different 3D thickness.
+
+I have attached an example of my pie chart to my query. Hopefully someone has some ideas :)
+
+Thanks!
+
+Tristan
+
+From u132d0542de930c5a at groups.google.com  Thu Jan 12 23:33:50 2017
+From: u132d0542de930c5a at groups.google.com (Konstantinos L. Papageorgiou)
+Date: Thu, 12 Jan 2017 23:33:50 +0000
+Subject: Re: Pie Chart with continuous Z axis.
+Message-ID: <1lTNVDOX5jc.PYmNjNOgEwAJ@ggplot2.groups.google.com>
+In-Reply-To: <1lTNVDOX5jc.H59PWzCfEwAJ@ggplot2.groups.google.com>
+References: <1lTNVDOX5jc.H59PWzCfEwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/1lTNVDOX5jc/m/PYmNjNOgEwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Tristan, nice first results!
+in case this helps you, note that people says that projecting in 3d, 2d data can influence in a bad way the perception of the data.
+i.e. if you skew a circle to suggest 3d depth then equal pies will be skewed as well in-proportional thus representing an unsound story.
+
+A potential solution to encode a 3rd variable in the graph, could be using opacity.
+Cheers
+
+On 13-Jan-17 12:48 AM, 'Tristan Goodbody' via ggplot2 wrote:
+
+> Hello!
+>
+> I have recently created a vast number of pie charts using ggplot (they look fantastic), but am wondering if its possible to add a continuous z axis to them.
+> I have 3 classes that I am representing the proportions of, but each class also has a height variable that I would like to display in the pie chart.
+> Is it possible to have a continuous Z axis that allows each section of the pie to individually have a Z value that is equal to its corresponding height variable?
+> In laymen terms, I want a pie that is divided into 3 colours and each colour will have a different 3D thickness.
+>
+> I have attached an example of my pie chart to my query. Hopefully someone has some ideas :)
+>
+> Thanks!
+>
+> Tristan
+>
+>
+
+> --
+> --
+> You received this message because you are subscribed to the ggplot2 mailing list.
+> Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+u...@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google Groups "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+u...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ueb97dee87f719076 at groups.google.com  Fri Jan 13 12:07:26 2017
+From: ueb97dee87f719076 at groups.google.com (igreg)
+Date: Fri, 13 Jan 2017 12:07:26 +0000
+Subject: labeling pie chart - strange behaviour in ggplot 2.2.1.
+Message-ID: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/ZdIDUIh4x_0/m/CgtQWvPJEwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi all...
+
+I found this example to label a pie chart...
+
+http://stackoverflow.com/questions/24803460/r-ggplot2-add-labels-on-facet-pie-chart
+
+Issue:
+
+### data
+
+year <- c(1,2,1,2,1,2)
+prod <- c(1,1,2,2,3,3)
+quantity <- c(33,50,33,25,34,25)
+
+df <- data.frame(year, prod, quantity)
+rm(year, prod, quantity)
+
+### plot
+
+ibrary(ggplot2)
+
+# center's calculated by hand
+centr2 <- c(16, 25, 49, 62.5, 81, 87.5)
+
+ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+    geom_bar(stat="identity") +
+    geom_text(aes(x= factor(1), y=centr2, label = df$quantity), size=10) +
+    facet_grid(facets = .~year, labeller = label_value) +
+    coord_polar(theta = "y")
+
+The solution from stackoverflow:
+
+#### Solution
+
+library(dplyr)
+library(ggplot2)
+
+df <- df %>% group_by(year) %>% mutate(pos = cumsum(quantity)- quantity/2)
+
+ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+  geom_bar(stat="identity") +
+  geom_text(aes(x= factor(1), y=pos, label = quantity), size=10) +  # note y = pos
+  facet_grid(facets = .~year, labeller = label_value) +
+  coord_polar(theta = "y")
+
+with the latest version of ggplot2 (2.2.1) this solutions doesn't work anymore.
+the text labels are in the wrong place... shifted by 180 degrees.
+
+My configuration:
+
+64 bit / windows 7
+ggplot2 2.2.1
+R version 3.3.2 - 64 bit
+
+any ideas to solve this problem?
+
+thank you!
+
+greg
+
+From u86d18a76bd7e3303 at groups.google.com  Fri Jan 13 13:38:06 2017
+From: u86d18a76bd7e3303 at groups.google.com (ping...@gmail.com)
+Date: Fri, 13 Jan 2017 13:38:06 +0000
+Subject: Re: labeling pie chart - strange behaviour in ggplot 2.2.1.
+Message-ID: <ZdIDUIh4x_0.Me_aBebOEwAJ@ggplot2.groups.google.com>
+In-Reply-To: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+References: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/ZdIDUIh4x_0/m/Me_aBebOEwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You have to make it like this,
+df <- df %>% group_by(year) %>% mutate(pos = 100-(cumsum(quantity)- quantity/2))
+
+ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+  geom_bar(stat="identity") +
+  geom_text(aes(x= factor(1), y=pos, label = quantity), size=10) +  # note y = pos
+  facet_grid(facets = .~year, labeller = label_value) +
+  coord_polar(theta = "y")
+
+>
+> From: igreg
+> Date: 2017-01-13 20:07
+> To: ggplot2
+> Subject: labeling pie chart - strange behaviour in ggplot 2.2.1.
+
+>
+> hi all...
+>
+>
+> I found this example to label a pie chart...
+>
+> http://stackoverflow.com/questions/24803460/r-ggplot2-add-labels-on-facet-pie-chart
+>
+> Issue:
+>
+>
+> ### data
+>
+> year <- c(1,2,1,2,1,2)
+> prod <- c(1,1,2,2,3,3)
+> quantity <- c(33,50,33,25,34,25)
+>
+> df <- data.frame(year, prod, quantity)
+> rm(year, prod, quantity)
+>
+>
+>
+> ### plot
+>
+> ibrary(ggplot2)
+>
+> # center's calculated by hand
+> centr2 <- c(16, 25, 49, 62.5, 81, 87.5)
+>
+> ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+>     geom_bar(stat="identity") +
+>     geom_text(aes(x= factor(1), y=centr2, label = df$quantity), size=10) +
+>     facet_grid(facets = .~year, labeller = label_value) +
+>     coord_polar(theta = "y")
+>
+>
+>
+> The solution from stackoverflow:
+>
+> #### Solution
+>
+> library(dplyr)
+> library(ggplot2)
+>
+> df <- df %>% group_by(year) %>% mutate(pos = cumsum(quantity)- quantity/2)
+>
+> ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+>   geom_bar(stat="identity") +
+>   geom_text(aes(x= factor(1), y=pos, label = quantity), size=10) +  # note y = pos
+>   facet_grid(facets = .~year, labeller = label_value) +
+>   coord_polar(theta = "y")
+>
+>
+>
+> with the latest version of ggplot2 (2.2.1) this solutions doesn't work anymore.
+> the text labels are in the wrong place... shifted by 180 degrees.
+>
+> My configuration:
+>
+> 64 bit / windows 7
+> ggplot2 2.2.1
+> R version 3.3.2 - 64 bit
+>
+>
+> any ideas to solve this problem?
+>
+> thank you!
+>
+> greg
+>
+>
+
+> --
+> --
+> You received this message because you are subscribed to the ggplot2 mailing list.
+> Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+u...@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google Groups "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+u...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ueb97dee87f719076 at groups.google.com  Fri Jan 13 14:04:14 2017
+From: ueb97dee87f719076 at groups.google.com (igreg)
+Date: Fri, 13 Jan 2017 14:04:14 +0000
+Subject: Re: labeling pie chart - strange behaviour in ggplot 2.2.1.
+Message-ID: <ZdIDUIh4x_0.hFNI6VLQEwAJ@ggplot2.groups.google.com>
+In-Reply-To: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+References: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/ZdIDUIh4x_0/m/hFNI6VLQEwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+thanks for this workaround, jie ping.
+for me, it's still a strange behavior... why did the order of the label position change... it doesn't make sense!
+
+maybe it's the same problem like here
+
+https://groups.google.com/forum/#!topic/ggplot2/buiKAb4RZJw
+
+greg
+
+From ude3ccfa8e8b70f28 at groups.google.com  Fri Jan 13 14:18:50 2017
+From: ude3ccfa8e8b70f28 at groups.google.com (san mohan)
+Date: Fri, 13 Jan 2017 14:18:50 +0000
+Subject: Re: labeling pie chart - strange behaviour in ggplot 2.2.1.
+Message-ID: <ZdIDUIh4x_0.w_3u6R7REwAJ@ggplot2.groups.google.com>
+In-Reply-To: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+References: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/ZdIDUIh4x_0/m/w_3u6R7REwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+When the positions are calculated in dplyr, the data should be ordered in the same order as in the plot. Here is the solution that works:
+
+year <- c(1,2,1,2,1,2)
+prod <- c(1,1,2,2,3,3)
+quantity <- c(33,50,33,25,34,25)
+
+df <- data.frame(year, prod, quantity)
+rm(year, prod, quantity)
+
+df <- df %>% group_by(year) %>% arrange(year,desc(prod)) %>% mutate(pos = cumsum(quantity)- quantity/2)
+
+ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+  geom_bar(stat="identity") +
+  geom_text(aes(x= factor(1), y=pos, label = quantity), size=10) +  # note y = pos
+  facet_grid(facets = .~year, labeller = label_value) +
+  coord_polar(theta = "y")
+
+On Friday, January 13, 2017 at 2:38:06 PM UTC+1, Jie Ping wrote:
+> You have to make it like this,
+> df <- df %>% group_by(year) %>% mutate(pos = 100-(cumsum(quantity)- quantity/2))
+>
+> ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+>   geom_bar(stat="identity") +
+>   geom_text(aes(x= factor(1), y=pos, label = quantity), size=10) +  # note y = pos
+>   facet_grid(facets = .~year, labeller = label_value) +
+>   coord_polar(theta = "y")
+> >
+> > From: igreg
+> > Date: 2017-01-13 20:07
+> > To: ggplot2
+> > Subject: labeling pie chart - strange behaviour in ggplot 2.2.1.
+> >
+> > hi all...
+> >
+> >
+> > I found this example to label a pie chart...
+> >
+> > http://stackoverflow.com/questions/24803460/r-ggplot2-add-labels-on-facet-pie-chart
+> >
+> > Issue:
+> >
+> >
+> > ### data
+> >
+> > year <- c(1,2,1,2,1,2)
+> > prod <- c(1,1,2,2,3,3)
+> > quantity <- c(33,50,33,25,34,25)
+> >
+> > df <- data.frame(year, prod, quantity)
+> > rm(year, prod, quantity)
+> >
+> >
+> >
+> > ### plot
+> >
+> > ibrary(ggplot2)
+> >
+> > # center's calculated by hand
+> > centr2 <- c(16, 25, 49, 62.5, 81, 87.5)
+> >
+> > ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+> >     geom_bar(stat="identity") +
+> >     geom_text(aes(x= factor(1), y=centr2, label = df$quantity), size=10) +
+> >     facet_grid(facets = .~year, labeller = label_value) +
+> >     coord_polar(theta = "y")
+> >
+> >
+> >
+> > The solution from stackoverflow:
+> >
+> > #### Solution
+> >
+> > library(dplyr)
+> > library(ggplot2)
+> >
+> > df <- df %>% group_by(year) %>% mutate(pos = cumsum(quantity)- quantity/2)
+> >
+> > ggplot(data=df, aes(x=factor(1), y=quantity, fill=factor(prod))) +
+> >   geom_bar(stat="identity") +
+> >   geom_text(aes(x= factor(1), y=pos, label = quantity), size=10) +  # note y = pos
+> >   facet_grid(facets = .~year, labeller = label_value) +
+> >   coord_polar(theta = "y")
+> >
+> >
+> >
+> > with the latest version of ggplot2 (2.2.1) this solutions doesn't work anymore.
+> > the text labels are in the wrong place... shifted by 180 degrees.
+> >
+> > My configuration:
+> >
+> > 64 bit / windows 7
+> > ggplot2 2.2.1
+> > R version 3.3.2 - 64 bit
+> >
+> >
+> > any ideas to solve this problem?
+> >
+> > thank you!
+> >
+> > greg
+> >
+> >
+> > --
+> > --
+> > You received this message because you are subscribed to the ggplot2 mailing list.
+> > Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+> >
+> > To post: email ggp...@googlegroups.com
+> > To unsubscribe: email ggplot2+u...@googlegroups.com
+> > More options: http://groups.google.com/group/ggplot2
+> >
+> > ---
+> > You received this message because you are subscribed to the Google Groups "ggplot2" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+u...@googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From ueb97dee87f719076 at groups.google.com  Fri Jan 13 15:10:19 2017
+From: ueb97dee87f719076 at groups.google.com (igreg)
+Date: Fri, 13 Jan 2017 15:10:19 +0000
+Subject: Re: labeling pie chart - strange behaviour in ggplot 2.2.1.
+Message-ID: <ZdIDUIh4x_0.rOftJe7TEwAJ@ggplot2.groups.google.com>
+In-Reply-To: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+References: <ZdIDUIh4x_0.CgtQWvPJEwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/ZdIDUIh4x_0/m/rOftJe7TEwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+@ san mohan...
+
+thanks a lot for your solution... this seems to solve the problem in a general way!
+have a nice weekend!
+
+From u46f71985c04650b7 at groups.google.com  Mon Jan 16 20:04:39 2017
+From: u46f71985c04650b7 at groups.google.com (Yas)
+Date: Mon, 16 Jan 2017 20:04:39 +0000
+Subject: New Package ggbash: A Simpler ggplot2 Syntax
+Message-ID: <nl6V6XgLz_4.HPe2yrvPFAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/nl6V6XgLz_4/m/HPe2yrvPFAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Spending the past three-weeks, I've built a package called ggbash.
+
+ggbash is a different and faster interface to write ggplot2 objects.
+Essentially it is a higher-level language on top of ggplot2 and R.
+
+Its main function, ggbash(), takes a ggbash "source code" and returns an "executable" ggplot2 object like:
+
+ggbash("gg iris + point Sepal.W Sepal.L size = 5")
+
+# output a figure of ggplot(iris) + geom_point(aes(Sepal.Width, Sepal.Length), size=5)
+
+ggbash() function also works as an interface for non-standard evaluation (NSE):
+
+ggbash(gg(iris) + point(Sepal.W, Sepal.L, size=5))
+
+# plots the same ggplot2 figure
+
+ggbash is still in its infancy. I've confirmed the current ggbash version 0.4.2 can correctly "compile" more than 60% of the geom_* examples in ggplot2 document. Currently ggbash interprets only "geom_*" and "theme*". My goal of this year is to expand the ggplot2 docs coverage and make it more reliable.
+
+For more information:
+  https://github.com/caprice-j/ggbash
+
+I hope this will help ggplot2 users do more comfortable plotting.
+
+Sincerely yours,
+
+Yasutaka Tanaka
+
+From u5e03b078b22b99c0 at groups.google.com  Tue Jan 17 18:50:52 2017
+From: u5e03b078b22b99c0 at groups.google.com (joao paulo honorato machado)
+Date: Tue, 17 Jan 2017 18:50:52 +0000
+Subject: Add legend ggplot2
+Message-ID: <wehSsDp4Bwo.IPyfhUkaFQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/wehSsDp4Bwo/m/IPyfhUkaFQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I need to add a caption and I can not. The file contains the attached data contains the data and here follows the script I am using in ggplot2 !!!
+
+library(dplyr)
+library(ggplot2)
+
+as1<-read.table("as1.txt", header=TRUE)
+as1$dos <- as.factor(as1$dos)
+
+as <- summarize(group_by(as1, dos),
+                der_dp = sd(ger),
+                ger_mean = mean (ger),
+                der2_dp = sd(ger2),
+                ger2_mean = mean (ger2))
+
+ggplot(as, aes(x = dos, y = ger_mean, group=1)) +
+  geom_line(color= "red", size = 1.2) +
+  geom_line(aes(x = dos, y = ger2_mean), color= "blue", size = 1.2)+
+  geom_errorbar(aes(ymin = ger_mean - der_dp , ymax = ger_mean + der_dp),width = 0.1, size=1, color = "red", linetype= 1) +
+  geom_errorbar(aes(ymin = ger2_mean - der2_dp , ymax = ger2_mean + der2_dp),width = 0.1, size=1, color = "blue", linetype= 1) +
+  geom_point(shape = 19,size = 4, color = "red") + theme_grey() +
+  geom_point(aes(x = dos, y = ger2_mean),shape= 19, color= "blue", size = 4)+
+  labs(title = "Volume água em litros") + labs(x = "Volume (L)") +
+  labs(y = "Evaporação (%)") + coord_cartesian(ylim = c(0, 120))
+
+From u7cd83d976d262e63 at groups.google.com  Wed Jan 18 15:42:43 2017
+From: u7cd83d976d262e63 at groups.google.com (Claude Vividsky)
+Date: Wed, 18 Jan 2017 15:42:43 +0000
+Subject: Change stacking behaviour in ggplot2 2.2.0 geom_bar not suitable with coord_flip()
+Message-ID: <tcOJZiWqB54.60qzjpleFQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/tcOJZiWqB54/m/60qzjpleFQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The stacking behaviour of geom_bar has been reversed such that the order of items is the same as in the legend. This seems not to be suitable when bars are horizontal orientated (apply coord_flip()).
+
+library(ggplot2)
+
+x <- data.frame(
+  a=c("A", "B", "A", "B"),
+  b=c("x", "x", "y", "y"),
+  m=c(4, 8, 7, 3)
+)
+
+ggplot(x, aes(x=a, y = m)) + geom_col(aes(x = a, y = m, fill = b)) + coord_flip()
+
+Moreover, if the legend direction is horizontal too, we are back to the old confusing dis-alignment of items in the bar and the legend:
+
+library(ggplot2)
+
+x <- data.frame(
+  a=c("A", "B", "A", "B"),
+  b=c("x", "x", "y", "y"),
+  m=c(4, 8, 7, 3)
+)
+
+ggplot(x, aes(x=a, y = m)) + geom_col(aes(x = a, y = m, fill = b)) + coord_flip() + theme(legend.position="bottom",  legend.direction = "horizontal")
+
+To reverse the order of factors seems not to be a solution in this case.
+
+Is there any other solution?
+
+From ubf9b744b5a463612 at groups.google.com  Thu Jan 19 02:17:40 2017
+From: ubf9b744b5a463612 at groups.google.com (Botao Fa)
+Date: Thu, 19 Jan 2017 02:17:40 +0000
+Subject: ggplot pie chart start in anti-clockwise direction while coord_polar(direction=1)
+Message-ID: <8o9GH6Os208.o3bFrT-BFQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/8o9GH6Os208/m/o3bFrT-BFQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi there,
+
+      I am using ggplot2 package to get a pie chart. The direction is anti-clockwise while I was using coord_polar with the default parameter (direction=1).
+After testing with the classical code online, the result is still strange.
+
+Here is the code:
+
+#' # A pie chart = stacked bar chart + polar coordinates
+pie <- ggplot(mtcars, aes(x = factor(1), fill = factor(cyl))) +
+ geom_bar(width = 1)
+pie + coord_polar(theta = "y")
+
+The chart online is A(http://docs.ggplot2.org/current/coord_polar.html),  my result is B. Can anyone known tell how dose this happen?
+
+A                                                                                                                                                                         B
+
+ <https://lh3.googleusercontent.com/-s56yD3rgOkw/WIAdSIXcmdI/AAAAAAAAAEI/TpoIZRbMvRU5hFTfSl18NTdL4AZQn0QOACLcB/s1600/%25E6%258D%2595%25E8%258E%25B7.JPG>
+
+Many thanks!
+
+Bert, F
+
+From u6ca2caf386e3bd39 at groups.google.com  Thu Jan 19 19:29:55 2017
+From: u6ca2caf386e3bd39 at groups.google.com (MEC)
+Date: Thu, 19 Jan 2017 19:29:55 +0000
+Subject: Does anyone know the equivalent of panel.lmlineq and panel.text (from lattice) in ggplot2?
+Message-ID: <nD0GYY7Lwm8.hzZjDZS5FQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/nD0GYY7Lwm8/m/hzZjDZS5FQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Community and GGPLOT2's Fans:
+
+Sorry for this very basic question, I am new to R and new to ggplot2
+
+I have the following toy code to use an example of what I am trying to achieve:
+
+library ("lattice")
+library ("latticeExtra")
+data (iris)
+xyplot(Sepal.Width ~ Sepal.Length | Species, data = iris, panel = function(x, y, ...) {
+        panel.xyplot(x, y, ...)
+        panel.lmlineq(x, y, adj = c(1,0),
+            lty = 1,col.text='red', pos= 4,
+            col.line = "blue", digits = 1,r.squared =TRUE)
+        panel.text(7, 4, round(cor(x, y),3), font=2, adj=c(0.5,-0.6))
+        panel.text(7, 4, round(cor.test(x,y)$p.value, 3), font=1, adj=c(0.5,0.6))},
+xlab = "Sepal.Length", ylab = "Sepal_Width")
+
+This codes generates an image (that I can't post), but you'll be able to see if you use the code.
+
+So, as you can see, I have a df with levels (Species) that I'd like to plot (all at the same time) showing their regression line with the Rsquared and also printing their cor and cor.test outputs. Preferably, in an aesthetically pleasing manner.
+
+Has anyone tried to do something similiar? Is there an efficient way to do it?
+
+Originally @stackoverflow <http://stackoverflow.com/q/41749284/7404449>
+
+Many thanks, any help will be much appreciated
+
+From ub756a7daa2c2aa6d at groups.google.com  Mon Jan 23 16:53:42 2017
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Mon, 23 Jan 2017 16:53:42 +0000
+Subject: Re: Change stacking behaviour in ggplot2 2.2.0 geom_bar not suitable with coord_flip()
+Message-ID: <tcOJZiWqB54.veG5LmDrFgAJ@ggplot2.groups.google.com>
+In-Reply-To: <tcOJZiWqB54.60qzjpleFQAJ@ggplot2.groups.google.com>
+References: <tcOJZiWqB54.60qzjpleFQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/tcOJZiWqB54/m/veG5LmDrFgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You can do position = position_stack(reverse = TRUE)
+
+Hadley
+
+On Wed, Jan 18, 2017 at 9:42 AM, Claude Vividsky
+<claude....@gmail.com> wrote:
+> The stacking behaviour of geom_bar has been reversed such that the order of
+> items is the same as in the legend. This seems not to be suitable when bars
+> are horizontal orientated (apply coord_flip()).
+>
+>
+> library(ggplot2)
+>
+> x <- data.frame(
+>   a=c("A", "B", "A", "B"),
+>   b=c("x", "x", "y", "y"),
+>   m=c(4, 8, 7, 3)
+> )
+>
+> ggplot(x, aes(x=a, y = m)) + geom_col(aes(x = a, y = m, fill = b)) +
+> coord_flip()
+>
+>
+> Moreover, if the legend direction is horizontal too, we are back to the old
+> confusing dis-alignment of items in the bar and the legend:
+>
+>
+> library(ggplot2)
+>
+> x <- data.frame(
+>   a=c("A", "B", "A", "B"),
+>   b=c("x", "x", "y", "y"),
+>   m=c(4, 8, 7, 3)
+> )
+>
+> ggplot(x, aes(x=a, y = m)) + geom_col(aes(x = a, y = m, fill = b)) +
+> coord_flip() + theme(legend.position="bottom",  legend.direction =
+> "horizontal")
+>
+>
+> To reverse the order of factors seems not to be a solution in this case.
+>
+>
+> Is there any other solution?
+>
+
+> --
+> --
+> You received this message because you are subscribed to the ggplot2 mailing
+> list.
+> Please provide a reproducible example:
+> https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+u...@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google Groups
+> "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to ggplot2+u...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+http://hadley.nz
+
+From ub756a7daa2c2aa6d at groups.google.com  Mon Jan 23 16:56:44 2017
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Mon, 23 Jan 2017 16:56:44 +0000
+Subject: Re: Does anyone know the equivalent of panel.lmlineq and panel.text (from lattice) in ggplot2?
+Message-ID: <nD0GYY7Lwm8.SMNiY4rrFgAJ@ggplot2.groups.google.com>
+In-Reply-To: <nD0GYY7Lwm8.hzZjDZS5FQAJ@ggplot2.groups.google.com>
+References: <nD0GYY7Lwm8.hzZjDZS5FQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/nD0GYY7Lwm8/m/SMNiY4rrFgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Try ggpmisc: http://www.ggplot2-exts.org/ggpmisc.html
+Hadley
+
+On Thu, Jan 19, 2017 at 1:26 PM, MEC <tlalli...@gmail.com> wrote:
+> Community and GGPLOT2's Fans:
+>
+> Sorry for this very basic question, I am new to R and new to ggplot2
+>
+>
+> I have the following toy code to use an example of what I am trying to
+> achieve:
+>
+>
+> library ("lattice")
+> library ("latticeExtra")
+> data (iris)
+> xyplot(Sepal.Width ~ Sepal.Length | Species, data = iris, panel =
+> function(x, y, ...) {
+>         panel.xyplot(x, y, ...)
+>         panel.lmlineq(x, y, adj = c(1,0),
+>             lty = 1,col.text='red', pos= 4,
+>             col.line = "blue", digits = 1,r.squared =TRUE)
+>         panel.text(7, 4, round(cor(x, y),3), font=2, adj=c(0.5,-0.6))
+>         panel.text(7, 4, round(cor.test(x,y)$p.value, 3), font=1,
+> adj=c(0.5,0.6))},
+> xlab = "Sepal.Length", ylab = "Sepal_Width")
+>
+>
+>
+> This codes generates an image (that I can't post), but you'll be able to see
+> if you use the code.
+>
+> So, as you can see, I have a df with levels (Species) that I'd like to plot
+> (all at the same time) showing their regression line with the Rsquared and
+> also printing their cor and cor.test outputs. Preferably, in an
+> aesthetically pleasing manner.
+>
+> Has anyone tried to do something similiar? Is there an efficient way to do
+> it?
+>
+>
+> Originally @stackoverflow
+>
+>
+> Many thanks, any help will be much appreciated
+>
+
+> --
+> --
+> You received this message because you are subscribed to the ggplot2 mailing
+> list.
+> Please provide a reproducible example:
+> https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+u...@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google Groups
+> "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to ggplot2+u...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+http://hadley.nz
+
+From uda835ad8b892e4f9 at groups.google.com  Wed Jan 25 20:07:36 2017
+From: uda835ad8b892e4f9 at groups.google.com (Tristan Goodbody)
+Date: Wed, 25 Jan 2017 20:07:36 +0000
+Subject: Re: Pie Chart with continuous Z axis.
+Message-ID: <1lTNVDOX5jc.Ul2WER6TFwAJ@ggplot2.groups.google.com>
+In-Reply-To: <1lTNVDOX5jc.PYmNjNOgEwAJ@ggplot2.groups.google.com>
+References: <1lTNVDOX5jc.H59PWzCfEwAJ@ggplot2.groups.google.com> <1lTNVDOX5jc.PYmNjNOgEwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/1lTNVDOX5jc/m/Ul2WER6TFwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks so much, Konstantinos!
+
+That's something that hadn't crossed my mind! Great Idea!
+
+Thanks for taking the time to reply!
+
+T
+
+On Thursday, January 12, 2017 at 3:33:50 PM UTC-8, Konstantinos L. Papageorgiou wrote:
+>
+> Hi Tristan, nice first results!
+> in case this helps you, note that people says that projecting in 3d, 2d data can influence in a bad way the perception of the data.
+> i.e. if you skew a circle to suggest 3d depth then equal pies will be skewed as well in-proportional thus representing an unsound story.
+>
+> A potential solution to encode a 3rd variable in the graph, could be using opacity.
+> Cheers
+>
+>
+>
+> On 13-Jan-17 12:48 AM, 'Tristan Goodbody' via ggplot2 wrote:
+> > Hello!
+> >
+> > I have recently created a vast number of pie charts using ggplot (they look fantastic), but am wondering if its possible to add a continuous z axis to them.
+> > I have 3 classes that I am representing the proportions of, but each class also has a height variable that I would like to display in the pie chart.
+> > Is it possible to have a continuous Z axis that allows each section of the pie to individually have a Z value that is equal to its corresponding height variable?
+> > In laymen terms, I want a pie that is divided into 3 colours and each colour will have a different 3D thickness.
+> >
+> > I have attached an example of my pie chart to my query. Hopefully someone has some ideas :)
+> >
+> > Thanks!
+> >
+> > Tristan
+> >
+> >
+> > --
+> > --
+> > You received this message because you are subscribed to the ggplot2 mailing list.
+> > Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+> >
+> > To post: email ggp...@googlegroups.com
+> > To unsubscribe: email ggplot2+u...@googlegroups.com
+> > More options: http://groups.google.com/group/ggplot2
+> >
+> > ---
+> > You received this message because you are subscribed to the Google Groups "ggplot2" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+u...@googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From ub756a7daa2c2aa6d at groups.google.com  Thu Jan 26 19:13:02 2017
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Thu, 26 Jan 2017 19:13:02 +0000
+Subject: Re: ggplot Multiple Regression Lines
+Message-ID: <6JuQx3rO8pc.5rtxKrjeFwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/6JuQx3rO8pc/m/5rtxKrjeFwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You've given each woman a unique identifier so there is only one data
+point per person. It's hard to fit a line to one point ;)
+
+Hadley
+
+On Thu, Jan 26, 2017 at 12:56 PM, Timothy Lau <timoth...@gmail.com> wrote:
+> Hi,
+>
+> I'm trying to make a single plot with multiple regression lines.
+> This code example doesn't work.
+>
+>
+> women2 <- data.frame(id = 1:nrow(women), women)
+> ggplot(data = women2, mapping = aes(x = height, y = weight, group = id)) +
+> geom_smooth(method = lm, se = F)
+>
+> What should I change?
+>
+> --
+> --
+> You received this message because you are subscribed to the ggplot2 mailing
+> list.
+> Please provide a reproducible example:
+> https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+u...@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google Groups
+> "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to ggplot2+u...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+http://hadley.nz
+
+From uf20966e9bc9cf5c7 at groups.google.com  Thu Jan 26 19:14:08 2017
+From: uf20966e9bc9cf5c7 at groups.google.com (Brian)
+Date: Thu, 26 Jan 2017 19:14:08 +0000
+Subject: Re: ggplot Multiple Regression Lines
+Message-ID: <6JuQx3rO8pc.nt-vxcfeFwAJ@ggplot2.groups.google.com>
+In-Reply-To: <6JuQx3rO8pc.5rtxKrjeFwAJ@ggplot2.groups.google.com>
+References: <6JuQx3rO8pc.5rtxKrjeFwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/6JuQx3rO8pc/m/nt-vxcfeFwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am guessing you have too many "group"s. "id" should be a meaningful factor with which one can perform a regression. This example is not reproducible so I/we can't help you much further (if I have helped you at all).
+
+El 26 de enero de 2017 19:56:08 CET, Timothy Lau <timoth...@gmail.com> escribió:
+> Hi,
+>
+> I'm trying to make a single plot with multiple regression lines.
+> This code example doesn't work.
+>
+>
+> women2 <- data.frame(id = 1:nrow(women), women)
+> ggplot(data = women2, mapping = aes(x = height, y = weight, group = id)) + geom_smooth(method = lm, se = F)
+>
+> What should I change?
+>
+
+From uf3f87164b9c7de94 at groups.google.com  Thu Jan 26 19:27:29 2017
+From: uf3f87164b9c7de94 at groups.google.com (Timothy Lau)
+Date: Thu, 26 Jan 2017 19:27:29 +0000
+Subject: Re: ggplot Multiple Regression Lines
+Message-ID: <6JuQx3rO8pc.K8VWNoLfFwAJ@ggplot2.groups.google.com>
+In-Reply-To: <6JuQx3rO8pc.5rtxKrjeFwAJ@ggplot2.groups.google.com>
+References: <6JuQx3rO8pc.5rtxKrjeFwAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/6JuQx3rO8pc/m/K8VWNoLfFwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Thu, Jan 26, 2017, 12:12 PM Hadley Wickham <h.wi...@gmail.com> wrote:
+> You've given each woman a unique identifier so there is only one data
+> point per person. It's hard to fit a line to one point ;)
+>
+> Hadley
+>
+> On Thu, Jan 26, 2017 at 12:56 PM, Timothy Lau <timoth...@gmail.com> wrote:
+> > Hi,
+> >
+> > I'm trying to make a single plot with multiple regression lines.
+> > This code example doesn't work.
+> >
+> >
+> > women2 <- data.frame(id = 1:nrow(women), women)
+> > ggplot(data = women2, mapping = aes(x = height, y = weight, group = id)) +
+> > geom_smooth(method = lm, se = F)
+> >
+> > What should I change?
+> >
+> > --
+> > --
+> > You received this message because you are subscribed to the ggplot2 mailing
+> > list.
+> > Please provide a reproducible example:
+> > https://github.com/hadley/devtools/wiki/Reproducibility
+> >
+> > To post: email ggp...@googlegroups.com
+> > To unsubscribe: email ggplot2+u...@googlegroups.com
+> > More options: http://groups.google.com/group/ggplot2
+> >
+> > ---
+> > You received this message because you are subscribed to the Google Groups
+> > "ggplot2" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to ggplot2+u...@googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> http://hadley.nz
+
+--
+
+Best,
+Timothy
+
+From uab6519b56352d943 at groups.google.com  Fri Jan 27 19:42:56 2017
+From: uab6519b56352d943 at groups.google.com (Sophia Mayne-Deluca)
+Date: Fri, 27 Jan 2017 19:42:56 +0000
+Subject: Re: barchart with proportion or percent rather than count
+Message-ID: <CRMKreLoMp8.YMfP1nHaBAAJ@ggplot2.groups.google.com>
+In-Reply-To: <CRMKreLoMp8.6A2TcWqkBesJ@ggplot2.groups.google.com>
+References: <CRMKreLoMp8.rfWU_sQGy6UJ@ggplot2.groups.google.com> <CRMKreLoMp8.6A2TcWqkBesJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/CRMKreLoMp8/m/YMfP1nHaBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Why is it then that the number you put down for group seems irrelevant so long as you put down a number? For example,
+> ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group = 1)) produces the exact same graph as
+> ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group = 26))
+??
+I know this is a super old post, it is just exactly the question I have been searching the internet for the answer to.
+Thank you
+
+On Monday, May 16, 2011 at 11:00:37 AM UTC-4, Hadley Wickham wrote:
+> > Has anyone found an explanation of what it means for layers to be divided
+> > into groups in this context?
+>
+> Each group receives it's own geom - one bar per group, one line per group, etc.
+>
+> Hadley
+>
+> --
+> Assistant Professor / Dobelman Family Junior Chair
+> Department of Statistics / Rice University
+> http://had.co.nz/
+>
+
+From u27405c4b711a1080 at groups.google.com  Fri Jan 27 19:59:10 2017
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Fri, 27 Jan 2017 19:59:10 +0000
+Subject: Re: barchart with proportion or percent rather than count
+Message-ID: <CRMKreLoMp8.rsZgdFTbBAAJ@ggplot2.groups.google.com>
+In-Reply-To: <CRMKreLoMp8.YMfP1nHaBAAJ@ggplot2.groups.google.com>
+References: <CRMKreLoMp8.rfWU_sQGy6UJ@ggplot2.groups.google.com> <CRMKreLoMp8.YMfP1nHaBAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/CRMKreLoMp8/m/rsZgdFTbBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Think of the value input to group more of as a factor than a number that has some importance in its value.
+This code also produces the same plot.
+ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group="a"))
+
+If you supply only a single grouping variable, the proportions are calculated across the classes of cut. If you supply none it calculates within each cut of diamonds, which is meaningless. See explanation here in geom_count:
+
+https://github.com/tidyverse/ggplot2/blob/9869339607d342d5d7dc7982586d20d54265a321/R/geom-count.r#L30-L39
+
+You can see it clearly in the data portion of the ggplot build output:
+ggplot_build(ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop..)))
+ggplot_build(ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group = 1)))
+
+On Wed, Jan 25, 2017 at 6:58 PM, Sophia Mayne-Deluca <smayne...@gmail.com> wrote:
+
+> Why is it then that the number you put down for group seems irrelevant so long as you put down a number? For example,
+> > ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group = 1)) produces the exact same graph as
+> > ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group = 26))
+> ??
+> I know this is a super old post, it is just exactly the question I have been searching the internet for the answer to.
+> Thank you
+>
+> On Monday, May 16, 2011 at 11:00:37 AM UTC-4, Hadley Wickham wrote:
+> > > Has anyone found an explanation of what it means for layers to be divided
+> > > into groups in this context?
+> >
+> > Each group receives it's own geom - one bar per group, one line per group, etc.
+> >
+> > Hadley
+> >
+> > --
+> > Assistant Professor / Dobelman Family Junior Chair
+> > Department of Statistics / Rice University
+> > http://had.co.nz/
+> >
+
+> --
+
+> --
+> You received this message because you are subscribed to the ggplot2 mailing list.
+
+> Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+>
+> To post: email ggp...@googlegroups.com
+> To unsubscribe: email ggplot2+unsubscribe@googlegroups.com
+> More options: http://groups.google.com/group/ggplot2
+>
+> ---
+> You received this message because you are subscribed to the Google Groups "ggplot2" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+unsubscribe@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uab6519b56352d943 at groups.google.com  Fri Jan 27 20:13:28 2017
+From: uab6519b56352d943 at groups.google.com (Sophia Mayne-Deluca)
+Date: Fri, 27 Jan 2017 20:13:28 +0000
+Subject: Re: barchart with proportion or percent rather than count
+Message-ID: <CRMKreLoMp8.mgt7SxzcBAAJ@ggplot2.groups.google.com>
+In-Reply-To: <CRMKreLoMp8.rsZgdFTbBAAJ@ggplot2.groups.google.com>
+References: <CRMKreLoMp8.rfWU_sQGy6UJ@ggplot2.groups.google.com> <CRMKreLoMp8.rsZgdFTbBAAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/CRMKreLoMp8/m/mgt7SxzcBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you for your detailed answer.
+It makes a lot more sense that setting the group to an explicit number is the same as naming a group that number rather than saying that there are that many groups in total.
+Thanks again.
+
+On Friday, January 27, 2017 at 2:59:10 PM UTC-5, Brandon Hurr wrote:
+
+> Think of the value input to group more of as a factor than a number that has some importance in its value.
+> This code also produces the same plot.
+> ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group="a"))
+>
+> If you supply only a single grouping variable, the proportions are calculated across the classes of cut. If you supply none it calculates within each cut of diamonds, which is meaningless. See explanation here in geom_count:
+>
+> https://github.com/tidyverse/ggplot2/blob/9869339607d342d5d7dc7982586d20d54265a321/R/geom-count.r#L30-L39
+>
+> You can see it clearly in the data portion of the ggplot build output:
+> ggplot_build(ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop..)))
+> ggplot_build(ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group = 1)))
+>
+>
+
+> On Wed, Jan 25, 2017 at 6:58 PM, Sophia Mayne-Deluca <smayne...@gmail.com> wrote:
+
+> > Why is it then that the number you put down for group seems irrelevant so long as you put down a number? For example,
+> > > ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group = 1)) produces the exact same graph as
+> > > ggplot(data = diamonds) + geom_bar(mapping = aes(x = cut, y = ..prop.., group = 26))
+> > ??
+> > I know this is a super old post, it is just exactly the question I have been searching the internet for the answer to.
+> > Thank you
+> >
+> > On Monday, May 16, 2011 at 11:00:37 AM UTC-4, Hadley Wickham wrote:
+> > > > Has anyone found an explanation of what it means for layers to be divided
+> > > > into groups in this context?
+> > >
+> > > Each group receives it's own geom - one bar per group, one line per group, etc.
+> > >
+> > > Hadley
+> > >
+> > > --
+> > > Assistant Professor / Dobelman Family Junior Chair
+> > > Department of Statistics / Rice University
+> > > http://had.co.nz/
+> > >
+
+> > --
+> > --
+> > You received this message because you are subscribed to the ggplot2 mailing list.
+> > Please provide a reproducible example: https://github.com/hadley/devtools/wiki/Reproducibility
+> >
+> > To post: email ggp...@googlegroups.com
+
+> > To unsubscribe: email ggplot2+u...@googlegroups.com
+
+> >
+> > More options: http://groups.google.com/group/ggplot2
+> >
+> > ---
+> > You received this message because you are subscribed to the Google Groups "ggplot2" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to ggplot2+u...@googlegroups.com.
+
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u5b08a405119e4b93 at groups.google.com  Sun Jan 29 18:50:03 2017
+From: u5b08a405119e4b93 at groups.google.com (Alan Rogers)
+Date: Sun, 29 Jan 2017 18:50:03 +0000
+Subject: Implementing qq (from Lattice) in ggplot2
+Message-ID: <ttItlVOdFW0.DFmeDbh0BQAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/ttItlVOdFW0/m/DFmeDbh0BQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+In Lattice, you can compare the quantiles of two data sets with
+
+    qq(f~v, data=df)
+
+where v is a vector that concatenates the two data sets, and f is a variable with two values, which distinguish between the two data sets. In other words, df looks like this:
+
+  v    f
+  3    1
+  8    1
+  7    1
+  3    2
+  2    2
+  3    2
+  0    2
+
+where 3, 8, and 7 are the values of data set 1, and the other v values are data set 2.
+
+In ggplot2, I would like to support syntax like:
+
+    ggplot(df, aes(v, f)) + stat_qqobs()
+
+So I wrote two functions, StatQQobs (which calls ggproto) and stat_qqobs (which calls layer). These are shown below. They work fine when f is a numeric vector. But when f is a factor, only the first data set is passed in the "data" argument of "compute_group", and StatQQobs fails.
+
+Is there a better way to do this?
+
+Even when this setup works--when f is a numeric vector--there is still no way to set sensible defaults for axis labels. So it seems likely that I need a completely different design.
+
+Here are the functions:
+
+# Calculations for empirical quantile-quantile plot.  x contains data
+# values for two samples. y is a factor with two levels, which
+# indicate which sample is x value belongs to.
+StatQQobs <- ggproto("StatQQobs", Stat,
+                        required_aes = c("x","y"),
+                        compute_group = function(data, scales) {
+                            var <- data$y[!is.na <http://is.na>(data$y)]
+                            var <- droplevels(as.factor(var))
+                            if(length(levels(var)) != 2) {
+                                stop("y variable must have 2 levels")
+                            }
+                            i1 <- var==levels(var)[1]
+                            i2 <- var==levels(var)[2]
+                            s1 <- sort(data$x[i1])
+                            s2 <- sort(data$x[i2])
+                            len1 <- length(s1)
+                            len2 <- length(s2)
+                            if(len1 < len2)
+                                s2 <- approx(1:len2, s2, n=len1)$y
+                            if(len1 > len2)
+                                s1 <- approx(1:len1, s1, n=len2)$y
+                            data.frame(x=s1, y=s2)
+                        }
+                        )
+
+# Compare quantiles of two data vectors
+stat_qqobs <- function(mapping = NULL, data = NULL, geom = "point",
+                        position = "identity", na.rm = TRUE,
+                        show.legend=NA, inherit.aes = TRUE, ...) {
+    layer(
+          stat=StatQQobs, data=data, mapping=mapping, geom=geom,
+          position=position, show.legend=show.legend,
+          inherit.aes=inherit.aes,
+          params=list(na.rm=na.rm, ...)
+          )
+}
+
+From u639970b1c93a337f at groups.google.com  Tue Jan 31 21:51:14 2017
+From: u639970b1c93a337f at groups.google.com (Vasily A.)
+Date: Tue, 31 Jan 2017 21:51:14 +0000
+Subject: Making `%+%` more indulgent (i.e. not breaking previous definitions of the same operator)
+Message-ID: <2nDyX38m8uc.ljzFcMQbBgAJ@ggplot2.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2/c/2nDyX38m8uc/m/ljzFcMQbBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Right now `%+%` is defined in such a way that it calls `+.gg` if the first argument is `theme` or `ggplot`, otherwise just returns NULL. If `%+%` was previously defined in another package, loading `ggplot2` package will break it - but I don't see why this is necessary if they work with non-overlapping classes. I tried changing the following in the `plot-construction.r` source file: instead of definition `"%+%" <- `+.gg`` (line 54 <https://github.com/tidyverse/ggplot2/blob/master/R/plot-construction.r#L54>), I put the following:
+"%+%" <- function(...) UseMethod("%+%")
+"%+%.theme" <- `+.gg`
+"%+%.ggplot" <- `+.gg`
+(of course don't forget adding corresponding `export()` instructions to the `NAMESPACE`)
+
+I have built and loaded this fork and it works as expected: now I can load another package (where `%+%` is defined to work with `character` class), then load `ggplot2`, and they both work correctly. Is there any special reason of not implementing this?
+
+P.S. I have asked this question (in more extended way) at StackOverflow - you can also comment or answer there <http://stackoverflow.com/questions/41786533/>.
+

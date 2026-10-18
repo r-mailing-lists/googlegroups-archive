@@ -1,0 +1,103 @@
+{
+ "thread": "lpZVVPssQFw",
+ "subject": "Musing on synchronising reactives to prevent data leaking from record to record",
+ "messages_listed": 3,
+ "last_activity": "2013-07-09T23:20:12Z",
+ "messages": [
+  {
+   "id": "v-sRVIXx18AJ",
+   "from": "Alex Brown",
+   "author": "c8fe4075ec631c03",
+   "date": "2013-07-06T21:51:36Z",
+   "subject": "Musing on synchronising reactives to prevent data leaking from record to record",
+   "parts": [
+    [
+     1,
+     "<div><b>Reactive forests, pseudo-concurrency, garbage collection, race conditions and selecting required reactive paths</b><br></div><div><br></div>Let&#39;s suppose we have a database.  The set of record ids can be selected for in a shiny app (sidebar), and a single record can be viewed in the main view.<div><br></div><div>The single record can be viewed, edited, and when displayed a process is applied to generate a plot, it that is derived from both global settings and the values in the record.</div><div><br></div><div>When edited, the plot is re-generated.</div><div><br></div><div>Part 1: map reactive components to parts of the UI</div><div><br></div><div>In my simple understanding of a shiny app, the UI elements of the single record view would be inputs e.g. textInput, and outputs either by updateXInput or by renderUI.</div><div><br></div><div>The plot would be a reactive output that depends upon the current record values and / or the input values.</div><div><br></div><div>A button would write the current input values back to the database.</div><div><br></div><div>How do we ensure the current values for a given calculation are all coming from the current record?  If the values are treated as individual reactiveValues then it&#39;s easy to imagine that there are at least some intermediate states where the plot calculation consumes stale inputs.</div><div><br></div><div>In a simple case, perhaps one record field is not editable in the UI - the record id.</div><div><br></div><div>output$myplot &lt;- renderPlot({ plot(record$id) })</div><div><br></div><div>and one record field IS editable in the UI:</div><div><br></div><div>output$editableField1 &lt;- renderUI({ textInput(editableField1Value,record$field1) })</div><div><br></div><div>now the plot function looks like this:</div><div><br></div><div>output$myplot &lt;- renderPlot({ plot(f(record$id, input$field1Value) })</div><div><br></div><div>When the reactiveValue <i>record</i> is updated, first the UI and the plot are uploaded:</div><div><br></div><div>SEND { </div><div>  editableField1:&lt;input id=&quot;field1Value&quot; value=&quot;new value&quot;&gt; </div><div>  myplot:[ plot derived from new record id and old field 1 ]</div><div>}</div><div><br></div><div>The the client sends back the new UI value to the host</div><div><br></div><div>RECV {</div><div>  field1Value: new value</div><div>}</div><div><br></div><div>Then the plot is executed again, with the correct values</div><div><br></div><div><div>SEND { </div><div>  editableField1:&lt;input id=&quot;field1Value&quot; value=&quot;new value&quot;&gt; </div><div>  myplot:[ plot derived from new record id and new field 1 ]</div><div>}</div></div><div><br></div><div>If the UI is more complex, nesting renderOutput in renderOutput, then this might take several steps and plots to stabilize (or might never stabilize, (seriously))</div><div><br></div><div>If this is FAST then this might not be an issue, since there is no data safety issue with occasionally displaying the wrong value.</div><div><br></div><div>If it&#39;s SLOW then the user might draw the conclusion that record2 was the same as record1.</div><div><br></div><div>If the update button is pressed, then what values does it depend upon and write into the database?  If it&#39;s pressed in between the send to the client and the updated field1Value from the client, then record 2 will be erased and replaced with some fields form record 1</div><div><br></div><div><div>Now this gets serious!</div></div><div><br></div><div>There doesn&#39;t seem to be a way to detect when the UI and internal reactives are synchronized on a single record, certainly not programmatically, and while we might ask the user to simply *wait* for the display to settle down, this 1) might never happen 2) might take a long time, during which it *appears* to be settled, 3) exceptions can cause parts of the UI to never update to the proper value 4) asynchrony (such as my mURL or plannel parallel() ) might mean that part of the UI update later, meanwhile they display the old value.</div><div><br></div><div>A related issue is that a reactive has no way to express that it can&#39;t produce a result just yet - returning NULL allows the *old* value to propagate up the chain, which is precisely the wrong effect.</div><div><br></div><div>---</div><div><br></div><div>Part 2: map reactive components to parts of the data</div><div><br></div><div>What if we took a different view of reactives - instead of having ONE plot, we have enough plots for every record in the database, but we only show one.  The plot ID is different for each record, and the UI is tabbed or conditionaled to show the correct one.</div><div><br></div><div>output$myplot_id1234</div><div><br></div><div>In addition, the editor UI is different for each record, being templated upon the recordID</div><div><br></div><div>This is an interesting structure, because it represents the implied parallelism of the problem - the whole data structure is mapped (as separate entites) into the reactive graph.  Since R is sequential, we probably only want the currently visible parts of the graph to be &#39;acted&#39;, but if we introduced parallelism, then it becomes an issue of &#39;priority&#39; rather than selection - perhaps the current and previous records would also be active, allowing for fast movement between records.</div><div><br></div><div><div>output$editableField1_id1234 &lt;- renderUI({ textInput(editableField1Value_id1234,records$id1234$field1) })</div></div><div><br></div><div>This would appear to solve the possibility of cross-record interaction.  However, this complicates the design, slows down the UI (since more of it is renderOutput) and brings up a few questions.</div><div><br></div><div>1) If a reactive is not being shown, is it nonetheless calculated.  Is that a good thing?</div><div>2) if a record is deleted, do the reactives observers and outputs &#39;go away&#39; or do they stick around and clog up shiny&#39;s arteries?  This starts to feel like the same problem as garbage collection</div><div>3) can we have a different design for shiny apps which achieves this effect without the pain of manually creating sets of inputs and outputs for each reactive?</div><div><br></div><div>----</div><div><br></div><div>Part3: multiplexing the UI on the record</div><div><br></div><div>A different approach might be to have an observer for each record and each plot, and the plot switches:</div><div><br></div><div>plots &lt;- reactiveValues(</div><div>  `id1234`=reactivePlot({ plot(record$id1234$id, inputs$id1234$field1})</div><div>)</div><div><div>output$myplot &lt;- renderPlot({ plots[[record$id]] })</div></div><div><br></div><div>This starts to look interesting, except that currently inputs (and outputs) are &#39;flat&#39;, which is to say the first level of branches in inputs are special, and the output object can&#39;t even have nested reactives in them. </div><div><br></div><div>Also it&#39;s fairly clear that any time ANY record value or plot was updated, the plot function would be re-invoked - it would be progressively linked against more and more reactives.</div><div><br></div><div>I note that the tab UI has a workaround for this - it deactivates the outputs that it&#39;s not currently showing, so they are not invoked.  Perhaps a similar code structure could exist in shiny...</div><div><br></div><div><div>plots &lt;- reactiveValues(</div><div>  activePlots = which(records==currentRecord)</div><div>  deactivateReactive(reactivePlotCollections[!activePlots])</div><div>  return(activateReactive(reactivePlotCollections[activePlots])</div><div>)<br></div></div><div><br></div><div>----</div><div><br></div><div>I look forward to your input.</div>"
+    ]
+   ]
+  },
+  {
+   "id": "vNd842e4_DcJ",
+   "from": "Joe Cheng",
+   "author": "ca443e6eaa0e78ed",
+   "date": "2013-07-08T22:08:11Z",
+   "subject": "Re: Musing on synchronising reactives to prevent data leaking from record to record",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Thanks as always for your feedback, Alex!<div><br></div><div>Specific nit-picking pedantry first.​</div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><br></div><div>&gt; <span style=\"font-family:arial,sans-serif;font-size:13px\">A related issue is that a reactive has no way to express that it can&#39;t produce a result just yet - returning NULL allows the *old* value to propagate up the chain, which is precisely the wrong effect.</span></div>\r\n\r\n<div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br></span></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><span style=\"font-family:arial,sans-serif;font-size:13px\">I&#39;m not seeing this behavior. If a reactive expression returns NULL, then its value becomes NULL. In fact there is no way, once a reactive expression has started executing, to say &quot;never mind, just use the existing value&quot;.</span></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\">\r\n\r\n<div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br></span></div><div><div style=\"font-family:arial,sans-serif;font-size:13px\">&gt; 1) If a reactive is not being shown, is it nonetheless calculated.  Is that a good thing?</div>\r\n\r\n</div><div><br></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div>This also shouldn&#39;t be happening. Each output has its own observer; that observer is suspended whenever Shiny detects that its corresponding DOM element is not being displayed (size is 0px-by-0px and it or an ancestor has display:none, I believe). Once an observer is suspended, not only does it not execute (actually it may execute 1 more time after you suspend it, if it was already invalidated before you suspended it) but it doesn&#39;t cause any of the reactive expressions it depends on to execute, either.</div>\r\n\r\n<div><br></div><div>You can override this behavior with outputOptions(..., suspendWhenHidden=FALSE) but by default that&#39;s what should be happening (and it&#39;s how tabPanel works, there&#39;s nothing specific for tabPanel).</div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\">\r\n\r\n<div><br></div><div>&gt; <span style=\"font-family:arial,sans-serif;font-size:13px\">2) if a record is deleted, do the reactives observers and outputs &#39;go away&#39; or do they stick around and clog up shiny&#39;s arteries?  This starts to feel like the same problem as garbage collection</span></div>\r\n\r\n<div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br></span></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><span style=\"font-family:arial,sans-serif;font-size:13px\">Reactive expressions go away if they are no longer referenced by anything. Observers go away if you suspend them and if R considers them ready for garbage collection according to the usual rules. However, outputs are referenced from your Shiny session object; you can overwrite them with a new output which would make the old one eligible for GC (and the old observer is also automatically suspended), but that&#39;s not the same as just deleting them. We could easily add a method for deleting outputs (or simply accept output$foo &lt;- NULL, which currently errors).</span></div>\r\n\r\n<div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br></span></div><div><span style=\"font-family:arial,sans-serif;font-size:13px\">--</span></div><div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br>\r\n\r\n</span></div><div><font face=\"arial, sans-serif\">I&#39;m still thinking about whether there&#39;s another way to solve the general problem in Part 1 that you outline. It&#39;s a really interesting question. It feels like there is a general solution that is lurking just beyond my vision.</font></div>\r\n\r\n</div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "A-w-QYQ3e3YJ",
+   "from": "Alex Brown",
+   "author": "c8fe4075ec631c03",
+   "date": "2013-07-09T23:20:12Z",
+   "subject": "Re: Musing on synchronising reactives to prevent data leaking from record to record",
+   "parts": [
+    [
+     1,
+     "<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\"><div>Specific nit-picking pedantry first.​</div></div></blockquote><div>Great!  </div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\"><div><br></div><div>&gt; <span style=\"font-family:arial,sans-serif;font-size:13px\">A related issue is that a reactive has no way to express that it can&#39;t produce a result just yet - returning NULL allows the *old* value to propagate up the chain, which is precisely the wrong effect.</span></div>\r\n\r\n<div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br></span></div><div><span style=\"font-family:arial,sans-serif;font-size:13px\">I&#39;m not seeing this behavior. If a reactive expression returns NULL, then its value becomes NULL. In fact there is no way, once a reactive expression has started executing, to say &quot;never mind, just use the existing value&quot;.</span></div></div></blockquote>"
+    ],
+    [
+     1,
+     "<div>Yep, you are 100% there.  I am still thinking in shiny 0.1.0 and that&#39;s how I learned to cope. </div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">\r\n\r\n<div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br></span></div><div><div style=\"font-family:arial,sans-serif;font-size:13px\">&gt; 1) If a reactive is not being shown, is it nonetheless calculated.  Is that a good thing?</div>\r\n\r\n</div><div><br></div><div>This also shouldn&#39;t be happening. Each output has its own observer; that observer is suspended whenever Shiny detects that its corresponding DOM element is not being displayed (size is 0px-by-0px and it or an ancestor has display:none, I believe). Once an observer is suspended, not only does it not execute (actually it may execute 1 more time after you suspend it, if it was already invalidated before you suspended it) but it doesn&#39;t cause any of the reactive expressions it depends on to execute, either.</div></div></blockquote>"
+    ],
+    [
+     1,
+     "<div>Ah, but once an observer has become associated with a reactive, doesn&#39;t it always listen to it?</div><div><br></div><div>In the case I describe I have associated the reactive for each and every record with one output.</div>"
+    ],
+    [
+     2,
+     "<div><br></div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\"><div>&gt; <span style=\"font-family:arial,sans-serif;font-size:13px\">2) if a record is deleted, do the reactives observers and outputs &#39;go away&#39; or do they stick around and clog up shiny&#39;s arteries?  This starts to feel like the same problem as garbage collection</span></div>\r\n\r\n<div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br></span></div><div><span style=\"font-family:arial,sans-serif;font-size:13px\">Reactive expressions go away if they are no longer referenced by anything. Observers go away if you suspend them and if R considers them ready for garbage collection according to the usual rules. However, outputs are referenced from your Shiny session object; you can overwrite them with a new output which would make the old one eligible for GC (and the old observer is also automatically suspended), but that&#39;s not the same as just deleting them. We could easily add a method for deleting outputs (or simply accept output$foo &lt;- NULL, which currently errors).</span></div></div></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>What I&#39;m actually concerned about is a little different from this - it&#39;s about load on shiny.  I don&#39;t want it to have to search through 1000s of dead reactives to find the behavior I want, and I don&#39;t want observers to needlessly save megabytes of output that I&#39;m never going to ask them about again.</div>"
+    ],
+    [
+     2,
+     "<div><br></div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\"><div><span style=\"font-family:arial,sans-serif;font-size:13px\"><br>\r\n\r\n</span></div><div><font face=\"arial, sans-serif\">I&#39;m still thinking about whether there&#39;s another way to solve the general problem in Part 1 that you outline. It&#39;s a really interesting question. It feels like there is a general solution that is lurking just beyond my vision.</font></div></div></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Awesome.  Sorry for not managing to present my problem in a 1+1 way.</div><div><br></div><div>-Alex </div>"
+    ]
+   ]
+  }
+ ]
+}

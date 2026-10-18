@@ -1,0 +1,1001 @@
+From u5ea27d7a6e4505cc at groups.google.com  Sun Sep  2 17:05:09 2012
+From: u5ea27d7a6e4505cc at groups.google.com (philip)
+Date: Sun, 02 Sep 2012 17:05:09 +0000
+Subject: maply efficiency?
+Message-ID: <NLxtYkw2rQE.MRvbT1kwDmMJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/NLxtYkw2rQE/m/MRvbT1kwDmMJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear list members,
+
+Any help on this efficiency issue would be greatly appreciated.
+
+I would like to find the most efficient way to run a non-vectorized function (here: fisher exact test p-value) iteratively using 4 matrices with identical dimensions. And as a result I aim for an array with identical dimensions containing the corresponding p-values. Please consider some code using a trivial example with 3x4 arrays below. Eventually I would like to run code on 2e3 x 7e6 arrays, for which someone suggested Amazon EC2 already...
+
+Q1: would you agree that fisher.test() is not vectorizable? e.g. fisher.test( matrix(c(Ax,Ay,Bx,By),ncol=2) ) does not work
+Q2: direct use of Ax, Ay, Bx, By as input instead of a (list) transform for the input would seem beneficial for speed
+Q3: parallelization of the iterative process seems to make sense.
+Q4: a progress bar seems to save peace of mind having no clue of the runtime.
+Q5: avoidance of an output transform to get array from vector
+Q6: for Q2/3/4/5 plyr seems to be ideal (e.g. maply)
+
+Please also find some solutions below.
+solution 1: using mapply
+solution 2: using lapply
+solution 3: using mclapply
+attempt 4: stuck on plyr implementation
+
+--Philip
+
+### CODE START ###
+
+Ax <- matrix(c(2,3,5,6,
+               3,7,8,9,
+               8,2,1,3), ncol = 4)
+Ay <- matrix(c(9,8,5,7,
+               4,9,9,9,
+               8,7,5,4), ncol = 4)
+Bx <- matrix(c(1,5,9,8,
+               4,7,8,9,
+               2,3,2,1), ncol = 4)
+By <- matrix(c(5,5,9,9,
+               9,8,8,9,
+               5,5,3,2), ncol = 4)
+
+### solution 1 using mapply
+# proper answer, no input transform, output transform, no parallelization, no progress update
+sol1 <- function() {
+ res1 <- mapply(
+   function(i,j,k,l) { fisher.test( matrix(c(i,j,k,l), ncol=2), conf.int <http://conf.int>=F)$p.value },
+   i=Ax, j=Ay, k=Bx, l=By,
+   SIMPLIFY=TRUE)
+ ans1 <- matrix(res1,ncol=4)
+ return(ans1)
+}
+s1 <- sol1()
+
+### solution 2 using lapply
+# proper answer, input transform, output transform, no parallelization, no progress update
+sol2 <- function() {
+ tmp.list <- as.data.frame(rbind(as.numeric(Ax), as.numeric(Ay), as.numeric(Bx), as.numeric(By)))
+ # determine fisher.test p-values as list
+ res2 <- lapply(tmp.list,
+    function(x) { fisher.test( matrix(unlist(x), ncol=2), conf.int <http://conf.int>=F)$p.value })
+ ans2 <- matrix(unlist(res2),ncol=4)
+ return(ans2)
+}
+s2 <- sol2()
+
+### solution 3 using mclapply
+# proper answer using input transform, output transform, parallelization, no progress update
+library(multicore)
+sol3 <- function() {
+  tmp.list <- as.data.frame(rbind(as.numeric(Ax), as.numeric(Ay), as.numeric(Bx), as.numeric(By)))
+  # determine fisher.test p-values as list
+  res3 <- mclapply(tmp.list,
+    function(x) { fisher.test( matrix(unlist(x), ncol=2), conf.int <http://conf.int>=F)$p.value },
+    mc.cores=4)
+  ans3 <- matrix(unlist(res3),ncol=4)
+}
+s3 <- sol3()
+
+### solution 4 using plyr::maply
+# difficulty finding equivalent code
+# benefit could be: no input transform, no output transform, parallelization, and progress update
+ library(plyr)
+ library(abind)
+ library(doMC)
+ registerDoMC(cores=4)
+ sol4 <- function() {
+  ans4 <- maply(
+   #.data = abind(i=Ax,j=Ay,k=Bx,l=By,along=0),
+   #.data = abind(Ax,Ay,Bx,By,along=3),
+   #.data = data.frame(i=Ax, j=Ay, k=Bx, l=By),
+   #.data = cbind(i=as.vector(Ax), j=as.vector(Ay), k=as.vector(Bx), l=as.vector(By)),
+   #.data = list(i=Ax, j=Ay, k=Bx, l=By),
+   .data = abind(i=Ax, j=Ay, k=Bx, l=By, along=3),
+   .fun = function(i,j,k,l) { fisher.test( matrix(c(i,j,k,l), ncol=2), conf.int <http://conf.int>=F)$p.value },
+   .progress = "text",
+   .parralel = TRUE
+  )
+  return(ans4)
+}
+
+all.equal(s1,s2) # TRUE
+all.equal(s1,s3) # TRUE
+
+library(microbenchmark)
+microbenchmark(sol1, times=1000)
+microbenchmark(sol2, times=1000)
+microbenchmark(sol3, times=1000)
+microbenchmark(sol4, times=1000)
+
+From u9c9b5f9c6aaa025d at groups.google.com  Mon Sep  3 21:43:23 2012
+From: u9c9b5f9c6aaa025d at groups.google.com (Doug Mitarotonda)
+Date: Mon, 03 Sep 2012 21:43:23 +0000
+Subject: Re: String names with spaces in plyr
+Message-ID: <MqICtkJ4gWA.XlR20iXRN8AJ@manipulatr.groups.google.com>
+In-Reply-To: <MqICtkJ4gWA.1moI071FvAwJ@manipulatr.groups.google.com>
+References: <MqICtkJ4gWA.ObnLKADYaWMJ@manipulatr.groups.google.com> <MqICtkJ4gWA.1moI071FvAwJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/MqICtkJ4gWA/m/XlR20iXRN8AJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hey Hadley,
+Sorry for being dense, but I am not quite understanding how your example works in the context of what I am trying to do. Could you please explain, perhaps using the example data.frame I created the thread with?
+
+Thanks!
+Doug
+
+On Friday, August 31, 2012 6:50:01 AM UTC-5, Hadley Wickham wrote:
+> > Hadley, plyr doesn't accept spaces the same way that base R does -- is
+> > this a bug or a feature? That is, is there any reason to not make plyr
+> > behave the same way?
+>
+> Currently you can do:
+>
+> .(x = min(x))
+>
+> and exactly equivalent
+>
+> c(x = "min(x)")
+>
+> I don't know if this is a feature that anyone uses, but it's there. It
+> would be trivial to change it so that c(x = "min(x)") is equivalent to
+> c(x = `min(x)`)
+>
+> Hadley
+>
+> --
+> Assistant Professor
+> Department of Statistics / Rice University
+> http://had.co.nz/
+
+From udc06d729e023580a at groups.google.com  Mon Sep  3 21:49:43 2012
+From: udc06d729e023580a at groups.google.com (Hadley Wickham)
+Date: Mon, 03 Sep 2012 21:49:43 +0000
+Subject: Re: String names with spaces in plyr
+Message-ID: <MqICtkJ4gWA.5W_ArJ0FqBAJ@manipulatr.groups.google.com>
+In-Reply-To: <MqICtkJ4gWA.1moI071FvAwJ@manipulatr.groups.google.com>
+References: <MqICtkJ4gWA.ObnLKADYaWMJ@manipulatr.groups.google.com> <MqICtkJ4gWA.1moI071FvAwJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/MqICtkJ4gWA/m/5W_ArJ0FqBAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I was just explaining why plyr behaves the way it does - which is not
+helpful for your problem.
+Hadley
+
+On Mon, Sep 3, 2012 at 4:43 PM, Doug Mitarotonda
+<dougmit...@gmail.com> wrote:
+> Hey Hadley,
+> Sorry for being dense, but I am not quite understanding how your example
+> works in the context of what I am trying to do. Could you please explain,
+> perhaps using the example data.frame I created the thread with?
+>
+> Thanks!
+> Doug
+>
+>
+> On Friday, August 31, 2012 6:50:01 AM UTC-5, Hadley Wickham wrote:
+>>
+>> > Hadley, plyr doesn't accept spaces the same way that base R does -- is
+>> > this a bug or a feature? That is, is there any reason to not make plyr
+>> > behave the same way?
+>>
+>> Currently you can do:
+>>
+>> .(x = min(x))
+>>
+>> and exactly equivalent
+>>
+>> c(x = "min(x)")
+>>
+>> I don't know if this is a feature that anyone uses, but it's there. It
+>> would be trivial to change it so that c(x = "min(x)") is equivalent to
+>> c(x = `min(x)`)
+>>
+>> Hadley
+>>
+>> --
+>> Assistant Professor
+>> Department of Statistics / Rice University
+>> http://had.co.nz/
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+
+> To view this discussion on the web visit
+
+> https://groups.google.com/d/msg/manipulatr/-/XlR20iXRN8AJ.
+
+>
+> To post to this group, send email to manip...@googlegroups.com.
+> To unsubscribe from this group, send email to
+> manipulatr+...@googlegroups.com.
+> For more options, visit this group at
+> http://groups.google.com/group/manipulatr?hl=en.
+
+--
+Assistant Professor
+Department of Statistics / Rice University
+http://had.co.nz/
+
+From ub756a7daa2c2aa6d at groups.google.com  Mon Sep 10 21:56:28 2012
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Mon, 10 Sep 2012 21:56:28 +0000
+Subject: Re: maply efficiency?
+Message-ID: <NLxtYkw2rQE.t7Q0UDvRHVYJ@manipulatr.groups.google.com>
+In-Reply-To: <NLxtYkw2rQE.MRvbT1kwDmMJ@manipulatr.groups.google.com>
+References: <NLxtYkw2rQE.MRvbT1kwDmMJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/NLxtYkw2rQE/m/t7Q0UDvRHVYJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Philip,
+
+I think you will only get marginal gains through tweaking how you run
+the non-vectorised code.  If you really want performance improvements,
+I think you need to bite the bullet and vectorise fisher.test.
+
+Hadley
+
+On Sun, Sep 2, 2012 at 12:05 PM, philip <pcv...@gmail.com> wrote:
+> Dear list members,
+>
+> Any help on this efficiency issue would be greatly appreciated.
+>
+> I would like to find the most efficient way to run a non-vectorized function
+> (here: fisher exact test p-value) iteratively using 4 matrices with
+> identical dimensions. And as a result I aim for an array with identical
+> dimensions containing the corresponding p-values. Please consider some code
+> using a trivial example with 3x4 arrays below. Eventually I would like to
+> run code on 2e3 x 7e6 arrays, for which someone suggested Amazon EC2
+> already...
+>
+> Q1: would you agree that fisher.test() is not vectorizable? e.g.
+> fisher.test( matrix(c(Ax,Ay,Bx,By),ncol=2) ) does not work
+> Q2: direct use of Ax, Ay, Bx, By as input instead of a (list) transform for
+> the input would seem beneficial for speed
+> Q3: parallelization of the iterative process seems to make sense.
+> Q4: a progress bar seems to save peace of mind having no clue of the
+> runtime.
+> Q5: avoidance of an output transform to get array from vector
+> Q6: for Q2/3/4/5 plyr seems to be ideal (e.g. maply)
+>
+> Please also find some solutions below.
+> solution 1: using mapply
+> solution 2: using lapply
+> solution 3: using mclapply
+> attempt 4: stuck on plyr implementation
+>
+> --Philip
+>
+> ### CODE START ###
+>
+> Ax <- matrix(c(2,3,5,6,
+>                3,7,8,9,
+>                8,2,1,3), ncol = 4)
+> Ay <- matrix(c(9,8,5,7,
+>                4,9,9,9,
+>                8,7,5,4), ncol = 4)
+> Bx <- matrix(c(1,5,9,8,
+>                4,7,8,9,
+>                2,3,2,1), ncol = 4)
+> By <- matrix(c(5,5,9,9,
+>                9,8,8,9,
+>                5,5,3,2), ncol = 4)
+>
+> ### solution 1 using mapply
+> # proper answer, no input transform, output transform, no parallelization,
+> no progress update
+> sol1 <- function() {
+>  res1 <- mapply(
+>    function(i,j,k,l) { fisher.test( matrix(c(i,j,k,l), ncol=2),
+> conf.int <http://conf.int>=F)$p.value },
+>    i=Ax, j=Ay, k=Bx, l=By,
+>    SIMPLIFY=TRUE)
+>  ans1 <- matrix(res1,ncol=4)
+>  return(ans1)
+> }
+> s1 <- sol1()
+>
+> ### solution 2 using lapply
+> # proper answer, input transform, output transform, no parallelization, no
+> progress update
+> sol2 <- function() {
+>  tmp.list <- as.data.frame(rbind(as.numeric(Ax), as.numeric(Ay),
+> as.numeric(Bx), as.numeric(By)))
+>  # determine fisher.test p-values as list
+>  res2 <- lapply(tmp.list,
+>     function(x) { fisher.test( matrix(unlist(x), ncol=2),
+> conf.int <http://conf.int>=F)$p.value })
+>  ans2 <- matrix(unlist(res2),ncol=4)
+>  return(ans2)
+> }
+> s2 <- sol2()
+>
+> ### solution 3 using mclapply
+> # proper answer using input transform, output transform, parallelization, no
+> progress update
+> library(multicore)
+> sol3 <- function() {
+>   tmp.list <- as.data.frame(rbind(as.numeric(Ax), as.numeric(Ay),
+> as.numeric(Bx), as.numeric(By)))
+>   # determine fisher.test p-values as list
+>   res3 <- mclapply(tmp.list,
+>     function(x) { fisher.test( matrix(unlist(x), ncol=2),
+> conf.int <http://conf.int>=F)$p.value },
+>     mc.cores=4)
+>   ans3 <- matrix(unlist(res3),ncol=4)
+> }
+> s3 <- sol3()
+>
+> ### solution 4 using plyr::maply
+> # difficulty finding equivalent code
+> # benefit could be: no input transform, no output transform,
+> parallelization, and progress update
+>  library(plyr)
+>  library(abind)
+>  library(doMC)
+>  registerDoMC(cores=4)
+>  sol4 <- function() {
+>   ans4 <- maply(
+>    #.data = abind(i=Ax,j=Ay,k=Bx,l=By,along=0),
+>    #.data = abind(Ax,Ay,Bx,By,along=3),
+>    #.data = data.frame(i=Ax, j=Ay, k=Bx, l=By),
+>    #.data = cbind(i=as.vector(Ax), j=as.vector(Ay), k=as.vector(Bx),
+> l=as.vector(By)),
+>    #.data = list(i=Ax, j=Ay, k=Bx, l=By),
+>    .data = abind(i=Ax, j=Ay, k=Bx, l=By, along=3),
+>    .fun = function(i,j,k,l) { fisher.test( matrix(c(i,j,k,l), ncol=2),
+> conf.int <http://conf.int>=F)$p.value },
+>    .progress = "text",
+>    .parralel = TRUE
+>   )
+>   return(ans4)
+> }
+>
+> all.equal(s1,s2) # TRUE
+> all.equal(s1,s3) # TRUE
+>
+> library(microbenchmark)
+> microbenchmark(sol1, times=1000)
+> microbenchmark(sol2, times=1000)
+> microbenchmark(sol3, times=1000)
+> microbenchmark(sol4, times=1000)
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msg/manipulatr/-/MRvbT1kwDmMJ.
+> To post to this group, send email to manip...@googlegroups.com.
+> To unsubscribe from this group, send email to
+> manipulatr+...@googlegroups.com.
+> For more options, visit this group at
+> http://groups.google.com/group/manipulatr?hl=en.
+
+--
+RStudio / Rice University
+http://had.co.nz/
+
+From u9c9b5f9c6aaa025d at groups.google.com  Tue Sep 11 15:06:11 2012
+From: u9c9b5f9c6aaa025d at groups.google.com (Doug Mitarotonda)
+Date: Tue, 11 Sep 2012 15:06:11 +0000
+Subject: arrange where the column name is in a variable
+Message-ID: <jiYyWIDs-vY.7kaxP_y2sjAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jiYyWIDs-vY/m/7kaxP_y2sjAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone,
+I came to this question in a similar fashion as my previous post on spaces in names with **ply, but this is slightly different because I can't get arrange to work where the column name to arrange by is stored in a variable regardless of spaces or not.
+
+> df <- data.frame(x=c(3,2,1), "y z" = c(12,6,9), check.names = FALSE)
+> r <- "x"
+> s <- "y z"
+
+Using arrange, I am trying to produce the following that works with order:
+> df[order(df[[r]]), ]
+  x y z
+3 1   9
+2 2   6
+1 3  12
+> df[order(df[[s]]), ]
+  x y z
+2 2   6
+3 1   9
+1 3  12
+
+It is clear that arrange does work with when using backticks with the name directly:
+> library(plyr)
+> arrange(df, `x`)
+  x y z
+1 1   9
+2 2   6
+3 3  12
+> arrange(df, `y z`)
+  x y z
+1 2   6
+2 1   9
+3 3  12
+
+but not when stored in a variable (note, I threw in my solution to the previous post on creating a .. function that has been working great for **ply calls)
+> arrange(df, r)
+Error: Length of ordering vectors don't match data frame size
+> arrange(df, .(r))
+Error: Length of ordering vectors don't match data frame size
+> `..` <- function(x){return(paste0("`", x, "`"))}
+> arrange(df, ..(r))
+Error: Length of ordering vectors don't match data frame size
+
+Does anyone have any suggestions on how to use arrange where the column is a variable name? I feel like I am missing something obvious here, so I apologize in advance if that is the case.
+
+Best wishes,
+Doug
+
+From ub756a7daa2c2aa6d at groups.google.com  Tue Sep 11 15:51:51 2012
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Tue, 11 Sep 2012 15:51:51 +0000
+Subject: Re: arrange where the column name is in a variable
+Message-ID: <jiYyWIDs-vY.LSNcfcTuvMMJ@manipulatr.groups.google.com>
+In-Reply-To: <jiYyWIDs-vY.7kaxP_y2sjAJ@manipulatr.groups.google.com>
+References: <jiYyWIDs-vY.7kaxP_y2sjAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jiYyWIDs-vY/m/LSNcfcTuvMMJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Doug,
+
+Yup, that's how arrange works.  If the column name is a variable, then
+use regular subsetting + order (the same applies for subset,
+summarise, and mutate)
+
+Hadley
+
+On Tue, Sep 11, 2012 at 10:06 AM, Doug Mitarotonda
+<dougmit...@gmail.com> wrote:
+> Hi everyone,
+> I came to this question in a similar fashion as my previous post on spaces
+> in names with **ply, but this is slightly different because I can't get
+> arrange to work where the column name to arrange by is stored in a variable
+> regardless of spaces or not.
+>
+>> df <- data.frame(x=c(3,2,1), "y z" = c(12,6,9), check.names = FALSE)
+>> r <- "x"
+>> s <- "y z"
+>
+> Using arrange, I am trying to produce the following that works with order:
+>> df[order(df[[r]]), ]
+>   x y z
+> 3 1   9
+> 2 2   6
+> 1 3  12
+>> df[order(df[[s]]), ]
+>   x y z
+> 2 2   6
+> 3 1   9
+> 1 3  12
+>
+> It is clear that arrange does work with when using backticks with the name
+> directly:
+>> library(plyr)
+>> arrange(df, `x`)
+>   x y z
+> 1 1   9
+> 2 2   6
+> 3 3  12
+>> arrange(df, `y z`)
+>   x y z
+> 1 2   6
+> 2 1   9
+> 3 3  12
+>
+> but not when stored in a variable (note, I threw in my solution to the
+> previous post on creating a .. function that has been working great for
+> **ply calls)
+>> arrange(df, r)
+> Error: Length of ordering vectors don't match data frame size
+>> arrange(df, .(r))
+> Error: Length of ordering vectors don't match data frame size
+>> `..` <- function(x){return(paste0("`", x, "`"))}
+>> arrange(df, ..(r))
+> Error: Length of ordering vectors don't match data frame size
+>
+> Does anyone have any suggestions on how to use arrange where the column is a
+> variable name? I feel like I am missing something obvious here, so I
+> apologize in advance if that is the case.
+>
+> Best wishes,
+> Doug
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msg/manipulatr/-/7kaxP_y2sjAJ.
+> To post to this group, send email to manip...@googlegroups.com.
+> To unsubscribe from this group, send email to
+> manipulatr+...@googlegroups.com.
+> For more options, visit this group at
+> http://groups.google.com/group/manipulatr?hl=en.
+
+--
+RStudio / Rice University
+http://had.co.nz/
+
+From u9c9b5f9c6aaa025d at groups.google.com  Tue Sep 11 16:20:36 2012
+From: u9c9b5f9c6aaa025d at groups.google.com (Doug Mitarotonda)
+Date: Tue, 11 Sep 2012 16:20:36 +0000
+Subject: Re: arrange where the column name is in a variable
+Message-ID: <jiYyWIDs-vY.BI3XaSOgqx8J@manipulatr.groups.google.com>
+In-Reply-To: <jiYyWIDs-vY.LSNcfcTuvMMJ@manipulatr.groups.google.com>
+References: <jiYyWIDs-vY.7kaxP_y2sjAJ@manipulatr.groups.google.com> <jiYyWIDs-vY.LSNcfcTuvMMJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jiYyWIDs-vY/m/BI3XaSOgqx8J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hey Hadley,
+Thanks very much for the quick response.
+
+Best wishes,
+Doug
+
+On Tuesday, September 11, 2012 8:52:13 AM UTC-7, Hadley Wickham wrote:
+> Hi Doug,
+>
+> Yup, that's how arrange works.  If the column name is a variable, then
+> use regular subsetting + order (the same applies for subset,
+> summarise, and mutate)
+>
+> Hadley
+>
+> On Tue, Sep 11, 2012 at 10:06 AM, Doug Mitarotonda
+> <dougmit...@gmail.com> wrote:
+> > Hi everyone,
+> > I came to this question in a similar fashion as my previous post on spaces
+> > in names with **ply, but this is slightly different because I can't get
+> > arrange to work where the column name to arrange by is stored in a variable
+> > regardless of spaces or not.
+> >
+> >> df <- data.frame(x=c(3,2,1), "y z" = c(12,6,9), check.names = FALSE)
+> >> r <- "x"
+> >> s <- "y z"
+> >
+> > Using arrange, I am trying to produce the following that works with order:
+> >> df[order(df[[r]]), ]
+> >   x y z
+> > 3 1   9
+> > 2 2   6
+> > 1 3  12
+> >> df[order(df[[s]]), ]
+> >   x y z
+> > 2 2   6
+> > 3 1   9
+> > 1 3  12
+> >
+> > It is clear that arrange does work with when using backticks with the name
+> > directly:
+> >> library(plyr)
+> >> arrange(df, `x`)
+> >   x y z
+> > 1 1   9
+> > 2 2   6
+> > 3 3  12
+> >> arrange(df, `y z`)
+> >   x y z
+> > 1 2   6
+> > 2 1   9
+> > 3 3  12
+> >
+> > but not when stored in a variable (note, I threw in my solution to the
+> > previous post on creating a .. function that has been working great for
+> > **ply calls)
+> >> arrange(df, r)
+> > Error: Length of ordering vectors don't match data frame size
+> >> arrange(df, .(r))
+> > Error: Length of ordering vectors don't match data frame size
+> >> `..` <- function(x){return(paste0("`", x, "`"))}
+> >> arrange(df, ..(r))
+> > Error: Length of ordering vectors don't match data frame size
+> >
+> > Does anyone have any suggestions on how to use arrange where the column is a
+> > variable name? I feel like I am missing something obvious here, so I
+> > apologize in advance if that is the case.
+> >
+> > Best wishes,
+> > Doug
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "manipulatr" group.
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msg/manipulatr/-/7kaxP_y2sjAJ.
+> > To post to this group, send email to manip...@googlegroups.com.
+> > To unsubscribe from this group, send email to
+> > manipulatr+...@googlegroups.com.
+> > For more options, visit this group at
+> > http://groups.google.com/group/manipulatr?hl=en.
+>
+>
+>
+> --
+> RStudio / Rice University
+> http://had.co.nz/
+
+From u9c9b5f9c6aaa025d at groups.google.com  Tue Sep 11 21:58:42 2012
+From: u9c9b5f9c6aaa025d at groups.google.com (Doug Mitarotonda)
+Date: Tue, 11 Sep 2012 21:58:42 +0000
+Subject: Re: arrange where the column name is in a variable
+Message-ID: <jiYyWIDs-vY.jw1QsY39f2sJ@manipulatr.groups.google.com>
+In-Reply-To: <jiYyWIDs-vY.BI3XaSOgqx8J@manipulatr.groups.google.com>
+References: <jiYyWIDs-vY.7kaxP_y2sjAJ@manipulatr.groups.google.com> <jiYyWIDs-vY.BI3XaSOgqx8J@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jiYyWIDs-vY/m/jw1QsY39f2sJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hadley, am I correct that this is also true for ggplot - i.e., writing the specific variable name in backticks works, but not if the variable is stored in a variable?
+
+On Tuesday, September 11, 2012 9:20:36 AM UTC-7, Doug Mitarotonda wrote:
+> Hey Hadley,
+> Thanks very much for the quick response.
+>
+> Best wishes,
+> Doug
+>
+>
+> On Tuesday, September 11, 2012 8:52:13 AM UTC-7, Hadley Wickham wrote:
+> > Hi Doug,
+> >
+> > Yup, that's how arrange works.  If the column name is a variable, then
+> > use regular subsetting + order (the same applies for subset,
+> > summarise, and mutate)
+> >
+> > Hadley
+> >
+> > On Tue, Sep 11, 2012 at 10:06 AM, Doug Mitarotonda
+> > <dougmit...@gmail.com> wrote:
+> > > Hi everyone,
+> > > I came to this question in a similar fashion as my previous post on spaces
+> > > in names with **ply, but this is slightly different because I can't get
+> > > arrange to work where the column name to arrange by is stored in a variable
+> > > regardless of spaces or not.
+> > >
+> > >> df <- data.frame(x=c(3,2,1), "y z" = c(12,6,9), check.names = FALSE)
+> > >> r <- "x"
+> > >> s <- "y z"
+> > >
+> > > Using arrange, I am trying to produce the following that works with order:
+> > >> df[order(df[[r]]), ]
+> > >   x y z
+> > > 3 1   9
+> > > 2 2   6
+> > > 1 3  12
+> > >> df[order(df[[s]]), ]
+> > >   x y z
+> > > 2 2   6
+> > > 3 1   9
+> > > 1 3  12
+> > >
+> > > It is clear that arrange does work with when using backticks with the name
+> > > directly:
+> > >> library(plyr)
+> > >> arrange(df, `x`)
+> > >   x y z
+> > > 1 1   9
+> > > 2 2   6
+> > > 3 3  12
+> > >> arrange(df, `y z`)
+> > >   x y z
+> > > 1 2   6
+> > > 2 1   9
+> > > 3 3  12
+> > >
+> > > but not when stored in a variable (note, I threw in my solution to the
+> > > previous post on creating a .. function that has been working great for
+> > > **ply calls)
+> > >> arrange(df, r)
+> > > Error: Length of ordering vectors don't match data frame size
+> > >> arrange(df, .(r))
+> > > Error: Length of ordering vectors don't match data frame size
+> > >> `..` <- function(x){return(paste0("`", x, "`"))}
+> > >> arrange(df, ..(r))
+> > > Error: Length of ordering vectors don't match data frame size
+> > >
+> > > Does anyone have any suggestions on how to use arrange where the column is a
+> > > variable name? I feel like I am missing something obvious here, so I
+> > > apologize in advance if that is the case.
+> > >
+> > > Best wishes,
+> > > Doug
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups
+> > > "manipulatr" group.
+> > > To view this discussion on the web visit
+> > > https://groups.google.com/d/msg/manipulatr/-/7kaxP_y2sjAJ.
+> > > To post to this group, send email to manip...@googlegroups.com.
+> > > To unsubscribe from this group, send email to
+> > > manipulatr+...@googlegroups.com.
+> > > For more options, visit this group at
+> > > http://groups.google.com/group/manipulatr?hl=en.
+> >
+> >
+> >
+> > --
+> > RStudio / Rice University
+> > http://had.co.nz/
+
+From ub756a7daa2c2aa6d at groups.google.com  Tue Sep 11 22:01:28 2012
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Tue, 11 Sep 2012 22:01:28 +0000
+Subject: Re: arrange where the column name is in a variable
+Message-ID: <jiYyWIDs-vY.ArXl6XKdfDcJ@manipulatr.groups.google.com>
+In-Reply-To: <jiYyWIDs-vY.jw1QsY39f2sJ@manipulatr.groups.google.com>
+References: <jiYyWIDs-vY.7kaxP_y2sjAJ@manipulatr.groups.google.com> <jiYyWIDs-vY.jw1QsY39f2sJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jiYyWIDs-vY/m/ArXl6XKdfDcJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+That's right for aes. If you have the name of the variable stored in a string you can use aes_string.
+
+Hadley
+
+On Tuesday, September 11, 2012, Doug Mitarotonda wrote:
+
+> Hadley, am I correct that this is also true for ggplot - i.e., writing the specific variable name in backticks works, but not if the variable is stored in a variable?
+>
+>
+> On Tuesday, September 11, 2012 9:20:36 AM UTC-7, Doug Mitarotonda wrote:
+> > Hey Hadley,
+> > Thanks very much for the quick response.
+> >
+> > Best wishes,
+> > Doug
+> >
+> >
+> > On Tuesday, September 11, 2012 8:52:13 AM UTC-7, Hadley Wickham wrote:
+> > > Hi Doug,
+> > >
+> > > Yup, that's how arrange works.  If the column name is a variable, then
+> > > use regular subsetting + order (the same applies for subset,
+> > > summarise, and mutate)
+> > >
+> > > Hadley
+> > >
+> > > On Tue, Sep 11, 2012 at 10:06 AM, Doug Mitarotonda
+> > > <dougmit...@gmail.com> wrote:
+> > > > Hi everyone,
+> > > > I came to this question in a similar fashion as my previous post on spaces
+> > > > in names with **ply, but this is slightly different because I can't get
+> > > > arrange to work where the column name to arrange by is stored in a variable
+> > > > regardless of spaces or not.
+> > > >
+> > > >> df <- data.frame(x=c(3,2,1), "y z" = c(12,6,9), check.names = FALSE)
+> > > >> r <- "x"
+> > > >> s <- "y z"
+> > > >
+> > > > Using arrange, I am trying to produce the following that works with order:
+> > > >> df[order(df[[r]]), ]
+> > > >   x y z
+> > > > 3 1   9
+> > > > 2 2   6
+> > > > 1 3  12
+> > > >> df[order(df[[s]]), ]
+> > > >   x y z
+> > > > 2 2   6
+> > > > 3 1   9
+> > > > 1 3  12
+> > > >
+> > > > It is clear that arrange does work with when using backticks with the name
+> > > > directly:
+> > > >> library(plyr)
+> > > >> arrange(df, `x`)
+> > > >   x y z
+> > > > 1 1   9
+> > > > 2 2   6
+> > > > 3 3  12
+> > > >> arrange(df, `y z`)
+> > > >   x y z
+> > > > 1 2   6
+> > > > 2 1   9
+> > > > 3 3  12
+> > > >
+> > > > but not when stored in a variable (note, I threw in my solution to the
+> > > > previous post on creating a .. function that has been working great for
+> > > > **ply calls)
+> > > >> arrange(df, r)
+> > > > Error: Length of ordering vectors don't match data frame size
+> > > >> arrange(df, .(r))
+> > > > Error: Length of ordering vectors don't match data frame size
+> > > >> `..` <- function(x){return(paste0("`", x, "`"))}
+> > > >> arrange(df, ..(r))
+> > > > Error: Length of ordering vectors don't match data frame size
+> > > >
+> > > > Does anyone have any suggestions on how to use arrange where the column is a
+> > > > variable name? I feel like I am missing something obvious here, so I
+> > > > apologize in advance if that is the case.
+> > > >
+> > > > Best wishes,
+> > > > Doug
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups
+> > > > "manipulatr" group.
+> > > > To view this discussion on the web visit
+> > > > https://groups.google.com/d/msg/manipulatr/-/7kaxP_y2sjAJ.
+> > > > To post to this group, send email to manip...@googlegroups.com.
+> > > > To unsubscribe from this group, send email to
+> > > > manipulatr+...@googlegroups.com.
+> > > > For more options, visit this group at
+> > > > http://groups.google.com/group/manipulatr?hl=en.
+> > >
+> > >
+> > >
+> > > --
+> > > RStudio / Rice University
+> > > http://had.co.nz/
+>
+> --
+> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+
+> To view this discussion on the web visit https://groups.google.com/d/msg/manipulatr/-/jw1QsY39f2sJ.
+
+>
+> To post to this group, send email to manip...@googlegroups.com.
+> To unsubscribe from this group, send email to manipulatr+...@googlegroups.com.
+> For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+--
+RStudio / Rice University
+http://had.co.nz/
+
+From u9c9b5f9c6aaa025d at groups.google.com  Tue Sep 11 22:11:04 2012
+From: u9c9b5f9c6aaa025d at groups.google.com (Doug Mitarotonda)
+Date: Tue, 11 Sep 2012 22:11:04 +0000
+Subject: Re: arrange where the column name is in a variable
+Message-ID: <jiYyWIDs-vY.-4xcv_i6W6EJ@manipulatr.groups.google.com>
+In-Reply-To: <jiYyWIDs-vY.ArXl6XKdfDcJ@manipulatr.groups.google.com>
+References: <jiYyWIDs-vY.7kaxP_y2sjAJ@manipulatr.groups.google.com> <jiYyWIDs-vY.ArXl6XKdfDcJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/jiYyWIDs-vY/m/-4xcv_i6W6EJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes, sorry for not being clear, for aes. I had not seen aes_string before so thanks for pointing me to that. Unfortunately, this does not look to solve my ultimate problem, which is using strings with spaces in them. I get an error where it is trying to parse the text, e.g., Error in parse(text = x) : <text>:1:9: unexpected symbol
+
+Going back to my earlier thread, it seems like I am going the wrong direction in my desire to use strings stored as variables, particularly some with spaces in names, when it comes to plyr and ggplot2. I was able to get around my issues with ddply by creating the .. function that puts backticks in the string, but that is not looking to work here for aes. Should I be aborting this approach and just create mappings between "valid" data.frame names and what I want to print as column names/labels?
+
+On Tuesday, September 11, 2012 3:01:29 PM UTC-7, Hadley Wickham wrote:
+
+> That's right for aes. If you have the name of the variable stored in a string you can use aes_string.
+>
+
+> Hadley
+>
+> On Tuesday, September 11, 2012, Doug Mitarotonda wrote:
+
+> > Hadley, am I correct that this is also true for ggplot - i.e., writing the specific variable name in backticks works, but not if the variable is stored in a variable?
+> >
+> >
+> > On Tuesday, September 11, 2012 9:20:36 AM UTC-7, Doug Mitarotonda wrote:
+> > > Hey Hadley,
+> > > Thanks very much for the quick response.
+> > >
+> > > Best wishes,
+> > > Doug
+> > >
+> > >
+> > > On Tuesday, September 11, 2012 8:52:13 AM UTC-7, Hadley Wickham wrote:
+> > > > Hi Doug,
+> > > >
+> > > > Yup, that's how arrange works.  If the column name is a variable, then
+> > > > use regular subsetting + order (the same applies for subset,
+> > > > summarise, and mutate)
+> > > >
+> > > > Hadley
+> > > >
+> > > > On Tue, Sep 11, 2012 at 10:06 AM, Doug Mitarotonda
+> > > > <dougmit...@gmail.com> wrote:
+> > > > > Hi everyone,
+> > > > > I came to this question in a similar fashion as my previous post on spaces
+> > > > > in names with **ply, but this is slightly different because I can't get
+> > > > > arrange to work where the column name to arrange by is stored in a variable
+> > > > > regardless of spaces or not.
+> > > > >
+> > > > >> df <- data.frame(x=c(3,2,1), "y z" = c(12,6,9), check.names = FALSE)
+> > > > >> r <- "x"
+> > > > >> s <- "y z"
+> > > > >
+> > > > > Using arrange, I am trying to produce the following that works with order:
+> > > > >> df[order(df[[r]]), ]
+> > > > >   x y z
+> > > > > 3 1   9
+> > > > > 2 2   6
+> > > > > 1 3  12
+> > > > >> df[order(df[[s]]), ]
+> > > > >   x y z
+> > > > > 2 2   6
+> > > > > 3 1   9
+> > > > > 1 3  12
+> > > > >
+> > > > > It is clear that arrange does work with when using backticks with the name
+> > > > > directly:
+> > > > >> library(plyr)
+> > > > >> arrange(df, `x`)
+> > > > >   x y z
+> > > > > 1 1   9
+> > > > > 2 2   6
+> > > > > 3 3  12
+> > > > >> arrange(df, `y z`)
+> > > > >   x y z
+> > > > > 1 2   6
+> > > > > 2 1   9
+> > > > > 3 3  12
+> > > > >
+> > > > > but not when stored in a variable (note, I threw in my solution to the
+> > > > > previous post on creating a .. function that has been working great for
+> > > > > **ply calls)
+> > > > >> arrange(df, r)
+> > > > > Error: Length of ordering vectors don't match data frame size
+> > > > >> arrange(df, .(r))
+> > > > > Error: Length of ordering vectors don't match data frame size
+> > > > >> `..` <- function(x){return(paste0("`", x, "`"))}
+> > > > >> arrange(df, ..(r))
+> > > > > Error: Length of ordering vectors don't match data frame size
+> > > > >
+> > > > > Does anyone have any suggestions on how to use arrange where the column is a
+> > > > > variable name? I feel like I am missing something obvious here, so I
+> > > > > apologize in advance if that is the case.
+> > > > >
+> > > > > Best wishes,
+> > > > > Doug
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups
+> > > > > "manipulatr" group.
+> > > > > To view this discussion on the web visit
+> > > > > https://groups.google.com/d/msg/manipulatr/-/7kaxP_y2sjAJ.
+> > > > > To post to this group, send email to manip...@googlegroups.com.
+> > > > > To unsubscribe from this group, send email to
+> > > > > manipulatr+...@googlegroups.com.
+> > > > > For more options, visit this group at
+> > > > > http://groups.google.com/group/manipulatr?hl=en.
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > RStudio / Rice University
+> > > > http://had.co.nz/
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> > To view this discussion on the web visit https://groups.google.com/d/msg/manipulatr/-/jw1QsY39f2sJ.
+> > To post to this group, send email to manip...@googlegroups.com.
+
+> > To unsubscribe from this group, send email to manipulatr+unsubscribe@googlegroups.com.
+
+> >
+> > For more options, visit this group at http://groups.google.com/group/manipulatr?hl=en.
+
+>
+>
+> --
+> RStudio / Rice University
+> http://had.co.nz/
+

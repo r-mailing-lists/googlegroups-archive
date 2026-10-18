@@ -1,0 +1,2348 @@
+From uef709fefe128fa07 at groups.google.com  Fri Dec  4 01:27:50 2015
+From: uef709fefe128fa07 at groups.google.com (Patrick Hunter)
+Date: Fri, 04 Dec 2015 01:27:50 +0000
+Subject: Stop("No more ticks") error when using do on a large postgre table.
+Message-ID: <rgwxLUYI0Sk.ls54yGWNAAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/rgwxLUYI0Sk/m/ls54yGWNAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am currently using do to process a table with a large number of rows (several million).  When it runs I get the error, "
+Auto-disconnecting postgres connection (14436, 20)
+Error in postgresqlCloseConnection(conn, ...) :
+  connection has pending rows (close open results set first)
+In addition: Warning message:
+Only first 100,000 results retrieved. Use n = -1 to retrieve all.
+Error in p$tick() : No more ticks "
+Or the more verbose "
+Error in p$tick() : No more ticks
+17 stop("No more ticks")
+16 p$tick()
+15 callback(chunk)
+14 chunky$query$fetch_paged(.chunk_size, function(chunk) {
+    if (!is.null(last_group))
+        chunk <- rbind(last_group, chunk)
+    group_id <- id(chunk[gvars], drop = TRUE) ...
+13 do_.tbl_sql(.data, .dots = lazyeval::lazy_dots(...))
+12 do_(.data, .dots = lazyeval::lazy_dots(...))
+11 dplyr::do(., data.frame(PassesBlacklist = !(any(c(unlist(strsplit(.$regions,
+    ";")), "*") %in% unlist(strsplit(.$blacklist, ";"))) | ("*" ==
+    .$regions & .$blacklist != "")), PassesWhitelist = all(unlist(strsplit(.$regions,
+    ";")) %in% unlist(strsplit(.$whitelist, ";"))) | .$whitelist ==  ...
+10 function_list[[i]](value)
+9 freduce(value, `_function_list`)
+8 `_fseq`(`_lhs`)
+7 eval(expr, envir, enclos)
+6 eval(quote(`_fseq`(`_lhs`)), env, env)
+5 withVisible(eval(quote(`_fseq`(`_lhs`)), env, env))
+4 combos %>% dplyr::group_by(placementid, creativeid) %>% dplyr::do(data.frame(PassesBlacklist = !(any(c(unlist(strsplit(.$regions,
+    ";")), "*") %in% unlist(strsplit(.$blacklist, ";"))) | ("*" ==
+    .$regions & .$blacklist != "")), PassesWhitelist = all(unlist(strsplit(.$regions,
+    ";")) %in% unlist(strsplit(.$whitelist, ";"))) | .$whitelist ==  ... at combo-generator.R#20
+3 trim_by_region(untrimmed_combos) at combo-generator.R#97
+2 get_combos(db, creatives = creatives, placements = placements,
+    valid_region_data = valid_regions) at compute-weights.R#32
+1 compute_weights_from_logfiles(spots_file = "tests/fixtures/integration/2015-11-17_spots.log",
+    clicks_file = "tests/fixtures/integration/2015-11-17_clicks.log",
+    impressions_file = "tests/fixtures/integration/2015-11-17_impressions.log",
+    creatives_file = "tests/fixtures/integration/realCreatives.csv",
+"
+the code is;"
+  trimed <- combos %>% dplyr::group_by(placementid,creativeid) %>%
+    dplyr::do(res=data.frame(PassesBlacklist = !(any(c(unlist(strsplit(.$regions,";")),"*") %in% unlist(strsplit(.$blacklist, ";"))) | ("*" == .$regions & .$blacklist !="")),
+           PassesWhitelist = all(unlist(strsplit(.$regions,";")) %in% unlist(strsplit(.$whitelist,";"))) | .$whitelist == "*")) %>%
+    do(data.frame(Allowed = .$PassesBlacklist | .$PassesWhitelist)) %>% dplyr::filter(Allowed) %>% dplyr::ungroup()
+"
+
+When I print the table being manipulated immediately before the failing line I get
+"From: <derived table> [?? x 5]
+
+   regions placementid creativeid whitelist blacklist
+     (chr)       (int)      (int)     (chr)     (chr)
+1    AU;NZ           1    1225042
+2    AU;NZ           1    1225027
+3    AU;NZ           1    1225037
+4    AU;NZ           1    1225041        US         *
+5    AU;NZ           1    1225043
+6    AU;NZ           1    1225050
+7    AU;NZ           1    1225049
+8    AU;NZ           1    1225048
+9    AU;NZ           1    1225040
+10   AU;NZ           1    1225030
+..     ...         ...        ...       ...       ..."
+Since, the problem looked like it might be from the unknown number of rows, I tried compute()ing the table and feeding the result in, but that did remove the error.  Nor did specifying chunk size in do, nor setting chunk size and adding n= -1.  I also tried setting    options(dplyr.show_progress = F) to no avail.
+I was already planning on moving the logic over to postgre, and switching to using mutate, which may solve the problem, but I still find it odd that dplyr seems to fail in the progress bar.
+
+From uc274c385266b9339 at groups.google.com  Fri Dec  4 12:33:58 2015
+From: uc274c385266b9339 at groups.google.com (oswald...@gmail.com)
+Date: Fri, 04 Dec 2015 12:33:58 +0000
+Subject: do() in dplyr: doesn't work with functions nlsfit and goodness.of.fit
+Message-ID: <eRTi4jZbZ08.8NXlnVnFBwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/eRTi4jZbZ08/m/8NXlnVnFBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I am a very fond user of dplyr, and I discovered how to use the function do() within a chain of command to get coefficients of a lm model (for example: regr<-croissance_2014_2015%>%group_by(code)%>%filter(longueur!="NA")%>%do(tidy(lm(longueur~temp_sum,.)))
+
+So I then tried to use the same kind of code, i.e. grouping by variables then applying a function, with two functions: nlsfit (package easynls) and goodness.of.fit (packge Zebook). It simply doesn't work with the nlsfit function, and with goodness.of.fit a value is returned but the grouping is not performed.
+
+So before posting some code, I wanted to know: maybe not all functions can work within do() and only lm() and some others?
+
+I could not find any hint on the internet so far.
+
+thanks for the great dplyr package anyway,
+
+cheers
+
+Oswaldo
+
+From ub756a7daa2c2aa6d at groups.google.com  Sat Dec  5 01:41:32 2015
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Sat, 05 Dec 2015 01:41:32 +0000
+Subject: Re: do() in dplyr: doesn't work with functions nlsfit and goodness.of.fit
+Message-ID: <eRTi4jZbZ08.Th-v2FPwBwAJ@manipulatr.groups.google.com>
+In-Reply-To: <eRTi4jZbZ08.8NXlnVnFBwAJ@manipulatr.groups.google.com>
+References: <eRTi4jZbZ08.8NXlnVnFBwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/eRTi4jZbZ08/m/Th-v2FPwBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+All functions should work, although some modelling functions have bugs
+in them that are revealed when called this way.
+Hadley
+
+On Fri, Dec 4, 2015 at 4:33 PM,  <oswald...@gmail.com> wrote:
+> Hi,
+>
+> I am a very fond user of dplyr, and I discovered how to use the function
+> do() within a chain of command to get coefficients of a lm model (for
+> example:
+> regr<-croissance_2014_2015%>%group_by(code)%>%filter(longueur!="NA")%>%do(tidy(lm(longueur~temp_sum,.)))
+>
+> So I then tried to use the same kind of code, i.e. grouping by variables
+> then applying a function, with two functions: nlsfit (package easynls) and
+> goodness.of.fit (packge Zebook). It simply doesn't work with the nlsfit
+> function, and with goodness.of.fit a value is returned but the grouping is
+> not performed.
+>
+> So before posting some code, I wanted to know: maybe not all functions can
+> work within do() and only lm() and some others?
+>
+> I could not find any hint on the internet so far.
+>
+> thanks for the great dplyr package anyway,
+>
+> cheers
+>
+> Oswaldo
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at http://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+http://had.co.nz/
+
+From u34d1b12964c01466 at groups.google.com  Sun Dec  6 01:21:32 2015
+From: u34d1b12964c01466 at groups.google.com (ArjunaCap)
+Date: Sun, 06 Dec 2015 01:21:32 +0000
+Subject: Getting xml in R using httr and/or xml2
+Message-ID: <09JcoYfCI_A.RllV9dA9CAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/09JcoYfCI_A/m/RllV9dA9CAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm trying to do something unfamiliar, but here's the gist
+
+I want to download xml from a page requiring authenitication (simple login/ pwd)
+
+I can sort of get started with the following pseudocode:
+
+library(httr)
+
+my_url <- "http://myurl/somexml.xml"
+x <- GET(my_url, authenticate("user", "password"))
+my_xml <- content(x)
+
+This connects successfully.
+
+str(my_xml)
+
+yields the following:
+
+Classes 'HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument' <externalptr>
+
+If I then try to use an xml2 command, such as:
+
+library(xml2)
+
+y <- read_xml(my_xml)
+
+I end up with the following error
+
+  no applicable method for 'read_xml' applied to an object of class "c('HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument')"
+
+Finally, if I try:
+
+y <- read_xml(my_url, authenticate("user", "password"))
+
+It seems to fail to connect, believe because 'authenticate' doesn't work with read_xml
+
+Finally, finally; in Hadley's fine webinar on Getting Data in R <https://www.rstudio.com/resources/webinars/getting-your-data-into-r/>, he mentions that xml is painful generally, but I'd love any direction to my specific problem above, or anything more general (like a tutorial and/or best practices) about going from xml to a data frame.  Google has yielded little.
+
+Thanks in advance.
+
+From uf03c91905cbdb6f9 at groups.google.com  Sun Dec  6 01:48:45 2015
+From: uf03c91905cbdb6f9 at groups.google.com (jim holtman)
+Date: Sun, 06 Dec 2015 01:48:45 +0000
+Subject: Re: Getting xml in R using httr and/or xml2
+Message-ID: <09JcoYfCI_A.Q-m0bU0_CAAJ@manipulatr.groups.google.com>
+In-Reply-To: <09JcoYfCI_A.RllV9dA9CAAJ@manipulatr.groups.google.com>
+References: <09JcoYfCI_A.RllV9dA9CAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/09JcoYfCI_A/m/Q-m0bU0_CAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Have you tried the XML package?  I have use it to parse both XML and HTTP.  If you plan to make heavy use, I recommend the book "
+XML and Web Technologies for Data Sciences with R <http://www.amazon.com/XML-Web-Technologies-Data-Sciences-ebook/dp/B00HWV2GWK/ref=sr_1_1?ie=UTF8&qid=1449366446&sr=8-1&keywords=lang+xml>"
+
+Jim Holtman
+Data Munger Guru
+
+What is the problem that you are trying to solve?
+Tell me what you want to do, not how you want to do it.
+
+On Sat, Dec 5, 2015 at 8:21 PM, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+
+> I'm trying to do something unfamiliar, but here's the gist
+>
+> I want to download xml from a page requiring authenitication (simple login/ pwd)
+>
+> I can sort of get started with the following pseudocode:
+>
+> library(httr)
+>
+>
+> my_url <- "http://myurl/somexml.xml"
+> x <- GET(my_url, authenticate("user", "password"))
+> my_xml <- content(x)
+>
+>
+> This connects successfully.
+>
+> str(my_xml)
+>
+> yields the following:
+>
+> Classes 'HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument' <externalptr>
+>
+> If I then try to use an xml2 command, such as:
+>
+> library(xml2)
+>
+> y <- read_xml(my_xml)
+>
+>
+>
+> I end up with the following error
+>
+>   no applicable method for 'read_xml' applied to an object of class "c('HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument')"
+>
+> Finally, if I try:
+>
+> y <- read_xml(my_url, authenticate("user", "password"))
+>
+>
+> It seems to fail to connect, believe because 'authenticate' doesn't work with read_xml
+>
+> Finally, finally; in Hadley's fine webinar on Getting Data in R <https://www.rstudio.com/resources/webinars/getting-your-data-into-r/>, he mentions that xml is painful generally, but I'd love any direction to my specific problem above, or anything more general (like a tutorial and/or best practices) about going from xml to a data frame.  Google has yielded little.
+>
+> Thanks in advance.
+
+> --
+> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at http://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ub756a7daa2c2aa6d at groups.google.com  Sun Dec  6 02:09:55 2015
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Sun, 06 Dec 2015 02:09:55 +0000
+Subject: Re: Getting xml in R using httr and/or xml2
+Message-ID: <09JcoYfCI_A.fQB_7nRACAAJ@manipulatr.groups.google.com>
+In-Reply-To: <09JcoYfCI_A.RllV9dA9CAAJ@manipulatr.groups.google.com>
+References: <09JcoYfCI_A.RllV9dA9CAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/09JcoYfCI_A/m/fQB_7nRACAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The problem is that httr is giving you xml from the XML package, which I no longer recommend using. I think you can call xml2::read_xml on the httr object instead.
+
+Hadley
+
+On Sunday, December 6, 2015, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+
+> I'm trying to do something unfamiliar, but here's the gist
+>
+> I want to download xml from a page requiring authenitication (simple login/ pwd)
+>
+> I can sort of get started with the following pseudocode:
+>
+> library(httr)
+>
+>
+> my_url <- "http://myurl/somexml.xml"
+> x <- GET(my_url, authenticate("user", "password"))
+> my_xml <- content(x)
+>
+>
+> This connects successfully.
+>
+> str(my_xml)
+>
+> yields the following:
+>
+> Classes 'HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument' <externalptr>
+>
+> If I then try to use an xml2 command, such as:
+>
+> library(xml2)
+>
+> y <- read_xml(my_xml)
+>
+>
+>
+> I end up with the following error
+>
+>   no applicable method for 'read_xml' applied to an object of class "c('HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument')"
+>
+> Finally, if I try:
+>
+> y <- read_xml(my_url, authenticate("user", "password"))
+>
+>
+> It seems to fail to connect, believe because 'authenticate' doesn't work with read_xml
+>
+> Finally, finally; in Hadley's fine webinar on Getting Data in R <https://www.rstudio.com/resources/webinars/getting-your-data-into-r/>, he mentions that xml is painful generally, but I'd love any direction to my specific problem above, or anything more general (like a tutorial and/or best practices) about going from xml to a data frame.  Google has yielded little.
+>
+> Thanks in advance.
+>
+
+> --
+
+> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at http://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+http://had.co.nz/
+
+From u34d1b12964c01466 at groups.google.com  Sun Dec  6 16:18:04 2015
+From: u34d1b12964c01466 at groups.google.com (Michael Cawthon)
+Date: Sun, 06 Dec 2015 16:18:04 +0000
+Subject: Re: Getting xml in R using httr and/or xml2
+Message-ID: <09JcoYfCI_A.QknGcr1uCAAJ@manipulatr.groups.google.com>
+In-Reply-To: <09JcoYfCI_A.fQB_7nRACAAJ@manipulatr.groups.google.com>
+References: <09JcoYfCI_A.RllV9dA9CAAJ@manipulatr.groups.google.com> <09JcoYfCI_A.fQB_7nRACAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/09JcoYfCI_A/m/QknGcr1uCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you, but the recommended solution doesn't work; ie,
+
+my_url <- "http://myurl/somexml.xml"
+x <- GET(my_url, authenticate("user", "password"
+
+))
+xml2::read_xml(x)
+
+yields the following:
+
+Error in UseMethod("read_xml") :
+  no applicable method for 'read_xml' applied to an object of class "response".
+
+and
+
+xml2::read_xml(content(x))
+
+Gives the same XML related error
+
+Is there a way to use authenticate with xml2, and simply bypass httr for my case?
+
+On 12/5/15 8:09 PM, Hadley Wickham wrote:
+> The problem is that httr is giving you xml from the XML package, which I no longer recommend using. I think you can call xml2::read_xml on the httr object instead.
+>
+> Hadley
+>
+> On Sunday, December 6, 2015, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+> > I'm trying to do something unfamiliar, but here's the gist
+> >
+> > I want to download xml from a page requiring authenitication (simple login/ pwd)
+> >
+> > I can sort of get started with the following pseudocode:
+> >
+> > library(httr)
+> >
+> >
+> > my_url <- "http://myurl/somexml.xml"
+> > x <- GET(my_url, authenticate("user", "password"))
+> > my_xml <- content(x)
+> >
+> >
+> > This connects successfully.
+> >
+> > str(my_xml)
+> >
+> > yields the following:
+> >
+> > Classes 'HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument' <externalptr>
+> >
+> > If I then try to use an xml2 command, such as:
+> >
+> > library(xml2)
+> >
+> > y <- read_xml(my_xml)
+> >
+> >
+> >
+> > I end up with the following error
+> >
+> >   no applicable method for 'read_xml' applied to an object of class "c('HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument')"
+> >
+> > Finally, if I try:
+> >
+> > y <- read_xml(my_url, authenticate("user", "password"))
+> >
+> >
+> > It seems to fail to connect, believe because 'authenticate' doesn't work with read_xml
+> >
+> > Finally, finally; in Hadley's fine webinar on Getting Data in R <https://www.rstudio.com/resources/webinars/getting-your-data-into-r/>, he mentions that xml is painful generally, but I'd love any direction to my specific problem above, or anything more general (like a tutorial and/or best practices) about going from xml to a data frame.  Google has yielded little.
+> >
+> > Thanks in advance.
+> > --
+> > You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to manipulatr+...@googlegroups.com.
+> > To post to this group, send email to manip...@googlegroups.com.
+> > Visit this group at http://groups.google.com/group/manipulatr.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+> --
+> http://had.co.nz/
+
+--
+
+Michael Cawthon
+Chief Investment Officer
+Green Street Energy LLC
+mcaw...@greenstenergy.com
+p: 479-442-1407
+
+From ub756a7daa2c2aa6d at groups.google.com  Sun Dec  6 16:52:44 2015
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Sun, 06 Dec 2015 16:52:44 +0000
+Subject: Re: Getting xml in R using httr and/or xml2
+Message-ID: <09JcoYfCI_A.FJ6Az6FwCAAJ@manipulatr.groups.google.com>
+In-Reply-To: <09JcoYfCI_A.QknGcr1uCAAJ@manipulatr.groups.google.com>
+References: <09JcoYfCI_A.RllV9dA9CAAJ@manipulatr.groups.google.com> <09JcoYfCI_A.QknGcr1uCAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/09JcoYfCI_A/m/FJ6Az6FwCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+No, you'll need to explore xml2 more to figure it out. I'm on my phone on a plane but I can look later in the week.
+
+Hadley
+
+On Sunday, December 6, 2015, Michael Cawthon <mcaw...@greenstenergy.com> wrote:
+> Thank you, but the recommended solution doesn't work; ie,
+>
+> my_url <- "http://myurl/somexml.xml"
+> x <- GET(my_url, authenticate("user", "password"))
+> xml2::read_xml(x)
+>
+> yields the following:
+>
+> Error in UseMethod("read_xml") :
+>   no applicable method for 'read_xml' applied to an object of class "response".
+>
+> and
+>
+> xml2::read_xml(content(x))
+>
+> Gives the same XML related error
+>
+> Is there a way to use authenticate with xml2, and simply bypass httr for my case?
+>
+>
+> On 12/5/15 8:09 PM, Hadley Wickham wrote:
+> > The problem is that httr is giving you xml from the XML package, which I no longer recommend using. I think you can call xml2::read_xml on the httr object instead.
+> >
+> > Hadley
+> >
+> > On Sunday, December 6, 2015, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+> > > I'm trying to do something unfamiliar, but here's the gist
+> > >
+> > > I want to download xml from a page requiring authenitication (simple login/ pwd)
+> > >
+> > > I can sort of get started with the following pseudocode:
+> > >
+> > > library(httr)
+> > >
+> > >
+> > > my_url <- " <http://myurl/somexml.xml>http://myurl/somexml.xml"
+> > > x <- GET(my_url, authenticate("user", "password"))
+> > > my_xml <- content(x)
+> > >
+> > >
+> > > This connects successfully.
+> > >
+> > > str(my_xml)
+> > >
+> > > yields the following:
+> > >
+> > > Classes 'HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument' <externalptr>
+> > >
+> > > If I then try to use an xml2 command, such as:
+> > >
+> > > library(xml2)
+> > >
+> > > y <- read_xml(my_xml)
+> > >
+> > >
+> > >
+> > > I end up with the following error
+> > >
+> > >   no applicable method for 'read_xml' applied to an object of class "c('HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument', 'XMLAbstractDocument')"
+> > >
+> > > Finally, if I try:
+> > >
+> > > y <- read_xml(my_url, authenticate("user", "password"))
+> > >
+> > >
+> > > It seems to fail to connect, believe because 'authenticate' doesn't work with read_xml
+> > >
+> > > Finally, finally; in Hadley's fine webinar on Getting Data in R <https://www.rstudio.com/resources/webinars/getting-your-data-into-r/>, he mentions that xml is painful generally, but I'd love any direction to my specific problem above, or anything more general (like a tutorial and/or best practices) about going from xml to a data frame.  Google has yielded little.
+> > >
+> > > Thanks in advance.
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to manipulatr+...@googlegroups.com.
+> > > To post to this group, send email to manip...@googlegroups.com.
+> > > Visit this group at http://groups.google.com/group/manipulatr.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> > --
+> > http://had.co.nz/
+>
+> --
+>
+> Michael Cawthon
+> Chief Investment Officer
+> Green Street Energy LLC
+> mcaw...@greenstenergy.com
+> p: 479-442-1407
+
+--
+http://had.co.nz/
+
+From u3a71f645a046e485 at groups.google.com  Sun Dec  6 22:58:35 2015
+From: u3a71f645a046e485 at groups.google.com (Stuart Luppescu)
+Date: Sun, 06 Dec 2015 22:58:35 +0000
+Subject: Closest match join with dplyr
+Message-ID: <EV-_AhiEmWc.YoymvZiECAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/EV-_AhiEmWc/m/YoymvZiECAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello all, I have two data frames that I want to join by a time variable. One data frame has data sampled every few seconds, and another about once or twice an hour. I want to match each record in the first data frame (the one with the frequent samples) with the record in the second data frame (infrequent samples) that is closest in time.
+
+I found a way to do it using data.table, here:
+
+http://stackoverflow.com/questions/31818444/join-two-data-frames-in-r-based-on-closest-timestamp
+
+but I would prefer to use dplyr because it's familiar (and I don't hardly know data.table at all). Anyone have a suggestion?
+
+TIA.
+--
+Stuart Luppescu -- pixbuf .at. gmail.com <http://gmail.com>
+I made up a new word: plagiarism.
+  --jpuller
+
+From u2710b717e5dbb066 at groups.google.com  Mon Dec  7 17:38:20 2015
+From: u2710b717e5dbb066 at groups.google.com (Greg Snow)
+Date: Mon, 07 Dec 2015 17:38:20 +0000
+Subject: Re: Closest match join with dplyr
+Message-ID: <EV-_AhiEmWc.bsOZZLPBCAAJ@manipulatr.groups.google.com>
+In-Reply-To: <EV-_AhiEmWc.YoymvZiECAAJ@manipulatr.groups.google.com>
+References: <EV-_AhiEmWc.YoymvZiECAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/EV-_AhiEmWc/m/bsOZZLPBCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You could find the midpoints of each of the intervals in the sparser
+dataset, then use the findInterval function on both datasets to find
+which interval (based on the midpoints, no the original data) the time
+periods fall into.  Then merge on the interval ID's, these will now be
+an exact match and any form of merging will work.
+
+On Sun, Dec 6, 2015 at 3:57 PM, Stuart Luppescu <pix...@gmail.com> wrote:
+> Hello all, I have two data frames that I want to join by a time variable.
+> One data frame has data sampled every few seconds, and another about once or
+> twice an hour. I want to match each record in the first data frame (the one
+> with the frequent samples) with the record in the second data frame
+> (infrequent samples) that is closest in time.
+>
+> I found a way to do it using data.table, here:
+>
+> http://stackoverflow.com/questions/31818444/join-two-data-frames-in-r-based-on-closest-timestamp
+>
+> but I would prefer to use dplyr because it's familiar (and I don't hardly
+> know data.table at all). Anyone have a suggestion?
+>
+> TIA.
+> --
+> Stuart Luppescu -- pixbuf .at. gmail.com <http://gmail.com>
+> I made up a new word: plagiarism.
+>   --jpuller
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at http://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Gregory (Greg) L. Snow Ph.D.
+538...@gmail.com
+
+From ub756a7daa2c2aa6d at groups.google.com  Thu Dec 10 15:16:20 2015
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Thu, 10 Dec 2015 15:16:20 +0000
+Subject: Re: Getting xml in R using httr and/or xml2
+Message-ID: <09JcoYfCI_A.LEpZUbGlCQAJ@manipulatr.groups.google.com>
+In-Reply-To: <09JcoYfCI_A.FJ6Az6FwCAAJ@manipulatr.groups.google.com>
+References: <09JcoYfCI_A.RllV9dA9CAAJ@manipulatr.groups.google.com> <09JcoYfCI_A.FJ6Az6FwCAAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/09JcoYfCI_A/m/LEpZUbGlCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ok, currently the best way would be:
+
+read_xml(content(x, "raw"))
+
+but I've filed an issue so that read_xml(x) can work directly -
+https://github.com/hadley/xml2/issues/63.
+
+Hadley
+
+On Sun, Dec 6, 2015 at 10:52 AM, Hadley Wickham <h.wi...@gmail.com> wrote:
+> No, you'll need to explore xml2 more to figure it out. I'm on my phone on a
+> plane but I can look later in the week.
+>
+> Hadley
+>
+>
+> On Sunday, December 6, 2015, Michael Cawthon <mcaw...@greenstenergy.com>
+> wrote:
+>>
+>> Thank you, but the recommended solution doesn't work; ie,
+>>
+>> my_url <- "http://myurl/somexml.xml"
+>> x <- GET(my_url, authenticate("user", "password"))
+>> xml2::read_xml(x)
+>>
+>> yields the following:
+>>
+>> Error in UseMethod("read_xml") :
+>>   no applicable method for 'read_xml' applied to an object of class
+>> "response".
+>>
+>> and
+>>
+>> xml2::read_xml(content(x))
+>>
+>> Gives the same XML related error
+>>
+>> Is there a way to use authenticate with xml2, and simply bypass httr for
+>> my case?
+>>
+>>
+>> On 12/5/15 8:09 PM, Hadley Wickham wrote:
+>>
+>> The problem is that httr is giving you xml from the XML package, which I
+>> no longer recommend using. I think you can call xml2::read_xml on the httr
+>> object instead.
+>>
+>> Hadley
+>>
+>> On Sunday, December 6, 2015, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+>>>
+>>> I'm trying to do something unfamiliar, but here's the gist
+>>>
+>>> I want to download xml from a page requiring authenitication (simple
+>>> login/ pwd)
+>>>
+>>> I can sort of get started with the following pseudocode:
+>>>
+>>> library(httr)
+>>>
+>>>
+>>> my_url <- "http://myurl/somexml.xml"
+>>> x <- GET(my_url, authenticate("user", "password"))
+>>> my_xml <- content(x)
+>>>
+>>>
+>>> This connects successfully.
+>>>
+>>> str(my_xml)
+>>>
+>>> yields the following:
+>>>
+>>> Classes 'HTMLInternalDocument', 'HTMLInternalDocument',
+>>> 'XMLInternalDocument', 'XMLAbstractDocument' <externalptr>
+>>>
+>>> If I then try to use an xml2 command, such as:
+>>>
+>>> library(xml2)
+>>>
+>>> y <- read_xml(my_xml)
+>>>
+>>>
+>>>
+>>> I end up with the following error
+>>>
+>>>   no applicable method for 'read_xml' applied to an object of class
+>>> "c('HTMLInternalDocument', 'HTMLInternalDocument', 'XMLInternalDocument',
+>>> 'XMLAbstractDocument')"
+>>>
+>>> Finally, if I try:
+>>>
+>>> y <- read_xml(my_url, authenticate("user", "password"))
+>>>
+>>>
+>>> It seems to fail to connect, believe because 'authenticate' doesn't work
+>>> with read_xml
+>>>
+>>> Finally, finally; in Hadley's fine webinar on Getting Data in R, he
+>>> mentions that xml is painful generally, but I'd love any direction to my
+>>> specific problem above, or anything more general (like a tutorial and/or
+>>> best practices) about going from xml to a data frame.  Google has yielded
+>>> little.
+>>>
+>>> Thanks in advance.
+>>> --
+>>> You received this message because you are subscribed to the Google Groups
+>>> "manipulatr" group.
+>>> To unsubscribe from this group and stop receiving emails from it, send an
+>>> email to manipulatr+...@googlegroups.com.
+>>> To post to this group, send email to manip...@googlegroups.com.
+>>> Visit this group at http://groups.google.com/group/manipulatr.
+>>> For more options, visit https://groups.google.com/d/optout.
+>>
+>>
+>>
+>> --
+>> http://had.co.nz/
+>>
+>>
+>> --
+>>
+>> Michael Cawthon
+>> Chief Investment Officer
+>> Green Street Energy LLC
+>> mcaw...@greenstenergy.com
+>> p: 479-442-1407
+>
+>
+>
+> --
+> http://had.co.nz/
+
+--
+http://had.co.nz/
+
+From u34d1b12964c01466 at groups.google.com  Tue Dec 15 23:00:39 2015
+From: u34d1b12964c01466 at groups.google.com (ArjunaCap)
+Date: Tue, 15 Dec 2015 23:00:39 +0000
+Subject: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/TO2rtu5HCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+suppose we have the following data:
+
+library(dplyr)
+
+df <- data_frame(base = 1:10)
+
+and that we want to generate a series of new named variables, something along the lines of the following (failing) pseudocode
+
+for (i in 2:5) {
+     df <- df %>% mutate(paste0("power_",i) = base^i )
+}
+
+i've also tried using NSE, which I probably should understand better, and the following works, but I cant figure out how to NAME the variables on the fly.
+
+I'm sure it's something really simple:
+
+for (i in 2:5) {
+     df <- df %>% mutate_(paste0("base^",i) )
+}
+
+Any guidance is appreciated
+
+From u27405c4b711a1080 at groups.google.com  Wed Dec 16 03:26:55 2015
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Wed, 16 Dec 2015 03:26:55 +0000
+Subject: Re: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.osu1V3ZWCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com>
+References: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/osu1V3ZWCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I don't have an answer for the names, but you can express the same thing in your loop directly in the paste0() with:
+
+df %>%
+  mutate_(paste0("base^", 2:5))
+
+Something related from here:
+https://stackoverflow.com/questions/30382908/r-dplyr-rename-variables-using-string-functions
+df %>%
+  mutate_(paste0("base^", 2:5)) %>%
+  setNames(c("base", paste0("base", 2:5)))
+
+HTH,
+B
+
+On Tue, Dec 15, 2015 at 3:00 PM, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+
+> suppose we have the following data:
+>
+> library(dplyr)
+>
+>
+> df <- data_frame(base = 1:10)
+>
+>
+> and that we want to generate a series of new named variables, something along the lines of the following (failing) pseudocode
+>
+> for (i in 2:5) {
+>      df <- df %>% mutate(paste0("power_",i) = base^i )
+> }
+>
+>
+>
+> i've also tried using NSE, which I probably should understand better, and the following works, but I cant figure out how to NAME the variables on the fly.
+>
+> I'm sure it's something really simple:
+>
+> for (i in 2:5) {
+>      df <- df %>% mutate_(paste0("base^",i) )
+> }
+>
+>
+>
+> Any guidance is appreciated
+
+> --
+> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u0c39e60ddb38622b at groups.google.com  Wed Dec 16 08:38:45 2015
+From: u0c39e60ddb38622b at groups.google.com (Dennis Murphy)
+Date: Wed, 16 Dec 2015 08:38:45 +0000
+Subject: Re: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.vl2upnpnCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com>
+References: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/vl2upnpnCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi:
+
+This is a simple vectorized operation in base R using the outer()
+function, so apply it as the argument to do() and then use setNames()
+as Brandon suggested:
+
+library(dplyr)
+
+df <- data.frame(base = 1:10)
+
+df %>% do(., as.data.frame(outer(.$base, 1:5, FUN = "^"))) %>%
+       setNames(paste0("power_", seq(5)))
+
+We need to wrap the output of outer() with as.data.frame() because
+dplyr expects the resulting data object along each step of the
+pipeline to be a data frame or tbl object.
+
+Dennis
+
+On Tue, Dec 15, 2015 at 3:00 PM, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+
+> suppose we have the following data:
+>
+> library(dplyr)
+>
+>
+> df <- data_frame(base = 1:10)
+>
+>
+> and that we want to generate a series of new named variables, something
+> along the lines of the following (failing) pseudocode
+>
+> for (i in 2:5) {
+>      df <- df %>% mutate(paste0("power_",i) = base^i )
+> }
+>
+>
+>
+> i've also tried using NSE, which I probably should understand better, and
+> the following works, but I cant figure out how to NAME the variables on the
+> fly.
+>
+> I'm sure it's something really simple:
+>
+> for (i in 2:5) {
+>      df <- df %>% mutate_(paste0("base^",i) )
+> }
+>
+>
+>
+> Any guidance is appreciated
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ub756a7daa2c2aa6d at groups.google.com  Wed Dec 16 13:37:56 2015
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Wed, 16 Dec 2015 13:37:56 +0000
+Subject: Re: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.NF2UOc53CwAJ@manipulatr.groups.google.com>
+In-Reply-To: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com>
+References: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/NF2UOc53CwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You need to give mutate_ a named list with the .dots argument:
+
+df <- df %>% mutate_(.dots = setNames(list(substitute(base ^ i)),
+paste0("power_",i)))
+
+Hadley
+
+On Tue, Dec 15, 2015 at 5:00 PM, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+> suppose we have the following data:
+>
+> library(dplyr)
+>
+>
+> df <- data_frame(base = 1:10)
+>
+>
+> and that we want to generate a series of new named variables, something
+> along the lines of the following (failing) pseudocode
+>
+> for (i in 2:5) {
+>      df <- df %>% mutate(paste0("power_",i) = base^i )
+> }
+>
+>
+>
+> i've also tried using NSE, which I probably should understand better, and
+> the following works, but I cant figure out how to NAME the variables on the
+> fly.
+>
+> I'm sure it's something really simple:
+>
+> for (i in 2:5) {
+>      df <- df %>% mutate_(paste0("base^",i) )
+> }
+>
+>
+>
+> Any guidance is appreciated
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+http://had.co.nz/
+
+From u34d1b12964c01466 at groups.google.com  Wed Dec 16 17:33:02 2015
+From: u34d1b12964c01466 at groups.google.com (Michael Cawthon)
+Date: Wed, 16 Dec 2015 17:33:02 +0000
+Subject: Re: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.6AQBdaKECwAJ@manipulatr.groups.google.com>
+In-Reply-To: <6WOVJzvgmL8.NF2UOc53CwAJ@manipulatr.groups.google.com>
+References: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com> <6WOVJzvgmL8.NF2UOc53CwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/6AQBdaKECwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hmmm.  this fails:
+
+for(i in 2:5) {
+
+   df <- df %>% mutate_(.dots = setNames(list(substitute(base ^ i)),
+   paste0("power_",i)))
+}
+
+with "Error: object 'i' not found"
+
+i've looked at each of the constituent functions and it's unclear to me
+why the loop index doesn't get passed
+
+On 12/16/15 7:37 AM, Hadley Wickham wrote:
+> You need to give mutate_ a named list with the .dots argument:
+>
+> df <- df %>% mutate_(.dots = setNames(list(substitute(base ^ i)),
+> paste0("power_",i)))
+>
+> Hadley
+>
+> On Tue, Dec 15, 2015 at 5:00 PM, ArjunaCap <mcaw...@greenstenergy.com> wrote:
+>> suppose we have the following data:
+>>
+>> library(dplyr)
+>>
+>>
+>> df <- data_frame(base = 1:10)
+>>
+>>
+>> and that we want to generate a series of new named variables, something
+>> along the lines of the following (failing) pseudocode
+>>
+>> for (i in 2:5) {
+>>       df <- df %>% mutate(paste0("power_",i) = base^i )
+>> }
+>>
+>>
+>>
+>> i've also tried using NSE, which I probably should understand better, and
+>> the following works, but I cant figure out how to NAME the variables on the
+>> fly.
+>>
+>> I'm sure it's something really simple:
+>>
+>> for (i in 2:5) {
+>>       df <- df %>% mutate_(paste0("base^",i) )
+>> }
+>>
+>>
+>>
+>> Any guidance is appreciated
+>>
+>> --
+>> You received this message because you are subscribed to the Google Groups
+>> "manipulatr" group.
+>> To unsubscribe from this group and stop receiving emails from it, send an
+>> email to manipulatr+...@googlegroups.com.
+>> To post to this group, send email to manip...@googlegroups.com.
+>> Visit this group at https://groups.google.com/group/manipulatr.
+>> For more options, visit https://groups.google.com/d/optout.
+>
+>
+
+--
+
+Michael Cawthon
+Chief Investment Officer
+Green Street Energy LLC
+mcaw...@greenstenergy.com
+p: 479-442-1407
+
+From ub756a7daa2c2aa6d at groups.google.com  Wed Dec 16 19:27:11 2015
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Wed, 16 Dec 2015 19:27:11 +0000
+Subject: Re: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.elUTHd2KCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <6WOVJzvgmL8.NF2UOc53CwAJ@manipulatr.groups.google.com>
+References: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com> <6WOVJzvgmL8.NF2UOc53CwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/elUTHd2KCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I realised there's a better approach anyway:
+
+df <- data_frame(base = 1:10)
+
+pow <- lapply(2:5, function(i) bquote(base ^ .(i)))
+names(pow) <- paste0("pow", 2:5)
+
+df %>% mutate_(.dots = pow)
+
+Hadley
+
+On Wed, Dec 16, 2015 at 11:32 AM, Michael Cawthon
+<mcaw...@greenstenergy.com> wrote:
+> hmmm.  this fails:
+>
+> for(i in 2:5) {
+>   df <- df %>% mutate_(.dots = setNames(list(substitute(base ^ i)),
+>   paste0("power_",i)))
+> }
+>
+> with "Error: object 'i' not found"
+>
+> i've looked at each of the constituent functions and it's unclear to me why
+> the loop index doesn't get passed
+>
+>
+>
+> On 12/16/15 7:37 AM, Hadley Wickham wrote:
+>>
+>> You need to give mutate_ a named list with the .dots argument:
+>>
+>> df <- df %>% mutate_(.dots = setNames(list(substitute(base ^ i)),
+>> paste0("power_",i)))
+>>
+>> Hadley
+>>
+>> On Tue, Dec 15, 2015 at 5:00 PM, ArjunaCap <mcaw...@greenstenergy.com>
+>> wrote:
+>>>
+>>> suppose we have the following data:
+>>>
+>>> library(dplyr)
+>>>
+>>>
+>>> df <- data_frame(base = 1:10)
+>>>
+>>>
+>>> and that we want to generate a series of new named variables, something
+>>> along the lines of the following (failing) pseudocode
+>>>
+>>> for (i in 2:5) {
+>>>       df <- df %>% mutate(paste0("power_",i) = base^i )
+>>> }
+>>>
+>>>
+>>>
+>>> i've also tried using NSE, which I probably should understand better, and
+>>> the following works, but I cant figure out how to NAME the variables on
+>>> the
+>>> fly.
+>>>
+>>> I'm sure it's something really simple:
+>>>
+>>> for (i in 2:5) {
+>>>       df <- df %>% mutate_(paste0("base^",i) )
+>>> }
+>>>
+>>>
+>>>
+>>> Any guidance is appreciated
+>>>
+>>> --
+>>> You received this message because you are subscribed to the Google Groups
+>>> "manipulatr" group.
+>>> To unsubscribe from this group and stop receiving emails from it, send an
+>>> email to manipulatr+...@googlegroups.com.
+>>> To post to this group, send email to manip...@googlegroups.com.
+>>> Visit this group at https://groups.google.com/group/manipulatr.
+>>> For more options, visit https://groups.google.com/d/optout.
+>>
+>>
+>>
+>
+> --
+>
+> Michael Cawthon
+> Chief Investment Officer
+> Green Street Energy LLC
+> mcaw...@greenstenergy.com
+> p: 479-442-1407
+>
+
+--
+http://had.co.nz/
+
+From u34d1b12964c01466 at groups.google.com  Wed Dec 16 22:40:43 2015
+From: u34d1b12964c01466 at groups.google.com (Michael Cawthon)
+Date: Wed, 16 Dec 2015 22:40:43 +0000
+Subject: Re: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.oiE3rWyVCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <6WOVJzvgmL8.elUTHd2KCwAJ@manipulatr.groups.google.com>
+References: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com> <6WOVJzvgmL8.elUTHd2KCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/oiE3rWyVCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you; one problem (my MRE was too minimal):
+
+suppose we define:
+
+f1 <- function(x, i) x ^ i
+
+following the suggested lapply pattern:
+
+df <- data_frame(base = 1:10)
+
+pow <- lapply(2:5, function(i) bquote(f1(base , .(i))))
+
+names(pow) <- paste0("pow", 2:5)
+df %>% mutate_(.dots = pow)
+
+this fails with: could not find function f1
+
+I can't figure out a problem with environments
+
+On 12/16/15 1:26 PM, Hadley Wickham wrote:
+> I realised there's a better approach anyway:
+>
+> df <- data_frame(base = 1:10)
+>
+> pow <- lapply(2:5, function(i) bquote(base ^ .(i)))
+> names(pow) <- paste0("pow", 2:5)
+>
+> df %>% mutate_(.dots = pow)
+>
+> Hadley
+>
+> On Wed, Dec 16, 2015 at 11:32 AM, Michael Cawthon
+> <mcaw...@greenstenergy.com> wrote:
+> > hmmm.  this fails:
+> >
+> > for(i in 2:5) {
+> >   df <- df %>% mutate_(.dots = setNames(list(substitute(base ^ i)),
+> >   paste0("power_",i)))
+> > }
+> >
+> > with "Error: object 'i' not found"
+> >
+> > i've looked at each of the constituent functions and it's unclear to me why
+> > the loop index doesn't get passed
+> >
+> >
+> >
+> > On 12/16/15 7:37 AM, Hadley Wickham wrote:
+> > >
+> > > You need to give mutate_ a named list with the .dots argument:
+> > >
+> > > df <- df %>% mutate_(.dots = setNames(list(substitute(base ^ i)),
+> > > paste0("power_",i)))
+> > >
+> > > Hadley
+> > >
+> > > On Tue, Dec 15, 2015 at 5:00 PM, ArjunaCap <mcaw...@greenstenergy.com>
+> > > wrote:
+> > > >
+> > > > suppose we have the following data:
+> > > >
+> > > > library(dplyr)
+> > > >
+> > > >
+> > > > df <- data_frame(base = 1:10)
+> > > >
+> > > >
+> > > > and that we want to generate a series of new named variables, something
+> > > > along the lines of the following (failing) pseudocode
+> > > >
+> > > > for (i in 2:5) {
+> > > >       df <- df %>% mutate(paste0("power_",i) = base^i )
+> > > > }
+> > > >
+> > > >
+> > > >
+> > > > i've also tried using NSE, which I probably should understand better, and
+> > > > the following works, but I cant figure out how to NAME the variables on
+> > > > the
+> > > > fly.
+> > > >
+> > > > I'm sure it's something really simple:
+> > > >
+> > > > for (i in 2:5) {
+> > > >       df <- df %>% mutate_(paste0("base^",i) )
+> > > > }
+> > > >
+> > > >
+> > > >
+> > > > Any guidance is appreciated
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups
+> > > > "manipulatr" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an
+> > > > email to manipulatr+...@googlegroups.com.
+> > > > To post to this group, send email to manip...@googlegroups.com.
+> > > > Visit this group at https://groups.google.com/group/manipulatr.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> >
+> > --
+> >
+> > Michael Cawthon
+> > Chief Investment Officer
+> > Green Street Energy LLC
+> > mcaw...@greenstenergy.com
+> > p: 479-442-1407
+> >
+>
+>
+>
+
+--
+
+Michael Cawthon
+Chief Investment Officer
+Green Street Energy LLC
+mcaw...@greenstenergy.com
+p: 479-442-1407
+
+From u27405c4b711a1080 at groups.google.com  Wed Dec 16 23:08:32 2015
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Wed, 16 Dec 2015 23:08:32 +0000
+Subject: Re: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.G3YsSfGWCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <6WOVJzvgmL8.oiE3rWyVCwAJ@manipulatr.groups.google.com>
+References: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com> <6WOVJzvgmL8.oiE3rWyVCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/G3YsSfGWCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Related:
+https://stackoverflow.com/questions/27787116/standard-evaluation-in-dplyr-could-not-find-function-error-for-functions-in-g
+
+require(dplyr)
+
+df <- data_frame(base = 1:10)
+
+f1 <- function(x, i) x ^ i
+
+pow <- lapply(2:5, function(i) as.formula(paste0("~", 'f1(base, ', i, ')')))
+
+names(pow) <- paste0("pow", 2:5)
+df %>% mutate_(.dots = pow)
+
+Seems to work... after I run the example in the link first.
+df <- data.frame(x = rnorm(10), y=rnorm(10))
+test <- function(x) x^2
+df %>% mutate_(as.formula(paste0("~", "test(x)")))
+
+Otherwise, I get an error:
+Error in UseMethod("mutate_") :
+  no applicable method for 'mutate_' applied to an object of class "function"
+
+I have no idea why though.
+
+> devtools::session_info()
+Session info -------------------------------------------------------------------------------------------------------
+ setting  value
+ version  R version 3.2.3 (2015-12-10)
+ system   x86_64, darwin13.4.0
+ ui       AQUA
+ language (EN)
+ collate  en_US.UTF-8
+ tz       America/Los_Angeles
+ date     2015-12-16
+
+Packages -----------------------------------------------------------------------------------------------------------
+ package    * version     date       source
+ assertthat   0.1         2013-12-06 CRAN (R 3.2.0)
+ DBI          0.3.1       2014-09-24 CRAN (R 3.2.0)
+ devtools     1.9.1.9000  2015-12-15 Github (hadley/devtools@9aaa3af)
+ digest       0.6.8       2014-12-31 CRAN (R 3.2.0)
+ dplyr      * 0.4.3.9000  2015-11-16 Github (hadley/dplyr@4f2d7f8)
+ lazyeval     0.1.10.9000 2015-05-26 Github (hadley/lazyeval@ecb8dc0)
+ magrittr     1.5         2014-11-22 CRAN (R 3.2.0)
+ memoise      0.2.1       2014-04-22 CRAN (R 3.2.0)
+ R6           2.1.1       2015-08-19 CRAN (R 3.2.0)
+ Rcpp         0.12.2      2015-11-15 CRAN (R 3.2.2)
+
+On Wed, Dec 16, 2015 at 2:40 PM, Michael Cawthon <mcaw...@greenstenergy.com> wrote:
+> pow <- lapply(2:5, function(i) bquote(f1(base , .(i))))
+
+From u4114912dbf9e2d36 at groups.google.com  Thu Dec 17 01:57:29 2015
+From: u4114912dbf9e2d36 at groups.google.com (Tan Chen)
+Date: Thu, 17 Dec 2015 01:57:29 +0000
+Subject: reading json with httr, unable to authenticate
+Message-ID: <cd-XALSfCKU.mKZclCmgCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/cd-XALSfCKU/m/mKZclCmgCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hey guys,
+
+I want to access this API:
+https://api.mmitnetwork.com/Home/QuickStart#Authentication
+
+and it has some instructions on how to do it, but I don't know what language it is or how to translate it to R. The furthest I've gotten is this code:
+
+library(httr)
+req <- POST("https://api.mmitnetwork.com/Token",
+            config = NULL,
+            body = c("grant_type=password"))
+
+This gives me 500 SERVER ERROR
+
+An error occured on the MMIT API Server. Check the developerMessage for more information.
+
+It gives me an error because I didn't pass it the username and password, but where do I do that? Everything else I've tried gives me Status Code 400 which is a bad request.
+
+From u34d1b12964c01466 at groups.google.com  Thu Dec 17 02:58:09 2015
+From: u34d1b12964c01466 at groups.google.com (Michael Cawthon)
+Date: Thu, 17 Dec 2015 02:58:09 +0000
+Subject: Re: using dplyr to create new variables on the fly
+Message-ID: <6WOVJzvgmL8.8sQ3EHmjCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <6WOVJzvgmL8.G3YsSfGWCwAJ@manipulatr.groups.google.com>
+References: <6WOVJzvgmL8.TO2rtu5HCwAJ@manipulatr.groups.google.com> <6WOVJzvgmL8.G3YsSfGWCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/6WOVJzvgmL8/m/8sQ3EHmjCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+very relevant SO entry- thanks
+
+and the as.formula construction works well for my non-minimal use case
+
+still, I'm not sure I fully understand why this construction works, but not the other, aside from the formula preserving the correct calling environment
+
+On 12/16/15 5:08 PM, Brandon Hurr wrote:
+> Related:
+> https://stackoverflow.com/questions/27787116/standard-evaluation-in-dplyr-could-not-find-function-error-for-functions-in-g
+>
+> require(dplyr)
+>
+> df <- data_frame(base = 1:10)
+> f1 <- function(x, i) x ^ i
+> pow <- lapply(2:5, function(i) as.formula(paste0("~", 'f1(base, ', i, ')')))
+> names(pow) <- paste0("pow", 2:5)
+> df %>% mutate_(.dots = pow)
+>
+>
+> Seems to work... after I run the example in the link first.
+> df <- data.frame(x = rnorm(10), y=rnorm(10))
+> test <- function(x) x^2
+> df %>% mutate_(as.formula(paste0("~", "test(x)")))
+>
+> Otherwise, I get an error:
+> Error in UseMethod("mutate_") :
+>   no applicable method for 'mutate_' applied to an object of class "function"
+>
+> I have no idea why though.
+>
+> > devtools::session_info()
+> Session info -------------------------------------------------------------------------------------------------------
+>  setting  value
+>  version  R version 3.2.3 (2015-12-10)
+>  system   x86_64, darwin13.4.0
+>  ui       AQUA
+>  language (EN)
+>  collate  en_US.UTF-8
+>  tz       America/Los_Angeles
+>  date     2015-12-16
+>
+> Packages -----------------------------------------------------------------------------------------------------------
+>  package    * version     date       source
+>  assertthat   0.1         2013-12-06 CRAN (R 3.2.0)
+>  DBI          0.3.1       2014-09-24 CRAN (R 3.2.0)
+>  devtools     1.9.1.9000  2015-12-15 Github (hadley/devtools@9aaa3af)
+>  digest       0.6.8       2014-12-31 CRAN (R 3.2.0)
+>  dplyr      * 0.4.3.9000  2015-11-16 Github (hadley/dplyr@4f2d7f8)
+>  lazyeval     0.1.10.9000 2015-05-26 Github (hadley/lazyeval@ecb8dc0)
+>  magrittr     1.5         2014-11-22 CRAN (R 3.2.0)
+>  memoise      0.2.1       2014-04-22 CRAN (R 3.2.0)
+>  R6           2.1.1       2015-08-19 CRAN (R 3.2.0)
+>  Rcpp         0.12.2      2015-11-15 CRAN (R 3.2.2)
+>
+>
+> On Wed, Dec 16, 2015 at 2:40 PM, Michael Cawthon <mcaw...@greenstenergy.com> wrote:
+> > pow <- lapply(2:5, function(i) bquote(f1(base , .(i))))
+>
+>
+
+From ub756a7daa2c2aa6d at groups.google.com  Thu Dec 17 14:02:52 2015
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Thu, 17 Dec 2015 14:02:52 +0000
+Subject: Re: reading json with httr, unable to authenticate
+Message-ID: <cd-XALSfCKU.mpqkJ7_HCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <cd-XALSfCKU.mKZclCmgCwAJ@manipulatr.groups.google.com>
+References: <cd-XALSfCKU.mKZclCmgCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/cd-XALSfCKU/m/mpqkJ7_HCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Here's a straightforward translation of
+
+curl -X POST
+-H "Accept: application/json"
+-d {"grant_type":"password",
+"username":"yourusername","password":"yourpassword"}
+"https://api.mmitnetwork.com/Token"
+
+which is command line curl, to httr:
+
+library(httr)
+POST("https://api.mmitnetwork.com/Token",
+  body = list(
+    grant_type = "password",
+    username = "yourusername",
+    password = "yourpassword"
+  ),
+  encode = "json",
+  accept_json(body)
+)
+
+Hadley
+
+On Wed, Dec 16, 2015 at 7:57 PM, Tan Chen <tanta...@gmail.com> wrote:
+> Hey guys,
+>
+> I want to access this API:
+> https://api.mmitnetwork.com/Home/QuickStart#Authentication
+>
+> and it has some instructions on how to do it, but I don't know what language
+> it is or how to translate it to R. The furthest I've gotten is this code:
+>
+> library(httr)
+> req <- POST("https://api.mmitnetwork.com/Token",
+>             config = NULL,
+>             body = c("grant_type=password"))
+>
+> This gives me 500 SERVER ERROR
+>
+> An error occured on the MMIT API Server. Check the developerMessage for more
+> information.
+>
+>
+> It gives me an error because I didn't pass it the username and password, but
+> where do I do that? Everything else I've tried gives me Status Code 400
+> which is a bad request.
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+http://had.co.nz/
+
+From u4114912dbf9e2d36 at groups.google.com  Thu Dec 17 14:59:47 2015
+From: u4114912dbf9e2d36 at groups.google.com (Tan Chen)
+Date: Thu, 17 Dec 2015 14:59:47 +0000
+Subject: Re: reading json with httr, unable to authenticate
+Message-ID: <cd-XALSfCKU.D7ISCtrKCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <cd-XALSfCKU.mpqkJ7_HCwAJ@manipulatr.groups.google.com>
+References: <cd-XALSfCKU.mKZclCmgCwAJ@manipulatr.groups.google.com> <cd-XALSfCKU.mpqkJ7_HCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/cd-XALSfCKU/m/D7ISCtrKCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hey thanks for quick response. I ran into an error where body is not defined, so I did
+body <- list(
+    grant_type = "password",
+    username = "tantanchen",
+    password = "Synygy1!"
+)
+
+POST("https://api.mmitnetwork.com/Token",
+     body = list(
+         grant_type = "password",
+
+         username = "username",
+         password = "password"
+
+     ),
+     encode = "json",
+     accept_json(body)
+)
+
+But it says that body is an unused argument. What is the parameter that I am passing with "accept_json"? is it the config parameter?
+
+On Thursday, December 17, 2015 at 9:02:52 AM UTC-5, Hadley Wickham wrote:
+> Here's a straightforward translation of
+>
+> curl -X POST
+> -H "Accept: application/json"
+> -d {"grant_type":"password",
+> "username":"yourusername","password":"yourpassword"}
+> "https://api.mmitnetwork.com/Token"
+>
+> which is command line curl, to httr:
+>
+> library(httr)
+> POST("https://api.mmitnetwork.com/Token",
+>   body = list(
+>     grant_type = "password",
+>     username = "yourusername",
+>     password = "yourpassword"
+>   ),
+>   encode = "json",
+>   accept_json(body)
+> )
+>
+> Hadley
+>
+>
+> On Wed, Dec 16, 2015 at 7:57 PM, Tan Chen <tanta...@gmail.com> wrote:
+> > Hey guys,
+> >
+> > I want to access this API:
+> > https://api.mmitnetwork.com/Home/QuickStart#Authentication
+> >
+> > and it has some instructions on how to do it, but I don't know what language
+> > it is or how to translate it to R. The furthest I've gotten is this code:
+> >
+> > library(httr)
+> > req <- POST("https://api.mmitnetwork.com/Token",
+> >             config = NULL,
+> >             body = c("grant_type=password"))
+> >
+> > This gives me 500 SERVER ERROR
+> >
+> > An error occured on the MMIT API Server. Check the developerMessage for more
+> > information.
+> >
+> >
+> > It gives me an error because I didn't pass it the username and password, but
+> > where do I do that? Everything else I've tried gives me Status Code 400
+> > which is a bad request.
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "manipulatr" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to manipulatr+...@googlegroups.com.
+> > To post to this group, send email to manip...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/manipulatr.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> http://had.co.nz/
+
+From u27405c4b711a1080 at groups.google.com  Thu Dec 17 15:18:07 2015
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Thu, 17 Dec 2015 15:18:07 +0000
+Subject: Re: reading json with httr, unable to authenticate
+Message-ID: <cd-XALSfCKU.d4drWdrLCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <cd-XALSfCKU.D7ISCtrKCwAJ@manipulatr.groups.google.com>
+References: <cd-XALSfCKU.mKZclCmgCwAJ@manipulatr.groups.google.com> <cd-XALSfCKU.D7ISCtrKCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/cd-XALSfCKU/m/d4drWdrLCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Tan,
+
+1. If your password is important change it immediately.
+
+2. I started deleting things and it seemed to work.
+
+POST("https://api.mmitnetwork.com/Token",
+  body = list(
+    grant_type = "password",
+    username = "yourusername",
+    password = "yourpassword"
+  ),
+  encode = "json",
+
+)
+
+Response [https://api.mmitnetwork.com/Token]
+  Date: 2015-12-17 15:13
+  Status: 400
+  Content-Type: application/json;charset=UTF-8
+  Size: 34 B
+
+On Thu, Dec 17, 2015 at 6:59 AM, Tan Chen <tanta...@gmail.com> wrote:
+> Hey thanks for quick response. I ran into an error where body is not defined, so I did
+> body <- list(
+>     grant_type = "password",
+>     username = "tantanchen",
+>     password = "Synygy1!"
+> )
+> POST("https://api.mmitnetwork.com/Token",
+>      body = list(
+>          grant_type = "password",
+>          username = "username",
+>          password = "password"
+>      ),
+>      encode = "json",
+>      accept_json(body)
+> )
+> But it says that body is an unused argument. What is the parameter that I am passing with "accept_json"? is it the config parameter?
+>
+>
+> On Thursday, December 17, 2015 at 9:02:52 AM UTC-5, Hadley Wickham wrote:
+> > Here's a straightforward translation of
+> >
+> > curl -X POST
+> > -H "Accept: application/json"
+> > -d {"grant_type":"password",
+> > "username":"yourusername","password":"yourpassword"}
+> > "https://api.mmitnetwork.com/Token"
+> >
+> > which is command line curl, to httr:
+> >
+> > library(httr)
+> > POST("https://api.mmitnetwork.com/Token",
+> >   body = list(
+> >     grant_type = "password",
+> >     username = "yourusername",
+> >     password = "yourpassword"
+> >   ),
+> >   encode = "json",
+> >   accept_json(body)
+> > )
+> >
+> > Hadley
+> >
+> >
+> > On Wed, Dec 16, 2015 at 7:57 PM, Tan Chen <tanta...@gmail.com> wrote:
+> > > Hey guys,
+> > >
+> > > I want to access this API:
+> > > https://api.mmitnetwork.com/Home/QuickStart#Authentication
+> > >
+> > > and it has some instructions on how to do it, but I don't know what language
+> > > it is or how to translate it to R. The furthest I've gotten is this code:
+> > >
+> > > library(httr)
+> > > req <- POST("https://api.mmitnetwork.com/Token",
+> > >             config = NULL,
+> > >             body = c("grant_type=password"))
+> > >
+> > > This gives me 500 SERVER ERROR
+> > >
+> > > An error occured on the MMIT API Server. Check the developerMessage for more
+> > > information.
+> > >
+> > >
+> > > It gives me an error because I didn't pass it the username and password, but
+> > > where do I do that? Everything else I've tried gives me Status Code 400
+> > > which is a bad request.
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups
+> > > "manipulatr" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an
+> > > email to manipulatr+...@googlegroups.com.
+> > > To post to this group, send email to manip...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/manipulatr.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > http://had.co.nz/
+>
+> --
+> You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u4114912dbf9e2d36 at groups.google.com  Thu Dec 17 15:35:15 2015
+From: u4114912dbf9e2d36 at groups.google.com (Tan Chen)
+Date: Thu, 17 Dec 2015 15:35:15 +0000
+Subject: Re: reading json with httr, unable to authenticate
+Message-ID: <cd-XALSfCKU.GAt6lMnMCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <cd-XALSfCKU.d4drWdrLCwAJ@manipulatr.groups.google.com>
+References: <cd-XALSfCKU.mKZclCmgCwAJ@manipulatr.groups.google.com> <cd-XALSfCKU.d4drWdrLCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/cd-XALSfCKU/m/GAt6lMnMCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for looking out for me. My password is not important, I don't use it anywhere else. I edited it in the middle, but forgot the top.
+
+As for your suggestion, this does not work. It gives a response code 400, and the website says that 400 means bad request.
+
+On Thursday, December 17, 2015 at 10:18:07 AM UTC-5, Brandon Hurr wrote:
+> Tan,
+>
+> 1. If your password is important change it immediately.
+>
+> 2. I started deleting things and it seemed to work.
+>
+> POST("https://api.mmitnetwork.com/Token",
+>   body = list(
+>     grant_type = "password",
+>     username = "yourusername",
+>     password = "yourpassword"
+>   ),
+>   encode = "json",
+> )
+>
+> Response [https://api.mmitnetwork.com/Token]
+>   Date: 2015-12-17 15:13
+>   Status: 400
+>   Content-Type: application/json;charset=UTF-8
+>   Size: 34 B
+>
+> On Thu, Dec 17, 2015 at 6:59 AM, Tan Chen <tanta...@gmail.com> wrote:
+> > Hey thanks for quick response. I ran into an error where body is not defined, so I did
+> > body <- list(
+> >     grant_type = "password",
+> >     username = "tantanchen",
+> >     password = "Synygy1!"
+> > )
+> > POST("https://api.mmitnetwork.com/Token",
+> >      body = list(
+> >          grant_type = "password",
+> >          username = "username",
+> >          password = "password"
+> >      ),
+> >      encode = "json",
+> >      accept_json(body)
+> > )
+> > But it says that body is an unused argument. What is the parameter that I am passing with "accept_json"? is it the config parameter?
+> >
+> >
+> > On Thursday, December 17, 2015 at 9:02:52 AM UTC-5, Hadley Wickham wrote:
+> > > Here's a straightforward translation of
+> > >
+> > > curl -X POST
+> > > -H "Accept: application/json"
+> > > -d {"grant_type":"password",
+> > > "username":"yourusername","password":"yourpassword"}
+> > > "https://api.mmitnetwork.com/Token"
+> > >
+> > > which is command line curl, to httr:
+> > >
+> > > library(httr)
+> > > POST("https://api.mmitnetwork.com/Token",
+> > >   body = list(
+> > >     grant_type = "password",
+> > >     username = "yourusername",
+> > >     password = "yourpassword"
+> > >   ),
+> > >   encode = "json",
+> > >   accept_json(body)
+> > > )
+> > >
+> > > Hadley
+> > >
+> > >
+> > > On Wed, Dec 16, 2015 at 7:57 PM, Tan Chen <tanta...@gmail.com> wrote:
+> > > > Hey guys,
+> > > >
+> > > > I want to access this API:
+> > > > https://api.mmitnetwork.com/Home/QuickStart#Authentication
+> > > >
+> > > > and it has some instructions on how to do it, but I don't know what language
+> > > > it is or how to translate it to R. The furthest I've gotten is this code:
+> > > >
+> > > > library(httr)
+> > > > req <- POST("https://api.mmitnetwork.com/Token",
+> > > >             config = NULL,
+> > > >             body = c("grant_type=password"))
+> > > >
+> > > > This gives me 500 SERVER ERROR
+> > > >
+> > > > An error occured on the MMIT API Server. Check the developerMessage for more
+> > > > information.
+> > > >
+> > > >
+> > > > It gives me an error because I didn't pass it the username and password, but
+> > > > where do I do that? Everything else I've tried gives me Status Code 400
+> > > > which is a bad request.
+> > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups
+> > > > "manipulatr" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an
+> > > > email to manipulatr+...@googlegroups.com.
+> > > > To post to this group, send email to manip...@googlegroups.com.
+> > > > Visit this group at https://groups.google.com/group/manipulatr.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > > --
+> > > http://had.co.nz/
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "manipulatr" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to manipulatr+...@googlegroups.com.
+> > To post to this group, send email to manip...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/manipulatr.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From ub756a7daa2c2aa6d at groups.google.com  Thu Dec 17 15:41:13 2015
+From: ub756a7daa2c2aa6d at groups.google.com (Hadley Wickham)
+Date: Thu, 17 Dec 2015 15:41:13 +0000
+Subject: Re: reading json with httr, unable to authenticate
+Message-ID: <cd-XALSfCKU.Ui0T_hzNCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <cd-XALSfCKU.GAt6lMnMCwAJ@manipulatr.groups.google.com>
+References: <cd-XALSfCKU.mKZclCmgCwAJ@manipulatr.groups.google.com> <cd-XALSfCKU.GAt6lMnMCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/cd-XALSfCKU/m/Ui0T_hzNCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You're going to need to figure out what's going wrong yourself. This
+suggests a place to start...
+
+library(httr)
+
+r <- POST("https://api.mmitnetwork.com/Token",
+
+  body = list(
+    grant_type = "password",
+
+    username = "tantanchen",
+    password = "Synygy1!"
+
+  ),
+  encode = "json",
+
+  accept_json()
+)
+
+content(r)
+# $error
+# [1] "unsupported_grant_type"
+
+On Thu, Dec 17, 2015 at 9:35 AM, Tan Chen <tanta...@gmail.com> wrote:
+> Thanks for looking out for me. My password is not important, I don't use it
+> anywhere else. I edited it in the middle, but forgot the top.
+>
+> As for your suggestion, this does not work. It gives a response code 400,
+> and the website says that 400 means bad request.
+>
+> On Thursday, December 17, 2015 at 10:18:07 AM UTC-5, Brandon Hurr wrote:
+>>
+>> Tan,
+>>
+>> 1. If your password is important change it immediately.
+>>
+>> 2. I started deleting things and it seemed to work.
+>>
+>> POST("https://api.mmitnetwork.com/Token",
+>>   body = list(
+>>     grant_type = "password",
+>>     username = "yourusername",
+>>     password = "yourpassword"
+>>   ),
+>>   encode = "json",
+>> )
+>>
+>> Response [https://api.mmitnetwork.com/Token]
+>>   Date: 2015-12-17 15:13
+>>   Status: 400
+>>   Content-Type: application/json;charset=UTF-8
+>>   Size: 34 B
+>>
+>> On Thu, Dec 17, 2015 at 6:59 AM, Tan Chen <tanta...@gmail.com> wrote:
+>>>
+>>> Hey thanks for quick response. I ran into an error where body is not
+>>> defined, so I did
+>>> body <- list(
+>>>     grant_type = "password",
+>>>     username = "tantanchen",
+>>>     password = "Synygy1!"
+>>> )
+>>> POST("https://api.mmitnetwork.com/Token",
+>>>      body = list(
+>>>          grant_type = "password",
+>>>          username = "username",
+>>>          password = "password"
+>>>      ),
+>>>      encode = "json",
+>>>      accept_json(body)
+>>> )
+>>> But it says that body is an unused argument. What is the parameter that I
+>>> am passing with "accept_json"? is it the config parameter?
+>>>
+>>>
+>>> On Thursday, December 17, 2015 at 9:02:52 AM UTC-5, Hadley Wickham wrote:
+>>>>
+>>>> Here's a straightforward translation of
+>>>>
+>>>> curl -X POST
+>>>> -H "Accept: application/json"
+>>>> -d {"grant_type":"password",
+>>>> "username":"yourusername","password":"yourpassword"}
+>>>> "https://api.mmitnetwork.com/Token"
+>>>>
+>>>> which is command line curl, to httr:
+>>>>
+>>>> library(httr)
+>>>> POST("https://api.mmitnetwork.com/Token",
+>>>>   body = list(
+>>>>     grant_type = "password",
+>>>>     username = "yourusername",
+>>>>     password = "yourpassword"
+>>>>   ),
+>>>>   encode = "json",
+>>>>   accept_json(body)
+>>>> )
+>>>>
+>>>> Hadley
+>>>>
+>>>>
+>>>> On Wed, Dec 16, 2015 at 7:57 PM, Tan Chen <tanta...@gmail.com> wrote:
+>>>> > Hey guys,
+>>>> >
+>>>> > I want to access this API:
+>>>> > https://api.mmitnetwork.com/Home/QuickStart#Authentication
+>>>> >
+>>>> > and it has some instructions on how to do it, but I don't know what
+>>>> > language
+>>>> > it is or how to translate it to R. The furthest I've gotten is this
+>>>> > code:
+>>>> >
+>>>> > library(httr)
+>>>> > req <- POST("https://api.mmitnetwork.com/Token",
+>>>> >             config = NULL,
+>>>> >             body = c("grant_type=password"))
+>>>> >
+>>>> > This gives me 500 SERVER ERROR
+>>>> >
+>>>> > An error occured on the MMIT API Server. Check the developerMessage
+>>>> > for more
+>>>> > information.
+>>>> >
+>>>> >
+>>>> > It gives me an error because I didn't pass it the username and
+>>>> > password, but
+>>>> > where do I do that? Everything else I've tried gives me Status Code
+>>>> > 400
+>>>> > which is a bad request.
+>>>> >
+>>>> >
+>>>> > --
+>>>> > You received this message because you are subscribed to the Google
+>>>> > Groups
+>>>> > "manipulatr" group.
+>>>> > To unsubscribe from this group and stop receiving emails from it, send
+>>>> > an
+>>>> > email to manipulatr+...@googlegroups.com.
+>>>> > To post to this group, send email to manip...@googlegroups.com.
+>>>> > Visit this group at https://groups.google.com/group/manipulatr.
+>>>> > For more options, visit https://groups.google.com/d/optout.
+>>>>
+>>>>
+>>>>
+>>>> --
+>>>> http://had.co.nz/
+>>>
+>>> --
+>>> You received this message because you are subscribed to the Google Groups
+>>> "manipulatr" group.
+>>> To unsubscribe from this group and stop receiving emails from it, send an
+>>> email to manipulatr+...@googlegroups.com.
+>>> To post to this group, send email to manip...@googlegroups.com.
+>>> Visit this group at https://groups.google.com/group/manipulatr.
+>>> For more options, visit https://groups.google.com/d/optout.
+>>
+>>
+> --
+> You received this message because you are subscribed to the Google Groups
+> "manipulatr" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to manipulatr+...@googlegroups.com.
+> To post to this group, send email to manip...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/manipulatr.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+http://had.co.nz/
+
+From u4114912dbf9e2d36 at groups.google.com  Thu Dec 17 16:29:30 2015
+From: u4114912dbf9e2d36 at groups.google.com (Tan Chen)
+Date: Thu, 17 Dec 2015 16:29:30 +0000
+Subject: Re: reading json with httr, unable to authenticate
+Message-ID: <cd-XALSfCKU.pfNSi7_PCwAJ@manipulatr.groups.google.com>
+In-Reply-To: <cd-XALSfCKU.Ui0T_hzNCwAJ@manipulatr.groups.google.com>
+References: <cd-XALSfCKU.mKZclCmgCwAJ@manipulatr.groups.google.com> <cd-XALSfCKU.Ui0T_hzNCwAJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/cd-XALSfCKU/m/pfNSi7_PCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I figured it out! Thanks for all the help. The problem was "encore = json" it needs to be "encode = form" since encode is the encoding of my list, and I'm not sending that list in json format.
+
+On Thursday, December 17, 2015 at 10:41:13 AM UTC-5, Hadley Wickham wrote:
+> You're going to need to figure out what's going wrong yourself. This
+> suggests a place to start...
+>
+> library(httr)
+>
+> r <- POST("https://api.mmitnetwork.com/Token",
+>   body = list(
+>     grant_type = "password",
+>     username = "tantanchen",
+>     password = "Synygy1!"
+>   ),
+>   encode = "json",
+>   accept_json()
+> )
+>
+> content(r)
+> # $error
+> # [1] "unsupported_grant_type"
+>
+> On Thu, Dec 17, 2015 at 9:35 AM, Tan Chen <tanta...@gmail.com> wrote:
+> > Thanks for looking out for me. My password is not important, I don't use it
+> > anywhere else. I edited it in the middle, but forgot the top.
+> >
+> > As for your suggestion, this does not work. It gives a response code 400,
+> > and the website says that 400 means bad request.
+> >
+> > On Thursday, December 17, 2015 at 10:18:07 AM UTC-5, Brandon Hurr wrote:
+> >>
+> >> Tan,
+> >>
+> >> 1. If your password is important change it immediately.
+> >>
+> >> 2. I started deleting things and it seemed to work.
+> >>
+> >> POST("https://api.mmitnetwork.com/Token",
+> >>   body = list(
+> >>     grant_type = "password",
+> >>     username = "yourusername",
+> >>     password = "yourpassword"
+> >>   ),
+> >>   encode = "json",
+> >> )
+> >>
+> >> Response [https://api.mmitnetwork.com/Token]
+> >>   Date: 2015-12-17 15:13
+> >>   Status: 400
+> >>   Content-Type: application/json;charset=UTF-8
+> >>   Size: 34 B
+> >>
+> >> On Thu, Dec 17, 2015 at 6:59 AM, Tan Chen <tanta...@gmail.com> wrote:
+> >>>
+> >>> Hey thanks for quick response. I ran into an error where body is not
+> >>> defined, so I did
+> >>> body <- list(
+> >>>     grant_type = "password",
+> >>>     username = "tantanchen",
+> >>>     password = "Synygy1!"
+> >>> )
+> >>> POST("https://api.mmitnetwork.com/Token",
+> >>>      body = list(
+> >>>          grant_type = "password",
+> >>>          username = "username",
+> >>>          password = "password"
+> >>>      ),
+> >>>      encode = "json",
+> >>>      accept_json(body)
+> >>> )
+> >>> But it says that body is an unused argument. What is the parameter that I
+> >>> am passing with "accept_json"? is it the config parameter?
+> >>>
+> >>>
+> >>> On Thursday, December 17, 2015 at 9:02:52 AM UTC-5, Hadley Wickham wrote:
+> >>>>
+> >>>> Here's a straightforward translation of
+> >>>>
+> >>>> curl -X POST
+> >>>> -H "Accept: application/json"
+> >>>> -d {"grant_type":"password",
+> >>>> "username":"yourusername","password":"yourpassword"}
+> >>>> "https://api.mmitnetwork.com/Token"
+> >>>>
+> >>>> which is command line curl, to httr:
+> >>>>
+> >>>> library(httr)
+> >>>> POST("https://api.mmitnetwork.com/Token",
+> >>>>   body = list(
+> >>>>     grant_type = "password",
+> >>>>     username = "yourusername",
+> >>>>     password = "yourpassword"
+> >>>>   ),
+> >>>>   encode = "json",
+> >>>>   accept_json(body)
+> >>>> )
+> >>>>
+> >>>> Hadley
+> >>>>
+> >>>>
+> >>>> On Wed, Dec 16, 2015 at 7:57 PM, Tan Chen <tanta...@gmail.com> wrote:
+> >>>> > Hey guys,
+> >>>> >
+> >>>> > I want to access this API:
+> >>>> > https://api.mmitnetwork.com/Home/QuickStart#Authentication
+> >>>> >
+> >>>> > and it has some instructions on how to do it, but I don't know what
+> >>>> > language
+> >>>> > it is or how to translate it to R. The furthest I've gotten is this
+> >>>> > code:
+> >>>> >
+> >>>> > library(httr)
+> >>>> > req <- POST("https://api.mmitnetwork.com/Token",
+> >>>> >             config = NULL,
+> >>>> >             body = c("grant_type=password"))
+> >>>> >
+> >>>> > This gives me 500 SERVER ERROR
+> >>>> >
+> >>>> > An error occured on the MMIT API Server. Check the developerMessage
+> >>>> > for more
+> >>>> > information.
+> >>>> >
+> >>>> >
+> >>>> > It gives me an error because I didn't pass it the username and
+> >>>> > password, but
+> >>>> > where do I do that? Everything else I've tried gives me Status Code
+> >>>> > 400
+> >>>> > which is a bad request.
+> >>>> >
+> >>>> >
+> >>>> > --
+> >>>> > You received this message because you are subscribed to the Google
+> >>>> > Groups
+> >>>> > "manipulatr" group.
+> >>>> > To unsubscribe from this group and stop receiving emails from it, send
+> >>>> > an
+> >>>> > email to manipulatr+...@googlegroups.com.
+> >>>> > To post to this group, send email to manip...@googlegroups.com.
+> >>>> > Visit this group at https://groups.google.com/group/manipulatr.
+> >>>> > For more options, visit https://groups.google.com/d/optout.
+> >>>>
+> >>>>
+> >>>>
+> >>>> --
+> >>>> http://had.co.nz/
+> >>>
+> >>> --
+> >>> You received this message because you are subscribed to the Google Groups
+> >>> "manipulatr" group.
+> >>> To unsubscribe from this group and stop receiving emails from it, send an
+> >>> email to manipulatr+...@googlegroups.com.
+> >>> To post to this group, send email to manip...@googlegroups.com.
+> >>> Visit this group at https://groups.google.com/group/manipulatr.
+> >>> For more options, visit https://groups.google.com/d/optout.
+> >>
+> >>
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "manipulatr" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to manipulatr+...@googlegroups.com.
+> > To post to this group, send email to manip...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/manipulatr.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> http://had.co.nz/
+
+From u363736a0b3bcfe80 at groups.google.com  Tue Dec 29 08:05:52 2015
+From: u363736a0b3bcfe80 at groups.google.com (Ryo Eng)
+Date: Tue, 29 Dec 2015 08:05:52 +0000
+Subject: Re: plyr equivalent to sapply
+Message-ID: <xZUdTdK64UA.yhxjizpjDwAJ@manipulatr.groups.google.com>
+In-Reply-To: <xZUdTdK64UA.ozAJxxILiEgJ@manipulatr.groups.google.com>
+References: <xZUdTdK64UA.ozAJxxILiEgJ@manipulatr.groups.google.com>
+Archived-At: <https://groups.google.com/g/manipulatr/c/xZUdTdK64UA/m/yhxjizpjDwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> dat <- rnorm(1000)
+> sapply(seq(10, 100, 10), function(x) mean(sample(dat, x)))
+
+ [1] -0.19057524 -0.30846562 -0.05200106 -0.18820173  0.24635544 -0.14211757  0.27714547 -0.03718823 -0.05296453 -0.01399822
+>
+> plyr::l_ply(seq(10, 100, 10), function(x) mean(sample(dat, x)))
+> plyr::l_ply(seq(10, 100, 10), function(x) mean(sample(dat, x)),.print=TRUE)
+[1] -0.04655479
+[1] -0.2034893
+[1] -0.1996475
+[1] -0.01916049
+[1] 0.151555
+[1] 0.04774635
+[1] 0.1291878
+[1] -0.1203999
+[1] -0.0374225
+[1] -0.02370615
+
+Ryo Eng® <http://englianhu.wordpress.com>
+
+2013年2月19日火曜日 5時48分06秒 UTC+9 Ross Ahmed:
+
+> Is there an equivalent to sapply using plyr?
+>
+> Example:
+>
+> dat <- rnorm(1000)
+> sapply(seq(10, 100, 10), function(x) mean(sample(dat, x)))
+>
+> The closest I can get using plyr is:
+>
+> unlist(llply(seq(10, 100, 10), function(x) mean(sample(dat, x))))
+>
+> Is there a plyr function, without having to use unlist?
+>
+>
+
