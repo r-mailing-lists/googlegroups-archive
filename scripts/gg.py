@@ -217,7 +217,8 @@ def fetch_thread(group, thread, tries=2):
             break
         title = re.search(r"<title>(.*?)</title>", page, re.S)
         print(f"  {thread}: no conversation on the page ({len(page)} bytes, "
-              f"title {title.group(1).strip()[:60]!r})" if title else f"  {thread}: no conversation on the page",
+              f"title {mask_addresses(title.group(1).strip())[:60]!r})" if title
+              else f"  {thread}: no conversation on the page",
               file=sys.stderr)
         if attempt < tries - 1:
             time.sleep(30)

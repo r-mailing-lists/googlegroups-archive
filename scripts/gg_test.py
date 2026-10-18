@@ -288,6 +288,21 @@ class Addresses(unittest.TestCase):
                 sys.stderr = err
                 os.chdir(cwd)
 
+    def test_a_page_without_its_conversation_is_logged_without_an_address(self):
+        # The title of such a page is the conversation's subject, and a log
+        # on GitHub's runners is public.
+        blank = "<html><head><title>Help (al.smith@example.org) - Google Groups</title></head></html>"
+        get, sleep = gg.get, gg.time.sleep
+        gg.get, gg.time.sleep = (lambda url, tries=4: blank), (lambda s: None)
+        err, sys.stderr = sys.stderr, __import__("io").StringIO()
+        try:
+            self.assertIsNone(gg.fetch_thread("grp", "T1"))
+            self.assertIn("no conversation on the page", sys.stderr.getvalue())
+            self.assertEqual(gg.whole_addresses(sys.stderr.getvalue()), 0)
+        finally:
+            sys.stderr = err
+            gg.get, gg.time.sleep = get, sleep
+
 
 HEADERS = (
     "Delivered-To: member@example.com\r\n"

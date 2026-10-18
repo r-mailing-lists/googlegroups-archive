@@ -1,0 +1,142 @@
+name: Crawl Groups
+
+# Backfills whole groups on GitHub's runners. Each group named in the input
+# gets a job of its own: list every conversation (in a browser, as the group's
+# pages are drawn by script), fetch them, write and parse the monthly mbox
+# files, and check for whole addresses. A group is committed once its list is
+# complete, even if Google held back a few of its conversations; running this
+# again for the group fetches only those.
+#
+# A job commits only its own group's directory, so jobs running side by side
+# never conflict. lists.tsv is rebuilt by the daily run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      groups:
+        description: Groups to crawl, separated by spaces (each needs a committed config.json)
+        required: true
+      parallel:
+        description: How many groups to crawl at a time
+        default: '2'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crawl-groups
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      groups: ${{ steps.groups.outputs.groups }}
+    steps:
+      - id: groups
+        env:
+          NAMES: ${{ inputs.groups }}
+        run: |
+          # shellcheck disable=SC2086 # split the input into names
+          echo "groups=$(printf '%s\n' $NAMES | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  crawl:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.parallel) }}
+      matrix:
+        group: ${{ fromJSON(needs.plan.outputs.groups) }}
+    env:
+      GROUP: ${{ matrix.group }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the group
+        id: state
+        run: |
+          if [[ ! "$GROUP" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || [ ! -f "$GROUP/config.json" ]; then
+            echo "::error::$GROUP has no config.json"
+            exit 1
+          fi
+          if [ -s "$GROUP/threads.txt" ]; then
+            echo "listed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download rmail-parser
+        run: |
+          curl -sL -o rmail-parser \
+            "https://github.com/r-mailing-lists/rmail-parser/releases/latest/download/rmail-parser-linux-x86_64"
+          chmod +x rmail-parser
+
+      - name: Download aliases
+        run: |
+          curl -sL -o aliases.json \
+            "https://raw.githubusercontent.com/r-mailing-lists/rmail-parser/main/aliases.json" \
+            2>/dev/null || echo '{"aliases":[]}' > aliases.json
+
+      - name: Test the scripts
+        run: python3 -I scripts/gg_test.py
+
+      - name: Install a browser
+        if: steps.state.outputs.listed != 'true'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pw"
+          "$RUNNER_TEMP/pw/bin/pip" install -q playwright==1.63.0
+          "$RUNNER_TEMP/pw/bin/python" -m playwright install --with-deps chromium
+
+      - name: List the conversations
+        if: steps.state.outputs.listed != 'true'
+        run: '"$RUNNER_TEMP/pw/bin/python" -I scripts/gg.py list "$GROUP"'
+
+      # Google now and then serves a conversation's page without its data, and
+      # stops after five in a row; the same pages come back whole a little later.
+      - name: Fetch the conversations
+        id: fetch
+        run: |
+          missing() {
+            comm -23 <(sort "$GROUP/threads.txt") \
+              <(find "$GROUP/source" -name '*.json' 2>/dev/null | sed 's#.*/##; s#\.json$##' | sort) | wc -l
+          }
+          for round in 1 2 3 4; do
+            python3 -I scripts/gg.py fetch "$GROUP" || true
+            left=$(missing)
+            echo "round $round: $left conversations missing"
+            [ "$left" -eq 0 ] && break
+            [ "$round" -lt 4 ] && sleep 1200
+          done
+          echo "missing=$left" >> "$GITHUB_OUTPUT"
+          echo "listed=$(wc -l < "$GROUP/threads.txt")" >> "$GITHUB_OUTPUT"
+
+      - name: Write and parse the mbox files
+        run: scripts/update.sh --no-fetch "$GROUP"
+        env:
+          ALIASES: aliases.json
+
+      # Nothing is committed if a whole address got through.
+      - name: Check for addresses
+        run: python3 -I scripts/gg.py check "$GROUP"
+
+      - name: Commit the group
+        env:
+          MISSING: ${{ steps.fetch.outputs.missing }}
+          LISTED: ${{ steps.fetch.outputs.listed }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -- "$GROUP"
+          if git diff --staged --quiet; then
+            echo "Nothing new for $GROUP"
+            exit 0
+          fi
+          git commit -q -m "chore: crawl $GROUP"
+          for try in 1 2 3 4 5; do
+            git pull -q --rebase --autostash origin main && git push -q origin HEAD:main && break
+            sleep $((try * 20))
+          done
+          echo "$GROUP: $((LISTED - MISSING)) of $LISTED conversations stored" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$MISSING" -gt 0 ]; then
+            echo "::warning::$GROUP: $MISSING conversations still missing; run this again for the group"
+          fi
