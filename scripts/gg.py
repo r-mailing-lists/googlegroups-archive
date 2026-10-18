@@ -150,6 +150,13 @@ def parse_listing(page):
     return total, list(out.values())
 
 
+def thread_from_href(gname, href):
+    """The conversation a link on the group's list opens, or None for a link
+    anywhere else (a group's welcome text can link a forum's /c/ category)."""
+    m = re.search(rf"/g/{re.escape(gname)}/c/([A-Za-z0-9_-]+)", href or "", re.I)
+    return m.group(1) if m else None
+
+
 # -- files ------------------------------------------------------------------
 
 def write_atomic(path, text):
@@ -228,16 +235,16 @@ def fetch_thread(group, thread, tries=2):
 def cmd_list(group):
     from playwright.sync_api import sync_playwright
 
-    ids, total = [], None
+    ids, total, gname = [], None, google_name(group)
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(user_agent=UA, locale="en-US")
-        page.goto(BASE + google_name(group), wait_until="networkidle")
+        page.goto(BASE + gname, wait_until="networkidle")
         while True:
             for href in page.eval_on_selector_all("a[href*='/c/']", "els => els.map(e => e.getAttribute('href'))"):
-                m = re.search(r"/c/([A-Za-z0-9_-]+)", href or "")
-                if m and m.group(1) not in ids:
-                    ids.append(m.group(1))
+                thread = thread_from_href(gname, href)
+                if thread and thread not in ids:
+                    ids.append(thread)
             shown = page.inner_text("div.aEb7Ed") if page.query_selector("div.aEb7Ed") else ""
             m = re.search(r"of ([\d,]+)", shown)
             if m:

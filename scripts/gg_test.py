@@ -86,6 +86,14 @@ class ParseListing(unittest.TestCase):
         self.assertEqual(total, 413)
         self.assertEqual(sorted(listed), [("P1", 1, "2017-07-14T02:40:00Z"), ("T9", 7, "2020-09-13T12:26:40Z")])
 
+    def test_only_a_link_into_the_group_is_a_conversation(self):
+        # shinyapps-users' welcome text links to a forum category at /c/shiny.
+        self.assertEqual(gg.thread_from_href("shinyapps-users", "./g/shinyapps-users/c/NakBajSs_4A"), "NakBajSs_4A")
+        self.assertEqual(gg.thread_from_href("oscr_package", "https://groups.google.com/g/oscr_package/c/T9"), "T9")
+        self.assertIsNone(gg.thread_from_href("shinyapps-users", "https://community.rstudio.com/c/shiny"))
+        self.assertIsNone(gg.thread_from_href("shiny-discuss", "./g/shinyapps-users/c/NakBajSs_4A"))
+        self.assertIsNone(gg.thread_from_href("shiny-discuss", None))
+
 
 class HtmlToText(unittest.TestCase):
     def test_blocks_and_breaks_become_lines(self):
