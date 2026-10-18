@@ -57,6 +57,7 @@ jobs:
       - name: Check the group
         id: state
         run: |
+          echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
           if [[ ! "$GROUP" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || [ ! -f "$GROUP/config.json" ]; then
             echo "::error::$GROUP has no config.json"
             exit 1
@@ -93,6 +94,8 @@ jobs:
 
       # Google now and then serves a conversation's page without its data, and
       # stops after five in a row; the same pages come back whole a little later.
+      # Fetching stops 300 minutes into the job, leaving time to commit what is
+      # stored before the job's limit; running this again fetches the rest.
       - name: Fetch the conversations
         id: fetch
         run: |
@@ -100,13 +103,21 @@ jobs:
             comm -23 <(sort "$GROUP/threads.txt") \
               <(find "$GROUP/source" -name '*.json' 2>/dev/null | sed 's#.*/##; s#\.json$##' | sort) | wc -l
           }
+          deadline=$((STARTED + 300 * 60))
           for round in 1 2 3 4; do
-            python3 -I scripts/gg.py fetch "$GROUP" || true
+            budget=$((deadline - $(date +%s)))
+            [ "$budget" -gt 60 ] || break
+            timeout "$budget" python3 -I scripts/gg.py fetch "$GROUP" || true
             left=$(missing)
             echo "round $round: $left conversations missing"
             [ "$left" -eq 0 ] && break
-            [ "$round" -lt 4 ] && sleep 1200
+            if [ "$round" -lt 4 ] && [ $((deadline - $(date +%s))) -gt 1500 ]; then
+              sleep 1200
+            fi
           done
+          # A fetch stopped by the deadline can leave a half-written page.
+          find "$GROUP" -name '.tmp-*' -delete
+          left=$(missing)
           echo "missing=$left" >> "$GITHUB_OUTPUT"
           echo "listed=$(wc -l < "$GROUP/threads.txt")" >> "$GITHUB_OUTPUT"
 
