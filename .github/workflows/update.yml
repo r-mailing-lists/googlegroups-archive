@@ -1,0 +1,62 @@
+name: Update Archive
+
+on:
+  schedule:
+    # Daily, ahead of the data build at 04:47 UTC. Only groups marked
+    # "active" in their config.json are asked for anything new.
+    - cron: '37 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-archive
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download rmail-parser
+        run: |
+          curl -sL -o rmail-parser \
+            "https://github.com/r-mailing-lists/rmail-parser/releases/latest/download/rmail-parser-linux-x86_64"
+          chmod +x rmail-parser
+
+      - name: Download aliases
+        run: |
+          curl -sL -o aliases.json \
+            "https://raw.githubusercontent.com/r-mailing-lists/rmail-parser/main/aliases.json" \
+            2>/dev/null || echo '{"aliases":[]}' > aliases.json
+
+      - name: Test the scripts
+        run: python3 -I scripts/gg_test.py
+
+      - name: Fetch and parse all groups
+        run: scripts/update.sh
+        env:
+          ALIASES: aliases.json
+          # The member account that receives the active groups' email.
+          # Repository secrets: without them the mail is not read.
+          IMAP_USERNAME: ${{ secrets.IMAP_USERNAME }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+
+      # Nothing is committed if a whole address got through anywhere.
+      - name: Check for addresses
+        run: python3 -I scripts/gg.py check all
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update archive $(date +%Y-%m-%d)"
+            git push
+          fi
