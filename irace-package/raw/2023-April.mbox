@@ -1,0 +1,733 @@
+From u027f33c3b205e695 at groups.google.com  Sun Apr  2 03:18:26 2023
+From: u027f33c3b205e695 at groups.google.com (Rachel Yuan)
+Date: Sun, 02 Apr 2023 03:18:26 +0000
+Subject: Problem in parallelizing irace
+Message-ID: <IRphSM0iY3A.A9-MOLy6AQAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/IRphSM0iY3A/m/A9-MOLy6AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi there,
+
+I am working on a project that needs parameter tuning with irace. My datasets are many (around 100 datasets), and in order to get the results faster, our team is using Compute Canada to obtain results for large datasets. I was using Rscript command to call and run irace. However, as our data are growing, the running time became longer, even beyond the allowed running time on Compute Canada. So, Rscript is no longer sufficient for our use and how to split jobs for many large datasets has become a struggle.
+
+As far as I know, both the parameter space and datasets to be used are fixed in an irace run. So there is no way for us to divide the parameter space or datasets for job submissions in parallel (we need to run 100 datasets altogether in one irace run). From the user guide, there are four options to parallelize irace runs. But I am not that familiar with those options.
+
+So I wonder if there is an approach to parallelize irace for cluster jobs (Compute Canada uses slurm) in a way that, given fixed parameter space and datasets, it can produce many array jobs (10-20, for example) to run irace concurrently but still evaluating the same parameter space and the same datasets. Or is there a way to submit a few jobs to evaluate parts of parameter candidates and obtain some results back, then send another jobs to evaluate the remaining parameter candidates and produce final results, based on the first returned results? Does the batchmode or batchtools work in this case?
+
+I am not sure if I have explained the problem clearly. If not, let me know and thank you very much for your help!
+
+Best,
+Rachel
+
+From u854a0709976c2a48 at groups.google.com  Mon Apr  3 10:48:55 2023
+From: u854a0709976c2a48 at groups.google.com (=?utf-8?b?TWFudWVsIEzDs3Blei1JYsOhw7Fleg==?=)
+Date: Mon, 03 Apr 2023 10:48:55 +0000
+Subject: Re: Problem in parallelizing irace
+Message-ID: <IRphSM0iY3A.qL2GAOYhAgAJ@irace-package.groups.google.com>
+In-Reply-To: <IRphSM0iY3A.A9-MOLy6AQAJ@irace-package.groups.google.com>
+References: <IRphSM0iY3A.A9-MOLy6AQAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/IRphSM0iY3A/m/qL2GAOYhAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Rachel,
+
+I'm not sure I understand completely your setup and limitations. What does it mean to "split the parameter space" or "split the datasets"? In any case there are four main options:
+
+The simplest form of parallelization is to execute the calls to target-runner in parallel. If you can reserve N CPUs in a single machine, then you can simply submit the job to the cluster and use the irace option "--parallel N" so that irace will evaluate multiple calls to target-runner in parallel. This means that you submit 1 job (= 1 run of irace) to the cluster but the job uses many CPUs within the same machine.
+
+The second option is to use MPI to use CPUs from multiple machines. This means that you submit 1 job (= 1 run of irace) but the job is setup to use MPI. For this you need to install Rmpi: https://docs.alliancecan.ca/wiki/R#Rmpi (Make sure that it works). Then replace:
+
+ R CMD BATCH test.R test.txt
+
+with whatever way you use to call irace, maybe:
+
+/path/to/irace/bin/irace --mpi 1 --parallel N
+
+or
+
+Rscript launch_irace.R
+
+(In launch_irace.R, you need to use the scenario options mpi=TRUE and paralllel=N)
+
+N here is the number of CPUs to use (ideally as many as you can, at least 64 or more) and it will be the same as
+
+#SBATCH --ntasks=N # number of MPI processes
+
+The third option is that you run irace in the submission node using the scenario option --batchmode=slurm (or whatever system your cluster uses). You need to make sure that irace will not get killed when you logout. In this mode,  irace is the one submitting jobs to the cluster and waiting for them to finish, that is, irace will submit many jobs, wait for them to finish, then submit more jobs. For this, you need to write a target-runner similar to https://github.com/MLopez-Ibanez/irace/blob/master/inst/examples/batchmode-cluster/target-runner-slurm that submits one run of your target-runner (NOT of irace) to the cluster. You also need to write a target-evaluator (https://github.com/MLopez-Ibanez/irace/blob/master/inst/examples/batchmode-cluster/target-evaluator) that will be called when the target-runner is done, collect the results available and print the cost.
+
+The 4th option is to write your own function targetRunnerParallel(). In this function you can use whatever R/Python packages you wish to do the parallelization. For example, you could use the package: https://mllg.github.io/batchtools/ or the package: https://future.batchtools.futureverse.org/ or something else that you find easy to work with. Irace will call the function with the list of executions it wants to do, and the function must return the results. If you use this 4th option, please let me know as we don't have an example of this in the documentation and it would be great to have one if you wish to share your code.
+
+There are other things that you can do to reduce the problem. If your algorithm reports progress over time, you can use capping to avoid running bad configurations until the end and terminating them earlier: https://www.sciencedirect.com/science/article/pii/S0305054821003300
+
+Best wishes,
+
+Manuel.
+
+On Sunday, 2 April 2023 at 04:18:26 UTC+1 rachel....@gmail.com wrote:
+> Hi there,
+>
+> I am working on a project that needs parameter tuning with irace. My datasets are many (around 100 datasets), and in order to get the results faster, our team is using Compute Canada to obtain results for large datasets. I was using Rscript command to call and run irace. However, as our data are growing, the running time became longer, even beyond the allowed running time on Compute Canada. So, Rscript is no longer sufficient for our use and how to split jobs for many large datasets has become a struggle.
+>
+> As far as I know, both the parameter space and datasets to be used are fixed in an irace run. So there is no way for us to divide the parameter space or datasets for job submissions in parallel (we need to run 100 datasets altogether in one irace run). From the user guide, there are four options to parallelize irace runs. But I am not that familiar with those options.
+>
+> So I wonder if there is an approach to parallelize irace for cluster jobs (Compute Canada uses slurm) in a way that, given fixed parameter space and datasets, it can produce many array jobs (10-20, for example) to run irace concurrently but still evaluating the same parameter space and the same datasets. Or is there a way to submit a few jobs to evaluate parts of parameter candidates and obtain some results back, then send another jobs to evaluate the remaining parameter candidates and produce final results, based on the first returned results? Does the batchmode or batchtools work in this case?
+>
+> I am not sure if I have explained the problem clearly. If not, let me know and thank you very much for your help!
+>
+> Best,
+> Rachel
+
+From u854a0709976c2a48 at groups.google.com  Mon Apr  3 10:51:25 2023
+From: u854a0709976c2a48 at groups.google.com (=?utf-8?b?TWFudWVsIEzDs3Blei1JYsOhw7Fleg==?=)
+Date: Mon, 03 Apr 2023 10:51:25 +0000
+Subject: Re: Parallelism in irace at Compute Canada
+Message-ID: <_yB14S3s4v8.bxpS_wgiAgAJ@irace-package.groups.google.com>
+In-Reply-To: <_yB14S3s4v8.Bsp7xWRgAgAJ@irace-package.groups.google.com>
+References: <_yB14S3s4v8.Bsp7xWRgAgAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/_yB14S3s4v8/m/bxpS_wgiAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Sarash,
+
+Would it be possible to share your setup? I think it would be helpful for other users. I  don't need the code to your algorithm or the instances, only the scripts that you use to launch irace, the target-runner (and target-evaluator if you use that), and the scenario.txt (if you use that).
+
+Thanks,
+
+Manuel.
+
+On Monday, 27 March 2023 at 03:29:04 UTC+1 sarahk...@gmail.com wrote:
+> Hi Manuel,
+>
+> Thank you for your detailed reply. It now works out!
+>
+> Best,
+>
+> Sarah
+>
+> On Tuesday, March 21, 2023 at 11:16:42 AM UTC-6 Manuel López-Ibáñez wrote:
+> > On Tuesday, 21 March 2023 at 16:27:57 UTC sarahk...@gmail.com wrote:
+> > > Hi Manuel,
+> > >
+> > > I tried to use mpirun with the --parallel option in the job script on compute canada, but it couldn't work. I executed it with an R script that included data loading, target.runner function, scenario and parameter lists. It worked fine on my local machine, but is it the right way to run irace in Linux?
+> >
+> > I personally would find easier to run irace via the command-line irace and put the various bits and pieces in different files as the command-line irace executable expects. This is what the script https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-mpi uses.
+> >
+> > Alternatively, you can put everything together in one .R file that calls irace() (or irace.main()) and run the .R file using Rscript (https://stat.ethz.ch/R-manual/R-devel/library/utils/html/Rscript.html), but you need still a bash script to set the options needed for SLURM and MPI and call Rscript from bash.
+> >
+> > > Also, I noticed that in the irace/bin folder, there is a file called "parallel-irace-slurm", and in the irace/examples/batchmode-cluster, there is "target-runner-slurm" file. Both look like bash scripts. I wonder which one should be used for compute canada, which should depend on slurm cluster.
+> >
+> > Probably the most useful for you is https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-slurm. This is launching the command-line irace via slurm. You could replace the command-line irace with "Rscript yourscript.R".
+> >
+> > But you sill need to modify it to setup MPI (by calling mpirun or setting some options). You may need also to change the SLURM options that do not apply to your cluster.
+> >
+> > What to change is difficult to say as different clusters require difference commands and options. You may need to load some module to activate R or install extra packages. You need to read the documentation provided and/or contact someone from the support staff in Compute Canada. Surely, you are not the only person running R scripts using MPI.
+> >
+> > > In addition to the bash script, is it possible to run the R script in Linux, or do I have to divide it into several files, while each contains one info (parameter list/scenario list/target.runner function)?
+> >
+> > You can run an .R script in Linux with Rscript myscript.R. You can define everything within myscript.R and not use any extra files if you wish to do that.
+> >
+> > > There are really not many examples online for this. I really appreciate your help and advice.
+> >
+> > It would be great to have more examples. Unfortunately, I rely on users to send me examples for the systems that I don't use. The github repository contains  the examples that I'm aware of.
+> >
+> > Good luck!
+> >
+> > Manuel.
+> >
+
+From u6421e62902e52848 at groups.google.com  Mon Apr  3 17:08:49 2023
+From: u6421e62902e52848 at groups.google.com (Sarah Lee)
+Date: Mon, 03 Apr 2023 17:08:49 +0000
+Subject: Re: Parallelism in irace at Compute Canada
+Message-ID: <_yB14S3s4v8.LL10KqE2AgAJ@irace-package.groups.google.com>
+In-Reply-To: <_yB14S3s4v8.bxpS_wgiAgAJ@irace-package.groups.google.com>
+References: <_yB14S3s4v8.Bsp7xWRgAgAJ@irace-package.groups.google.com> <_yB14S3s4v8.bxpS_wgiAgAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/_yB14S3s4v8/m/LL10KqE2AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello Manuel,
+
+Sure, I'd love to share it. Do I need to share it here or make it public in another place?
+
+Best,
+Sarah
+
+On Monday, April 3, 2023 at 4:51:25 AM UTC-6 Manuel López-Ibáñez wrote:
+> Dear Sarash,
+>
+> Would it be possible to share your setup? I think it would be helpful for other users. I  don't need the code to your algorithm or the instances, only the scripts that you use to launch irace, the target-runner (and target-evaluator if you use that), and the scenario.txt (if you use that).
+>
+> Thanks,
+>
+> Manuel.
+>
+> On Monday, 27 March 2023 at 03:29:04 UTC+1 sarahk...@gmail.com wrote:
+> > Hi Manuel,
+> >
+> > Thank you for your detailed reply. It now works out!
+> >
+> > Best,
+> >
+> > Sarah
+> >
+> > On Tuesday, March 21, 2023 at 11:16:42 AM UTC-6 Manuel López-Ibáñez wrote:
+> > > On Tuesday, 21 March 2023 at 16:27:57 UTC sarahk...@gmail.com wrote:
+> > > > Hi Manuel,
+> > > >
+> > > > I tried to use mpirun with the --parallel option in the job script on compute canada, but it couldn't work. I executed it with an R script that included data loading, target.runner function, scenario and parameter lists. It worked fine on my local machine, but is it the right way to run irace in Linux?
+> > >
+> > > I personally would find easier to run irace via the command-line irace and put the various bits and pieces in different files as the command-line irace executable expects. This is what the script https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-mpi uses.
+> > >
+> > > Alternatively, you can put everything together in one .R file that calls irace() (or irace.main()) and run the .R file using Rscript (https://stat.ethz.ch/R-manual/R-devel/library/utils/html/Rscript.html), but you need still a bash script to set the options needed for SLURM and MPI and call Rscript from bash.
+> > >
+> > > > Also, I noticed that in the irace/bin folder, there is a file called "parallel-irace-slurm", and in the irace/examples/batchmode-cluster, there is "target-runner-slurm" file. Both look like bash scripts. I wonder which one should be used for compute canada, which should depend on slurm cluster.
+> > >
+> > > Probably the most useful for you is https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-slurm. This is launching the command-line irace via slurm. You could replace the command-line irace with "Rscript yourscript.R".
+> > >
+> > > But you sill need to modify it to setup MPI (by calling mpirun or setting some options). You may need also to change the SLURM options that do not apply to your cluster.
+> > >
+> > > What to change is difficult to say as different clusters require difference commands and options. You may need to load some module to activate R or install extra packages. You need to read the documentation provided and/or contact someone from the support staff in Compute Canada. Surely, you are not the only person running R scripts using MPI.
+> > >
+> > > > In addition to the bash script, is it possible to run the R script in Linux, or do I have to divide it into several files, while each contains one info (parameter list/scenario list/target.runner function)?
+> > >
+> > > You can run an .R script in Linux with Rscript myscript.R. You can define everything within myscript.R and not use any extra files if you wish to do that.
+> > >
+> > > > There are really not many examples online for this. I really appreciate your help and advice.
+> > >
+> > > It would be great to have more examples. Unfortunately, I rely on users to send me examples for the systems that I don't use. The github repository contains  the examples that I'm aware of.
+> > >
+> > > Good luck!
+> > >
+> > > Manuel.
+> > >
+
+From u854a0709976c2a48 at groups.google.com  Mon Apr  3 17:12:42 2023
+From: u854a0709976c2a48 at groups.google.com (=?utf-8?b?TWFudWVsIEzDs3Blei1JYsOhw7Fleg==?=)
+Date: Mon, 03 Apr 2023 17:12:42 +0000
+Subject: Re: Parallelism in irace at Compute Canada
+Message-ID: <_yB14S3s4v8.O1fvhNc2AgAJ@irace-package.groups.google.com>
+In-Reply-To: <_yB14S3s4v8.Bsp7xWRgAgAJ@irace-package.groups.google.com>
+References: <_yB14S3s4v8.Bsp7xWRgAgAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/_yB14S3s4v8/m/O1fvhNc2AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Sarah,
+
+You can share them here if you wish or send them to my email address and I will upload them to the git repository: https://github.com/MLopez-Ibanez/irace
+
+Please, only the scripts and text files for setting up and launching irace (no datasets no code for your own algorithm).
+
+Cheers,
+
+Manuel.
+
+On Monday, 3 April 2023 at 18:08:49 UTC+1 sarahk...@gmail.com wrote:
+> Hello Manuel,
+>
+> Sure, I'd love to share it. Do I need to share it here or make it public in another place?
+>
+> Best,
+> Sarah
+>
+> On Monday, April 3, 2023 at 4:51:25 AM UTC-6 Manuel López-Ibáñez wrote:
+> > Dear Sarash,
+> >
+> > Would it be possible to share your setup? I think it would be helpful for other users. I  don't need the code to your algorithm or the instances, only the scripts that you use to launch irace, the target-runner (and target-evaluator if you use that), and the scenario.txt (if you use that).
+> >
+> > Thanks,
+> >
+> > Manuel.
+> >
+> > On Monday, 27 March 2023 at 03:29:04 UTC+1 sarahk...@gmail.com wrote:
+> > > Hi Manuel,
+> > >
+> > > Thank you for your detailed reply. It now works out!
+> > >
+> > > Best,
+> > >
+> > > Sarah
+> > >
+> > > On Tuesday, March 21, 2023 at 11:16:42 AM UTC-6 Manuel López-Ibáñez wrote:
+> > > > On Tuesday, 21 March 2023 at 16:27:57 UTC sarahk...@gmail.com wrote:
+> > > > > Hi Manuel,
+> > > > >
+> > > > > I tried to use mpirun with the --parallel option in the job script on compute canada, but it couldn't work. I executed it with an R script that included data loading, target.runner function, scenario and parameter lists. It worked fine on my local machine, but is it the right way to run irace in Linux?
+> > > >
+> > > > I personally would find easier to run irace via the command-line irace and put the various bits and pieces in different files as the command-line irace executable expects. This is what the script https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-mpi uses.
+> > > >
+> > > > Alternatively, you can put everything together in one .R file that calls irace() (or irace.main()) and run the .R file using Rscript (https://stat.ethz.ch/R-manual/R-devel/library/utils/html/Rscript.html), but you need still a bash script to set the options needed for SLURM and MPI and call Rscript from bash.
+> > > >
+> > > > > Also, I noticed that in the irace/bin folder, there is a file called "parallel-irace-slurm", and in the irace/examples/batchmode-cluster, there is "target-runner-slurm" file. Both look like bash scripts. I wonder which one should be used for compute canada, which should depend on slurm cluster.
+> > > >
+> > > > Probably the most useful for you is https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-slurm. This is launching the command-line irace via slurm. You could replace the command-line irace with "Rscript yourscript.R".
+> > > >
+> > > > But you sill need to modify it to setup MPI (by calling mpirun or setting some options). You may need also to change the SLURM options that do not apply to your cluster.
+> > > >
+> > > > What to change is difficult to say as different clusters require difference commands and options. You may need to load some module to activate R or install extra packages. You need to read the documentation provided and/or contact someone from the support staff in Compute Canada. Surely, you are not the only person running R scripts using MPI.
+> > > >
+> > > > > In addition to the bash script, is it possible to run the R script in Linux, or do I have to divide it into several files, while each contains one info (parameter list/scenario list/target.runner function)?
+> > > >
+> > > > You can run an .R script in Linux with Rscript myscript.R. You can define everything within myscript.R and not use any extra files if you wish to do that.
+> > > >
+> > > > > There are really not many examples online for this. I really appreciate your help and advice.
+> > > >
+> > > > It would be great to have more examples. Unfortunately, I rely on users to send me examples for the systems that I don't use. The github repository contains  the examples that I'm aware of.
+> > > >
+> > > > Good luck!
+> > > >
+> > > > Manuel.
+> > > >
+
+From u6421e62902e52848 at groups.google.com  Mon Apr  3 21:52:04 2023
+From: u6421e62902e52848 at groups.google.com (Sarah Lee)
+Date: Mon, 03 Apr 2023 21:52:04 +0000
+Subject: Re: Parallelism in irace at Compute Canada
+Message-ID: <_yB14S3s4v8.ArksHRZGAgAJ@irace-package.groups.google.com>
+In-Reply-To: <_yB14S3s4v8.O1fvhNc2AgAJ@irace-package.groups.google.com>
+References: <_yB14S3s4v8.Bsp7xWRgAgAJ@irace-package.groups.google.com> <_yB14S3s4v8.O1fvhNc2AgAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/_yB14S3s4v8/m/ArksHRZGAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Manuel,
+
+I have sent it to your email.
+
+Cheers,
+
+Sarah
+
+On Monday, April 3, 2023 at 11:12:42 AM UTC-6 Manuel López-Ibáñez wrote:
+> Dear Sarah,
+>
+> You can share them here if you wish or send them to my email address and I will upload them to the git repository: https://github.com/MLopez-Ibanez/irace
+>
+> Please, only the scripts and text files for setting up and launching irace (no datasets no code for your own algorithm).
+>
+> Cheers,
+>
+> Manuel.
+>
+> On Monday, 3 April 2023 at 18:08:49 UTC+1 sarahk...@gmail.com wrote:
+> > Hello Manuel,
+> >
+> > Sure, I'd love to share it. Do I need to share it here or make it public in another place?
+> >
+> > Best,
+> > Sarah
+> >
+> > On Monday, April 3, 2023 at 4:51:25 AM UTC-6 Manuel López-Ibáñez wrote:
+> > > Dear Sarash,
+> > >
+> > > Would it be possible to share your setup? I think it would be helpful for other users. I  don't need the code to your algorithm or the instances, only the scripts that you use to launch irace, the target-runner (and target-evaluator if you use that), and the scenario.txt (if you use that).
+> > >
+> > > Thanks,
+> > >
+> > > Manuel.
+> > >
+> > > On Monday, 27 March 2023 at 03:29:04 UTC+1 sarahk...@gmail.com wrote:
+> > > > Hi Manuel,
+> > > >
+> > > > Thank you for your detailed reply. It now works out!
+> > > >
+> > > > Best,
+> > > >
+> > > > Sarah
+> > > >
+> > > > On Tuesday, March 21, 2023 at 11:16:42 AM UTC-6 Manuel López-Ibáñez wrote:
+> > > > > On Tuesday, 21 March 2023 at 16:27:57 UTC sarahk...@gmail.com wrote:
+> > > > > > Hi Manuel,
+> > > > > >
+> > > > > > I tried to use mpirun with the --parallel option in the job script on compute canada, but it couldn't work. I executed it with an R script that included data loading, target.runner function, scenario and parameter lists. It worked fine on my local machine, but is it the right way to run irace in Linux?
+> > > > >
+> > > > > I personally would find easier to run irace via the command-line irace and put the various bits and pieces in different files as the command-line irace executable expects. This is what the script https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-mpi uses.
+> > > > >
+> > > > > Alternatively, you can put everything together in one .R file that calls irace() (or irace.main()) and run the .R file using Rscript (https://stat.ethz.ch/R-manual/R-devel/library/utils/html/Rscript.html), but you need still a bash script to set the options needed for SLURM and MPI and call Rscript from bash.
+> > > > >
+> > > > > > Also, I noticed that in the irace/bin folder, there is a file called "parallel-irace-slurm", and in the irace/examples/batchmode-cluster, there is "target-runner-slurm" file. Both look like bash scripts. I wonder which one should be used for compute canada, which should depend on slurm cluster.
+> > > > >
+> > > > > Probably the most useful for you is https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-slurm. This is launching the command-line irace via slurm. You could replace the command-line irace with "Rscript yourscript.R".
+> > > > >
+> > > > > But you sill need to modify it to setup MPI (by calling mpirun or setting some options). You may need also to change the SLURM options that do not apply to your cluster.
+> > > > >
+> > > > > What to change is difficult to say as different clusters require difference commands and options. You may need to load some module to activate R or install extra packages. You need to read the documentation provided and/or contact someone from the support staff in Compute Canada. Surely, you are not the only person running R scripts using MPI.
+> > > > >
+> > > > > > In addition to the bash script, is it possible to run the R script in Linux, or do I have to divide it into several files, while each contains one info (parameter list/scenario list/target.runner function)?
+> > > > >
+> > > > > You can run an .R script in Linux with Rscript myscript.R. You can define everything within myscript.R and not use any extra files if you wish to do that.
+> > > > >
+> > > > > > There are really not many examples online for this. I really appreciate your help and advice.
+> > > > >
+> > > > > It would be great to have more examples. Unfortunately, I rely on users to send me examples for the systems that I don't use. The github repository contains  the examples that I'm aware of.
+> > > > >
+> > > > > Good luck!
+> > > > >
+> > > > > Manuel.
+> > > > >
+
+From u1d9f190c517292b6 at groups.google.com  Wed Apr  5 07:10:46 2023
+From: u1d9f190c517292b6 at groups.google.com (Thomas Feutrier)
+Date: Wed, 05 Apr 2023 07:10:46 +0000
+Subject: Error on recovery file
+Message-ID: <UBIMqfSze1Y.nAW4rF01BAAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/UBIMqfSze1Y/m/nAW4rF01BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello, I have a problem with a logfile that I wanted to use as a recoveryfile after a crash of my computer. However, I get this error when I restart: 'Error in computeNbConfigurations(currentBudget, indexIteration, mu = scenario$mu, :
+  object 'blockSize' not found', I use one of the latest github version available. Where does this come from, I can't find the blocksize variable and I don't understand what has changed compared to before?
+Thank you
+Feutrier Thomas
+
+From u854a0709976c2a48 at groups.google.com  Wed Apr  5 09:01:49 2023
+From: u854a0709976c2a48 at groups.google.com (=?utf-8?b?TWFudWVsIEzDs3Blei1JYsOhw7Fleg==?=)
+Date: Wed, 05 Apr 2023 09:01:49 +0000
+Subject: Re: Error on recovery file
+Message-ID: <UBIMqfSze1Y.mLCMMm07BAAJ@irace-package.groups.google.com>
+In-Reply-To: <UBIMqfSze1Y.nAW4rF01BAAJ@irace-package.groups.google.com>
+References: <UBIMqfSze1Y.nAW4rF01BAAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/UBIMqfSze1Y/m/mLCMMm07BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Thomas,
+
+Normally one should not try to recover from a file generated by a different version of irace, because irace options change and even the irace procedures may have small changes that make recovery not produce the same results.
+
+In this case, the irace version in git has a new option 'blockSize' but the recovery file does not have such an option. You can "hack" the recovery file by editing the data within it, adding the option to the scenario component with a value that would make sense, but unless you really know what you are doing and you understand the implications, I would not recommend it. I would suggest to downgrade to the previous version of irace or to start from scratch. You can also extract the experimental executed by irace from the recovery data and construct a "cache" file for your experiments to avoid repeating very expensive computations.
+
+The next version of irace will give a clearer error in this case: https://github.com/MLopez-Ibanez/irace/commit/a648e9ba63a6028c25602ec0b3732fa205c2ca81
+
+Best wishes,
+
+Manuel.
+
+On Wednesday, 5 April 2023 at 08:10:46 UTC+1 Thomas Feutrier wrote:
+> Hello, I have a problem with a logfile that I wanted to use as a recoveryfile after a crash of my computer. However, I get this error when I restart: 'Error in computeNbConfigurations(currentBudget, indexIteration, mu = scenario$mu, :
+>   object 'blockSize' not found', I use one of the latest github version available. Where does this come from, I can't find the blocksize variable and I don't understand what has changed compared to before?
+> Thank you
+> Feutrier Thomas
+
+From u1d9f190c517292b6 at groups.google.com  Wed Apr  5 09:40:07 2023
+From: u1d9f190c517292b6 at groups.google.com (Thomas Feutrier)
+Date: Wed, 05 Apr 2023 09:40:07 +0000
+Subject: Re: Error on recovery file
+Message-ID: <UBIMqfSze1Y.Ac9hL4Q9BAAJ@irace-package.groups.google.com>
+In-Reply-To: <UBIMqfSze1Y.nAW4rF01BAAJ@irace-package.groups.google.com>
+References: <UBIMqfSze1Y.nAW4rF01BAAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/UBIMqfSze1Y/m/Ac9hL4Q9BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Okay I understand but in my case I use the same version to generate the first logFile and to use it as a revory file. So is it normal that the same version does not ask for the same structure ? My version is irace_3.5.1.
+By curiosity, what is blocksize?
+
+Le mercredi 5 avril 2023 à 11:01:49 UTC+2, Manuel López-Ibáñez a écrit :
+> Hi Thomas,
+>
+> Normally one should not try to recover from a file generated by a different version of irace, because irace options change and even the irace procedures may have small changes that make recovery not produce the same results.
+>
+> In this case, the irace version in git has a new option 'blockSize' but the recovery file does not have such an option. You can "hack" the recovery file by editing the data within it, adding the option to the scenario component with a value that would make sense, but unless you really know what you are doing and you understand the implications, I would not recommend it. I would suggest to downgrade to the previous version of irace or to start from scratch. You can also extract the experimental executed by irace from the recovery data and construct a "cache" file for your experiments to avoid repeating very expensive computations.
+>
+> The next version of irace will give a clearer error in this case: https://github.com/MLopez-Ibanez/irace/commit/a648e9ba63a6028c25602ec0b3732fa205c2ca81
+>
+> Best wishes,
+>
+> Manuel.
+>
+>
+>
+> On Wednesday, 5 April 2023 at 08:10:46 UTC+1 Thomas Feutrier wrote:
+> > Hello, I have a problem with a logfile that I wanted to use as a recoveryfile after a crash of my computer. However, I get this error when I restart: 'Error in computeNbConfigurations(currentBudget, indexIteration, mu = scenario$mu, :
+> >   object 'blockSize' not found', I use one of the latest github version available. Where does this come from, I can't find the blocksize variable and I don't understand what has changed compared to before?
+> > Thank you
+> > Feutrier Thomas
+
+From u854a0709976c2a48 at groups.google.com  Wed Apr  5 13:58:32 2023
+From: u854a0709976c2a48 at groups.google.com (=?utf-8?b?TWFudWVsIEzDs3Blei1JYsOhw7Fleg==?=)
+Date: Wed, 05 Apr 2023 13:58:32 +0000
+Subject: Re: Error on recovery file
+Message-ID: <UBIMqfSze1Y.nzgtSJ5LBAAJ@irace-package.groups.google.com>
+In-Reply-To: <UBIMqfSze1Y.Ac9hL4Q9BAAJ@irace-package.groups.google.com>
+References: <UBIMqfSze1Y.nAW4rF01BAAJ@irace-package.groups.google.com> <UBIMqfSze1Y.Ac9hL4Q9BAAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/UBIMqfSze1Y/m/nzgtSJ5LBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+If you are installing from github, the check becomes trickier as new options and changes are added during development. I have not found a way to automatically update the version number with the github revision when the package is installed.
+
+`blockSize` is a new scenario option, documented here: https://mlopez-ibanez.github.io/irace/news/index.html#new-features-and-improvements-development-version
+and in the user-guide: https://mlopez-ibanez.github.io/irace/irace-package.pdf
+
+Best,
+
+Manuel.
+
+On Wednesday, 5 April 2023 at 10:40:07 UTC+1 Thomas Feutrier wrote:
+>
+> Okay I understand but in my case I use the same version to generate the first logFile and to use it as a revory file. So is it normal that the same version does not ask for the same structure ? My version is irace_3.5.1.
+> By curiosity, what is blocksize?
+> Le mercredi 5 avril 2023 à 11:01:49 UTC+2, Manuel López-Ibáñez a écrit :
+> > Hi Thomas,
+> >
+> > Normally one should not try to recover from a file generated by a different version of irace, because irace options change and even the irace procedures may have small changes that make recovery not produce the same results.
+> >
+> > In this case, the irace version in git has a new option 'blockSize' but the recovery file does not have such an option. You can "hack" the recovery file by editing the data within it, adding the option to the scenario component with a value that would make sense, but unless you really know what you are doing and you understand the implications, I would not recommend it. I would suggest to downgrade to the previous version of irace or to start from scratch. You can also extract the experimental executed by irace from the recovery data and construct a "cache" file for your experiments to avoid repeating very expensive computations.
+> >
+> > The next version of irace will give a clearer error in this case: https://github.com/MLopez-Ibanez/irace/commit/a648e9ba63a6028c25602ec0b3732fa205c2ca81
+> >
+> > Best wishes,
+> >
+> > Manuel.
+> >
+> >
+> >
+> > On Wednesday, 5 April 2023 at 08:10:46 UTC+1 Thomas Feutrier wrote:
+> > > Hello, I have a problem with a logfile that I wanted to use as a recoveryfile after a crash of my computer. However, I get this error when I restart: 'Error in computeNbConfigurations(currentBudget, indexIteration, mu = scenario$mu, :
+> > >   object 'blockSize' not found', I use one of the latest github version available. Where does this come from, I can't find the blocksize variable and I don't understand what has changed compared to before?
+> > > Thank you
+> > > Feutrier Thomas
+
+From u027f33c3b205e695 at groups.google.com  Wed Apr  5 23:38:44 2023
+From: u027f33c3b205e695 at groups.google.com (Rachel Yuan)
+Date: Wed, 05 Apr 2023 23:38:44 +0000
+Subject: Re: Problem in parallelizing irace
+Message-ID: <IRphSM0iY3A.LgcBoUdrBAAJ@irace-package.groups.google.com>
+In-Reply-To: <IRphSM0iY3A.qL2GAOYhAgAJ@irace-package.groups.google.com>
+References: <IRphSM0iY3A.A9-MOLy6AQAJ@irace-package.groups.google.com> <IRphSM0iY3A.qL2GAOYhAgAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/IRphSM0iY3A/m/LgcBoUdrBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Manuel,
+
+Thank you so much for your detailed descriptions!
+
+I am mostly interested in using option 2 and option 3, but I have a few more questions about how to use them.
+
+1) For option 2, I assume that using multiple machines should run faster than using a single machine. I am in the process of installing the Rmpi. Just wondering, is there an example of using mpirun for irace?
+
+2) For option 3, by enabling "batchmode = slurm" in the scenario list, what does it mean to have jobs submitted serially? When the first group of jobs is submitted, say 10, these jobs evaluate 10 configuration candidates. Once finished, it sends back the results and another groups of 10 jobs is submitted representing another 10 configuration candidates for evaluation. When all the results are returned, it produces the best configuration. Is it what it means?
+
+Also, I wonder how fast option 3 is compared with option 2 in terms of parallelized computation time. (my highest priority is to minimize the running time at this point)
+
+Thanks,
+Rachel
+
+On Monday, April 3, 2023 at 4:48:55 AM UTC-6 Manuel López-Ibáñez wrote:
+> Hi Rachel,
+>
+> I'm not sure I understand completely your setup and limitations. What does it mean to "split the parameter space" or "split the datasets"? In any case there are four main options:
+>
+> The simplest form of parallelization is to execute the calls to target-runner in parallel. If you can reserve N CPUs in a single machine, then you can simply submit the job to the cluster and use the irace option "--parallel N" so that irace will evaluate multiple calls to target-runner in parallel. This means that you submit 1 job (= 1 run of irace) to the cluster but the job uses many CPUs within the same machine.
+>
+> The second option is to use MPI to use CPUs from multiple machines. This means that you submit 1 job (= 1 run of irace) but the job is setup to use MPI. For this you need to install Rmpi: https://docs.alliancecan.ca/wiki/R#Rmpi (Make sure that it works). Then replace:
+>
+>  R CMD BATCH test.R test.txt
+>
+> with whatever way you use to call irace, maybe:
+>
+> /path/to/irace/bin/irace --mpi 1 --parallel N
+>
+> or
+>
+> Rscript launch_irace.R
+>
+> (In launch_irace.R, you need to use the scenario options mpi=TRUE and paralllel=N)
+>
+> N here is the number of CPUs to use (ideally as many as you can, at least 64 or more) and it will be the same as
+>
+> #SBATCH --ntasks=N # number of MPI processes
+>
+> The third option is that you run irace in the submission node using the scenario option --batchmode=slurm (or whatever system your cluster uses). You need to make sure that irace will not get killed when you logout. In this mode,  irace is the one submitting jobs to the cluster and waiting for them to finish, that is, irace will submit many jobs, wait for them to finish, then submit more jobs. For this, you need to write a target-runner similar to https://github.com/MLopez-Ibanez/irace/blob/master/inst/examples/batchmode-cluster/target-runner-slurm that submits one run of your target-runner (NOT of irace) to the cluster. You also need to write a target-evaluator (https://github.com/MLopez-Ibanez/irace/blob/master/inst/examples/batchmode-cluster/target-evaluator) that will be called when the target-runner is done, collect the results available and print the cost.
+>
+> The 4th option is to write your own function targetRunnerParallel(). In this function you can use whatever R/Python packages you wish to do the parallelization. For example, you could use the package: https://mllg.github.io/batchtools/ or the package: https://future.batchtools.futureverse.org/ or something else that you find easy to work with. Irace will call the function with the list of executions it wants to do, and the function must return the results. If you use this 4th option, please let me know as we don't have an example of this in the documentation and it would be great to have one if you wish to share your code.
+>
+> There are other things that you can do to reduce the problem. If your algorithm reports progress over time, you can use capping to avoid running bad configurations until the end and terminating them earlier: https://www.sciencedirect.com/science/article/pii/S0305054821003300
+>
+> Best wishes,
+>
+> Manuel.
+>
+>
+> On Sunday, 2 April 2023 at 04:18:26 UTC+1 rachel....@gmail.com wrote:
+> > Hi there,
+> >
+> > I am working on a project that needs parameter tuning with irace. My datasets are many (around 100 datasets), and in order to get the results faster, our team is using Compute Canada to obtain results for large datasets. I was using Rscript command to call and run irace. However, as our data are growing, the running time became longer, even beyond the allowed running time on Compute Canada. So, Rscript is no longer sufficient for our use and how to split jobs for many large datasets has become a struggle.
+> >
+> > As far as I know, both the parameter space and datasets to be used are fixed in an irace run. So there is no way for us to divide the parameter space or datasets for job submissions in parallel (we need to run 100 datasets altogether in one irace run). From the user guide, there are four options to parallelize irace runs. But I am not that familiar with those options.
+> >
+> > So I wonder if there is an approach to parallelize irace for cluster jobs (Compute Canada uses slurm) in a way that, given fixed parameter space and datasets, it can produce many array jobs (10-20, for example) to run irace concurrently but still evaluating the same parameter space and the same datasets. Or is there a way to submit a few jobs to evaluate parts of parameter candidates and obtain some results back, then send another jobs to evaluate the remaining parameter candidates and produce final results, based on the first returned results? Does the batchmode or batchtools work in this case?
+> >
+> > I am not sure if I have explained the problem clearly. If not, let me know and thank you very much for your help!
+> >
+> > Best,
+> > Rachel
+
+From u854a0709976c2a48 at groups.google.com  Thu Apr  6 11:37:17 2023
+From: u854a0709976c2a48 at groups.google.com (=?utf-8?b?TWFudWVsIEzDs3Blei1JYsOhw7Fleg==?=)
+Date: Thu, 06 Apr 2023 11:37:17 +0000
+Subject: Re: Problem in parallelizing irace
+Message-ID: <IRphSM0iY3A.F8OKh32SBAAJ@irace-package.groups.google.com>
+In-Reply-To: <IRphSM0iY3A.A9-MOLy6AQAJ@irace-package.groups.google.com>
+References: <IRphSM0iY3A.A9-MOLy6AQAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/IRphSM0iY3A/m/F8OKh32SBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Thursday, 6 April 2023 at 00:38:44 UTC+1 rachel....@gmail.com wrote:
+>
+> 1) For option 2, I assume that using multiple machines should run faster than using a single machine. I am in the process of installing the Rmpi. Just wondering, is there an example of using mpirun for irace?
+
+Not necessarily. If your cluster has nodes with 64 or 128 CPUs, then it will be faster to run on a single node with 128 CPUs than run on 8 nodes with 16 CPUs. The communication between nodes required by MPI can be very very slow depending on the cluster.
+
+This is an example of launching irace with MPI in a SGE cluster: https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-mpi
+If you manage to make it work with SLURM, please share the submission script.
+
+> 2) For option 3, by enabling "batchmode = slurm" in the scenario list, what does it mean to have jobs submitted serially? When the first group of jobs is submitted, say 10, these jobs evaluate 10 configuration candidates. Once finished, it sends back the results and another groups of 10 jobs is submitted representing another 10 configuration candidates for evaluation. When all the results are returned, it produces the best configuration. Is it what it means?
+
+Yes, irace will submit jobs (so the target-runner must call sbatch and return the jobID), irace will monitor the jobs in the queue and submit more when needed. In this mode, --parallel option controls the maximum number of jobs allowed in the queue (your cluster may have a maximum, otherwise do not use the option so irace will submit as many as needed)
+
+> Also, I wonder how fast option 3 is compared with option 2 in terms of parallelized computation time. (my highest priority is to minimize the running time at this point)
+
+Once irace is running, option 1 is the fastest. Option 2 can be faster if you can request many more CPUs than with option 1. However, depending on the configuration of your cluster, requesting many CPUs may require waiting in the queue a long time until all requested CPUs are available.
+
+Option 3 is the slowest BUT it may start running as soon as 1 CPU is available, so it may actually finish earlier than the other options if there is always a few CPUs available in the system.
+
+Personally, I would advise to check in the documentation of your cluster, how many CPUs a single node may have, then run option 1 with that number of CPUs. If that number is 64 or more, it should be enough unless a single run of irace evaluates thousands of configurations. Otherwise, investigate option 2. If option 2 doesn't work, then investigate option 3.
+
+Best,
+
+Manuel.
+
+From u027f33c3b205e695 at groups.google.com  Thu Apr  6 18:07:37 2023
+From: u027f33c3b205e695 at groups.google.com (Rachel Yuan)
+Date: Thu, 06 Apr 2023 18:07:37 +0000
+Subject: Re: Problem in parallelizing irace
+Message-ID: <IRphSM0iY3A.dAvLW8qnBAAJ@irace-package.groups.google.com>
+In-Reply-To: <IRphSM0iY3A.F8OKh32SBAAJ@irace-package.groups.google.com>
+References: <IRphSM0iY3A.A9-MOLy6AQAJ@irace-package.groups.google.com> <IRphSM0iY3A.F8OKh32SBAAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/IRphSM0iY3A/m/dAvLW8qnBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Got it. Thank you very much, Manuel! I will check out # of CPUs in the clusters and go from there to see which option I should pursue.
+
+Thanks once again!
+
+Rachel
+
+On Thursday, April 6, 2023 at 5:37:17 AM UTC-6 Manuel López-Ibáñez wrote:
+> On Thursday, 6 April 2023 at 00:38:44 UTC+1 rachel....@gmail.com wrote:
+> >
+> > 1) For option 2, I assume that using multiple machines should run faster than using a single machine. I am in the process of installing the Rmpi. Just wondering, is there an example of using mpirun for irace?
+>
+> Not necessarily. If your cluster has nodes with 64 or 128 CPUs, then it will be faster to run on a single node with 128 CPUs than run on 8 nodes with 16 CPUs. The communication between nodes required by MPI can be very very slow depending on the cluster.
+>
+> This is an example of launching irace with MPI in a SGE cluster: https://github.com/MLopez-Ibanez/irace/blob/master/inst/bin/parallel-irace-mpi
+> If you manage to make it work with SLURM, please share the submission script.
+>
+> > 2) For option 3, by enabling "batchmode = slurm" in the scenario list, what does it mean to have jobs submitted serially? When the first group of jobs is submitted, say 10, these jobs evaluate 10 configuration candidates. Once finished, it sends back the results and another groups of 10 jobs is submitted representing another 10 configuration candidates for evaluation. When all the results are returned, it produces the best configuration. Is it what it means?
+>
+> Yes, irace will submit jobs (so the target-runner must call sbatch and return the jobID), irace will monitor the jobs in the queue and submit more when needed. In this mode, --parallel option controls the maximum number of jobs allowed in the queue (your cluster may have a maximum, otherwise do not use the option so irace will submit as many as needed)
+> > Also, I wonder how fast option 3 is compared with option 2 in terms of parallelized computation time. (my highest priority is to minimize the running time at this point)
+>
+> Once irace is running, option 1 is the fastest. Option 2 can be faster if you can request many more CPUs than with option 1. However, depending on the configuration of your cluster, requesting many CPUs may require waiting in the queue a long time until all requested CPUs are available.
+>
+> Option 3 is the slowest BUT it may start running as soon as 1 CPU is available, so it may actually finish earlier than the other options if there is always a few CPUs available in the system.
+>
+> Personally, I would advise to check in the documentation of your cluster, how many CPUs a single node may have, then run option 1 with that number of CPUs. If that number is 64 or more, it should be enough unless a single run of irace evaluates thousands of configurations. Otherwise, investigate option 2. If option 2 doesn't work, then investigate option 3.
+>
+> Best,
+>
+> Manuel.
+
+From u95230de30c784b4a at groups.google.com  Thu Apr 13 16:06:50 2023
+From: u95230de30c784b4a at groups.google.com (Phoebe Liu)
+Date: Thu, 13 Apr 2023 16:06:50 +0000
+Subject: Question about running on multiple datasets
+Message-ID: <TsqO5rOgt8k.HadkhekzDgAJ@irace-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/irace-package/c/TsqO5rOgt8k/m/HadkhekzDgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Manual,
+
+I was asking about how to work with datasets in irace previously. I am sorry for asking some similar questions again.
+
+I am using multiple datasets to tune the parameters, and to make things simple, say 3 datasets. They are saved in a list, so there is a list of three datasets.
+
+I want irace to search for the best configuration within a given parameter space across the 3 datasets. I am using the similar example in another conversation to illustrate:
+
+//
+
+library(irace)
+
+# data generation
+dataset1 <- matrix(runif(1000), nrow=500)
+dataset2 <- matrix(runif(1000), nrow=500)
+dataset3 <- matrix(runif(1000), nrow=500)
+
+dataset <- list(dataset1, dataset2, dataset3)
+
+# target runner function
+target.runner <- function(experiment, scenario) {
+
+  instance <- experiment$instance
+  configuration <- experiment$configuration
+
+  res <- list(value = my_algo(instance, configuration))
+  return(list(cost = res$value))
+}
+
+parameters <- readParameters(text='
+....
+')
+parameters <- readParameters(text = parameter_table)
+
+# scenario
+scenario <- list(targetRunner = target.runner,
+                 instances = list(dataset[[1]], dataset[[2]], dataset[[3]]),
+                 maxExperiments = 200,
+                 logFile = "")
+
+# check that the scenario is valid.
+checkIraceScenario(scenario, parameters = parameters)
+
+# run irace
+my_results <- irace(scenario = scenario, parameters = parameters)
+
+//
+
+It is a little redundant to generate a list of datasets and unlist it into three datasets for running. This part can be modified. But I would like to make sure if that is the way above for irace to evaluate the algorithm across multiple datasets. I do not want to have three results from three datasets generated in a single run. Instead, I want it to search and evaluate the dataset to produce a single cost value based on my proposed algorithm and then repeat the process across multiple datasets until the best configuration is found. So, in this case, is it the way above to do it?
+
+If I put "instances = list(dataset)" in the scenario list instead of "instances = list(dataset[[1]], dataset[[2]], dataset[[3]])", it will have a different meaning, which is to evaluate all three datasets in a single run, rather than evaluate a single dataset in a single run. Do I understand it correctly?
+
+By importing the datasets in this way above, does it work in the same way as instancesFile does? (My dataset reading needs some function to process, so it is hard to use instancesFile directly.)
+
+Thank you so much in advance!
+
+Best regards,
+Phoebe
+
