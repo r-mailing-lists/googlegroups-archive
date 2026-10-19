@@ -42,14 +42,14 @@ Some of R's busiest help forums of the 2010s were Google Groups rather than R's 
 | `nat-user` | The NeuroAnatomy Toolbox (natverse) | active, updated daily |
 | `netlogor` | The NetLogoR package | last post August 2023 |
 | `nimble-users` | NIMBLE, hierarchical models and MCMC | active, updated daily |
-| `nlsy-links` | NlsyLinks, behavior genetics with the NLSY samples | no longer active |
+| `nlsy-links` | NlsyLinks, behavior genetics with the NLSY samples | last post March 2022 |
 | `oscr-package` | oSCR, open spatial capture-recapture | active, updated daily |
 | `pez-users` | The pez package | last post January 2018 |
 | `phylogram` | The phylogram package | last post September 2022 |
 | `piecepackr` | The piecepackr package | last post August 2024 |
 | `poppr` | The poppr package | active, updated daily |
 | `qcawithr` | Qualitative Comparative Analysis with R | active, updated daily |
-| `r-and-cpp` | R and C++ | no longer active |
+| `r-and-cpp` | R and C++ | last post May 2024 |
 | `r-hiphop` | The hiphop package | last post October 2023 |
 | `r-inla-discussion-group` | R-INLA, Bayesian inference with integrated nested Laplace approximations | active, updated daily |
 | `r-package-xlsx` | Development of the xlsx package | last post November 2021 |
