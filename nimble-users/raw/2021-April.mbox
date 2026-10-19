@@ -1,0 +1,3456 @@
+From u2504f1f1633f946f at groups.google.com  Thu Apr  1 14:54:15 2021
+From: u2504f1f1633f946f at groups.google.com (Mattia Falaschi)
+Date: Thu, 01 Apr 2021 14:54:15 +0000
+Subject: Re: nimStep function error
+Message-ID: <7y0ez80OYyo.v0gA1sFtCwAJ@nimble-users.groups.google.com>
+In-Reply-To: <7y0ez80OYyo.usRUvlecCQAJ@nimble-users.groups.google.com>
+References: <7y0ez80OYyo.9H29HyVmEAAJ@nimble-users.groups.google.com> <7y0ez80OYyo.usRUvlecCQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/7y0ez80OYyo/m/v0gA1sFtCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you very much Daniel for your enlightening reply!
+I always have issues with inits, but I am glad that the model itself is fine.
+
+I modified the inits as you suggested and the model runs fine, with no more errors/warnings, even after adding some covariates.
+
+Regarding b0: yes, I am working on a more complex model to estimate the effect of some covariates on the abundance of newts, this is the reason why p.nb is defined for each site.
+
+Again, thank you very much for the help.
+Mattia
+
+Il giorno mercoledì 31 marzo 2021 alle 17:04:04 UTC+2 db...@williams.edu ha scritto:
+> Mattia, thanks for your persistence and use of NIMBLE.  I tried running your model, and a few comments:
+>
+> Noting that each lambda[i] is defined the same as exp(b0), so also each p.nb[i] term is exactly the same.  I'm not sure if you meant it this way, or perhaps you're working up to a more complex model?  But if not, the code could be simplified.
+>
+> I took a look at the errors, and I think it just comes down to choices of initial values.  I made a few changes:
+>
+> The initial value for the p parameter, you had "rnorm(1,0,1)", but as p is a probability, this was often giving negative values for p, which led to an invalid model state. I changed the initial value for p to "p = runif(1, 0, 1)"
+>
+> The initial value for eta, you had "rnorm(1, 0, 1)", and while valid, in many cases this was "too large" of a value, and the term from your model:
+>
+> exp(log(N[i,t-1]) + rho - eta*N[i,t-1] + S[i] + T[t])
+>
+> when eta was say -1, and a value of N is say 10, this would lead to L being on the order exp(10), which was way too large, and was causing a density evaluation for N (since N[i,t] ~ dpois(L[i,t])) of -Inf.  So, we need a more "neutral" initial value for eta.  I changed the initial value simply to 0, and we can let the MCMC explore from there.  If you truly want a "random" initial value for eta, then I would recommend something much closer to 0, such as "rnorm(1, 0, 0.001)"
+>
+> The same problem was happening in the initial values for both S and T.  Their initial values, say for S:
+>
+> S = rnorm(nrow(counts),0,pow(rtruncnorm(1,a=0,,mean=0,sd=1),-2)),
+>
+> The problem is, when the truncnorm() function returns a small value, near to 0, say 0.1, then pow(0.1, -2) = 100 is the standard deviation for drawing the initial values for S (and same happening for T), and therefore the initial values of S (and T) are often on the order of 100, or 200, then these are also appear in the term:
+>
+> L[i,t] <- step(N[i,t-1]-0.01) * exp(log(N[i,t-1]) + rho - eta*N[i,t-1] + S[i] + T[t]) + ...
+>
+> and the exp(S), or exp(T) again gives a huge number, and would cause the density evaluation (the same problem as before) for N to be -Inf.  So, I changed the initial values for S and T to have smaller standard deviations, to give smaller numbers for S and T:
+>
+> S = rnorm(nrow(counts),0,1)
+> T = rnorm(ncol(counts),0,1)
+>
+> All told, the new initial values list looks like:
+> inits <-list(N = (counts+1), b0 = rnorm(1,0,1),
+>              p = runif(1, 0, 1), ##rnorm(1,0,1),
+>              alpha = runif(1,0,50),
+>              eta = 0, ##rnorm(1,0,1),
+>              rho = rnorm(1,0,1),
+>              S = rnorm(nrow(counts),0,1), ##pow(rtruncnorm(1,a=0,,mean=0,sd=1),-2)),
+>              T = rnorm(ncol(counts),0,1), ##pow(rtruncnorm(1,a=0,,mean=0,sd=1),-2)),
+>              sigma.S = rtruncnorm(1,a=0,,mean=0,sd=1), sigma.T = rtruncnorm(1,a=0,,mean=0,sd=1),
+>              tau.S = pow(rtruncnorm(1,a=0,,mean=0,sd=1),-2), tau.T=pow(rtruncnorm(1,a=0,,mean=0,sd=1),-2))
+>
+> And this seemed to work for me, and not produce any warnings or errors.
+>
+> To diagnose these problems, you can look at the variables in the model, such as:
+>
+> Rmodel$T
+> Rmodel$S
+> Rmodel$p
+>
+> And equally useful, you can look at the density evaluations (log-probabilities) of stochastic model variables as:
+>
+> Rmodel$logProb_y
+> Rmodel$logProb_N
+>
+> So, that way you can figure out where the -Infs, or NaNs are coming from.
+>
+> Hope this helps.  Keep at it.
+>
+> Daniel
+>
+>
+> On Fri, Mar 26, 2021 at 12:45 PM Mattia Falaschi <matt...@gmail.com> wrote:
+> > Hello again,
+> > I am having more troubles with the same model.
+> > I hope you can help me in solving these issues.
+> >
+> > Here is the model. I also attach the data and the script to run it.
+> >
+> > model.ricker.nb <- nimbleCode({
+> >
+> >   for (i in 1:nSite){
+> >     N[i,1] ~ dnegbin(p.nb[i], alpha)
+> >     p.nb[i]<-alpha/(alpha+lambda[i])
+> >     lambda[i] <- exp(b0)
+> >
+> >     for (t in 2:Tf[i]){
+> >       N[i,t] ~ dpois(L[i,t])
+> >       L[i,t] <- step(N[i,t-1]-0.01) * exp(log(N[i,t-1]) + rho - eta*N[i,t-1] + S[i] + T[t]) +
+> >                (1 - step(N[i,t-1]-0.01)) * exp(rho + S[i] + T[t])
+> >     }
+> >
+> >     for (t in T0[i]:Tf[i]){
+> >       y[i,t] ~ dbin(p,N[i,t])
+> >     }
+> >   }
+> >
+> >   # Priors
+> >   for(i in 1:nSite){
+> >     S[i] ~ dnorm(0,tau.S)
+> >   }
+> >   for(t in 2:nYear){
+> >     T[t] ~ dnorm(0,tau.T)
+> >   }
+> >
+> >   tau.S <- pow(sigma.S,-2)
+> >   sigma.S ~ T(dt(0,1,1),0,)
+> >
+> >   tau.T <- pow(sigma.T,-2)
+> >   sigma.T ~ T(dt(0,1,1),0,)
+> >
+> >   b0 ~ dnorm(0,0.01)
+> >
+> >   p ~ dunif(0,1)
+> >
+> >   eta ~ dnorm(0,0.01)
+> >   rho ~ dnorm(0,0.01)
+> >   alpha ~ dunif(0,50)
+> > })
+> >
+> >
+> > When running the "nimbleModel" function, I get some warnings stating
+> > "In dbinom(model$y[getNodeFunctionIndexedInfo(INDEXEDNODEINFO_,  ... : NaN produced)"
+> >
+> > Then (I do not know if it is related) I get many times this message when running the model:
+> > "Warning: slice sampler reached maximum number of contractions for 'N[8, 2]'. Current parameter value is 1."
+> >
+> > The problem is that I do not understand the meaning of these warnings.
+> > I have many NA in the dataset, but I should have avoided them by adding indexing T0 and Tf into the likelihood.
+> >
+> > Thank you again for your patience!
+> >
+> > Il giorno martedì 16 febbraio 2021 alle 09:28:02 UTC+1 Mattia Falaschi ha scritto:
+> > > Thank you very much, I changed the script as you suggested and now it works!
+> > >
+> > > Well, new errors appeared, but they seem to be easier to solve.
+> > > Thank you again.
+> > >
+> > >
+> > >
+> > > Il giorno lunedì 15 febbraio 2021 alle 18:55:13 UTC+1 db...@williams.edu ha scritto:
+> > > > I think it's just the way you have the line breaks separating single declarations in your code file, specifically, line 13:
+> > > >       L[i,t] <- nimStep(N[i,t-1]-0.01) * exp(log(N[i,t-1]) + rho - eta*N[i,t-1] + S[i] + T[t])
+> > > >
+> > > > then line 14 (which is intended to be a continuation of line 13):
+> > > >       +
+> > > >
+> > > > and then, after some comments, the intended continuation of line 13, which is line 17:
+> > > >         (1 - nimStep(N[i,t-1]-0.01)) * exp(rho + S[i] + T[t])
+> > > >
+> > > > Rather, put the "+" line at the end of line 13, and I think it should work.
+> > > >
+> > > >
+> > > > On Mon, Feb 15, 2021 at 6:31 AM Mattia Falaschi <matt...@gmail.com> wrote:
+> > > > > Here is the code of the model
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/907bfea3-bef7-4f4c-92b6-4ef690d958e5n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/907bfea3-bef7-4f4c-92b6-4ef690d958e5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/a11aa538-8187-44e5-846c-39429e8682f3n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/a11aa538-8187-44e5-846c-39429e8682f3n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u052cb554200cab3f at groups.google.com  Mon Apr  5 08:50:02 2021
+From: u052cb554200cab3f at groups.google.com (fraser lewis)
+Date: Mon, 05 Apr 2021 08:50:02 +0000
+Subject: Custom density with Parallel library - error
+Message-ID: <cM6N75R84HA.yT2BEzSUDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/cM6N75R84HA/m/yT2BEzSUDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi All,
+I'm having an issue with an unregistered distribution using the parallel library. The non-parallel version works fine. I have put below two self-contained code examples - the first uses a custom pdf on a single core and works fine. The second uses the parallel library and gives an error about the pdf not being registered - I think I have registered it, so I guess I've not done it properly?
+
+Any thoughts or help much appreciated! thanks.
+best wishes
+Fraser
+
+##################
+The Error:
+##################
+Error in checkForRemoteErrors(val) : one node produced an error: In sizeAssignAfterRecursing: 'rmysde' is not available or its output type is unknown. This occurred for: model_Observation2_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)] <<- rmysde(=1,x0=model_Observation1_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],t=model_lifted_Time2_oBi_cB_minus_Time1_oBi_cB_L11[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],alpha=model_a[1],K=model_K[1],sigma=model_sigma3[1]) This was part of the call: { model_Observation2_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)] <<- rmysde(=1,x0=model_Observation1_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],t=model_lifted_Time2_oBi_cB_minus_Time1_oBi_cB_L11[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],alpha=model_a[1],K=model_K[1],sigma=model_sigma3[1]) }
+
+############################################
+# self-contained code example - the first part runs fine, the second part not
+###############################################################################################################
+# SINGLE CORE VERSION
+# works ok
+###############################################################################################################
+
+rm(list=ls());
+############## DATA
+data1 <-
+structure(list(ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+38L, 38L, 38L, 38L, 38L, 38L), Time1 = c(11, 12, 13, 14, 17,
+18, 19, 20, 25, 26, 27, 28, 32, 33), Observation1 = c(109.08,
+161.68000000000001, 275.70999999999998, 231.21000000000001, 299.63,
+455.69, 540, 713.75999999999999, 723.82000000000005, 819.04999999999995,
+791.57000000000005, 681.34000000000003, 999.44000000000005, 1067.6500000000001
+), ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+38L, 38L, 38L), Time2 = c(12, 13, 14, 17, 18, 19, 20, 25, 26,
+27, 28, 32, 33, 34), Observation2 = c(161.68000000000001, 275.70999999999998,
+231.21000000000001, 299.63, 455.69, 540, 713.75999999999999,
+723.82000000000005, 819.04999999999995, 791.57000000000005, 681.34000000000003,
+999.44000000000005, 1067.6500000000001, 1132.1600000000001)), class = "data.frame", row.names = 331:344)
+
+###########################################
+library(nimble, warn.conflicts = FALSE)
+###########################################
+
+## custom density dXXXX
+dmysde <- nimbleFunction(
+    run = function(x = double(0),                  # random variable value
+                   x0 = double(0, default = 0),
+                   t = double(0, default = 0),
+                   alpha = double(0, default = 0),
+                   K = double(0, default = 0),
+                   sigma = double(0, default = 1), # standard deviation
+
+                   log = integer(0, default = 0)) {
+                         returnType(double(0))
+                         # log pdf
+                         logProb <- (1/2)*(
+                                            -log(2*pi*t) - 2*log(x) - ((
+                                                  ((t*sigma^2)/2) - log(K) + log(x) +
+                                                  (exp(-t*alpha))*(log(K) - log(x0)))^2)/(t*sigma^2) -
+                                          2*log(sigma)
+                                          )
+        if(log) return(logProb)
+        else return(exp(logProb))
+    })
+
+## this is not strictly needed but here as a check - the mcmc sampler should generate the variate
+## and so a stop() is used here to catch if this is used, in which case we need to switch sampler type
+  rmysde <- nimbleFunction(
+    run = function(n = integer(0),
+                   x0 = double(0, default = 0),
+                    t = double(0, default = 0),
+                   alpha = double(0, default = 0),
+                   K = double(0, default = 0),
+                   sigma = double(0, default = 1)) {
+                                      stop('rmynorm should never be run')
+                                      returnType(double(0))
+                             return(0)
+    })
+deregisterDistributions('dmysde')
+registerDistributions('dmysde')
+
+code <- nimbleCode({
+
+  sigma1 ~ dunif(0, 1000)
+  sigma2 ~ dunif(0, 1000)
+  sigma3 ~ dunif(0, 1000)
+
+  a ~ dnorm(0,sd=1000)
+  K ~ dnorm(0,sd=1000)
+  mu_t ~ dnorm(0,sd=1000)
+  sigma_t ~ dunif(0, 1000)
+
+  for(i in 1:n) {
+
+      Observation1_latent[i]  ~ dnorm(mu_t,sd=sigma_t); # note = precision
+      Observation1[i] ~ dnorm(Observation1_latent[i],sd=sigma1); # note = precision
+
+      Observation2_latent[i] ~ dmysde(x0=Observation1_latent[i],t=Time2[i]-Time1[i],alpha=a,K=K,sigma=sigma3); # note sigma3=sd
+
+      Observation2[i]~dnorm(Observation2_latent[i],sd=sigma2); # note precision
+
+       }
+
+})
+
+constants <- list(n = nrow(data1))
+data <- list(Observation1 = data1$Observation1,Observation2 = data1$Observation2,
+             Time1 = data1$Time1,Time2=data1$Time2)
+inits <- list(a=0.1,K=1000,sigma2=10,sigma3=0.1,sigma1=0.1,mu_t=0.1,sigma_t=1.0,
+              Observation1_latent=rep(0.1,nrow(data1)),
+              Observation2_latent=rep(0.1,nrow(data1))
+              )
+
+model <- nimbleModel(code, constants = constants, data = data1, inits = inits) # build model
+
+myMCMCconf <- configureMCMC(model)
+
+print(myMCMCconf);
+myMCMC<-buildMCMC(myMCMCconf)
+
+Cmodel <- compileNimble(model,resetFunctions = TRUE,showCompilerOutput = FALSE)
+CmodelMCMC <- compileNimble(myMCMC, project = Cmodel,resetFunctions = TRUE,showCompilerOutput = FALSE)
+
+seeds<-1;
+MCMCsamples <- runMCMC(CmodelMCMC, niter = 100,thin=1,nchains=1,setSeed=seeds,
+                   samplesAsCodaMCMC = FALSE)
+
+###############################################################################################################
+# PARALLEL VERSION
+# fails! on missing rmydist function
+###############################################################################################################
+rm(list=ls())
+############## DATA
+data1 <-
+structure(list(ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+38L, 38L, 38L, 38L, 38L, 38L), Time1 = c(11, 12, 13, 14, 17,
+18, 19, 20, 25, 26, 27, 28, 32, 33), Observation1 = c(109.08,
+161.68000000000001, 275.70999999999998, 231.21000000000001, 299.63,
+455.69, 540, 713.75999999999999, 723.82000000000005, 819.04999999999995,
+791.57000000000005, 681.34000000000003, 999.44000000000005, 1067.6500000000001
+), ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+38L, 38L, 38L), Time2 = c(12, 13, 14, 17, 18, 19, 20, 25, 26,
+27, 28, 32, 33, 34), Observation2 = c(161.68000000000001, 275.70999999999998,
+231.21000000000001, 299.63, 455.69, 540, 713.75999999999999,
+723.82000000000005, 819.04999999999995, 791.57000000000005, 681.34000000000003,
+999.44000000000005, 1067.6500000000001, 1132.1600000000001)), class = "data.frame", row.names = 331:344)
+
+library(parallel)
+
+Nnodes<-1;
+
+this_cluster <- makeCluster(Nnodes)
+
+run_MCMC_allcode <- function(seeds,dat) {
+###########################################
+library(nimble, warn.conflicts = FALSE)
+###########################################
+
+## custom density dXXXX
+dmysde <- nimbleFunction(
+    run = function(x = double(0),                  # random variable value
+                   x0 = double(0, default = 0),
+                   t = double(0, default = 0),
+                   alpha = double(0, default = 0),
+                   K = double(0, default = 0),
+                   sigma = double(0, default = 1), # standard deviation
+
+                   log = integer(0, default = 0)) {
+                         returnType(double(0))
+                         # log pdf
+                         logProb <- (1/2)*(
+                                            -log(2*pi*t) - 2*log(x) - ((
+                                                  ((t*sigma^2)/2) - log(K) + log(x) +
+                                                  (exp(-t*alpha))*(log(K) - log(x0)))^2)/(t*sigma^2) -
+                                          2*log(sigma)
+                                          )
+        if(log) return(logProb)
+        else return(exp(logProb))
+    })
+
+## this is not strictly needed but here as a check - the mcmc sampler should generate the variate
+## and so a stop() is used here to catch if this is used, in which case we need to switch sampler type
+  rmysde <- nimbleFunction(
+    run = function(n = integer(0),
+                   x0 = double(0, default = 0),
+                    t = double(0, default = 0),
+                   alpha = double(0, default = 0),
+                   K = double(0, default = 0),
+                   sigma = double(0, default = 1)) {
+                                      stop('rmynorm should never be run')
+                                      returnType(double(0))
+                             return(0)
+    })
+
+deregisterDistributions('dmysde')
+
+registerDistributions(list(
+    dmysde = list(
+        BUGSdist = "dmysde(x0,t,alpha,K,sigma)",
+        types = c('value = double(0)', 'x0=double(0)','t=double(0)','alpha=double(0)','K=double(0)','sigma=double(0)')
+        )
+    ))
+
+code <- nimbleCode({
+
+  sigma1 ~ dunif(0, 1000)
+  sigma2 ~ dunif(0, 1000)
+  sigma3 ~ dunif(0, 1000)
+
+  a ~ dnorm(0,sd=1000)
+  K ~ dnorm(0,sd=1000)
+
+   mu_t ~ dnorm(0,sd=1000)
+  sigma_t ~ dunif(0, 1000)
+
+  for(i in 1:n) {
+
+      Observation1_latent[i]  ~ dnorm(mu_t,sd=sigma_t); # note = precision
+      Observation1[i] ~ dnorm(Observation1_latent[i],sd=sigma1); # note = precision
+
+      Observation2_latent[i] ~ dmysde(x0=Observation1_latent[i],t=Time2[i]-Time1[i],alpha=a,K=K,sigma=sigma3); # note sigma3=sd
+
+      Observation2[i]~dnorm(Observation2_latent[i],sd=sigma2); # note precision
+
+       }
+
+})
+
+data1=dat[[1]];
+constants <- list(n = nrow(data1))
+data <- list(Observation1 = data1$Observation1,Observation2 = data1$Observation2,
+             Time1 = data1$Time1,Time2=data1$Time2)
+inits <- list(a=0.1,K=1000,sigma2=10,sigma3=0.1,sigma1=0.1,mu_t=0.1,sigma_t=1.0,
+              Observation1_latent=rep(0.1,nrow(data1)),
+              Observation2_latent=rep(0.1,nrow(data1))
+              )
+
+model <- nimbleModel(code, constants = constants, data = data1, inits = inits) # build model
+
+myMCMCconf <- configureMCMC(model)
+
+print(myMCMCconf);
+myMCMC<-buildMCMC(myMCMCconf)
+
+Cmodel <- compileNimble(model,resetFunctions = TRUE,showCompilerOutput = FALSE)
+CmodelMCMC <- compileNimble(myMCMC, project = Cmodel,resetFunctions = TRUE,showCompilerOutput = FALSE)
+
+MCMCsamples <- runMCMC(CmodelMCMC, niter = 5000000,thin=500,nchains=4,setSeed=seeds,
+                   samplesAsCodaMCMC = FALSE)
+
+return(MCMCsamples);
+}
+
+chain_output <- parLapply(cl = this_cluster, X = 1:Nnodes, ## NOTE this is the seeds argument!
+                          fun = run_MCMC_allcode,
+                          dat=list(data1) # this is one extra argument
+                          )
+
+# It's good practice to close the cluster when you're done with it.
+stopCluster(this_cluster)
+
+From ud9e9761babf29f2a at groups.google.com  Mon Apr  5 11:16:03 2021
+From: ud9e9761babf29f2a at groups.google.com (Fanny Empacher)
+Date: Mon, 05 Apr 2021 11:16:03 +0000
+Subject: Changing parameter values in bootstrap filter
+Message-ID: <Cg5uPMXaX2A.xRM45SucDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Cg5uPMXaX2A/m/xRM45SucDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I'm trying to use the bootstrap filter in nimble to estimate the likelihood of a time series for different parameter values.
+
+The only way it has worked so far is by changing the value in the model (with model$a <- 1), then recompiling the model, then building the bootstrap filter, then compiling the bootstrap filter and finally running it. I've tried a few things to avoid some of these steps but haven't succeeded yet. Is there any way to skip some of the intermediate steps?
+
+Here's some example code of what I'm trying to do, using the model in the documentation:
+
+timeModelCode <- nimbleCode({
+  x[1] ~ dnorm(mu_0, 1)
+  y[1] ~ dnorm(x[1], 1)
+  for(i in 2:t){
+    x[i] ~ dnorm(x[i-1] * a + b, 1)
+    y[i] ~ dnorm(x[i] * c, 1)
+  }
+
+  a ~ dunif(0, 1)
+  b ~ dnorm(0, 1)
+  c ~ dnorm(1,1)
+  mu_0 ~ dnorm(0, 1)
+})
+
+# simulate some data
+t <- 25; mu_0 <- 1
+x <- rnorm(1 ,mu_0, 1)
+y <- rnorm(1, x, 1)
+a <- 0.5; b <- 1; c <- 1
+for(i in 2:t){
+  x[i] <- rnorm(1, x[i-1] * a + b, 1)
+  y[i] <- rnorm(1, x[i] * c, 1)
+}
+
+# build the model
+rTimeModel <- nimbleModel(timeModelCode, constants = list(t = t),
+                          data <- list(y = y), check = FALSE )
+
+# Set parameter values and compile the model
+rTimeModel$a <- 0.5
+rTimeModel$c <- 1
+rTimeModel$mu_0 <- 1
+
+b_candidates <- seq(-4, 4, by = 1)
+b_ll <- numeric(length(b_candidates))
+parNum <- 5000
+
+for(i in 1:length(b_candidates)){
+  print(i)
+  rTimeModel$b <- b_candidates[i]
+  cTimeModel <- compileNimble(rTimeModel)
+  rBootF <- buildBootstrapFilter(rTimeModel, "x",
+                                 control = list(thresh = 0.8, saveAll = TRUE,
+                                                smoothing = FALSE))
+  cBootF <- compileNimble(rBootF,project = rTimeModel)
+  b_ll[i] <- cBootF$run(parNum)
+}
+
+plot(b_candidates, b_ll)
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Mon Apr  5 11:49:24 2021
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Mon, 05 Apr 2021 11:49:24 +0000
+Subject: Re: Changing parameter values in bootstrap filter
+Message-ID: <Cg5uPMXaX2A.e_E20P2dDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <Cg5uPMXaX2A.xRM45SucDAAJ@nimble-users.groups.google.com>
+References: <Cg5uPMXaX2A.xRM45SucDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Cg5uPMXaX2A/m/e_E20P2dDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+If your only trying to change the value of "a" as far as the filtering algorithm is concerned, then you should be fine to change that value in the compiled model object (cTimeModel), as:
+
+cTimeModel$a <- 1
+
+Then, for good measure, adding in a call to calculate() to make sure to propagate this modified value downwards through the entire model:
+
+cTimeModel$calculate()
+
+Point being, the compiled filtering algorithm (cBootF) operates using the compiled model object. Should be no need for  the other intermediate steps.
+
+On Mon, Apr 5, 2021 at 7:16 AM Fanny Empacher <fc.em...@gmail.com> wrote:
+
+> Hi,
+>
+> I'm trying to use the bootstrap filter in nimble to estimate the likelihood of a time series for different parameter values.
+>
+> The only way it has worked so far is by changing the value in the model (with model$a <- 1), then recompiling the model, then building the bootstrap filter, then compiling the bootstrap filter and finally running it. I've tried a few things to avoid some of these steps but haven't succeeded yet. Is there any way to skip some of the intermediate steps?
+>
+> Here's some example code of what I'm trying to do, using the model in the documentation:
+>
+> timeModelCode <- nimbleCode({
+>   x[1] ~ dnorm(mu_0, 1)
+>   y[1] ~ dnorm(x[1], 1)
+>   for(i in 2:t){
+>     x[i] ~ dnorm(x[i-1] * a + b, 1)
+>     y[i] ~ dnorm(x[i] * c, 1)
+>   }
+>
+>   a ~ dunif(0, 1)
+>   b ~ dnorm(0, 1)
+>   c ~ dnorm(1,1)
+>   mu_0 ~ dnorm(0, 1)
+> })
+>
+> # simulate some data
+> t <- 25; mu_0 <- 1
+> x <- rnorm(1 ,mu_0, 1)
+> y <- rnorm(1, x, 1)
+> a <- 0.5; b <- 1; c <- 1
+> for(i in 2:t){
+>   x[i] <- rnorm(1, x[i-1] * a + b, 1)
+>   y[i] <- rnorm(1, x[i] * c, 1)
+> }
+>
+> # build the model
+> rTimeModel <- nimbleModel(timeModelCode, constants = list(t = t),
+>                           data <- list(y = y), check = FALSE )
+>
+> # Set parameter values and compile the model
+> rTimeModel$a <- 0.5
+> rTimeModel$c <- 1
+> rTimeModel$mu_0 <- 1
+>
+> b_candidates <- seq(-4, 4, by = 1)
+> b_ll <- numeric(length(b_candidates))
+> parNum <- 5000
+>
+> for(i in 1:length(b_candidates)){
+>   print(i)
+>   rTimeModel$b <- b_candidates[i]
+>   cTimeModel <- compileNimble(rTimeModel)
+>   rBootF <- buildBootstrapFilter(rTimeModel, "x",
+>                                  control = list(thresh = 0.8, saveAll = TRUE,
+>                                                 smoothing = FALSE))
+>   cBootF <- compileNimble(rBootF,project = rTimeModel)
+>   b_ll[i] <- cBootF$run(parNum)
+> }
+>
+> plot(b_candidates, b_ll)
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/c6a1fe2e-6ad3-437a-a91d-7b5733ed8a5dn%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/c6a1fe2e-6ad3-437a-a91d-7b5733ed8a5dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Tue Apr  6 00:47:53 2021
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Tue, 06 Apr 2021 00:47:53 +0000
+Subject: Re: Custom density with Parallel library - error
+Message-ID: <cM6N75R84HA.cMkrLHnIDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <cM6N75R84HA.yT2BEzSUDAAJ@nimble-users.groups.google.com>
+References: <cM6N75R84HA.yT2BEzSUDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/cM6N75R84HA/m/cMkrLHnIDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi Fraser,
+
+The problem has to do with where nimble looks for user-defined distributions and functions. At the bottom of our example on parallelization, we have some syntax using assign() to make sure the user-defined distributions/functions are in the global environment of each worker, which is where nimble will look for them. So please add that use of assign() to your run_MCMC_allCode() function after you create the "d" and "r" functions.
+
+This is an aspect of the system we have some long-term development work ongoing to make things more user-friendly. But for now, this work-around should get you going.
+
+Also, as a side note, this is a case where you shouldn't need to call registerDistributions(). For straightforward distributions like this, it should work to create the "d" (and in many cases the "r" is not needed) and then simply use it (but still using assign() when parallelizing).
+
+-Chris
+
+On Mon, Apr 5, 2021 at 1:50 AM fraser lewis <fraser.i...@gmail.com> wrote:
+
+> Hi All,
+> I'm having an issue with an unregistered distribution using the parallel library. The non-parallel version works fine. I have put below two self-contained code examples - the first uses a custom pdf on a single core and works fine. The second uses the parallel library and gives an error about the pdf not being registered - I think I have registered it, so I guess I've not done it properly?
+>
+> Any thoughts or help much appreciated! thanks.
+> best wishes
+> Fraser
+>
+> ##################
+> The Error:
+> ##################
+> Error in checkForRemoteErrors(val) : one node produced an error: In sizeAssignAfterRecursing: 'rmysde' is not available or its output type is unknown. This occurred for: model_Observation2_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)] <<- rmysde(=1,x0=model_Observation1_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],t=model_lifted_Time2_oBi_cB_minus_Time1_oBi_cB_L11[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],alpha=model_a[1],K=model_K[1],sigma=model_sigma3[1]) This was part of the call: { model_Observation2_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)] <<- rmysde(=1,x0=model_Observation1_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],t=model_lifted_Time2_oBi_cB_minus_Time1_oBi_cB_L11[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],alpha=model_a[1],K=model_K[1],sigma=model_sigma3[1]) }
+>
+> ############################################
+> # self-contained code example - the first part runs fine, the second part not
+> ###############################################################################################################
+> # SINGLE CORE VERSION
+> # works ok
+> ###############################################################################################################
+>
+> rm(list=ls());
+> ############## DATA
+> data1 <-
+> structure(list(ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+> 38L, 38L, 38L, 38L, 38L, 38L), Time1 = c(11, 12, 13, 14, 17,
+> 18, 19, 20, 25, 26, 27, 28, 32, 33), Observation1 = c(109.08,
+> 161.68000000000001, 275.70999999999998, 231.21000000000001, 299.63,
+> 455.69, 540, 713.75999999999999, 723.82000000000005, 819.04999999999995,
+> 791.57000000000005, 681.34000000000003, 999.44000000000005, 1067.6500000000001
+> ), ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+> 38L, 38L, 38L), Time2 = c(12, 13, 14, 17, 18, 19, 20, 25, 26,
+> 27, 28, 32, 33, 34), Observation2 = c(161.68000000000001, 275.70999999999998,
+> 231.21000000000001, 299.63, 455.69, 540, 713.75999999999999,
+> 723.82000000000005, 819.04999999999995, 791.57000000000005, 681.34000000000003,
+> 999.44000000000005, 1067.6500000000001, 1132.1600000000001)), class = "data.frame", row.names = 331:344)
+>
+>
+> ###########################################
+> library(nimble, warn.conflicts = FALSE)
+> ###########################################
+>
+> ## custom density dXXXX
+> dmysde <- nimbleFunction(
+>     run = function(x = double(0),                  # random variable value
+>                    x0 = double(0, default = 0),
+>                    t = double(0, default = 0),
+>                    alpha = double(0, default = 0),
+>                    K = double(0, default = 0),
+>                    sigma = double(0, default = 1), # standard deviation
+>
+>                    log = integer(0, default = 0)) {
+>                          returnType(double(0))
+>                          # log pdf
+>                          logProb <- (1/2)*(
+>                                             -log(2*pi*t) - 2*log(x) - ((
+>                                                   ((t*sigma^2)/2) - log(K) + log(x) +
+>                                                   (exp(-t*alpha))*(log(K) - log(x0)))^2)/(t*sigma^2) -
+>                                           2*log(sigma)
+>                                           )
+>         if(log) return(logProb)
+>         else return(exp(logProb))
+>     })
+>
+> ## this is not strictly needed but here as a check - the mcmc sampler should generate the variate
+> ## and so a stop() is used here to catch if this is used, in which case we need to switch sampler type
+>   rmysde <- nimbleFunction(
+>     run = function(n = integer(0),
+>                    x0 = double(0, default = 0),
+>                     t = double(0, default = 0),
+>                    alpha = double(0, default = 0),
+>                    K = double(0, default = 0),
+>                    sigma = double(0, default = 1)) {
+>                                       stop('rmynorm should never be run')
+>                                       returnType(double(0))
+>                              return(0)
+>     })
+> deregisterDistributions('dmysde')
+> registerDistributions('dmysde')
+>
+> code <- nimbleCode({
+>
+>   sigma1 ~ dunif(0, 1000)
+>   sigma2 ~ dunif(0, 1000)
+>   sigma3 ~ dunif(0, 1000)
+>
+>   a ~ dnorm(0,sd=1000)
+>   K ~ dnorm(0,sd=1000)
+>   mu_t ~ dnorm(0,sd=1000)
+>   sigma_t ~ dunif(0, 1000)
+>
+>   for(i in 1:n) {
+>
+>       Observation1_latent[i]  ~ dnorm(mu_t,sd=sigma_t); # note = precision
+>       Observation1[i] ~ dnorm(Observation1_latent[i],sd=sigma1); # note = precision
+>
+>       Observation2_latent[i] ~ dmysde(x0=Observation1_latent[i],t=Time2[i]-Time1[i],alpha=a,K=K,sigma=sigma3); # note sigma3=sd
+>
+>       Observation2[i]~dnorm(Observation2_latent[i],sd=sigma2); # note precision
+>
+>        }
+>
+> })
+>
+> constants <- list(n = nrow(data1))
+> data <- list(Observation1 = data1$Observation1,Observation2 = data1$Observation2,
+>              Time1 = data1$Time1,Time2=data1$Time2)
+> inits <- list(a=0.1,K=1000,sigma2=10,sigma3=0.1,sigma1=0.1,mu_t=0.1,sigma_t=1.0,
+>               Observation1_latent=rep(0.1,nrow(data1)),
+>               Observation2_latent=rep(0.1,nrow(data1))
+>               )
+>
+>
+> model <- nimbleModel(code, constants = constants, data = data1, inits = inits) # build model
+>
+> myMCMCconf <- configureMCMC(model)
+>
+> print(myMCMCconf);
+> myMCMC<-buildMCMC(myMCMCconf)
+>
+> Cmodel <- compileNimble(model,resetFunctions = TRUE,showCompilerOutput = FALSE)
+> CmodelMCMC <- compileNimble(myMCMC, project = Cmodel,resetFunctions = TRUE,showCompilerOutput = FALSE)
+>
+> seeds<-1;
+> MCMCsamples <- runMCMC(CmodelMCMC, niter = 100,thin=1,nchains=1,setSeed=seeds,
+>                    samplesAsCodaMCMC = FALSE)
+>
+>
+> ###############################################################################################################
+> # PARALLEL VERSION
+> # fails! on missing rmydist function
+> ###############################################################################################################
+> rm(list=ls())
+> ############## DATA
+> data1 <-
+> structure(list(ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+> 38L, 38L, 38L, 38L, 38L, 38L), Time1 = c(11, 12, 13, 14, 17,
+> 18, 19, 20, 25, 26, 27, 28, 32, 33), Observation1 = c(109.08,
+> 161.68000000000001, 275.70999999999998, 231.21000000000001, 299.63,
+> 455.69, 540, 713.75999999999999, 723.82000000000005, 819.04999999999995,
+> 791.57000000000005, 681.34000000000003, 999.44000000000005, 1067.6500000000001
+> ), ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+> 38L, 38L, 38L), Time2 = c(12, 13, 14, 17, 18, 19, 20, 25, 26,
+> 27, 28, 32, 33, 34), Observation2 = c(161.68000000000001, 275.70999999999998,
+> 231.21000000000001, 299.63, 455.69, 540, 713.75999999999999,
+> 723.82000000000005, 819.04999999999995, 791.57000000000005, 681.34000000000003,
+> 999.44000000000005, 1067.6500000000001, 1132.1600000000001)), class = "data.frame", row.names = 331:344)
+>
+> library(parallel)
+>
+> Nnodes<-1;
+>
+> this_cluster <- makeCluster(Nnodes)
+>
+> run_MCMC_allcode <- function(seeds,dat) {
+> ###########################################
+> library(nimble, warn.conflicts = FALSE)
+> ###########################################
+>
+> ## custom density dXXXX
+> dmysde <- nimbleFunction(
+>     run = function(x = double(0),                  # random variable value
+>                    x0 = double(0, default = 0),
+>                    t = double(0, default = 0),
+>                    alpha = double(0, default = 0),
+>                    K = double(0, default = 0),
+>                    sigma = double(0, default = 1), # standard deviation
+>
+>                    log = integer(0, default = 0)) {
+>                          returnType(double(0))
+>                          # log pdf
+>                          logProb <- (1/2)*(
+>                                             -log(2*pi*t) - 2*log(x) - ((
+>                                                   ((t*sigma^2)/2) - log(K) + log(x) +
+>                                                   (exp(-t*alpha))*(log(K) - log(x0)))^2)/(t*sigma^2) -
+>                                           2*log(sigma)
+>                                           )
+>         if(log) return(logProb)
+>         else return(exp(logProb))
+>     })
+>
+> ## this is not strictly needed but here as a check - the mcmc sampler should generate the variate
+> ## and so a stop() is used here to catch if this is used, in which case we need to switch sampler type
+>   rmysde <- nimbleFunction(
+>     run = function(n = integer(0),
+>                    x0 = double(0, default = 0),
+>                     t = double(0, default = 0),
+>                    alpha = double(0, default = 0),
+>                    K = double(0, default = 0),
+>                    sigma = double(0, default = 1)) {
+>                                       stop('rmynorm should never be run')
+>                                       returnType(double(0))
+>                              return(0)
+>     })
+>
+> deregisterDistributions('dmysde')
+>
+> registerDistributions(list(
+>     dmysde = list(
+>         BUGSdist = "dmysde(x0,t,alpha,K,sigma)",
+>         types = c('value = double(0)', 'x0=double(0)','t=double(0)','alpha=double(0)','K=double(0)','sigma=double(0)')
+>         )
+>     ))
+>
+>
+> code <- nimbleCode({
+>
+>   sigma1 ~ dunif(0, 1000)
+>   sigma2 ~ dunif(0, 1000)
+>   sigma3 ~ dunif(0, 1000)
+>
+>   a ~ dnorm(0,sd=1000)
+>   K ~ dnorm(0,sd=1000)
+>
+>    mu_t ~ dnorm(0,sd=1000)
+>   sigma_t ~ dunif(0, 1000)
+>
+>   for(i in 1:n) {
+>
+>       Observation1_latent[i]  ~ dnorm(mu_t,sd=sigma_t); # note = precision
+>       Observation1[i] ~ dnorm(Observation1_latent[i],sd=sigma1); # note = precision
+>
+>       Observation2_latent[i] ~ dmysde(x0=Observation1_latent[i],t=Time2[i]-Time1[i],alpha=a,K=K,sigma=sigma3); # note sigma3=sd
+>
+>       Observation2[i]~dnorm(Observation2_latent[i],sd=sigma2); # note precision
+>
+>        }
+>
+> })
+>
+> data1=dat[[1]];
+> constants <- list(n = nrow(data1))
+> data <- list(Observation1 = data1$Observation1,Observation2 = data1$Observation2,
+>              Time1 = data1$Time1,Time2=data1$Time2)
+> inits <- list(a=0.1,K=1000,sigma2=10,sigma3=0.1,sigma1=0.1,mu_t=0.1,sigma_t=1.0,
+>               Observation1_latent=rep(0.1,nrow(data1)),
+>               Observation2_latent=rep(0.1,nrow(data1))
+>               )
+>
+>
+> model <- nimbleModel(code, constants = constants, data = data1, inits = inits) # build model
+>
+> myMCMCconf <- configureMCMC(model)
+>
+> print(myMCMCconf);
+> myMCMC<-buildMCMC(myMCMCconf)
+>
+> Cmodel <- compileNimble(model,resetFunctions = TRUE,showCompilerOutput = FALSE)
+> CmodelMCMC <- compileNimble(myMCMC, project = Cmodel,resetFunctions = TRUE,showCompilerOutput = FALSE)
+>
+> MCMCsamples <- runMCMC(CmodelMCMC, niter = 5000000,thin=500,nchains=4,setSeed=seeds,
+>                    samplesAsCodaMCMC = FALSE)
+>
+> return(MCMCsamples);
+> }
+>
+>
+> chain_output <- parLapply(cl = this_cluster, X = 1:Nnodes, ## NOTE this is the seeds argument!
+>                           fun = run_MCMC_allcode,
+>                           dat=list(data1) # this is one extra argument
+>                           )
+>
+> # It's good practice to close the cluster when you're done with it.
+> stopCluster(this_cluster)
+>
+>
+>
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/a885a8f0-20ba-42a2-8162-3ce7e880211en%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/a885a8f0-20ba-42a2-8162-3ce7e880211en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u052cb554200cab3f at groups.google.com  Tue Apr  6 06:36:42 2021
+From: u052cb554200cab3f at groups.google.com (fraser lewis)
+Date: Tue, 06 Apr 2021 06:36:42 +0000
+Subject: Re: Custom density with Parallel library - error
+Message-ID: <cM6N75R84HA.BOErBoLbDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <cM6N75R84HA.yT2BEzSUDAAJ@nimble-users.groups.google.com>
+References: <cM6N75R84HA.yT2BEzSUDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/cM6N75R84HA/m/BOErBoLbDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Chris, thanks a lot, it of course works fine now. Sorry, that was
+my bad as I didn't scroll down the parallel example to the very end!
+best wishes. Fraser.
+
+On Tue, 6 Apr 2021 at 02:47, Chris Paciorek
+<christophe...@gmail.com> wrote:
+>
+> hi Fraser,
+>
+> The problem has to do with where nimble looks for user-defined distributions and functions. At the bottom of our example on parallelization, we have some syntax using assign() to make sure the user-defined distributions/functions are in the global environment of each worker, which is where nimble will look for them. So please add that use of assign() to your run_MCMC_allCode() function after you create the "d" and "r" functions.
+>
+> This is an aspect of the system we have some long-term development work ongoing to make things more user-friendly. But for now, this work-around should get you going.
+>
+> Also, as a side note, this is a case where you shouldn't need to call registerDistributions(). For straightforward distributions like this, it should work to create the "d" (and in many cases the "r" is not needed) and then simply use it (but still using assign() when parallelizing).
+>
+> -Chris
+>
+> On Mon, Apr 5, 2021 at 1:50 AM fraser lewis <fraser.i...@gmail.com> wrote:
+>>
+>> Hi All,
+>> I'm having an issue with an unregistered distribution using the parallel library. The non-parallel version works fine. I have put below two self-contained code examples - the first uses a custom pdf on a single core and works fine. The second uses the parallel library and gives an error about the pdf not being registered - I think I have registered it, so I guess I've not done it properly?
+>>
+>> Any thoughts or help much appreciated! thanks.
+>> best wishes
+>> Fraser
+>>
+>> ##################
+>> The Error:
+>> ##################
+>> Error in checkForRemoteErrors(val) : one node produced an error: In sizeAssignAfterRecursing: 'rmysde' is not available or its output type is unknown. This occurred for: model_Observation2_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)] <<- rmysde(=1,x0=model_Observation1_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],t=model_lifted_Time2_oBi_cB_minus_Time1_oBi_cB_L11[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],alpha=model_a[1],K=model_K[1],sigma=model_sigma3[1]) This was part of the call: { model_Observation2_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)] <<- rmysde(=1,x0=model_Observation1_latent[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],t=model_lifted_Time2_oBi_cB_minus_Time1_oBi_cB_L11[getNodeFunctionIndexedInfo(ARG1_INDEXEDNODEINFO__,1)],alpha=model_a[1],K=model_K[1],sigma=model_sigma3[1]) }
+>>
+>> ############################################
+>> # self-contained code example - the first part runs fine, the second part not
+>> ###############################################################################################################
+>> # SINGLE CORE VERSION
+>> # works ok
+>> ###############################################################################################################
+>>
+>> rm(list=ls());
+>> ############## DATA
+>> data1 <-
+>> structure(list(ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+>> 38L, 38L, 38L, 38L, 38L, 38L), Time1 = c(11, 12, 13, 14, 17,
+>> 18, 19, 20, 25, 26, 27, 28, 32, 33), Observation1 = c(109.08,
+>> 161.68000000000001, 275.70999999999998, 231.21000000000001, 299.63,
+>> 455.69, 540, 713.75999999999999, 723.82000000000005, 819.04999999999995,
+>> 791.57000000000005, 681.34000000000003, 999.44000000000005, 1067.6500000000001
+>> ), ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+>> 38L, 38L, 38L), Time2 = c(12, 13, 14, 17, 18, 19, 20, 25, 26,
+>> 27, 28, 32, 33, 34), Observation2 = c(161.68000000000001, 275.70999999999998,
+>> 231.21000000000001, 299.63, 455.69, 540, 713.75999999999999,
+>> 723.82000000000005, 819.04999999999995, 791.57000000000005, 681.34000000000003,
+>> 999.44000000000005, 1067.6500000000001, 1132.1600000000001)), class = "data.frame", row.names = 331:344)
+>>
+>>
+>> ###########################################
+>> library(nimble, warn.conflicts = FALSE)
+>> ###########################################
+>>
+>> ## custom density dXXXX
+>> dmysde <- nimbleFunction(
+>>     run = function(x = double(0),                  # random variable value
+>>                    x0 = double(0, default = 0),
+>>                    t = double(0, default = 0),
+>>                    alpha = double(0, default = 0),
+>>                    K = double(0, default = 0),
+>>                    sigma = double(0, default = 1), # standard deviation
+>>
+>>                    log = integer(0, default = 0)) {
+>>                          returnType(double(0))
+>>                          # log pdf
+>>                          logProb <- (1/2)*(
+>>                                             -log(2*pi*t) - 2*log(x) - ((
+>>                                                   ((t*sigma^2)/2) - log(K) + log(x) +
+>>                                                   (exp(-t*alpha))*(log(K) - log(x0)))^2)/(t*sigma^2) -
+>>                                           2*log(sigma)
+>>                                           )
+>>         if(log) return(logProb)
+>>         else return(exp(logProb))
+>>     })
+>>
+>> ## this is not strictly needed but here as a check - the mcmc sampler should generate the variate
+>> ## and so a stop() is used here to catch if this is used, in which case we need to switch sampler type
+>>   rmysde <- nimbleFunction(
+>>     run = function(n = integer(0),
+>>                    x0 = double(0, default = 0),
+>>                     t = double(0, default = 0),
+>>                    alpha = double(0, default = 0),
+>>                    K = double(0, default = 0),
+>>                    sigma = double(0, default = 1)) {
+>>                                       stop('rmynorm should never be run')
+>>                                       returnType(double(0))
+>>                              return(0)
+>>     })
+>> deregisterDistributions('dmysde')
+>> registerDistributions('dmysde')
+>>
+>> code <- nimbleCode({
+>>
+>>   sigma1 ~ dunif(0, 1000)
+>>   sigma2 ~ dunif(0, 1000)
+>>   sigma3 ~ dunif(0, 1000)
+>>
+>>   a ~ dnorm(0,sd=1000)
+>>   K ~ dnorm(0,sd=1000)
+>>   mu_t ~ dnorm(0,sd=1000)
+>>   sigma_t ~ dunif(0, 1000)
+>>
+>>   for(i in 1:n) {
+>>
+>>       Observation1_latent[i]  ~ dnorm(mu_t,sd=sigma_t); # note = precision
+>>       Observation1[i] ~ dnorm(Observation1_latent[i],sd=sigma1); # note = precision
+>>
+>>       Observation2_latent[i] ~ dmysde(x0=Observation1_latent[i],t=Time2[i]-Time1[i],alpha=a,K=K,sigma=sigma3); # note sigma3=sd
+>>
+>>       Observation2[i]~dnorm(Observation2_latent[i],sd=sigma2); # note precision
+>>
+>>        }
+>>
+>> })
+>>
+>> constants <- list(n = nrow(data1))
+>> data <- list(Observation1 = data1$Observation1,Observation2 = data1$Observation2,
+>>              Time1 = data1$Time1,Time2=data1$Time2)
+>> inits <- list(a=0.1,K=1000,sigma2=10,sigma3=0.1,sigma1=0.1,mu_t=0.1,sigma_t=1.0,
+>>               Observation1_latent=rep(0.1,nrow(data1)),
+>>               Observation2_latent=rep(0.1,nrow(data1))
+>>               )
+>>
+>>
+>> model <- nimbleModel(code, constants = constants, data = data1, inits = inits) # build model
+>>
+>> myMCMCconf <- configureMCMC(model)
+>>
+>> print(myMCMCconf);
+>> myMCMC<-buildMCMC(myMCMCconf)
+>>
+>> Cmodel <- compileNimble(model,resetFunctions = TRUE,showCompilerOutput = FALSE)
+>> CmodelMCMC <- compileNimble(myMCMC, project = Cmodel,resetFunctions = TRUE,showCompilerOutput = FALSE)
+>>
+>> seeds<-1;
+>> MCMCsamples <- runMCMC(CmodelMCMC, niter = 100,thin=1,nchains=1,setSeed=seeds,
+>>                    samplesAsCodaMCMC = FALSE)
+>>
+>>
+>> ###############################################################################################################
+>> # PARALLEL VERSION
+>> # fails! on missing rmydist function
+>> ###############################################################################################################
+>> rm(list=ls())
+>> ############## DATA
+>> data1 <-
+>> structure(list(ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+>> 38L, 38L, 38L, 38L, 38L, 38L), Time1 = c(11, 12, 13, 14, 17,
+>> 18, 19, 20, 25, 26, 27, 28, 32, 33), Observation1 = c(109.08,
+>> 161.68000000000001, 275.70999999999998, 231.21000000000001, 299.63,
+>> 455.69, 540, 713.75999999999999, 723.82000000000005, 819.04999999999995,
+>> 791.57000000000005, 681.34000000000003, 999.44000000000005, 1067.6500000000001
+>> ), ID = c(38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L, 38L,
+>> 38L, 38L, 38L), Time2 = c(12, 13, 14, 17, 18, 19, 20, 25, 26,
+>> 27, 28, 32, 33, 34), Observation2 = c(161.68000000000001, 275.70999999999998,
+>> 231.21000000000001, 299.63, 455.69, 540, 713.75999999999999,
+>> 723.82000000000005, 819.04999999999995, 791.57000000000005, 681.34000000000003,
+>> 999.44000000000005, 1067.6500000000001, 1132.1600000000001)), class = "data.frame", row.names = 331:344)
+>>
+>> library(parallel)
+>>
+>> Nnodes<-1;
+>>
+>> this_cluster <- makeCluster(Nnodes)
+>>
+>> run_MCMC_allcode <- function(seeds,dat) {
+>> ###########################################
+>> library(nimble, warn.conflicts = FALSE)
+>> ###########################################
+>>
+>> ## custom density dXXXX
+>> dmysde <- nimbleFunction(
+>>     run = function(x = double(0),                  # random variable value
+>>                    x0 = double(0, default = 0),
+>>                    t = double(0, default = 0),
+>>                    alpha = double(0, default = 0),
+>>                    K = double(0, default = 0),
+>>                    sigma = double(0, default = 1), # standard deviation
+>>
+>>                    log = integer(0, default = 0)) {
+>>                          returnType(double(0))
+>>                          # log pdf
+>>                          logProb <- (1/2)*(
+>>                                             -log(2*pi*t) - 2*log(x) - ((
+>>                                                   ((t*sigma^2)/2) - log(K) + log(x) +
+>>                                                   (exp(-t*alpha))*(log(K) - log(x0)))^2)/(t*sigma^2) -
+>>                                           2*log(sigma)
+>>                                           )
+>>         if(log) return(logProb)
+>>         else return(exp(logProb))
+>>     })
+>>
+>> ## this is not strictly needed but here as a check - the mcmc sampler should generate the variate
+>> ## and so a stop() is used here to catch if this is used, in which case we need to switch sampler type
+>>   rmysde <- nimbleFunction(
+>>     run = function(n = integer(0),
+>>                    x0 = double(0, default = 0),
+>>                     t = double(0, default = 0),
+>>                    alpha = double(0, default = 0),
+>>                    K = double(0, default = 0),
+>>                    sigma = double(0, default = 1)) {
+>>                                       stop('rmynorm should never be run')
+>>                                       returnType(double(0))
+>>                              return(0)
+>>     })
+>>
+>> deregisterDistributions('dmysde')
+>>
+>> registerDistributions(list(
+>>     dmysde = list(
+>>         BUGSdist = "dmysde(x0,t,alpha,K,sigma)",
+>>         types = c('value = double(0)', 'x0=double(0)','t=double(0)','alpha=double(0)','K=double(0)','sigma=double(0)')
+>>         )
+>>     ))
+>>
+>>
+>> code <- nimbleCode({
+>>
+>>   sigma1 ~ dunif(0, 1000)
+>>   sigma2 ~ dunif(0, 1000)
+>>   sigma3 ~ dunif(0, 1000)
+>>
+>>   a ~ dnorm(0,sd=1000)
+>>   K ~ dnorm(0,sd=1000)
+>>
+>>    mu_t ~ dnorm(0,sd=1000)
+>>   sigma_t ~ dunif(0, 1000)
+>>
+>>   for(i in 1:n) {
+>>
+>>       Observation1_latent[i]  ~ dnorm(mu_t,sd=sigma_t); # note = precision
+>>       Observation1[i] ~ dnorm(Observation1_latent[i],sd=sigma1); # note = precision
+>>
+>>       Observation2_latent[i] ~ dmysde(x0=Observation1_latent[i],t=Time2[i]-Time1[i],alpha=a,K=K,sigma=sigma3); # note sigma3=sd
+>>
+>>       Observation2[i]~dnorm(Observation2_latent[i],sd=sigma2); # note precision
+>>
+>>        }
+>>
+>> })
+>>
+>> data1=dat[[1]];
+>> constants <- list(n = nrow(data1))
+>> data <- list(Observation1 = data1$Observation1,Observation2 = data1$Observation2,
+>>              Time1 = data1$Time1,Time2=data1$Time2)
+>> inits <- list(a=0.1,K=1000,sigma2=10,sigma3=0.1,sigma1=0.1,mu_t=0.1,sigma_t=1.0,
+>>               Observation1_latent=rep(0.1,nrow(data1)),
+>>               Observation2_latent=rep(0.1,nrow(data1))
+>>               )
+>>
+>>
+>> model <- nimbleModel(code, constants = constants, data = data1, inits = inits) # build model
+>>
+>> myMCMCconf <- configureMCMC(model)
+>>
+>> print(myMCMCconf);
+>> myMCMC<-buildMCMC(myMCMCconf)
+>>
+>> Cmodel <- compileNimble(model,resetFunctions = TRUE,showCompilerOutput = FALSE)
+>> CmodelMCMC <- compileNimble(myMCMC, project = Cmodel,resetFunctions = TRUE,showCompilerOutput = FALSE)
+>>
+>> MCMCsamples <- runMCMC(CmodelMCMC, niter = 5000000,thin=500,nchains=4,setSeed=seeds,
+>>                    samplesAsCodaMCMC = FALSE)
+>>
+>> return(MCMCsamples);
+>> }
+>>
+>>
+>> chain_output <- parLapply(cl = this_cluster, X = 1:Nnodes, ## NOTE this is the seeds argument!
+>>                           fun = run_MCMC_allcode,
+>>                           dat=list(data1) # this is one extra argument
+>>                           )
+>>
+>> # It's good practice to close the cluster when you're done with it.
+>> stopCluster(this_cluster)
+>>
+>>
+>>
+>>
+>>
+>>
+>>
+>> --
+>> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+>> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+>> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/a885a8f0-20ba-42a2-8162-3ce7e880211en%40googlegroups.com.
+
+From u09e88ea4cf9d5353 at groups.google.com  Thu Apr  8 08:51:25 2021
+From: u09e88ea4cf9d5353 at groups.google.com (Magali Frauendorf)
+Date: Thu, 08 Apr 2021 08:51:25 +0000
+Subject: Error in parse(text = x) : negative length vectors are not allowed
+Message-ID: <vMwXSyJdCkU.J6GvExoxDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/vMwXSyJdCkU/m/J6GvExoxDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I have a multi-state capture recapture model
+incorporating a structural equation model (code attached). The model builds
+fine when I use calculate=F, however, when I use RModel$calculate() to check
+the initialization, I get the following error: Error in parse(text = x) : negative
+length vectors are not allowed.
+
+I found a post about a similar error here in
+the google group which seemed to be related to the initial values, but I cannot
+find my mistake in the initial values. If I run RModel$initializeInfo() I got
+the following message:
+
+# Missing
+values (NAs) or non-finite values were found in model variables: alive.
+
+# This is
+not an error, but some or all variables may need to be initialized for
+
+# certain
+algorithms to operate properly. For more information on model initialization,
+
+# see
+help(modelInitialization).
+
+Alive is the
+initial state matrix that indeed has NAs for the occasions before the first
+capture. As far as I found in other multi-state examples, that should not cause
+the error about the negative length vectors?!
+
+Next, when I
+compile the RModel I get the following warnings:
+
+#compiling...
+this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation
+details.
+
+#Warning: R
+object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has
+size 1574.
+
+#Warning: R
+object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has
+size 1574.
+
+#Warning: R
+object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has
+size 1574.
+
+#Warning: R
+object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has
+size 1574.
+
+#Warning: R
+object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has
+size 1574.
+
+#compilation
+finished.
+
+May this be
+related to the above mentioned error?
+
+Thank you
+very much!
+
+Magali
+
+From udd632bd3bbcdd7e9 at groups.google.com  Thu Apr  8 15:38:49 2021
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Thu, 08 Apr 2021 15:38:49 +0000
+Subject: Re: Error in parse(text = x) : negative length vectors are not allowed
+Message-ID: <vMwXSyJdCkU.ihtll1VHDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <vMwXSyJdCkU.J6GvExoxDAAJ@nimble-users.groups.google.com>
+References: <vMwXSyJdCkU.J6GvExoxDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/vMwXSyJdCkU/m/ihtll1VHDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Magali,
+
+It's hard for us to diagnose what's happening without having your data file.  Here are the steps I suggest.
+
+Check that all entries in the data, constants, and/or inits lists are the size and shape they should be.  A good guess is that something is not the right size or shape.
+
+Check that first[i] < T for all i, because you have loops over (first[i] + 1):T and decreasing loops are not supported.
+
+For the alive NAs, values before first[i] should not matter because they are not declared as nodes in the model as far as I see.  Values after first capture are best initialized, if that is not already the case.
+
+You can narrow down where there is a problem by building the model with calculate = FALSE and then calculating pieces of it to determine which causes an error, like
+
+model$calculate("PSI")
+model$calculate("alive")
+model$calculate("alive[1, ]")
+model$calculate("alive[1, 3]")
+
+You'll want to go in order.  You might get a nonsense value from one calculation if the previous calculations aren't done.
+
+Actually since alive is sequentially dependent, you can be safe by doing:
+model$calculate( model$topologicallySortNodes("alive") )
+That will ensure nodes are in order.
+
+You can also study the values of those variables.
+model$PSI
+model$alive
+
+And the log probabilities of stochastic nodes after calculation:
+model$getLogProb("alive")
+model$getLogProb("alive[1, ]") # etc
+Or more directly
+model$logProb_alive
+
+I hope that helps you debug the model.  If you're still stuck, you could share the data off-list if (understandably) you don't want to share it on-list.
+
+-Perry
+
+On Thu, Apr 8, 2021 at 1:51 AM Magali Frauendorf <mag...@estudio-kiel.de> wrote:
+
+> Hi all,
+>
+> I have a multi-state capture recapture model incorporating a structural equation model (code attached). The model builds fine when I use calculate=F, however, when I use RModel$calculate() to check the initialization, I get the following error: Error in parse(text = x) : negative length vectors are not allowed.
+>
+> I found a post about a similar error here in the google group which seemed to be related to the initial values, but I cannot find my mistake in the initial values. If I run RModel$initializeInfo() I got the following message:
+>
+> # Missing values (NAs) or non-finite values were found in model variables: alive.
+>
+> # This is not an error, but some or all variables may need to be initialized for
+>
+> # certain algorithms to operate properly. For more information on model initialization,
+>
+> # see help(modelInitialization).
+>
+> Alive is the initial state matrix that indeed has NAs for the occasions before the first capture. As far as I found in other multi-state examples, that should not cause the error about the negative length vectors?!
+>
+> Next, when I compile the RModel I get the following warnings:
+>
+> #compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+>
+> #Warning: R object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has size 1574.
+>
+> #Warning: R object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has size 1574.
+>
+> #Warning: R object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has size 1574.
+>
+> #Warning: R object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has size 1574.
+>
+> #Warning: R object of different size than NimArrDouble. R obj has size 1 but NimArrDbl has size 1574.
+>
+> #compilation finished.
+>
+>
+>
+> May this be related to the above mentioned error?
+>
+>
+>
+> Thank you very much!
+>
+> Magali
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/04f829b7-01e6-409e-980c-be7050236728n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/04f829b7-01e6-409e-980c-be7050236728n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u909779d5411b84f9 at groups.google.com  Fri Apr  9 10:01:46 2021
+From: u909779d5411b84f9 at groups.google.com (alireza beheshty)
+Date: Fri, 09 Apr 2021 10:01:46 +0000
+Subject: Error: Failed to create the shared library" compiler error
+Message-ID: <OIKTI20OgMs.HgaTmIWDDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/OIKTI20OgMs/m/HgaTmIWDDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+HI
+I've written a nimbleFunction but when I try to compile the model code, I get a "Failed to create the shared library" error. Here's the code:
+
+R version 4.0.3 & 4.0.4
+
+---------------------------------------------
+library(spdep)
+
+data("baltimore")
+
+str(baltimore)
+
+N <- S <- 211
+
+## pairwise matrix of distance
+
+ distMat <- matrix(nrow = nrow(baltimore), ncol = nrow(baltimore))
+
+for (i in 1:nrow(distMat)) {
+  for (j in i:nrow(distMat)) {
+    distMat[i, j] <- distMat[j, i] <-
+      sqrt(sum((baltimore[i, c("X", "Y")] - baltimore[j, c("X", "Y")]))^2)
+      }
+       }
+## normalization
+  distMat <- distMat / max(distMat) * 10
+
+library(nimble)
+SLMMCode <- nimbleCode({
+  for (i in 1:S) {
+    y[i] ~ dnorm(mu_y[i], tau = tau_y)
+    mu_y[i] <- b[i, 1] * x1[i] + b[i, 2] * x2[i] +
+      b[i, 3] * x3[i] + b[i, 4] * x4[i] + b[i, 5] * x5[i] +
+      b[i, 6] * x6[i] + b[i, 7] * x7[i] + b[i, 8] * x8[i] +
+      b[i, 9] * x9[i] + b[i, 10]* x10[i] + b[i,11] * x11[i] +
+      b[i,12] * x12[i]+ b[i,13] * x13[i] + W[i]
+
+    b[i, 1:13] <- bm[latent[i], 1:13]
+
+    latent[i] ~ dcat(zlatent[1:M])
+  }
+
+  for (j in 1:S) {
+    for (k in 1:S) {
+      H[j, k] <- exp(-Dist[j, k]/phi)
+    }
+  }
+
+  W[1:S] ~ dmnorm(mu_w[1:S], prec = prec_W[1:S, 1:S])
+  prec_W[1:S, 1:S] <- tau_w * inverse(H[1:S, 1:S])
+
+  phi ~ dunif(0, D)
+  tau_w ~ dgamma(1, 1)
+
+  mu_w[1:S] <- rep(0, S)
+
+  for (k in 1:M) {
+    bm[k, 1:13] ~ dmnorm(mu_bm[1:13], cov = var_bm[1:13, 1:13])
+  }
+
+ var_bm[1:13, 1:13] <- 1/tau_bm * diag(rep(1, 13))
+
+  tau_bm ~ dgamma(1, 1)
+
+  for (j in 1:13) {
+    mu_bm[j] ~ dnorm(0, 1)
+  }
+
+  zlatent[1:M] <- stick_breaking(vlatent[1:(M - 1)])
+
+  for (j in 1:(M - 1)) {
+    vlatent[j] ~ dbeta(1, alpha)
+  }
+
+  alpha ~ dgamma(1, 1)
+  tau_y ~ dgamma(1, 1)
+
+})
+
+ SLMMdata <- list(y = baltimore$PRICE, x1 = baltimore$NROOM,
+                  x2 = baltimore$DWELL,x3 = baltimore$NBATH,
+                  x4 = baltimore$PATIO,x5 = baltimore$FIREPL,
+                  x6 =baltimore$AC,    x7 = baltimore$BMENT,
+                  x8 =baltimore$NSTOR, x9 = baltimore$GAR,
+                  x10 =baltimore$AGE,  x11=baltimore$CITCOU,
+                  x12 =baltimore$LOTSZ,x13=baltimore$SQFT,
+                  Dist = distMat)
+  SLMMConsts <- list(S = 211, M = 50, D = 100)
+  SLMMInits <- list(tau_y = 1,
+                   latent = rep(1, SLMMConsts$S),
+                   alpha = 2,
+                   tau_bm = 1,
+                   mu_bm = rnorm(13),
+                   phi = 1,
+                   tau_w = 1,
+                   vlatent = rbeta(SLMMConsts$M - 1, 1, 1))
+
+  mcmc.out <- nimbleMCMC(code = SLMMCode, data = SLMMdata,
+                        constants = SLMMConsts,
+                        inits = SLMMInits,
+                        monitors = c("bm","b","phi", "tau_w",
+                                     "alpha", "latent", "tau_y"),
+                        niter = 50000,
+                        thin = 10, nchains = 1, setSeed = TRUE)
+
+defining model...
+building model...
+setting data and initial values...
+running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in solve.default(x) :
+  Lapack routine dgesv: system is exactly singular: U[49,49] = 0
+
+checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+checking model calculations...
+Error in solve.default(x) :
+  Lapack routine dgesv: system is exactly singular: U[49,49] = 0
+Error in solve.default(x) :
+  Lapack routine dgesv: system is exactly singular: U[49,49] = 0
+Note: cannot calculate logProb for node  prec_W[1:211, 1:211] .
+Error in chol.default(model$prec_W[1:211, 1:211]) :
+  the leading minor of order 1 is not positive definite
+Note: cannot calculate logProb for node  lifted_chol_oPprec_W_oB1to211_comma_1to211_cB_cP[1:211, 1:211] .
+NAs were detected in model variables: prec_W, bm, logProb_bm, lifted_chol_oPprec_W_oB1to211_comma_1to211_cB_cP, W, logProb_W, b, mu_y, logProb_y.
+model building finished.
+compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+Error: Failed to create the shared library. Run 'printErrors()' to see the compilation errors.
+
+THANKS
+
+From udd632bd3bbcdd7e9 at groups.google.com  Fri Apr  9 22:18:07 2021
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Fri, 09 Apr 2021 22:18:07 +0000
+Subject: Re: Error: Failed to create the shared library" compiler error
+Message-ID: <OIKTI20OgMs.3K2KNLSrDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <OIKTI20OgMs.HgaTmIWDDAAJ@nimble-users.groups.google.com>
+References: <OIKTI20OgMs.HgaTmIWDDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/OIKTI20OgMs/m/3K2KNLSrDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Alireza,
+
+Thanks for the message.  Your code works for me!
+
+Have you updated R and/or nimble and/or your C++ compiler tools recently?  Sometimes one needs to take an extra step after updating compiler tools.  In OS X, sometimes one needs to launch Xcode outside of R to give it permission.  Also one needs command line tools ("xcode-select --install").  On Windows, there is a relatively recent extra procedure for setting up the PATH environment variable: https://cran.r-project.org/bin/windows/Rtools/.
+
+You can check if your compiler setup is working by a simple test like this:
+foo <- nimbleFunction( run = function(x = double(1)) {return(sum(x)); returnType(double())})
+cfoo <- compileNimble(foo)
+cfoo(1:10)
+
+If it fails, please follow the instructions by entering printErrors() to see what happened, and send the result if you're still stuck.  An alternative is to use "showCompilerOutput = TRUE" in compileNimble, but know that that can generate lots of harmless warnings.
+
+If the compiler works, please try the component steps of nimbleMCMC like this:
+
+SLMMmodel <- nimbleModel(SLMMCode, data = SLMMdata,
+                        constants = SLMMConsts,
+                        inits = SLMMInits)
+
+cSLMMmodel <- compileNimble(SLMMmodel)
+MCMC <- buildMCMC(cSLMMmodel)
+cMCMC <- compileNimble(MCMC, project = SLMMmodel)
+samples <- runMCMC(cMCMC, niter = 1000)
+
+I hope something works out.
+
+-Perry
+
+On Fri, Apr 9, 2021 at 3:01 AM alireza beheshty <beheshty...@gmail.com> wrote:
+
+> HI
+> I've written a nimbleFunction but when I try to compile the model code, I get a "Failed to create the shared library" error. Here's the code:
+>
+> R version 4.0.3 & 4.0.4
+>
+> ---------------------------------------------
+> library(spdep)
+>
+> data("baltimore")
+>
+> str(baltimore)
+>
+> N <- S <- 211
+>
+> ## pairwise matrix of distance
+>
+>  distMat <- matrix(nrow = nrow(baltimore), ncol = nrow(baltimore))
+>
+> for (i in 1:nrow(distMat)) {
+>   for (j in i:nrow(distMat)) {
+>     distMat[i, j] <- distMat[j, i] <-
+>       sqrt(sum((baltimore[i, c("X", "Y")] - baltimore[j, c("X", "Y")]))^2)
+>       }
+>        }
+> ## normalization
+>   distMat <- distMat / max(distMat) * 10
+>
+>
+> library(nimble)
+> SLMMCode <- nimbleCode({
+>   for (i in 1:S) {
+>     y[i] ~ dnorm(mu_y[i], tau = tau_y)
+>     mu_y[i] <- b[i, 1] * x1[i] + b[i, 2] * x2[i] +
+>       b[i, 3] * x3[i] + b[i, 4] * x4[i] + b[i, 5] * x5[i] +
+>       b[i, 6] * x6[i] + b[i, 7] * x7[i] + b[i, 8] * x8[i] +
+>       b[i, 9] * x9[i] + b[i, 10]* x10[i] + b[i,11] * x11[i] +
+>       b[i,12] * x12[i]+ b[i,13] * x13[i] + W[i]
+>
+>     b[i, 1:13] <- bm[latent[i], 1:13]
+>
+>     latent[i] ~ dcat(zlatent[1:M])
+>   }
+>
+>
+>   for (j in 1:S) {
+>     for (k in 1:S) {
+>       H[j, k] <- exp(-Dist[j, k]/phi)
+>     }
+>   }
+>
+>   W[1:S] ~ dmnorm(mu_w[1:S], prec = prec_W[1:S, 1:S])
+>   prec_W[1:S, 1:S] <- tau_w * inverse(H[1:S, 1:S])
+>
+>   phi ~ dunif(0, D)
+>   tau_w ~ dgamma(1, 1)
+>
+>   mu_w[1:S] <- rep(0, S)
+>
+>   for (k in 1:M) {
+>     bm[k, 1:13] ~ dmnorm(mu_bm[1:13], cov = var_bm[1:13, 1:13])
+>   }
+>
+>  var_bm[1:13, 1:13] <- 1/tau_bm * diag(rep(1, 13))
+>
+>   tau_bm ~ dgamma(1, 1)
+>
+>   for (j in 1:13) {
+>     mu_bm[j] ~ dnorm(0, 1)
+>   }
+>
+>   zlatent[1:M] <- stick_breaking(vlatent[1:(M - 1)])
+>
+>   for (j in 1:(M - 1)) {
+>     vlatent[j] ~ dbeta(1, alpha)
+>   }
+>
+>   alpha ~ dgamma(1, 1)
+>   tau_y ~ dgamma(1, 1)
+>
+> })
+>
+>  SLMMdata <- list(y = baltimore$PRICE, x1 = baltimore$NROOM,
+>                   x2 = baltimore$DWELL,x3 = baltimore$NBATH,
+>                   x4 = baltimore$PATIO,x5 = baltimore$FIREPL,
+>                   x6 =baltimore$AC,    x7 = baltimore$BMENT,
+>                   x8 =baltimore$NSTOR, x9 = baltimore$GAR,
+>                   x10 =baltimore$AGE,  x11=baltimore$CITCOU,
+>                   x12 =baltimore$LOTSZ,x13=baltimore$SQFT,
+>                   Dist = distMat)
+>   SLMMConsts <- list(S = 211, M = 50, D = 100)
+>   SLMMInits <- list(tau_y = 1,
+>                    latent = rep(1, SLMMConsts$S),
+>                    alpha = 2,
+>                    tau_bm = 1,
+>                    mu_bm = rnorm(13),
+>                    phi = 1,
+>                    tau_w = 1,
+>                    vlatent = rbeta(SLMMConsts$M - 1, 1, 1))
+>
+>   mcmc.out <- nimbleMCMC(code = SLMMCode, data = SLMMdata,
+>                         constants = SLMMConsts,
+>                         inits = SLMMInits,
+>                         monitors = c("bm","b","phi", "tau_w",
+>                                      "alpha", "latent", "tau_y"),
+>                         niter = 50000,
+>                         thin = 10, nchains = 1, setSeed = TRUE)
+>
+>
+> defining model...
+> building model...
+> setting data and initial values...
+> running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in solve.default(x) :
+>   Lapack routine dgesv: system is exactly singular: U[49,49] = 0
+>
+> checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+> checking model calculations...
+> Error in solve.default(x) :
+>   Lapack routine dgesv: system is exactly singular: U[49,49] = 0
+> Error in solve.default(x) :
+>   Lapack routine dgesv: system is exactly singular: U[49,49] = 0
+> Note: cannot calculate logProb for node  prec_W[1:211, 1:211] .
+> Error in chol.default(model$prec_W[1:211, 1:211]) :
+>   the leading minor of order 1 is not positive definite
+> Note: cannot calculate logProb for node  lifted_chol_oPprec_W_oB1to211_comma_1to211_cB_cP[1:211, 1:211] .
+> NAs were detected in model variables: prec_W, bm, logProb_bm, lifted_chol_oPprec_W_oB1to211_comma_1to211_cB_cP, W, logProb_W, b, mu_y, logProb_y.
+> model building finished.
+> compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> Error: Failed to create the shared library. Run 'printErrors()' to see the compilation errors.
+>
+> THANKS
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/40277b46-e85a-4d3b-bbbc-22d077b483a5n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/40277b46-e85a-4d3b-bbbc-22d077b483a5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4d992ac005b751e4 at groups.google.com  Tue Apr 20 14:03:30 2021
+From: u4d992ac005b751e4 at groups.google.com (ugolin...@gmail.com)
+Date: Tue, 20 Apr 2021 14:03:30 +0000
+Subject: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/p6SQtuNHAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+I am trying to code a model in which there is a if-else statement
+However, it implies parameters that are not in the "constant" section.
+It is written as follow :
+if (X[obs] < bp) { ...
+With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+(see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+
+I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+
+Thank you in advance.
+
+Ugoline
+
+From u4d992ac005b751e4 at groups.google.com  Tue Apr 20 14:18:55 2021
+From: u4d992ac005b751e4 at groups.google.com (ugolin...@gmail.com)
+Date: Tue, 20 Apr 2021 14:18:55 +0000
+Subject: Re: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs.BMFTSLtIAQAJ@nimble-users.groups.google.com>
+In-Reply-To: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com>
+References: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/BMFTSLtIAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+For information I also tried with this alternative :
+
+        conditional_mean[obs][which(X[obs] < bp)]<- intercept + slope_before * (X[obs] - bp)
+        conditional_mean[obs][which(X[obs] >= bp)]<- intercept + slope_after * (X[obs] - bp)
+
+But apparently "which" function is not available in Nimble either.
+Error:
+defining model...
+Error in genReplacementsAndCodeRecurse(x, constAndIndexNames, nimbleFunctionNames,  :
+  Error, R function "which" has non-replaceable node values as arguments.  Must be a nimble function.
+
+Thank you
+
+Le mardi 20 avril 2021 à 16:03:30 UTC+2, ugolin...@gmail.com a écrit :
+> Dear all,
+>
+> I am trying to code a model in which there is a if-else statement
+> However, it implies parameters that are not in the "constant" section.
+> It is written as follow :
+> if (X[obs] < bp) { ...
+> With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+> (see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+>
+> I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+> As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+>
+> Thank you in advance.
+>
+> Ugoline
+>
+>
+>
+
+From udd632bd3bbcdd7e9 at groups.google.com  Tue Apr 20 15:03:26 2021
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Tue, 20 Apr 2021 15:03:26 +0000
+Subject: Re: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs.8a-4MSlLAQAJ@nimble-users.groups.google.com>
+In-Reply-To: <VjlvtEOJuqs.BMFTSLtIAQAJ@nimble-users.groups.google.com>
+References: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com> <VjlvtEOJuqs.BMFTSLtIAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/8a-4MSlLAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Ugoline,
+
+Thanks for the message.
+
+The if-then-else provided for models is evaluated at the time of model definition.  It provides a way to create multiple model variants starting from the same code.  It does not provide if-then-else logic during model calculations.  Once it is built, the model is a graphical model with fixed relationships of what depends on what.  For this reason, if-then-else logic that would change what depends on what during model calculations is not part of nimble.  That is similar to the reason that the second idea you tried would not make sense for nimble.
+
+I think either of the following two ideas can work:
+
+conditional_mean[obs] <- intercept + slope_before_or_after[ (X[obs] < bp) + 1] * (X[obs] - bp)
+
+This would rely on a logical result of (X[obs] < bp)  being 0 for FALSE and 1 for TRUE, so slope_before_or_after would have length of 2.  This kind of model flexibility is supported because nimble will see that the index for slope_before_or_after depends on a model variable, and internally it will handle conditional_mean[obs]  as depending on both elements of slope_before_or_after, even though it only depends on one element at a time.
+
+Another option, which would be more general, such as for more slope categories, would be:
+conditional_mean[obs] <- intercept +  choose_slope(slopes[1:max_slopes], X[obs], bp) * (X[obs] - bp)
+
+choose_slope <- nimbleFunction(
+ run = function(slopes = double(1), xobs = double(), bp = double()) {
+   if(xobs < bp) return(slopes[1])
+   return(slopes[2])
+   returnType(double())
+})
+
+Again nimble will in this case handle conditional_mean[obs] as depending on all of slopes[1:max_slopes].  (The if-then inside of choose_slope is not in the model code itself and so is not used for deciding what depends on what in the model graph.)
+
+I hope it helps.
+
+-Perry
+
+On Tue, Apr 20, 2021 at 7:18 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+
+> For information I also tried with this alternative :
+>
+>         conditional_mean[obs][which(X[obs] < bp)]<- intercept + slope_before * (X[obs] - bp)
+>         conditional_mean[obs][which(X[obs] >= bp)]<- intercept + slope_after * (X[obs] - bp)
+>
+> But apparently "which" function is not available in Nimble either.
+> Error:
+> defining model...
+> Error in genReplacementsAndCodeRecurse(x, constAndIndexNames, nimbleFunctionNames,  :
+>   Error, R function "which" has non-replaceable node values as arguments.  Must be a nimble function.
+>
+> Thank you
+>
+> Le mardi 20 avril 2021 à 16:03:30 UTC+2, ugolin...@gmail.com a écrit :
+> > Dear all,
+> >
+> > I am trying to code a model in which there is a if-else statement
+> > However, it implies parameters that are not in the "constant" section.
+> > It is written as follow :
+> > if (X[obs] < bp) { ...
+> > With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+> > (see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+> >
+> > I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+> > As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+> >
+> > Thank you in advance.
+> >
+> > Ugoline
+> >
+> >
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4d992ac005b751e4 at groups.google.com  Tue Apr 20 15:34:32 2021
+From: u4d992ac005b751e4 at groups.google.com (ugolin...@gmail.com)
+Date: Tue, 20 Apr 2021 15:34:32 +0000
+Subject: Re: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs.Gncmo9tMAQAJ@nimble-users.groups.google.com>
+In-Reply-To: <VjlvtEOJuqs.BMFTSLtIAQAJ@nimble-users.groups.google.com>
+References: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com> <VjlvtEOJuqs.BMFTSLtIAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/Gncmo9tMAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Perry,
+Indeed the first one would not be good because later I will use more than two slopes.
+However I don't know why the second solution is not working (I think I do something wrong but don't know what).
+Thank you for your help.
+
+He is my script as it is now (I tested the choose_slope nimbleFunction outside the model and it works)  :
+
+choose_slope <- nimbleFunction(
+  run = function(slopes = double(1), xobs = double(), bp = double()) {
+    if(xobs < bp) return(slopes[1])
+    return(slopes[2])
+    returnType(double())
+  })
+
+modelCodeSLR <- nimbleCode(
+  {
+    intercept ~ dnorm(150, 25)  # Average Y at breakpoint
+    slope_before ~ dnorm(0, 5)  # Slope before breakpoint
+    slope_after ~ dnorm(0, 5)   # Slope after breakpoint
+    bp ~ dnorm(12, 6)           # Breakpoint X
+    error ~ dnorm(0, 20)        # Residual error
+
+    both_slopes <-  c(slope_before,slope_after)
+      for (obs in 1:Nobs) {
+        conditional_mean[obs] <- intercept +  choose_slope(both_slopes, X[obs], bp) * (X[obs] - bp)
+      }
+    for (obs in 1:Nobs) {
+      Y[obs] ~ dnorm(conditional_mean[obs], error)
+    }
+  })
+
+Here is the error:
+
+> Model <- nimbleModel(code = modelCodeSLR, name = 'Nimble', constants = ModelConsts, data = ModelData)
+defining model...
+building model...
+setting data and initial values...
+running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in if (xobs < bp) return(slopes[1]) :
+  valeur manquante là où TRUE / FALSE est requis
+
+checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+model building finished.
+Warning message:
+In model$both_slopes[1] <<- nimC(model$slope_before[1], model$slope_after[1]) :
+  le nombre d'objets à remplacer n'est pas multiple de la taille du remplacement
+> CModel <- compileNimble(Model)
+compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+Warning, in eigenizing model_both_slopes[1] the [ is still there but nDim is not 0 (not a scalar).
+Erreur : Failed to create the shared library. Run 'printErrors()' to see the compilation errors.
+
+Le mardi 20 avril 2021 à 17:03:26 UTC+2, pdevalpine a écrit :
+> Dear Ugoline,
+>
+> Thanks for the message.
+>
+> The if-then-else provided for models is evaluated at the time of model definition.  It provides a way to create multiple model variants starting from the same code.  It does not provide if-then-else logic during model calculations.  Once it is built, the model is a graphical model with fixed relationships of what depends on what.  For this reason, if-then-else logic that would change what depends on what during model calculations is not part of nimble.  That is similar to the reason that the second idea you tried would not make sense for nimble.
+>
+> I think either of the following two ideas can work:
+>
+> conditional_mean[obs] <- intercept + slope_before_or_after[ (X[obs] < bp) + 1] * (X[obs] - bp)
+>
+> This would rely on a logical result of (X[obs] < bp)  being 0 for FALSE and 1 for TRUE, so slope_before_or_after would have length of 2.  This kind of model flexibility is supported because nimble will see that the index for slope_before_or_after depends on a model variable, and internally it will handle conditional_mean[obs]  as depending on both elements of slope_before_or_after, even though it only depends on one element at a time.
+>
+> Another option, which would be more general, such as for more slope categories, would be:
+> conditional_mean[obs] <- intercept +  choose_slope(slopes[1:max_slopes], X[obs], bp) * (X[obs] - bp)
+>
+> choose_slope <- nimbleFunction(
+>  run = function(slopes = double(1), xobs = double(), bp = double()) {
+>    if(xobs < bp) return(slopes[1])
+>    return(slopes[2])
+>    returnType(double())
+> })
+>
+> Again nimble will in this case handle conditional_mean[obs] as depending on all of slopes[1:max_slopes].  (The if-then inside of choose_slope is not in the model code itself and so is not used for deciding what depends on what in the model graph.)
+>
+> I hope it helps.
+>
+> -Perry
+>
+> On Tue, Apr 20, 2021 at 7:18 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > For information I also tried with this alternative :
+> >
+> >         conditional_mean[obs][which(X[obs] < bp)]<- intercept + slope_before * (X[obs] - bp)
+> >         conditional_mean[obs][which(X[obs] >= bp)]<- intercept + slope_after * (X[obs] - bp)
+> >
+> > But apparently "which" function is not available in Nimble either.
+> > Error:
+> > defining model...
+> > Error in genReplacementsAndCodeRecurse(x, constAndIndexNames, nimbleFunctionNames,  :
+> >   Error, R function "which" has non-replaceable node values as arguments.  Must be a nimble function.
+> >
+> > Thank you
+> >
+> > Le mardi 20 avril 2021 à 16:03:30 UTC+2, ugolin...@gmail.com a écrit :
+> > > Dear all,
+> > >
+> > > I am trying to code a model in which there is a if-else statement
+> > > However, it implies parameters that are not in the "constant" section.
+> > > It is written as follow :
+> > > if (X[obs] < bp) { ...
+> > > With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+> > > (see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+> > >
+> > > I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+> > > As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+> > >
+> > > Thank you in advance.
+> > >
+> > > Ugoline
+> > >
+> > >
+> > >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4d992ac005b751e4 at groups.google.com  Tue Apr 20 15:56:28 2021
+From: u4d992ac005b751e4 at groups.google.com (ugolin...@gmail.com)
+Date: Tue, 20 Apr 2021 15:56:28 +0000
+Subject: Re: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs.TzdOCQ5OAQAJ@nimble-users.groups.google.com>
+In-Reply-To: <VjlvtEOJuqs.Gncmo9tMAQAJ@nimble-users.groups.google.com>
+References: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com> <VjlvtEOJuqs.Gncmo9tMAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/TzdOCQ5OAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It seems to work just like that :
+        conditional_mean[obs] <- intercept +  choose_slope(slopes=c(slope_before,slope_after), xobs=X[obs], bp=bp) * (X[obs] - bp)
+Not using "both_slopes"
+Thank you a lot for your help.
+
+Le mardi 20 avril 2021 à 17:34:32 UTC+2, ugolin...@gmail.com a écrit :
+> Dear Perry,
+> Indeed the first one would not be good because later I will use more than two slopes.
+> However I don't know why the second solution is not working (I think I do something wrong but don't know what).
+> Thank you for your help.
+>
+> He is my script as it is now (I tested the choose_slope nimbleFunction outside the model and it works)  :
+>
+> choose_slope <- nimbleFunction(
+>   run = function(slopes = double(1), xobs = double(), bp = double()) {
+>     if(xobs < bp) return(slopes[1])
+>     return(slopes[2])
+>     returnType(double())
+>   })
+>
+>
+> modelCodeSLR <- nimbleCode(
+>   {
+>     intercept ~ dnorm(150, 25)  # Average Y at breakpoint
+>     slope_before ~ dnorm(0, 5)  # Slope before breakpoint
+>     slope_after ~ dnorm(0, 5)   # Slope after breakpoint
+>     bp ~ dnorm(12, 6)           # Breakpoint X
+>     error ~ dnorm(0, 20)        # Residual error
+>
+>     both_slopes <-  c(slope_before,slope_after)
+>       for (obs in 1:Nobs) {
+>         conditional_mean[obs] <- intercept +  choose_slope(both_slopes, X[obs], bp) * (X[obs] - bp)
+>       }
+>     for (obs in 1:Nobs) {
+>       Y[obs] ~ dnorm(conditional_mean[obs], error)
+>     }
+>   })
+>
+>
+> Here is the error:
+>
+> > Model <- nimbleModel(code = modelCodeSLR, name = 'Nimble', constants = ModelConsts, data = ModelData)
+> defining model...
+> building model...
+> setting data and initial values...
+> running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in if (xobs < bp) return(slopes[1]) :
+>   valeur manquante là où TRUE / FALSE est requis
+>
+> checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+> model building finished.
+> Warning message:
+> In model$both_slopes[1] <<- nimC(model$slope_before[1], model$slope_after[1]) :
+>   le nombre d'objets à remplacer n'est pas multiple de la taille du remplacement
+> > CModel <- compileNimble(Model)
+> compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> Warning, in eigenizing model_both_slopes[1] the [ is still there but nDim is not 0 (not a scalar).
+> Erreur : Failed to create the shared library. Run 'printErrors()' to see the compilation errors.
+>
+>
+>
+> Le mardi 20 avril 2021 à 17:03:26 UTC+2, pdevalpine a écrit :
+> > Dear Ugoline,
+> >
+> > Thanks for the message.
+> >
+> > The if-then-else provided for models is evaluated at the time of model definition.  It provides a way to create multiple model variants starting from the same code.  It does not provide if-then-else logic during model calculations.  Once it is built, the model is a graphical model with fixed relationships of what depends on what.  For this reason, if-then-else logic that would change what depends on what during model calculations is not part of nimble.  That is similar to the reason that the second idea you tried would not make sense for nimble.
+> >
+> > I think either of the following two ideas can work:
+> >
+> > conditional_mean[obs] <- intercept + slope_before_or_after[ (X[obs] < bp) + 1] * (X[obs] - bp)
+> >
+> > This would rely on a logical result of (X[obs] < bp)  being 0 for FALSE and 1 for TRUE, so slope_before_or_after would have length of 2.  This kind of model flexibility is supported because nimble will see that the index for slope_before_or_after depends on a model variable, and internally it will handle conditional_mean[obs]  as depending on both elements of slope_before_or_after, even though it only depends on one element at a time.
+> >
+> > Another option, which would be more general, such as for more slope categories, would be:
+> > conditional_mean[obs] <- intercept +  choose_slope(slopes[1:max_slopes], X[obs], bp) * (X[obs] - bp)
+> >
+> > choose_slope <- nimbleFunction(
+> >  run = function(slopes = double(1), xobs = double(), bp = double()) {
+> >    if(xobs < bp) return(slopes[1])
+> >    return(slopes[2])
+> >    returnType(double())
+> > })
+> >
+> > Again nimble will in this case handle conditional_mean[obs] as depending on all of slopes[1:max_slopes].  (The if-then inside of choose_slope is not in the model code itself and so is not used for deciding what depends on what in the model graph.)
+> >
+> > I hope it helps.
+> >
+> > -Perry
+> >
+> > On Tue, Apr 20, 2021 at 7:18 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > > For information I also tried with this alternative :
+> > >
+> > >         conditional_mean[obs][which(X[obs] < bp)]<- intercept + slope_before * (X[obs] - bp)
+> > >         conditional_mean[obs][which(X[obs] >= bp)]<- intercept + slope_after * (X[obs] - bp)
+> > >
+> > > But apparently "which" function is not available in Nimble either.
+> > > Error:
+> > > defining model...
+> > > Error in genReplacementsAndCodeRecurse(x, constAndIndexNames, nimbleFunctionNames,  :
+> > >   Error, R function "which" has non-replaceable node values as arguments.  Must be a nimble function.
+> > >
+> > > Thank you
+> > >
+> > > Le mardi 20 avril 2021 à 16:03:30 UTC+2, ugolin...@gmail.com a écrit :
+> > > > Dear all,
+> > > >
+> > > > I am trying to code a model in which there is a if-else statement
+> > > > However, it implies parameters that are not in the "constant" section.
+> > > > It is written as follow :
+> > > > if (X[obs] < bp) { ...
+> > > > With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+> > > > (see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+> > > >
+> > > > I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+> > > > As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+> > > >
+> > > > Thank you in advance.
+> > > >
+> > > > Ugoline
+> > > >
+> > > >
+> > > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Tue Apr 20 16:06:12 2021
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Tue, 20 Apr 2021 16:06:12 +0000
+Subject: Re: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs.LFLZ65VOAQAJ@nimble-users.groups.google.com>
+In-Reply-To: <VjlvtEOJuqs.TzdOCQ5OAQAJ@nimble-users.groups.google.com>
+References: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com> <VjlvtEOJuqs.TzdOCQ5OAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/LFLZ65VOAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+In the case that didn't work, I think you would need explicit indexing in this declaration:
+
+both_slopes[1:2] <-  c(slope_before,slope_after)
+
+The version that did work for you should be essentially doing the same thing internally.
+
+Glad you've got something that works.
+
+-Perry
+
+On Tue, Apr 20, 2021 at 8:34 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+
+> Dear Perry,
+> Indeed the first one would not be good because later I will use more than two slopes.
+> However I don't know why the second solution is not working (I think I do something wrong but don't know what).
+> Thank you for your help.
+>
+> He is my script as it is now (I tested the choose_slope nimbleFunction outside the model and it works)  :
+>
+> choose_slope <- nimbleFunction(
+>   run = function(slopes = double(1), xobs = double(), bp = double()) {
+>     if(xobs < bp) return(slopes[1])
+>     return(slopes[2])
+>     returnType(double())
+>   })
+>
+>
+> modelCodeSLR <- nimbleCode(
+>   {
+>     intercept ~ dnorm(150, 25)  # Average Y at breakpoint
+>     slope_before ~ dnorm(0, 5)  # Slope before breakpoint
+>     slope_after ~ dnorm(0, 5)   # Slope after breakpoint
+>     bp ~ dnorm(12, 6)           # Breakpoint X
+>     error ~ dnorm(0, 20)        # Residual error
+>
+>     both_slopes <-  c(slope_before,slope_after)
+>       for (obs in 1:Nobs) {
+>         conditional_mean[obs] <- intercept +  choose_slope(both_slopes, X[obs], bp) * (X[obs] - bp)
+>       }
+>     for (obs in 1:Nobs) {
+>       Y[obs] ~ dnorm(conditional_mean[obs], error)
+>     }
+>   })
+>
+>
+> Here is the error:
+>
+> > Model <- nimbleModel(code = modelCodeSLR, name = 'Nimble', constants = ModelConsts, data = ModelData)
+> defining model...
+> building model...
+> setting data and initial values...
+> running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in if (xobs < bp) return(slopes[1]) :
+>   valeur manquante là où TRUE / FALSE est requis
+>
+> checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+> model building finished.
+> Warning message:
+> In model$both_slopes[1] <<- nimC(model$slope_before[1], model$slope_after[1]) :
+>   le nombre d'objets à remplacer n'est pas multiple de la taille du remplacement
+> > CModel <- compileNimble(Model)
+> compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> Warning, in eigenizing model_both_slopes[1] the [ is still there but nDim is not 0 (not a scalar).
+> Erreur : Failed to create the shared library. Run 'printErrors()' to see the compilation errors.
+>
+>
+>
+> Le mardi 20 avril 2021 à 17:03:26 UTC+2, pdevalpine a écrit :
+> > Dear Ugoline,
+> >
+> > Thanks for the message.
+> >
+> > The if-then-else provided for models is evaluated at the time of model definition.  It provides a way to create multiple model variants starting from the same code.  It does not provide if-then-else logic during model calculations.  Once it is built, the model is a graphical model with fixed relationships of what depends on what.  For this reason, if-then-else logic that would change what depends on what during model calculations is not part of nimble.  That is similar to the reason that the second idea you tried would not make sense for nimble.
+> >
+> > I think either of the following two ideas can work:
+> >
+> > conditional_mean[obs] <- intercept + slope_before_or_after[ (X[obs] < bp) + 1] * (X[obs] - bp)
+> >
+> > This would rely on a logical result of (X[obs] < bp)  being 0 for FALSE and 1 for TRUE, so slope_before_or_after would have length of 2.  This kind of model flexibility is supported because nimble will see that the index for slope_before_or_after depends on a model variable, and internally it will handle conditional_mean[obs]  as depending on both elements of slope_before_or_after, even though it only depends on one element at a time.
+> >
+> > Another option, which would be more general, such as for more slope categories, would be:
+> > conditional_mean[obs] <- intercept +  choose_slope(slopes[1:max_slopes], X[obs], bp) * (X[obs] - bp)
+> >
+> > choose_slope <- nimbleFunction(
+> >  run = function(slopes = double(1), xobs = double(), bp = double()) {
+> >    if(xobs < bp) return(slopes[1])
+> >    return(slopes[2])
+> >    returnType(double())
+> > })
+> >
+> > Again nimble will in this case handle conditional_mean[obs] as depending on all of slopes[1:max_slopes].  (The if-then inside of choose_slope is not in the model code itself and so is not used for deciding what depends on what in the model graph.)
+> >
+> > I hope it helps.
+> >
+> > -Perry
+> >
+> > On Tue, Apr 20, 2021 at 7:18 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > > For information I also tried with this alternative :
+> > >
+> > >         conditional_mean[obs][which(X[obs] < bp)]<- intercept + slope_before * (X[obs] - bp)
+> > >         conditional_mean[obs][which(X[obs] >= bp)]<- intercept + slope_after * (X[obs] - bp)
+> > >
+> > > But apparently "which" function is not available in Nimble either.
+> > > Error:
+> > > defining model...
+> > > Error in genReplacementsAndCodeRecurse(x, constAndIndexNames, nimbleFunctionNames,  :
+> > >   Error, R function "which" has non-replaceable node values as arguments.  Must be a nimble function.
+> > >
+> > > Thank you
+> > >
+> > > Le mardi 20 avril 2021 à 16:03:30 UTC+2, ugolin...@gmail.com a écrit :
+> > > > Dear all,
+> > > >
+> > > > I am trying to code a model in which there is a if-else statement
+> > > > However, it implies parameters that are not in the "constant" section.
+> > > > It is written as follow :
+> > > > if (X[obs] < bp) { ...
+> > > > With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+> > > > (see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+> > > >
+> > > > I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+> > > > As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+> > > >
+> > > > Thank you in advance.
+> > > >
+> > > > Ugoline
+> > > >
+> > > >
+> > > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/19c458b9-9c34-4952-b433-79b21137f5a6n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/19c458b9-9c34-4952-b433-79b21137f5a6n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4d992ac005b751e4 at groups.google.com  Tue Apr 20 16:16:34 2021
+From: u4d992ac005b751e4 at groups.google.com (ugolin...@gmail.com)
+Date: Tue, 20 Apr 2021 16:16:34 +0000
+Subject: Re: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs._Nft0iZPAQAJ@nimble-users.groups.google.com>
+In-Reply-To: <VjlvtEOJuqs.TzdOCQ5OAQAJ@nimble-users.groups.google.com>
+References: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com> <VjlvtEOJuqs.TzdOCQ5OAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/_Nft0iZPAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Indeed, it's been a while since I used Nimble. I forgot that each position needed to be specified. Thank you for the reminder.
+Thank you again for your precious help.
+
+Ugoline
+
+Le mardi 20 avril 2021 à 18:06:12 UTC+2, pdevalpine a écrit :
+> In the case that didn't work, I think you would need explicit indexing in this declaration:
+>
+> both_slopes[1:2] <-  c(slope_before,slope_after)
+>
+> The version that did work for you should be essentially doing the same thing internally.
+>
+> Glad you've got something that works.
+>
+> -Perry
+>
+>
+> On Tue, Apr 20, 2021 at 8:34 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > Dear Perry,
+> > Indeed the first one would not be good because later I will use more than two slopes.
+> > However I don't know why the second solution is not working (I think I do something wrong but don't know what).
+> > Thank you for your help.
+> >
+> > He is my script as it is now (I tested the choose_slope nimbleFunction outside the model and it works)  :
+> >
+> > choose_slope <- nimbleFunction(
+> >   run = function(slopes = double(1), xobs = double(), bp = double()) {
+> >     if(xobs < bp) return(slopes[1])
+> >     return(slopes[2])
+> >     returnType(double())
+> >   })
+> >
+> >
+> > modelCodeSLR <- nimbleCode(
+> >   {
+> >     intercept ~ dnorm(150, 25)  # Average Y at breakpoint
+> >     slope_before ~ dnorm(0, 5)  # Slope before breakpoint
+> >     slope_after ~ dnorm(0, 5)   # Slope after breakpoint
+> >     bp ~ dnorm(12, 6)           # Breakpoint X
+> >     error ~ dnorm(0, 20)        # Residual error
+> >
+> >     both_slopes <-  c(slope_before,slope_after)
+> >       for (obs in 1:Nobs) {
+> >         conditional_mean[obs] <- intercept +  choose_slope(both_slopes, X[obs], bp) * (X[obs] - bp)
+> >       }
+> >     for (obs in 1:Nobs) {
+> >       Y[obs] ~ dnorm(conditional_mean[obs], error)
+> >     }
+> >   })
+> >
+> >
+> > Here is the error:
+> >
+> > > Model <- nimbleModel(code = modelCodeSLR, name = 'Nimble', constants = ModelConsts, data = ModelData)
+> > defining model...
+> > building model...
+> > setting data and initial values...
+> > running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in if (xobs < bp) return(slopes[1]) :
+> >   valeur manquante là où TRUE / FALSE est requis
+> >
+> > checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+> > model building finished.
+> > Warning message:
+> > In model$both_slopes[1] <<- nimC(model$slope_before[1], model$slope_after[1]) :
+> >   le nombre d'objets à remplacer n'est pas multiple de la taille du remplacement
+> > > CModel <- compileNimble(Model)
+> > compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> > Warning, in eigenizing model_both_slopes[1] the [ is still there but nDim is not 0 (not a scalar).
+> > Erreur : Failed to create the shared library. Run 'printErrors()' to see the compilation errors.
+> >
+> >
+> >
+> > Le mardi 20 avril 2021 à 17:03:26 UTC+2, pdevalpine a écrit :
+> > > Dear Ugoline,
+> > >
+> > > Thanks for the message.
+> > >
+> > > The if-then-else provided for models is evaluated at the time of model definition.  It provides a way to create multiple model variants starting from the same code.  It does not provide if-then-else logic during model calculations.  Once it is built, the model is a graphical model with fixed relationships of what depends on what.  For this reason, if-then-else logic that would change what depends on what during model calculations is not part of nimble.  That is similar to the reason that the second idea you tried would not make sense for nimble.
+> > >
+> > > I think either of the following two ideas can work:
+> > >
+> > > conditional_mean[obs] <- intercept + slope_before_or_after[ (X[obs] < bp) + 1] * (X[obs] - bp)
+> > >
+> > > This would rely on a logical result of (X[obs] < bp)  being 0 for FALSE and 1 for TRUE, so slope_before_or_after would have length of 2.  This kind of model flexibility is supported because nimble will see that the index for slope_before_or_after depends on a model variable, and internally it will handle conditional_mean[obs]  as depending on both elements of slope_before_or_after, even though it only depends on one element at a time.
+> > >
+> > > Another option, which would be more general, such as for more slope categories, would be:
+> > > conditional_mean[obs] <- intercept +  choose_slope(slopes[1:max_slopes], X[obs], bp) * (X[obs] - bp)
+> > >
+> > > choose_slope <- nimbleFunction(
+> > >  run = function(slopes = double(1), xobs = double(), bp = double()) {
+> > >    if(xobs < bp) return(slopes[1])
+> > >    return(slopes[2])
+> > >    returnType(double())
+> > > })
+> > >
+> > > Again nimble will in this case handle conditional_mean[obs] as depending on all of slopes[1:max_slopes].  (The if-then inside of choose_slope is not in the model code itself and so is not used for deciding what depends on what in the model graph.)
+> > >
+> > > I hope it helps.
+> > >
+> > > -Perry
+> > >
+> > > On Tue, Apr 20, 2021 at 7:18 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > > > For information I also tried with this alternative :
+> > > >
+> > > >         conditional_mean[obs][which(X[obs] < bp)]<- intercept + slope_before * (X[obs] - bp)
+> > > >         conditional_mean[obs][which(X[obs] >= bp)]<- intercept + slope_after * (X[obs] - bp)
+> > > >
+> > > > But apparently "which" function is not available in Nimble either.
+> > > > Error:
+> > > > defining model...
+> > > > Error in genReplacementsAndCodeRecurse(x, constAndIndexNames, nimbleFunctionNames,  :
+> > > >   Error, R function "which" has non-replaceable node values as arguments.  Must be a nimble function.
+> > > >
+> > > > Thank you
+> > > >
+> > > > Le mardi 20 avril 2021 à 16:03:30 UTC+2, ugolin...@gmail.com a écrit :
+> > > > > Dear all,
+> > > > >
+> > > > > I am trying to code a model in which there is a if-else statement
+> > > > > However, it implies parameters that are not in the "constant" section.
+> > > > > It is written as follow :
+> > > > > if (X[obs] < bp) { ...
+> > > > > With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+> > > > > (see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+> > > > >
+> > > > > I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+> > > > > As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+> > > > >
+> > > > > Thank you in advance.
+> > > > >
+> > > > > Ugoline
+> > > > >
+> > > > >
+> > > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/19c458b9-9c34-4952-b433-79b21137f5a6n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/19c458b9-9c34-4952-b433-79b21137f5a6n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4d992ac005b751e4 at groups.google.com  Fri Apr 23 07:51:34 2021
+From: u4d992ac005b751e4 at groups.google.com (ugolin...@gmail.com)
+Date: Fri, 23 Apr 2021 07:51:34 +0000
+Subject: Re: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs.EFRN-NlvDQAJ@nimble-users.groups.google.com>
+In-Reply-To: <VjlvtEOJuqs._Nft0iZPAQAJ@nimble-users.groups.google.com>
+References: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com> <VjlvtEOJuqs._Nft0iZPAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/EFRN-NlvDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Perry,
+The model is working but I have an error message (that does not prevent to compile, run or even estimate properly the parameters and that seems to be linked to the nimbleFunction), but I wanted to know if this error should be adressed or safely ignored :
+
+> Model <- nimbleModel(code = modelCodeSLR, name = 'Nimble', constants = ModelConsts, data = ModelData)
+defining model...
+building model...
+setting data and initial values...
+
+running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in if (xobs < bp) { :
+
+  valeur manquante là où TRUE / FALSE est requis
+
+checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+model building finished.
+
+Is it also possible to use the "else if" statement in nimbleFunction ? I could not find an anwer for that.
+Like this one :
+
+choose_intercept <- nimbleFunction(
+  run = function(intercepts = double(1), xobs = double(),Xbp=double(1)) {
+    if(xobs < Xbp[1]) {return(intercepts[1])}
+    else if (xobs >= Xbp[1] & xobs < Xbp[2]) {return(intercepts[2])}
+    else if (xobs >= Xbp[2] & xobs < Xbp[3]) {return(intercepts[3])}
+    else {return(intercepts[4])}
+    returnType(double())
+  })
+
+Thank you for all your help.
+
+Le mardi 20 avril 2021 à 18:16:34 UTC+2, ugolin...@gmail.com a écrit :
+> Indeed, it's been a while since I used Nimble. I forgot that each position needed to be specified. Thank you for the reminder.
+> Thank you again for your precious help.
+>
+> Ugoline
+>
+> Le mardi 20 avril 2021 à 18:06:12 UTC+2, pdevalpine a écrit :
+> > In the case that didn't work, I think you would need explicit indexing in this declaration:
+> >
+> > both_slopes[1:2] <-  c(slope_before,slope_after)
+> >
+> > The version that did work for you should be essentially doing the same thing internally.
+> >
+> > Glad you've got something that works.
+> >
+> > -Perry
+> >
+> >
+> > On Tue, Apr 20, 2021 at 8:34 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > > Dear Perry,
+> > > Indeed the first one would not be good because later I will use more than two slopes.
+> > > However I don't know why the second solution is not working (I think I do something wrong but don't know what).
+> > > Thank you for your help.
+> > >
+> > > He is my script as it is now (I tested the choose_slope nimbleFunction outside the model and it works)  :
+> > >
+> > > choose_slope <- nimbleFunction(
+> > >   run = function(slopes = double(1), xobs = double(), bp = double()) {
+> > >     if(xobs < bp) return(slopes[1])
+> > >     return(slopes[2])
+> > >     returnType(double())
+> > >   })
+> > >
+> > >
+> > > modelCodeSLR <- nimbleCode(
+> > >   {
+> > >     intercept ~ dnorm(150, 25)  # Average Y at breakpoint
+> > >     slope_before ~ dnorm(0, 5)  # Slope before breakpoint
+> > >     slope_after ~ dnorm(0, 5)   # Slope after breakpoint
+> > >     bp ~ dnorm(12, 6)           # Breakpoint X
+> > >     error ~ dnorm(0, 20)        # Residual error
+> > >
+> > >     both_slopes <-  c(slope_before,slope_after)
+> > >       for (obs in 1:Nobs) {
+> > >         conditional_mean[obs] <- intercept +  choose_slope(both_slopes, X[obs], bp) * (X[obs] - bp)
+> > >       }
+> > >     for (obs in 1:Nobs) {
+> > >       Y[obs] ~ dnorm(conditional_mean[obs], error)
+> > >     }
+> > >   })
+> > >
+> > >
+> > > Here is the error:
+> > >
+> > > > Model <- nimbleModel(code = modelCodeSLR, name = 'Nimble', constants = ModelConsts, data = ModelData)
+> > > defining model...
+> > > building model...
+> > > setting data and initial values...
+> > > running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in if (xobs < bp) return(slopes[1]) :
+> > >   valeur manquante là où TRUE / FALSE est requis
+> > >
+> > > checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+> > > model building finished.
+> > > Warning message:
+> > > In model$both_slopes[1] <<- nimC(model$slope_before[1], model$slope_after[1]) :
+> > >   le nombre d'objets à remplacer n'est pas multiple de la taille du remplacement
+> > > > CModel <- compileNimble(Model)
+> > > compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> > > Warning, in eigenizing model_both_slopes[1] the [ is still there but nDim is not 0 (not a scalar).
+> > > Erreur : Failed to create the shared library. Run 'printErrors()' to see the compilation errors.
+> > >
+> > >
+> > >
+> > > Le mardi 20 avril 2021 à 17:03:26 UTC+2, pdevalpine a écrit :
+> > > > Dear Ugoline,
+> > > >
+> > > > Thanks for the message.
+> > > >
+> > > > The if-then-else provided for models is evaluated at the time of model definition.  It provides a way to create multiple model variants starting from the same code.  It does not provide if-then-else logic during model calculations.  Once it is built, the model is a graphical model with fixed relationships of what depends on what.  For this reason, if-then-else logic that would change what depends on what during model calculations is not part of nimble.  That is similar to the reason that the second idea you tried would not make sense for nimble.
+> > > >
+> > > > I think either of the following two ideas can work:
+> > > >
+> > > > conditional_mean[obs] <- intercept + slope_before_or_after[ (X[obs] < bp) + 1] * (X[obs] - bp)
+> > > >
+> > > > This would rely on a logical result of (X[obs] < bp)  being 0 for FALSE and 1 for TRUE, so slope_before_or_after would have length of 2.  This kind of model flexibility is supported because nimble will see that the index for slope_before_or_after depends on a model variable, and internally it will handle conditional_mean[obs]  as depending on both elements of slope_before_or_after, even though it only depends on one element at a time.
+> > > >
+> > > > Another option, which would be more general, such as for more slope categories, would be:
+> > > > conditional_mean[obs] <- intercept +  choose_slope(slopes[1:max_slopes], X[obs], bp) * (X[obs] - bp)
+> > > >
+> > > > choose_slope <- nimbleFunction(
+> > > >  run = function(slopes = double(1), xobs = double(), bp = double()) {
+> > > >    if(xobs < bp) return(slopes[1])
+> > > >    return(slopes[2])
+> > > >    returnType(double())
+> > > > })
+> > > >
+> > > > Again nimble will in this case handle conditional_mean[obs] as depending on all of slopes[1:max_slopes].  (The if-then inside of choose_slope is not in the model code itself and so is not used for deciding what depends on what in the model graph.)
+> > > >
+> > > > I hope it helps.
+> > > >
+> > > > -Perry
+> > > >
+> > > > On Tue, Apr 20, 2021 at 7:18 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > > > > For information I also tried with this alternative :
+> > > > >
+> > > > >         conditional_mean[obs][which(X[obs] < bp)]<- intercept + slope_before * (X[obs] - bp)
+> > > > >         conditional_mean[obs][which(X[obs] >= bp)]<- intercept + slope_after * (X[obs] - bp)
+> > > > >
+> > > > > But apparently "which" function is not available in Nimble either.
+> > > > > Error:
+> > > > > defining model...
+> > > > > Error in genReplacementsAndCodeRecurse(x, constAndIndexNames, nimbleFunctionNames,  :
+> > > > >   Error, R function "which" has non-replaceable node values as arguments.  Must be a nimble function.
+> > > > >
+> > > > > Thank you
+> > > > >
+> > > > > Le mardi 20 avril 2021 à 16:03:30 UTC+2, ugolin...@gmail.com a écrit :
+> > > > > > Dear all,
+> > > > > >
+> > > > > > I am trying to code a model in which there is a if-else statement
+> > > > > > However, it implies parameters that are not in the "constant" section.
+> > > > > > It is written as follow :
+> > > > > > if (X[obs] < bp) { ...
+> > > > > > With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+> > > > > > (see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+> > > > > >
+> > > > > > I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+> > > > > > As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+> > > > > >
+> > > > > > Thank you in advance.
+> > > > > >
+> > > > > > Ugoline
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/19c458b9-9c34-4952-b433-79b21137f5a6n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/19c458b9-9c34-4952-b433-79b21137f5a6n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Fri Apr 23 16:14:20 2021
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Fri, 23 Apr 2021 16:14:20 +0000
+Subject: Re: If-else statement with estimated parameter
+Message-ID: <VjlvtEOJuqs.wBKUc0mLDQAJ@nimble-users.groups.google.com>
+In-Reply-To: <VjlvtEOJuqs.EFRN-NlvDQAJ@nimble-users.groups.google.com>
+References: <VjlvtEOJuqs.p6SQtuNHAQAJ@nimble-users.groups.google.com> <VjlvtEOJuqs.EFRN-NlvDQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VjlvtEOJuqs/m/wBKUc0mLDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ugoline,
+
+If the MCMC seems to be working, it is probably ok.  The message is telling you something is not fully initialized when the model is created, but it may be initialized later (by the MCMC, for example) and that is why the MCMC might run fine (or might not, if its attempt at initialization doesn't go well).  My guess is that the input to xobs or Xbp is not initialized in some call from the model to choose_intercept, and that's why you're getting an error from choose_intercept.  It's like a lot of error messages in R: there might be something hard to make sense of from an inner level of the call stack and some higher-level information from an outer level.  The outer call layer doesn't necessarily stop the inner call layer from emitting its confusing message, in case it is helpful.
+
+Yes, the nested ifs should work. If you test a compiled version outside of choose_intercept (which is a good idea, simply from Cchoose_intercept <- compileNimble(choose_intercept) ), and it doesn't work, please let me know!
+
+Glad this is making progress for you.
+
+-Perry
+
+On Fri, Apr 23, 2021 at 12:51 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+
+> Dear Perry,
+> The model is working but I have an error message (that does not prevent to compile, run or even estimate properly the parameters and that seems to be linked to the nimbleFunction), but I wanted to know if this error should be adressed or safely ignored :
+>
+> > Model <- nimbleModel(code = modelCodeSLR, name = 'Nimble', constants = ModelConsts, data = ModelData)
+> defining model...
+> building model...
+> setting data and initial values...
+> running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in if (xobs < bp) { :
+>   valeur manquante là où TRUE / FALSE est requis
+>
+> checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+> model building finished.
+>
+> Is it also possible to use the "else if" statement in nimbleFunction ? I could not find an anwer for that.
+> Like this one :
+>
+> choose_intercept <- nimbleFunction(
+>   run = function(intercepts = double(1), xobs = double(),Xbp=double(1)) {
+>     if(xobs < Xbp[1]) {return(intercepts[1])}
+>     else if (xobs >= Xbp[1] & xobs < Xbp[2]) {return(intercepts[2])}
+>     else if (xobs >= Xbp[2] & xobs < Xbp[3]) {return(intercepts[3])}
+>     else {return(intercepts[4])}
+>     returnType(double())
+>   })
+>
+> Thank you for all your help.
+>
+> Le mardi 20 avril 2021 à 18:16:34 UTC+2, ugolin...@gmail.com a écrit :
+> > Indeed, it's been a while since I used Nimble. I forgot that each position needed to be specified. Thank you for the reminder.
+> > Thank you again for your precious help.
+> >
+> > Ugoline
+> >
+> > Le mardi 20 avril 2021 à 18:06:12 UTC+2, pdevalpine a écrit :
+> > > In the case that didn't work, I think you would need explicit indexing in this declaration:
+> > >
+> > > both_slopes[1:2] <-  c(slope_before,slope_after)
+> > >
+> > > The version that did work for you should be essentially doing the same thing internally.
+> > >
+> > > Glad you've got something that works.
+> > >
+> > > -Perry
+> > >
+> > >
+> > > On Tue, Apr 20, 2021 at 8:34 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > > > Dear Perry,
+> > > > Indeed the first one would not be good because later I will use more than two slopes.
+> > > > However I don't know why the second solution is not working (I think I do something wrong but don't know what).
+> > > > Thank you for your help.
+> > > >
+> > > > He is my script as it is now (I tested the choose_slope nimbleFunction outside the model and it works)  :
+> > > >
+> > > > choose_slope <- nimbleFunction(
+> > > >   run = function(slopes = double(1), xobs = double(), bp = double()) {
+> > > >     if(xobs < bp) return(slopes[1])
+> > > >     return(slopes[2])
+> > > >     returnType(double())
+> > > >   })
+> > > >
+> > > >
+> > > > modelCodeSLR <- nimbleCode(
+> > > >   {
+> > > >     intercept ~ dnorm(150, 25)  # Average Y at breakpoint
+> > > >     slope_before ~ dnorm(0, 5)  # Slope before breakpoint
+> > > >     slope_after ~ dnorm(0, 5)   # Slope after breakpoint
+> > > >     bp ~ dnorm(12, 6)           # Breakpoint X
+> > > >     error ~ dnorm(0, 20)        # Residual error
+> > > >
+> > > >     both_slopes <-  c(slope_before,slope_after)
+> > > >       for (obs in 1:Nobs) {
+> > > >         conditional_mean[obs] <- intercept +  choose_slope(both_slopes, X[obs], bp) * (X[obs] - bp)
+> > > >       }
+> > > >     for (obs in 1:Nobs) {
+> > > >       Y[obs] ~ dnorm(conditional_mean[obs], error)
+> > > >     }
+> > > >   })
+> > > >
+> > > >
+> > > > Here is the error:
+> > > >
+> > > > > Model <- nimbleModel(code = modelCodeSLR, name = 'Nimble', constants = ModelConsts, data = ModelData)
+> > > > defining model...
+> > > > building model...
+> > > > setting data and initial values...
+> > > > running calculate on model (any error reports that follow may simply reflect missing values in model variables) ... Error in if (xobs < bp) return(slopes[1]) :
+> > > >   valeur manquante là où TRUE / FALSE est requis
+> > > >
+> > > > checking model sizes and dimensions... This model is not fully initialized. This is not an error. To see which variables are not initialized, use model$initializeInfo(). For more information on model initialization, see help(modelInitialization).
+> > > > model building finished.
+> > > > Warning message:
+> > > > In model$both_slopes[1] <<- nimC(model$slope_before[1], model$slope_after[1]) :
+> > > >   le nombre d'objets à remplacer n'est pas multiple de la taille du remplacement
+> > > > > CModel <- compileNimble(Model)
+> > > > compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> > > > Warning, in eigenizing model_both_slopes[1] the [ is still there but nDim is not 0 (not a scalar).
+> > > > Erreur : Failed to create the shared library. Run 'printErrors()' to see the compilation errors.
+> > > >
+> > > >
+> > > >
+> > > > Le mardi 20 avril 2021 à 17:03:26 UTC+2, pdevalpine a écrit :
+> > > > > Dear Ugoline,
+> > > > >
+> > > > > Thanks for the message.
+> > > > >
+> > > > > The if-then-else provided for models is evaluated at the time of model definition.  It provides a way to create multiple model variants starting from the same code.  It does not provide if-then-else logic during model calculations.  Once it is built, the model is a graphical model with fixed relationships of what depends on what.  For this reason, if-then-else logic that would change what depends on what during model calculations is not part of nimble.  That is similar to the reason that the second idea you tried would not make sense for nimble.
+> > > > >
+> > > > > I think either of the following two ideas can work:
+> > > > >
+> > > > > conditional_mean[obs] <- intercept + slope_before_or_after[ (X[obs] < bp) + 1] * (X[obs] - bp)
+> > > > >
+> > > > > This would rely on a logical result of (X[obs] < bp)  being 0 for FALSE and 1 for TRUE, so slope_before_or_after would have length of 2.  This kind of model flexibility is supported because nimble will see that the index for slope_before_or_after depends on a model variable, and internally it will handle conditional_mean[obs]  as depending on both elements of slope_before_or_after, even though it only depends on one element at a time.
+> > > > >
+> > > > > Another option, which would be more general, such as for more slope categories, would be:
+> > > > > conditional_mean[obs] <- intercept +  choose_slope(slopes[1:max_slopes], X[obs], bp) * (X[obs] - bp)
+> > > > >
+> > > > > choose_slope <- nimbleFunction(
+> > > > >  run = function(slopes = double(1), xobs = double(), bp = double()) {
+> > > > >    if(xobs < bp) return(slopes[1])
+> > > > >    return(slopes[2])
+> > > > >    returnType(double())
+> > > > > })
+> > > > >
+> > > > > Again nimble will in this case handle conditional_mean[obs] as depending on all of slopes[1:max_slopes].  (The if-then inside of choose_slope is not in the model code itself and so is not used for deciding what depends on what in the model graph.)
+> > > > >
+> > > > > I hope it helps.
+> > > > >
+> > > > > -Perry
+> > > > >
+> > > > > On Tue, Apr 20, 2021 at 7:18 AM ugolin...@gmail.com <ugolin...@gmail.com> wrote:
+> > > > > > For information I also tried with this alternative :
+> > > > > >
+> > > > > >         conditional_mean[obs][which(X[obs] < bp)]<- intercept + slope_before * (X[obs] - bp)
+> > > > > >         conditional_mean[obs][which(X[obs] >= bp)]<- intercept + slope_after * (X[obs] - bp)
+> > > > > >
+> > > > > > But apparently "which" function is not available in Nimble either.
+> > > > > > Error:
+> > > > > > defining model...
+> > > > > > Error in genReplacementsAndCodeRecurse(x, constAndIndexNames, nimbleFunctionNames,  :
+> > > > > >   Error, R function "which" has non-replaceable node values as arguments.  Must be a nimble function.
+> > > > > >
+> > > > > > Thank you
+> > > > > >
+> > > > > > Le mardi 20 avril 2021 à 16:03:30 UTC+2, ugolin...@gmail.com a écrit :
+> > > > > > > Dear all,
+> > > > > > >
+> > > > > > > I am trying to code a model in which there is a if-else statement
+> > > > > > > However, it implies parameters that are not in the "constant" section.
+> > > > > > > It is written as follow :
+> > > > > > > if (X[obs] < bp) { ...
+> > > > > > > With X an explanatory variable contained in the ModelConst and bp a parameter to estimate.
+> > > > > > > (see this page to see the original code with stan: https://janhove.github.io/analysis/2018/07/04/bayesian-breakpoint-model )
+> > > > > > >
+> > > > > > > I am getting this error : "Condition must be able to be evaluated based on values in 'constants'."
+> > > > > > > As I understand it, it is because I am not allowed to use bp in the statement because it is not a constant. Why is that ? And is there  is something planned or known to get around this issue ?
+> > > > > > >
+> > > > > > > Thank you in advance.
+> > > > > > >
+> > > > > > > Ugoline
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/da61cf01-e0d7-4c63-9af6-0f7bd2d462c9n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/19c458b9-9c34-4952-b433-79b21137f5a6n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/19c458b9-9c34-4952-b433-79b21137f5a6n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/1e85983e-70a6-46f3-9d88-9c5ab4c10302n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/1e85983e-70a6-46f3-9d88-9c5ab4c10302n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Apr 23 22:49:23 2021
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Fri, 23 Apr 2021 22:49:23 +0000
+Subject: NIMBLE version 0.11.0 released
+Message-ID: <V9TVdN-sKeo.n2ckRNigDQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/V9TVdN-sKeo/m/n2ckRNigDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+We've released version 0.11.0. This release provides a variety of new functionality, improved error trapping, and bug fixes, including:
+
+ - added the 'posterior_predictive_branch' MCMC sampler, which samples jointly from the predictive distribution of networks of entirely non-data nodes, to improve MCMC mixing,
+ - added a model method to find parent nodes, called 'getParents', analogous to 'getDependencies',
+ - improved efficiency of conjugate samplers,
+ - allowed use of the elliptical slice sampler for univariate nodes, which can be useful for posteriors with multiple modes,
+ - allowed model definition using if-then-else without an else clause, and
+ - fixed a bug giving incorrect node names and potentially affecting algorithm behavior for models with more than 100,000 elements in a vector node or any dimension of a multi-dimensional node.
+
+Please see the NEWS file in the installed package for more details (https://github.com/nimble-dev/nimble/blob/devel/packages/nimble/inst/NEWS).
+
+- Chris Paciorek for the NIMBLE Development Team
+
+From u06d20f365d978898 at groups.google.com  Mon Apr 26 13:05:31 2021
+From: u06d20f365d978898 at groups.google.com (Zoey Werbin)
+Date: Mon, 26 Apr 2021 13:05:31 +0000
+Subject: Re: running same Nimble model multiple times (with different data)
+Message-ID: <k63xGcuNbpc.tv34a7lsDgAJ@nimble-users.groups.google.com>
+In-Reply-To: <k63xGcuNbpc.Arkcl_JLAwAJ@nimble-users.groups.google.com>
+References: <k63xGcuNbpc.Arkcl_JLAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/k63xGcuNbpc/m/tv34a7lsDgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+About the solutions proposed here: what is the difference between using the setData() function and changing the data value nodes directly? Specifically: I want to run datasets with different patterns of NA (missing values), while avoiding re-compilation. Would either approach work for this?
+
+Thanks very much, and I can post this as a new question if preferred.
+Zoey
+
+On Friday, April 24, 2020 at 10:42:53 AM UTC-4 pdevalpine wrote:
+> An alternative is to directly change the values of the data nodes:
+>
+> Cmodel$y <- new_y
+>
+>
+>
+> On Fri, Apr 24, 2020 at 7:27 AM Daniel Turek <db...@williams.edu> wrote:
+> > Christel, basically the functionality you're looking for is model$setData(newDataList).  If you do this using the compiled model object (Cmodel), then the compiledMCMC will operate using the newDataList.  A very simple example is given below.
+> >
+> > library(nimble)
+> >
+> > N <- 10
+> > y.first <- 1:N
+> >
+> > code <- nimbleCode({
+> >     mu ~ dnorm(0, sd = 1000)
+> >     sigma ~ dunif(0, 1000)
+> >     for(i in 1:N) {
+> >         y[i] ~ dnorm(mu, sd = sigma)
+> >     }
+> > })
+> > constants <- list(N = N)
+> > data <- list(y = y.first)
+> > inits <- list(mu = 0, sigma = 1)
+> >
+> > Rmodel <- nimbleModel(code, constants, data, inits)
+> > Rmodel$calculate()
+> >
+> > conf <- configureMCMC(Rmodel)
+> > Rmcmc <- buildMCMC(conf)
+> > Cmodel <- compileNimble(Rmodel)
+> > Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
+> >
+> > samples.first <- runMCMC(Cmcmc, 10000)
+> > samplesSummary(samples.first)
+> >
+> > y.second <- 2*(1:N)
+> > Cmodel$setData(y = y.second)
+> >
+> > samples.second <- runMCMC(Cmcmc, 10000)
+> > samplesSummary(samples.second)
+> >
+> >
+> >
+> >
+> >
+> > On Fri, Apr 24, 2020 at 8:24 AM Christel FAES <christ...@uhasselt.be> wrote:
+> > > Hi,
+> > >
+> > > I have a (probably basic) question about running a Nimble model several times but with different data.
+> > >
+> > > I follow the following steps to run a model in Nimble
+> > > - create a Nimble model via nimbleModel(),
+> > > - configure the MCMC via configureMCMC()  and buildMCMC()
+> > > - then compile it via CompileNimble().
+> > > - and run the model via runMCMC()
+> > >
+> > > For every new data sets (with the same constants), I rerun all these steps again. The compilation takes quite some time.
+> > > Therefore, I was wondering whether it is possible to rerun the model without the need to redo the C++ compilation?
+> > >
+> > > Kind regards,
+> > > Christel
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/8ba6f265-b662-496e-86a7-3557f58325de%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/8ba6f265-b662-496e-86a7-3557f58325de%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hrRaRid1efv%2BGxp%2B7Qm7Pr6AS9Uzy4jvDz61jvbTCN6Mw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hrRaRid1efv%2BGxp%2B7Qm7Pr6AS9Uzy4jvDz61jvbTCN6Mw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Mon Apr 26 14:04:40 2021
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Mon, 26 Apr 2021 14:04:40 +0000
+Subject: Re: running same Nimble model multiple times (with different data)
+Message-ID: <k63xGcuNbpc.8uIz2PNvDgAJ@nimble-users.groups.google.com>
+In-Reply-To: <k63xGcuNbpc.tv34a7lsDgAJ@nimble-users.groups.google.com>
+References: <k63xGcuNbpc.Arkcl_JLAwAJ@nimble-users.groups.google.com> <k63xGcuNbpc.tv34a7lsDgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/k63xGcuNbpc/m/8uIz2PNvDgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Zoey, thanks for your question.  Short answers:
+
+Changing the value of (data or non-data) nodes in the model will do only that: change the value of particular nodes (but not affect which nodes are considered as NA missing values, and hence are either updated by the MCMC, or help constant as fixed "data" values).
+
+Using the setData() method will perform as above, changing the node values, and will also set / reset boolean flags internal to the model itself, indicating which model nodes are flagged as observations (and hence are fixed).  However, these boolean flags internal to the model are (as far as building / compiling an MCMC algorithm goes) *only* inspected and used at the time of calling configureMCMC(model) (or, if you pass the model object directly to buildMCMC, at the time of calling buildMCMC(model)).  At that point, of MCMC configuration, these flags are inspected, and used to determine which model nodes will undergo MCMC sampling (specifically: all stochastic model nodes which are *not* flagged as being fixed data observations).
+
+Finally, getting back to your question, if the locations of NA (missing) values is changing between datasets, then going back to the steps of configureMCMC(), buildMCMC(), and compileNimble() will be necessary, since the internals of the MCMC algorithm itself (which model nodes are being updated) will have changed.  Neither of the above options (changing node values, or using setData) will change how an already built and compiled MCMC will operate.
+
+I hope this helps.  Let me know if it's still unclear.
+
+On Mon, Apr 26, 2021 at 9:05 AM Zoey Werbin <zoeyw...@gmail.com> wrote:
+
+> About the solutions proposed here: what is the difference between using the setData() function and changing the data value nodes directly? Specifically: I want to run datasets with different patterns of NA (missing values), while avoiding re-compilation. Would either approach work for this?
+>
+> Thanks very much, and I can post this as a new question if preferred.
+> Zoey
+> On Friday, April 24, 2020 at 10:42:53 AM UTC-4 pdevalpine wrote:
+> > An alternative is to directly change the values of the data nodes:
+> >
+> > Cmodel$y <- new_y
+> >
+> >
+> >
+> > On Fri, Apr 24, 2020 at 7:27 AM Daniel Turek <db...@williams.edu> wrote:
+> > > Christel, basically the functionality you're looking for is model$setData(newDataList).  If you do this using the compiled model object (Cmodel), then the compiledMCMC will operate using the newDataList.  A very simple example is given below.
+> > >
+> > > library(nimble)
+> > >
+> > > N <- 10
+> > > y.first <- 1:N
+> > >
+> > > code <- nimbleCode({
+> > >     mu ~ dnorm(0, sd = 1000)
+> > >     sigma ~ dunif(0, 1000)
+> > >     for(i in 1:N) {
+> > >         y[i] ~ dnorm(mu, sd = sigma)
+> > >     }
+> > > })
+> > > constants <- list(N = N)
+> > > data <- list(y = y.first)
+> > > inits <- list(mu = 0, sigma = 1)
+> > >
+> > > Rmodel <- nimbleModel(code, constants, data, inits)
+> > > Rmodel$calculate()
+> > >
+> > > conf <- configureMCMC(Rmodel)
+> > > Rmcmc <- buildMCMC(conf)
+> > > Cmodel <- compileNimble(Rmodel)
+> > > Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
+> > >
+> > > samples.first <- runMCMC(Cmcmc, 10000)
+> > > samplesSummary(samples.first)
+> > >
+> > > y.second <- 2*(1:N)
+> > > Cmodel$setData(y = y.second)
+> > >
+> > > samples.second <- runMCMC(Cmcmc, 10000)
+> > > samplesSummary(samples.second)
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > On Fri, Apr 24, 2020 at 8:24 AM Christel FAES <christ...@uhasselt.be> wrote:
+> > > > Hi,
+> > > >
+> > > > I have a (probably basic) question about running a Nimble model several times but with different data.
+> > > >
+> > > > I follow the following steps to run a model in Nimble
+> > > > - create a Nimble model via nimbleModel(),
+> > > > - configure the MCMC via configureMCMC()  and buildMCMC()
+> > > > - then compile it via CompileNimble().
+> > > > - and run the model via runMCMC()
+> > > >
+> > > > For every new data sets (with the same constants), I rerun all these steps again. The compilation takes quite some time.
+> > > > Therefore, I was wondering whether it is possible to rerun the model without the need to redo the C++ compilation?
+> > > >
+> > > > Kind regards,
+> > > > Christel
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/8ba6f265-b662-496e-86a7-3557f58325de%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/8ba6f265-b662-496e-86a7-3557f58325de%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hrRaRid1efv%2BGxp%2B7Qm7Pr6AS9Uzy4jvDz61jvbTCN6Mw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hrRaRid1efv%2BGxp%2B7Qm7Pr6AS9Uzy4jvDz61jvbTCN6Mw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/41e66920-7448-4587-a8b3-cbd7f2897a3en%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/41e66920-7448-4587-a8b3-cbd7f2897a3en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Mon Apr 26 14:19:36 2021
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Mon, 26 Apr 2021 14:19:36 +0000
+Subject: Re: running same Nimble model multiple times (with different data)
+Message-ID: <k63xGcuNbpc.NaaYiMRwDgAJ@nimble-users.groups.google.com>
+In-Reply-To: <k63xGcuNbpc.8uIz2PNvDgAJ@nimble-users.groups.google.com>
+References: <k63xGcuNbpc.Arkcl_JLAwAJ@nimble-users.groups.google.com> <k63xGcuNbpc.8uIz2PNvDgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/k63xGcuNbpc/m/NaaYiMRwDgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Zoey,
+
+Thanks for the question.  It's a good one.  Oh, Daniel just gave a good reply as well!  I have another suggestion for you that might work nicely, but let me walk through a bit more of what is happening.
+
+The typical steps are nimbleModel -> configureMCMC -> buildMCMC -> compile model and MCMC -> runMCMC.
+
+buildMCMC will do configureMCMC if you skip that step.  All are done inside of nimbleMCMC.
+
+At configureMCMC, the samplers are set up based on the current tags of what is data that are in the model.  Hence, if you use setData to change what is tagged as data, you will generally need to re-create and re-compile the MCMC again. (There are some ways that buildMCMC also uses the data tags, but in any case it comes after configureMCMC).
+
+I think you should be able to do this without recompiling the *model* again, which is some help.  That is, you should be able to do:
+
+m <- nimbleModel(...)
+cm <- compileNimble(m)
+MCMC1 <- buildMCMC(m)
+cMCMC1 <- compileMCMC(MCMC1, project = m)
+## change what is data in m using resetData and setData, checking with isData.
+MCMC2 <- buildMCMC(m)
+cMCMC2 <- compileMCMC(MCMC2, project = m) # Possibly use resetFunctions = TRUE
+
+I'd suggest trying this in a toy model first to be sure it all works and does what you want.
+
+If you have a limited set of cases and the above doesn't work, you should be able to hold off on compiling the MCMCs and do them together:
+cMCMClist <- compileMCMC(MCMC1, MCMC2, project = m)
+
+Here is another option that should work in many cases and I think would achieve what you want.  You could make the model with NAs anywhere you'll ever need them.  The MCMC configuration object (returned by configureMCMC) will have methods printSamplers() or getSamplers() that will show you the order in which they are listed.  You'll need that.  Specifically you'll need to see which samplers are for the NAs, so you can omit them when you want to treat those nodes as data.  Then go through compiling that MCMC.  Then inspect and modify the sampler execution order list:
+
+cMCMC$samplerExecutionOrderFromConfPlusTwoZeros
+
+This will be a vector of integers from 1 to the number of samplers, with two 0s at the end for internal purposes.  Always keep those two zeros.
+
+You can modify that as you please and assign it back into cMCMC$samplerExecutionOrderFromConfPlusTwoZeros.   If you omit a sampler that you don't want, it will not be used.
+
+For example:
+
+samplerToSkip <- 101 ## If sampler 101 has target node y[1] and you do not want to sample y[1] as an NA,
+cMCMC$samplerExecutionOrderFromConfPlusTwoZeros <- cMCMC$samplerExecutionOrderFromConfPlusTwoZeros[-samplerToSkip]
+
+Be sure to put the data values you want into the compiled model
+cm$y[1] <- data_for_y1
+
+Let us know if it works or brings up more questions.
+
+-Perry
+
+On Mon, Apr 26, 2021 at 7:04 AM Daniel Turek <db...@williams.edu> wrote:
+
+> Zoey, thanks for your question.  Short answers:
+>
+> Changing the value of (data or non-data) nodes in the model will do only that: change the value of particular nodes (but not affect which nodes are considered as NA missing values, and hence are either updated by the MCMC, or help constant as fixed "data" values).
+>
+> Using the setData() method will perform as above, changing the node values, and will also set / reset boolean flags internal to the model itself, indicating which model nodes are flagged as observations (and hence are fixed).  However, these boolean flags internal to the model are (as far as building / compiling an MCMC algorithm goes) *only* inspected and used at the time of calling configureMCMC(model) (or, if you pass the model object directly to buildMCMC, at the time of calling buildMCMC(model)).  At that point, of MCMC configuration, these flags are inspected, and used to determine which model nodes will undergo MCMC sampling (specifically: all stochastic model nodes which are *not* flagged as being fixed data observations).
+>
+> Finally, getting back to your question, if the locations of NA (missing) values is changing between datasets, then going back to the steps of configureMCMC(), buildMCMC(), and compileNimble() will be necessary, since the internals of the MCMC algorithm itself (which model nodes are being updated) will have changed.  Neither of the above options (changing node values, or using setData) will change how an already built and compiled MCMC will operate.
+>
+> I hope this helps.  Let me know if it's still unclear.
+>
+>
+> On Mon, Apr 26, 2021 at 9:05 AM Zoey Werbin <zoeyw...@gmail.com> wrote:
+> > About the solutions proposed here: what is the difference between using the setData() function and changing the data value nodes directly? Specifically: I want to run datasets with different patterns of NA (missing values), while avoiding re-compilation. Would either approach work for this?
+> >
+> > Thanks very much, and I can post this as a new question if preferred.
+> > Zoey
+> > On Friday, April 24, 2020 at 10:42:53 AM UTC-4 pdevalpine wrote:
+> > > An alternative is to directly change the values of the data nodes:
+> > >
+> > > Cmodel$y <- new_y
+> > >
+> > >
+> > >
+> > > On Fri, Apr 24, 2020 at 7:27 AM Daniel Turek <db...@williams.edu> wrote:
+> > > > Christel, basically the functionality you're looking for is model$setData(newDataList).  If you do this using the compiled model object (Cmodel), then the compiledMCMC will operate using the newDataList.  A very simple example is given below.
+> > > >
+> > > > library(nimble)
+> > > >
+> > > > N <- 10
+> > > > y.first <- 1:N
+> > > >
+> > > > code <- nimbleCode({
+> > > >     mu ~ dnorm(0, sd = 1000)
+> > > >     sigma ~ dunif(0, 1000)
+> > > >     for(i in 1:N) {
+> > > >         y[i] ~ dnorm(mu, sd = sigma)
+> > > >     }
+> > > > })
+> > > > constants <- list(N = N)
+> > > > data <- list(y = y.first)
+> > > > inits <- list(mu = 0, sigma = 1)
+> > > >
+> > > > Rmodel <- nimbleModel(code, constants, data, inits)
+> > > > Rmodel$calculate()
+> > > >
+> > > > conf <- configureMCMC(Rmodel)
+> > > > Rmcmc <- buildMCMC(conf)
+> > > > Cmodel <- compileNimble(Rmodel)
+> > > > Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
+> > > >
+> > > > samples.first <- runMCMC(Cmcmc, 10000)
+> > > > samplesSummary(samples.first)
+> > > >
+> > > > y.second <- 2*(1:N)
+> > > > Cmodel$setData(y = y.second)
+> > > >
+> > > > samples.second <- runMCMC(Cmcmc, 10000)
+> > > > samplesSummary(samples.second)
+> > > >
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > On Fri, Apr 24, 2020 at 8:24 AM Christel FAES <christ...@uhasselt.be> wrote:
+> > > > > Hi,
+> > > > >
+> > > > > I have a (probably basic) question about running a Nimble model several times but with different data.
+> > > > >
+> > > > > I follow the following steps to run a model in Nimble
+> > > > > - create a Nimble model via nimbleModel(),
+> > > > > - configure the MCMC via configureMCMC()  and buildMCMC()
+> > > > > - then compile it via CompileNimble().
+> > > > > - and run the model via runMCMC()
+> > > > >
+> > > > > For every new data sets (with the same constants), I rerun all these steps again. The compilation takes quite some time.
+> > > > > Therefore, I was wondering whether it is possible to rerun the model without the need to redo the C++ compilation?
+> > > > >
+> > > > > Kind regards,
+> > > > > Christel
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/8ba6f265-b662-496e-86a7-3557f58325de%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/8ba6f265-b662-496e-86a7-3557f58325de%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hrRaRid1efv%2BGxp%2B7Qm7Pr6AS9Uzy4jvDz61jvbTCN6Mw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hrRaRid1efv%2BGxp%2B7Qm7Pr6AS9Uzy4jvDz61jvbTCN6Mw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/41e66920-7448-4587-a8b3-cbd7f2897a3en%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/41e66920-7448-4587-a8b3-cbd7f2897a3en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hoqRESh9xXPPxkHwxyfRcWFT%3D9_ha%2B%2BeL5%3DBB1ARUj6BA%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hoqRESh9xXPPxkHwxyfRcWFT%3D9_ha%2B%2BeL5%3DBB1ARUj6BA%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From uf86305296543d08f at groups.google.com  Fri Apr 30 18:27:23 2021
+From: uf86305296543d08f at groups.google.com (Miranda Fix)
+Date: Fri, 30 Apr 2021 18:27:23 +0000
+Subject: Prior for covariance (or precision) matrix
+Message-ID: <t1ArfNDPcdg.wt4QLpy4DwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/t1ArfNDPcdg/m/wt4QLpy4DwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi there,
+
+I am trying to code up a model in NIMBLE with a bivariate random effect using dmnorm. Following some examples in BUGS, I gave the precision matrix a wishart prior using dwish. However, it seems like the results are pretty sensitive to the parameters of this wishart prior. I have also heard that there are issues with using a wishart prior, but I couldn't find any examples of a different way of specifying a prior for a covariance (or precision) matrix in NIMBLE.
+
+Does anyone have any suggestions? Either on how to choose the parameters for the wishart prior, or how to specify a different (better?) prior for a covariance (or precision) matrix?
+
+Below are some relevant lines of code. I do actually care about getting good posterior estimates for sig_pre, sig_post, and cor_pp.
+
+for( j in 1:Nstands ){
+    a_0[j, 1:2] ~ dmnorm(a_0_mean[1:2], prec = Omega[1:2,1:2])
+}
+
+a_0_mean[1:2] ~ dmnorm(mu0[1:2], prec = S2[1:2,1:2])
+Omega[1:2,1:2] ~ dwish(R2[1:2,1:2], 2)
+
+Sigma_a_0[1:2,1:2] <- inverse(Omega[1:2,1:2])
+sig_pre <- sqrt(Sigma_a_0[1,1])
+sig_post <- sqrt(Sigma_a_0[2,2])
+cor_pp <- Sigma_a_0[1,2]/(sig_pre*sig_post)
+
+I am currently specifying the following constants (for lack of other ideas), but changing R2 can change the results quite a bit.
+    S2 = matrix(c(1,0,0,1),nrow=2)/9,
+    R2 = matrix(c(1,0,0,1),nrow=2)
+
+Thanks in advance for your help!!
+-Miranda
+
+From uea29cead5e3b8075 at groups.google.com  Fri Apr 30 18:48:02 2021
+From: uea29cead5e3b8075 at groups.google.com (Daniel Gibson)
+Date: Fri, 30 Apr 2021 18:48:02 +0000
+Subject: Re: Prior for covariance (or precision) matrix
+Message-ID: <t1ArfNDPcdg.zQ0stLy5DwAJ@nimble-users.groups.google.com>
+In-Reply-To: <t1ArfNDPcdg.wt4QLpy4DwAJ@nimble-users.groups.google.com>
+References: <t1ArfNDPcdg.wt4QLpy4DwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/t1ArfNDPcdg/m/zQ0stLy5DwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Miranda,
+
+I may have shared something similar to this on the listserv before, but this is my preferred way at the moment as it can handle any number of correlated features.
+
+Here, n = the number of co-varying features (your case, 2), and n.ind = the number of observations. It is specified to create a variance-covariance matrix as opposed to the precision matrix, so it just needs users to provide a prior for the correlation (rho), which is between -1 and 1, and some relatively diffuse prior for each variance term (sig). I used a half-Cauchy, but you can definitely switch this to a uniform distribution that resembles the potential variance in your system.
+
+for(m in 1:n){
+   mu[m] <- 0
+   sig[m]  ~ T(dt(0, pow(2.5,-2), 1),0,)
+  for(i in 1:n){
+    Sigma[m,i] <- rho[m,i] * sig[m] * sig[i]
+  }
+}
+
+for(mm in 2:n){
+  for(ii in 1:(mm-1)){
+    rho[mm,ii] ~ dunif(-1,1)
+    rho[ii,mm] <- rho[mm,ii]
+  }
+}
+for(k in 1:n.ind){
+  eps[1:n,k] ~ dmnorm(mu[1:n], cov = Sigma[1:n,1:n])
+}
+
+Best
+-Dan
+
+On Fri, Apr 30, 2021 at 12:27 PM Miranda Fix <miran...@gmail.com> wrote:
+
+> Hi there,
+>
+> I am trying to code up a model in NIMBLE with a bivariate random effect using dmnorm. Following some examples in BUGS, I gave the precision matrix a wishart prior using dwish. However, it seems like the results are pretty sensitive to the parameters of this wishart prior. I have also heard that there are issues with using a wishart prior, but I couldn't find any examples of a different way of specifying a prior for a covariance (or precision) matrix in NIMBLE.
+>
+> Does anyone have any suggestions? Either on how to choose the parameters for the wishart prior, or how to specify a different (better?) prior for a covariance (or precision) matrix?
+>
+> Below are some relevant lines of code. I do actually care about getting good posterior estimates for sig_pre, sig_post, and cor_pp.
+>
+> for( j in 1:Nstands ){
+>     a_0[j, 1:2] ~ dmnorm(a_0_mean[1:2], prec = Omega[1:2,1:2])
+> }
+>
+> a_0_mean[1:2] ~ dmnorm(mu0[1:2], prec = S2[1:2,1:2])
+> Omega[1:2,1:2] ~ dwish(R2[1:2,1:2], 2)
+>
+> Sigma_a_0[1:2,1:2] <- inverse(Omega[1:2,1:2])
+> sig_pre <- sqrt(Sigma_a_0[1,1])
+> sig_post <- sqrt(Sigma_a_0[2,2])
+> cor_pp <- Sigma_a_0[1,2]/(sig_pre*sig_post)
+>
+> I am currently specifying the following constants (for lack of other ideas), but changing R2 can change the results quite a bit.
+>     S2 = matrix(c(1,0,0,1),nrow=2)/9,
+>     R2 = matrix(c(1,0,0,1),nrow=2)
+>
+> Thanks in advance for your help!!
+> -Miranda
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/98b2bdb5-2e5f-489d-a760-88ba5bca1001n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/98b2bdb5-2e5f-489d-a760-88ba5bca1001n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ubebd85531a67ef86 at groups.google.com  Fri Apr 30 21:20:21 2021
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Fri, 30 Apr 2021 21:20:21 +0000
+Subject: Re: Prior for covariance (or precision) matrix
+Message-ID: <t1ArfNDPcdg.95gFWwzCDwAJ@nimble-users.groups.google.com>
+In-Reply-To: <t1ArfNDPcdg.wt4QLpy4DwAJ@nimble-users.groups.google.com>
+References: <t1ArfNDPcdg.wt4QLpy4DwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/t1ArfNDPcdg/m/95gFWwzCDwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Miranda
+
+An alternative specification for a correlation matrix is the so called LKJ prior <https://stats.stackexchange.com/questions/304684/why-lkjcorr-is-a-good-prior-for-correlation-matrix>
+
+You can hard-wire it directly into your BUGs code using the the code below, which is adapted from here <https://github.com/rmcelreath/rethinking/blob/master/R/distributions.r>
+
+Cheers
+David
+
+p.s. the code uses a transform of the beta distribution on to (-Inf, Inf) - this is purely to avoid Metropolis Hastings wasting time making proposals outside [0,1].
+
+  ## ############################################
+  ## Model correlation matrix based on cholesky onion method ##
+  ## ############################################
+  eta        <- 1     # Must be one or larger for all Beta distributions to be proper
+  alpha[1]   <- eta + (K - 2)/2
+  logit(corY[1]) ~ dLogitBeta(alpha[1], alpha[1])
+  u[1,1]     <- 1
+  u[1,2]     <- 2 * corY[1] - 1
+  u[2,2]     <- 2*sqrt(corY[1] - corY[1]^2)
+  u[2:K,1]   <- 0
+  for (m in 2:(K-1)) {
+    ## Draw beta random variable
+    alpha[m]      <- alpha[m-1] - 0.5
+    logit(corY[m]) ~ dLogitBeta(m / 2, alpha[m])
+    ## Draw uniformly on a hypersphere
+    for (jj in 1:m) {
+      corZ[m, jj] ~ dnorm(mean=0, sd=1)
+    }
+    scZ[m, 1:m]  <- corZ[m, 1:m] / sqrt(inprod(corZ[m, 1:m], corZ[m, 1:m]))
+    u[1:m,m+1]   <- sqrt(corY[m]) * scZ[m,1:m]
+    u[m+1,m+1]   <- sqrt(1 - corY[m])
+    u[(m+1):K,m] <- 0
+  }
+
+## ################################################
+## A DISTRIBUTION GIVING THE LOGIT OF A BETA DISTRIBUTION ##
+## ################################################
+dLogitBeta <- nimbleFunction (
+    ## Returns density of x where
+    ##                    y ~ Beta(a1,a2)
+    ##                    x = logit(y)
+    run = function(x = double(0),
+                   shape1=double(0, default=1.0),
+                   shape2=double(0, default=1.0),
+                   log = integer(0, default=0)) {
+        returnType(double(0))
+        y = ilogit(x)
+        logProbX = log(y) + log(1 - y) + dbeta(y, shape1=shape1, shape2=shape2, log=TRUE) ## Via change of variables
+        if (log)
+            return(logProbX)
+        return(exp(logProbX))
+    }
+)
+
+rLogitBeta <- nimbleFunction (
+    ## Generates y ~ Beta(a1,a2)
+    ## Returns   x = logit(y)
+    run = function(n = integer(0, default=1),
+                   shape1 = double(0, default=1.0),
+                   shape2 = double(0, default=1.0)) {
+        returnType(double(0))
+        if(n != 1)
+            nimPrint("Warning: rLogitBeta only allows n = 1; Using n = 1.\n")
+        y <- rbeta(1, shape1=shape1, shape2=shape2)
+        x <- logit(y)
+        return(x)
+    }
+)
+
+registerDistributions(list(dLogitBeta = list(
+                               BUGSdist = "dLogitBeta(shape1, shape2)",
+                               discrete = FALSE,
+                               types    = c("value=double(0)"), ## , "para=double(0)"
+                               pqAvail  = FALSE)))
+
+On Friday, 30 April 2021 at 20:48:02 UTC+2 gib...@vt.edu wrote:
+> Hi Miranda,
+>
+> I may have shared something similar to this on the listserv before, but this is my preferred way at the moment as it can handle any number of correlated features.
+>
+> Here, n = the number of co-varying features (your case, 2), and n.ind = the number of observations. It is specified to create a variance-covariance matrix as opposed to the precision matrix, so it just needs users to provide a prior for the correlation (rho), which is between -1 and 1, and some relatively diffuse prior for each variance term (sig). I used a half-Cauchy, but you can definitely switch this to a uniform distribution that resembles the potential variance in your system.
+>
+> for(m in 1:n){
+>    mu[m] <- 0
+>    sig[m]  ~ T(dt(0, pow(2.5,-2), 1),0,)
+>   for(i in 1:n){
+>     Sigma[m,i] <- rho[m,i] * sig[m] * sig[i]
+>   }
+> }
+>
+> for(mm in 2:n){
+>   for(ii in 1:(mm-1)){
+>     rho[mm,ii] ~ dunif(-1,1)
+>     rho[ii,mm] <- rho[mm,ii]
+>   }
+> }
+> for(k in 1:n.ind){
+>   eps[1:n,k] ~ dmnorm(mu[1:n], cov = Sigma[1:n,1:n])
+> }
+>
+> Best
+> -Dan
+>
+> On Fri, Apr 30, 2021 at 12:27 PM Miranda Fix <miran...@gmail.com> wrote:
+> > Hi there,
+> >
+> > I am trying to code up a model in NIMBLE with a bivariate random effect using dmnorm. Following some examples in BUGS, I gave the precision matrix a wishart prior using dwish. However, it seems like the results are pretty sensitive to the parameters of this wishart prior. I have also heard that there are issues with using a wishart prior, but I couldn't find any examples of a different way of specifying a prior for a covariance (or precision) matrix in NIMBLE.
+> >
+> > Does anyone have any suggestions? Either on how to choose the parameters for the wishart prior, or how to specify a different (better?) prior for a covariance (or precision) matrix?
+> >
+> > Below are some relevant lines of code. I do actually care about getting good posterior estimates for sig_pre, sig_post, and cor_pp.
+> >
+> > for( j in 1:Nstands ){
+> >     a_0[j, 1:2] ~ dmnorm(a_0_mean[1:2], prec = Omega[1:2,1:2])
+> > }
+> >
+> > a_0_mean[1:2] ~ dmnorm(mu0[1:2], prec = S2[1:2,1:2])
+> > Omega[1:2,1:2] ~ dwish(R2[1:2,1:2], 2)
+> >
+> > Sigma_a_0[1:2,1:2] <- inverse(Omega[1:2,1:2])
+> > sig_pre <- sqrt(Sigma_a_0[1,1])
+> > sig_post <- sqrt(Sigma_a_0[2,2])
+> > cor_pp <- Sigma_a_0[1,2]/(sig_pre*sig_post)
+> >
+> > I am currently specifying the following constants (for lack of other ideas), but changing R2 can change the results quite a bit.
+> >     S2 = matrix(c(1,0,0,1),nrow=2)/9,
+> >     R2 = matrix(c(1,0,0,1),nrow=2)
+> >
+> > Thanks in advance for your help!!
+> > -Miranda
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/98b2bdb5-2e5f-489d-a760-88ba5bca1001n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/98b2bdb5-2e5f-489d-a760-88ba5bca1001n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+

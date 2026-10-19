@@ -1,0 +1,146 @@
+{
+ "thread": "-N_CsWQHV7Y",
+ "subject": "Aggregate simulated daily values to match monthly data",
+ "messages_listed": 6,
+ "last_activity": "2022-08-04T16:47:33Z",
+ "messages": [
+  {
+   "id": "oBE-nfw0BQAJ",
+   "from": "Debbie Shackleton",
+   "author": "08d7d872077e52b9",
+   "date": "2022-06-21T13:37:31Z",
+   "subject": "Aggregate simulated daily values to match monthly data",
+   "parts": [
+    [
+     1,
+     "Hello,<div><br></div><div>I am having an issue trying to fit an SIR-style DE model to data. The problem is that the simulation needs to run on a daily resolution, but I only have monthly data to fit it to. I am trying to convince Nimble to first aggregate the simulated daily infection values according to their month before sampling, but the only way I have managed to think to achieve this gives me a BUGS error. It feels a very inelegant solution anyhow, so I&#39;m sure there is a better way! </div><div><br></div><div>Here is a simplified stand-alone version of the model to demonstrate the issue and my (poor) attempt. I&#39;ve also left in a commented-out version which calibrates against simulated daily data which functions well - so I&#39;ve left that in for reference. </div><div><br></div><div><font face=\"Courier New\">library(deSolve)<br>library(nimble)<br>library(dplyr)<br><br>######################################## FUNCTIONS ##############################################<br># SIR equations for NIMBLE<br>SIR_equations &lt;- function(t, z, theta) {<br>  H           &lt;- 10000       # Population size<br>  S           &lt;- z[1]<br>  I           &lt;- z[2]<br>  R           &lt;- z[3]<br>  alpha     &lt;- theta[1]<br>  beta        &lt;- theta[2]<br>  lambda = beta * (I / H)<br>  dS = -lambda * S<br>  dI = lambda * S - alpha * I<br>  dR = alpha * I<br>  returnList  &lt;- list(c(dS = dS, dI = dI, dR = dR))<br>  return(returnList)<br>}<br><br><br>ODEfun &lt;- function(z_init, theta) {<br>  as.matrix(ode(<br>    y = z_init,<br>    times = 0:999,<br>    func = SIR_equations,<br>    parms = theta<br>  ))[-1,-1]<br>}<br><br>nimODE &lt;-<br>  nimbleRcall(function(z_init = double(1),<br>                       theta = double(1)) {<br>    <br>  }, Rfun = &#39;ODEfun&#39;, returnType = double(2))<br><br><br>##################################### SIMULATE DUMMY DATA ############################################<br># Parameters which will be estimated<br>theta &lt;- c(alpha = 0.005, beta = 0.03)<br><br># Number of unknown parameters in this model<br>num_params &lt;- 2<br><br># Initial Conditions<br>H  &lt;- 10000       # Population size<br>I0 &lt;- 10<br>R0 &lt;- 0<br>S0 &lt;- H - I0 - R0<br><br># Initial values<br>z_init &lt;- c(S = S0,<br>            I = I0,<br>            R = R0)<br><br># Time series<br>num_days &lt;- 1000 - 1<br>ts       &lt;- seq(0, num_days)<br><br><br># Analyse DEs<br>SIR_values &lt;-<br>  as.matrix(ode(<br>    y = z_init,<br>    times = ts,<br>    SIR_equations,<br>    parms = theta<br>  ))<br>df &lt;- data.frame(SIR_values)<br><br># Create some noise<br>sigma &lt;- 10<br>noise &lt;- replicate(3, rnorm(nrow(SIR_values), 0, sd = sigma))<br><br>noisy_SIR          &lt;- SIR_values[, 2:4] + noise<br>noisy_SIR[noisy_SIR &lt; 0] &lt;- 0<br>colnames(noisy_SIR) &lt;- c(&quot;S_noise&quot;, &quot;I_noise&quot;, &quot;R_noise&quot;)<br>daily_infection_data &lt;- unlist(noisy_SIR[-c(1),][,&quot;I_noise&quot;])<br>plot(daily_infection_data)<br><br>#Simulate Monthly Data<br>monthly_infection_data &lt;- as.data.frame(noisy_SIR) %&gt;%<br>  mutate(day = 1:nrow(noisy_SIR)) %&gt;%<br>  mutate(date = as.Date(day, origin = &quot;2000/01/01&quot;)) %&gt;%<br>  mutate(month = lubridate::month(date)) %&gt;%<br>  mutate(year = lubridate::year(date)) %&gt;%<br>  group_by(year, month) %&gt;%<br>  summarise(I_noise = sum(I_noise)) %&gt;%<br>  ungroup() %&gt;%<br>  select(I_noise) %&gt;%<br>  pull()<br><br>##An inelegant way to instruct the model which days go in which month<br>day_month_mapper &lt;- data.frame(day = 1:num_days) %&gt;%<br>  mutate(date = as.Date(day, origin = &quot;2000/01/01&quot;)) %&gt;%<br>  mutate(month = lubridate::month(date)) %&gt;%<br>  mutate(year = lubridate::year(date)) %&gt;%<br>  mutate(month_num = month + 12*(year-2000)) %&gt;%<br>  select(day,month_num)<br><br>month_start_dates &lt;- vector()<br>month_end_dates &lt;- vector()<br><br>for(i in 1:33){<br>  month &lt;- day_month_mapper %&gt;% filter(month_num == i)<br>  month_start_dates[i] &lt;- head(month$day,1) <br>  month_end_dates[i] &lt;- tail(month$day,1) <br>}<br>############################################### NIMBLE MODEL ##########################################<br>num_chains     &lt;- 4<br>n_months &lt;- 33<br><br>Model &lt;- nimbleCode({<br>  for (i in 1:n_months) {<br>    start_date = month_start_dates[i]<br>    end_date = month_end_dates[i]<br>    z_month = sum(z[start_date:end_date,2]) #Aggregate daily infection values to month<br>    y[i] ~ dnorm(z_month, sd = sigma)<br>  }<br>  z[1:n, 1:3] &lt;- nimODE(z_init = z_init[1:3], theta = theta[1:2])<br>  sigma    ~ T(dnorm(0, 1), 0,)      # sigma = 10<br>  theta[1] ~ T(dnorm(0, sd = 5), 0,) # alpha = 0.2<br>  theta[2] ~ T(dnorm(0, sd = 5), 0,) # beta = 0.5<br>})<br># #Model for daily data<br># Model &lt;- nimbleCode({<br>#   for (i in 1:n) {<br>#     y[i] ~ dnorm(z[i, 2], sd = sigma)<br>#   }<br>#   z[1:n, 1:3] &lt;- nimODE(z_init = z_init[1:3], theta = theta[1:2])<br>#   sigma    ~ T(dnorm(0, 1), 0,)      # sigma = 10<br>#   theta[1] ~ T(dnorm(0, sd = 5), 0,) # alpha = 0.2<br>#   theta[2] ~ T(dnorm(0, sd = 5), 0,) # beta = 0.5<br># })<br><br>Consts      &lt;- list(n = num_days, n_months = 33, month_start_dates = month_start_dates, month_end_dates = month_end_dates)<br># Consts      &lt;- list(n = num_days)<br>nimbleData  &lt;- list(y = monthly_infection_data, z_init = z_init)<br># nimbleData  &lt;- list(y = daily_infection_data, z_init = z_init)<br>inits       &lt;- list(theta = c(0.1, 0.1), sigma = 1)<br>nimbleModel &lt;-<br>  nimbleModel(<br>    code = Model,<br>    name = &#39;nimbleModel&#39;,<br>    constants = Consts,<br>    data = nimbleData,<br>    inits = inits<br>  )<br><br>MCMCconfig          &lt;-<br>  configureMCMC(nimbleModel, monitors = c(&quot;theta&quot;, &quot;sigma&quot;))<br>MCMCconfig$removeSamplers(&quot;theta&quot;)<br>MCMCconfig$addSampler(target = &quot;theta&quot;, type = &#39;AF_slice&#39;)<br><br>modelMCMC           &lt;- buildMCMC(MCMCconfig)<br>compiled_model      &lt;-<br>  compileNimble(nimbleModel, showCompilerOutput = TRUE)<br>compiled_model_MCMC &lt;-<br>  compileNimble(modelMCMC, project = nimbleModel, showCompilerOutput = TRUE)<br><br>results &lt;-<br>  runMCMC(<br>    compiled_model_MCMC,<br>    niter = 5000,<br>    nburnin = 2000,<br>    nchains = num_chains,<br>    thin = 10,<br>    inits = inits,<br>    progressBar = T,<br>    samplesAsCodaMCMC = T<br>  )<br></font></div><div><br></div><div>Any ideas as to how I can achieve this would be very much appreciated!</div><div><br></div><div>Thanks,</div><div>Debbie</div>"
+    ]
+   ]
+  },
+  {
+   "id": "jIEnyidABQAJ",
+   "from": "David Pleydell",
+   "author": "bebd85531a67ef86",
+   "date": "2022-06-21T17:02:11Z",
+   "subject": "Re: Aggregate simulated daily values to match monthly data",
+   "parts": [
+    [
+     1,
+     "Hi Debbie<div><br></div><div>One problem with this line  <font face=\"Courier New\">z_month = sum(z[start_date:end_date,2])</font>is that the same individuals can contribute multiple times to the aggregate, so z_month will be a biased estimate of how many cases there actually were. One option would be to try to correct this bias by dividing by the expected number of days each individual will be infected.  </div><div><br></div><div>A further potential problem (from a biological perspective) is in your observation model <font face=\"Courier New\">y[i] ~ dnorm(z_month, sd = sigma)- </font>where your expected value is all aggregated cases (including it&#39;s bias) but that you may observe a y &gt; aggregate(I), which may not make much sense biologically. Usually what people do is to have an &quot;observation model&quot;, which models which proportion of the cases that are actually observed, in which case E[y] = aggregate(I) * detectionProbability.  Also, a normal likelihood does not prevent you simulating -ve values for y when z_month is close to zero.</div><div><br></div><div>One alternative to help overcome the first problem is to switch to a stochastic model. Using something like the tau-leap method you can track when individuals enter and leave each compartment. We did this recently in a spatial SIR model for African Swine Fever spread among wild boar, and used 10-day aggregates of observed cases (in each pixel) in our likelihood calculations (we used a Poisson likelihood, with the expected value obtained from Monte Carlo simulation). <a href=\"https://we.tl/t-YTasoc83UF\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://we.tl/t-YTasoc83UF&amp;source=gmail&amp;ust=1792476783097000&amp;usg=AOvVaw1ov7IThADgWPFXthBURIpH\">Here&#39;s a temporary link to the paper</a>, which has just been accepted for publication in a special issue of Epidemics. Normally you should be able to access our code via the links in the paper. Feel free to shoot me a message if you need some pointers navigating the code to the parts which are relevant to you.<br><br></div><div>Hope this helps, or at least provides food for thought.</div><div><br></div><div>Cheers</div><div>David<br></div><div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "M7FV7fqxBAAJ",
+   "from": "David Pleydell",
+   "author": "bebd85531a67ef86",
+   "date": "2022-06-22T08:47:19Z",
+   "subject": "Re: Aggregate simulated daily values to match monthly data",
+   "parts": [
+    [
+     1,
+     "Another option is to add a 4th compartment to the SIR model just to track the cumulative incidence, i.e. <font face=\"Courier New\">dCI = lambda * S</font>, then at the end of each month calculate the number of new cases as the difference in CI at the end and start of the month. <div><br></div><div>Cheers</div><div>David<br><div><br></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "yfpI7YbJBAAJ",
+   "from": "Chris Paciorek",
+   "author": "5fa2a363d4ddd1d1",
+   "date": "2022-06-22T15:58:48Z",
+   "subject": "Re: Aggregate simulated daily values to match monthly data",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Also a quick note in terms of the model coding of your original code (without delving into David&#39;s comment and how the model should be defined statistically), it won&#39;t work to do this:<div><br></div><div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><span style=\"font-family:&quot;Courier New&quot;\">for (i in 1:n_months) {</span><br style=\"font-family:&quot;Courier New&quot;\"><span style=\"font-family:&quot;Courier New&quot;\">    start_date = month_start_dates[i]</span><br style=\"font-family:&quot;Courier New&quot;\"><span style=\"font-family:&quot;Courier New&quot;\">    end_date = month_end_dates[i]</span><br style=\"font-family:&quot;Courier New&quot;\"><span style=\"font-family:&quot;Courier New&quot;\">    z_month = sum(z[start_date:end_date,2]) #Aggregate daily infection values to month</span><br style=\"font-family:&quot;Courier New&quot;\"></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><span style=\"font-family:&quot;Courier New&quot;\">    y[i] ~ dnorm(z_month, sd = sigma)</span><br style=\"font-family:&quot;Courier New&quot;\"><span style=\"font-family:&quot;Courier New&quot;\">  }</span><br></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div></div><div><span style=\"font-family:&quot;Courier New&quot;\"><br></span></div><div>because you are defining start_date, end_date, and z_month multiple times, once for each iteration of the loop. When writing model code you are defining a graphical model, and NIMBLE will return an error if you try to define a node (e.g, start_date) multiple times.</div><div><br></div><div>You should be able to do this:</div><div><br></div><div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><span style=\"font-family:&quot;Courier New&quot;\">for (i in 1:n_months) {</span><br style=\"font-family:&quot;Courier New&quot;\"></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><span style=\"font-family:&quot;Courier New&quot;\"> </span><span style=\"font-family:&quot;Courier New&quot;\">    y[i] ~ dnorm(</span><span style=\"font-family:&quot;Courier New&quot;\">sum(z[month_start_dates[i]:month_end_dates[i],2])</span><span style=\"font-family:&quot;Courier New&quot;\">, sd = sigma)</span></div><div><span style=\"font-family:&quot;Courier New&quot;\">  }</span><br></div><div><span style=\"font-family:&quot;Courier New&quot;\"><br></span></div><div><br></div></div><br><div class=\"gmail_quote\"></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><div dir=\"ltr\" class=\"gmail_attr\">On Wed, Jun 22, 2022 at 1:47 AM &#39;David Pleydell&#39; via nimble-users &lt;<a href data-email-masked rel=\"nofollow\">nimble...@googlegroups.com</a>&gt; wrote:<br></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">Another option is to add a 4th compartment to the SIR model just to track the cumulative incidence, i.e. <font face=\"Courier New\">dCI = lambda * S</font>, then at the end of each month calculate the number of new cases as the difference in CI at the end and start of the month. <div><br></div><div>Cheers</div><div>David<br><div><br></div></div>\r\n\r\n<p></p></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\r\n\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;nimble-users&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">nimble-users...@googlegroups.com</a>.<br>\r\nTo view this discussion on the web visit <a href=\"https://groups.google.com/d/msgid/nimble-users/8a9cc6e8-35d2-4ee5-91ee-de11d79314fcn%40googlegroups.com?utm_medium=email&amp;utm_source=footer\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msgid/nimble-users/8a9cc6e8-35d2-4ee5-91ee-de11d79314fcn%2540googlegroups.com?utm_medium%3Demail%26utm_source%3Dfooter&amp;source=gmail&amp;ust=1792476783099000&amp;usg=AOvVaw2OmIYlwe7Q6cunzadgAo0i\">https://groups.google.com/d/msgid/nimble-users/8a9cc6e8-35d2-4ee5-91ee-de11d79314fcn%40googlegroups.com</a>.<br>\r\n</blockquote></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "lSn3iEpGBQAJ",
+   "from": "David Pleydell",
+   "author": "bebd85531a67ef86",
+   "date": "2022-06-27T08:18:42Z",
+   "subject": "Re: Aggregate simulated daily values to match monthly data",
+   "parts": [
+    [
+     1,
+     "<div class=\"gmail_quote\"><div>For anyone reading through this thread, and interested in how we fitted the mentioned African Swine Fever spatial spread model, a pre-proof version of the paper is now available online <a href=\"https://doi.org/10.1016/j.epidem.2022.100596\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://doi.org/10.1016/j.epidem.2022.100596&amp;source=gmail&amp;ust=1792476783100000&amp;usg=AOvVaw3rYJBGGdJml0RAmjV2x83y\">https://doi.org/10.1016/j.epidem.2022.100596</a></div><div><br></div><div>Cheers</div><div>David</div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><div><br></div><div><br></div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><div></div><div>One alternative to help overcome the first problem is to switch to a stochastic model. Using something like the tau-leap method you can track when individuals enter and leave each compartment. We did this recently in a spatial SIR model for African Swine Fever spread among wild boar, and used 10-day aggregates of observed cases (in each pixel) in our likelihood calculations (we used a Poisson likelihood, with the expected value obtained from Monte Carlo simulation). <a href=\"https://we.tl/t-YTasoc83UF\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://we.tl/t-YTasoc83UF&amp;source=gmail&amp;ust=1792476783100000&amp;usg=AOvVaw14jX_egW4WCFOvSfCvmilw\">Here&#39;s a temporary link to the paper</a>, which has just been accepted for publication in a special issue of Epidemics. Normally you should be able to access our code via the links in the paper. Feel free to shoot me a message if you need some pointers navigating the code to the parts which are relevant to you.<br><br></div></blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "sYY4ZbyEAwAJ",
+   "from": "Debbie Shackleton",
+   "author": "08d7d872077e52b9",
+   "date": "2022-08-04T16:47:33Z",
+   "subject": "Re: Aggregate simulated daily values to match monthly data",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Hi David,<div><br></div><div>Thanks so much for taking the time to send this. I took some time to look through it, but eventually had to conclude it was beyond my fairly rudimentary understanding of statistics! I therefore thought I would start with what seemed like a more basic solution to achieve integer simulation values in order to use a binomial distribution to map cases to infections. My theory was that I could just swap the ODE solver to a discrete tau-leaping algorithm (I went for the package <i>adaptivetau</i>). However, while I am able to simulate data successfully using the <i>ssa.adaptivetau </i>function, when I use it as a NimbleFunction, I start getting input errors (despite the fact that the inputs should be exactly the same?) I was wondering if you could think of any fundamental reasons why this approach wouldn&#39;t work (both technically in Nimble and mathematically)? The problem appears to be with the rate function, which is used as an argument within the NimbleFunction. I think maybe I need to declare it as an argument within the nimbleRcall() function, but I&#39;m not sure if that&#39;s possible? Can you think of an alternative solution? (Hopefully this makes sense with the code!). As always, your input is much appreciated!</div><div><br></div><div>Here is the code:</div><div>library(nimble)<br>library(dplyr)<br>library(adaptivetau)<br><br>##################################### FUNCTIONS #################################################<br>#Tau-leap rate function<br>rate_function &lt;- function(x, p, t) {<br>  return(c(x[&quot;I&quot;]*p$e, #Bacteria Birth<br>           0.33, #Bacteria death<br>           p$mu * (x[&quot;S&quot;] + x[&quot;I&quot;]), # Human birth<br>           p$mu * x[&quot;S&quot;], #Susceptible death<br>           p$a * (x[&quot;B&quot;] / (x[&quot;B&quot;] + 10**6)) * x[&quot;S&quot;], # Infection<br>           p$r * x[&quot;I&quot;])) #Infective death<br>}<br><br>#Convert from who-knows-what timescale to daily<br>get_daily &lt;- function(results,num_days){<br>  df &lt;- as.data.frame(results)<br>  df$day &lt;- ceiling(df$time)<br>  daily &lt;- data.frame(day = 1:num_days, S = NA, I = NA, B = NA)  <br>  for(i in 1:num_days){<br>    day &lt;- df %&gt;%<br>      filter(day == i)<br>    if(nrow(day) &gt; 0){<br>      daily[i,2:4] &lt;- tail(day[,2:4],1)<br>    } else {<br>      daily[i,2:4] &lt;- daily[i-1,2:4]<br>    }<br>  }<br>  return(daily)<br>}<br><br><br>rate_function &lt;- function(x, p, t) {<br>  return(c(x[&quot;I&quot;]*p$e, #Bacteria Birth<br>           0.33, #Bacteria death<br>           p$mu * (x[&quot;S&quot;] + x[&quot;I&quot;]), # Human birth<br>           p$mu * x[&quot;S&quot;], #Susceptible death<br>           p$a * (x[&quot;B&quot;] / (x[&quot;B&quot;] + 10**6)) * x[&quot;S&quot;], # Infection<br>           p$r * x[&quot;I&quot;])) #Infective death<br>}<br>  <br>##Simulate Data<br>SIB_daily &lt;- function(z_init, theta){<br>  #Transition matrix<br>  transitions = ssa.maketrans(names(z_init),<br>                                 rbind(&#39;B&#39;, +1), # Bacteria birth<br>                                 rbind(&#39;B&#39;, -1), # Bacteria death<br>                                 rbind(&#39;S&#39;, +1), # Human birth<br>                                 rbind(&#39;S&#39;, -1), #Susceptible death<br>                                 rbind(&#39;S&#39;, -1, &#39;I&#39;, +1), #Infection<br>                                 rbind(&#39;I&#39;, -1) #Infective death<br>  )<br><br>  <br>  num_days = 300<br>  theta_list &lt;- as.list(theta)<br>  results =ssa.adaptivetau(z_init, transitions, rate_function, theta_list, tf= num_days)<br>  daily = get_daily(results,num_days)<br>  return(daily)<br>}<br><br>#Remove intial values and day column for Nimble<br>SIB_daily_nim &lt;- function(z_init, theta){<br>  SIB_daily_nim &lt;- SIB_daily(z_init,theta)[-1,2:4]<br>  return(as.matrix(SIB_daily_nim))<br>}<br><br>nimODE &lt;- nimbleRcall(function(z_init = integer(1), theta = double(1)){}, Rfun = &#39;SIB_daily_nim&#39;,<br>                      returnType = integer(2))<br><br>##################################### INITIAL SET UP ###########################################<br>#Parameters<br>theta &lt;- c(<br>  a = 1,<br>  e = 10,<br>  r = 0.2,<br>  mu = 0.0001<br>)<br><br><br>#Set initial values<br>N = 10000<br>I0 = 10<br>B0 = 0<br>S0 = N - I0<br>num_days = 300<br>z_init &lt;- c(S = S0, I = I0, B = B0)<br><br>#Transitions<br>SIB_daily_sim &lt;- SIB_daily(z_init, theta) #Simulate &#39;true&#39; values<br>daily_cases &lt;- rbinom(n = nrow(SIB_daily_sim), size = SIB_daily_sim$I, p = 0.3)[-1] #Simulate reported cases<br><br><br>###################################### NIMBLE MODEL #################################################<br>Model &lt;- nimbleCode({ <br>  for(i in 1:n){<br>    y[i] ~ dbin(prob = p, size = z[i,2]) <br>  }<br>  z[1:n,1:3] &lt;- nimODE(z_init=z_init[1:3],theta=theta[1:4])<br>  ## Priors<br>  p ~ dbeta(shape1 = 1.3, shape2 = 5) #P<br>  theta[1] ~ T(dnorm(0,5),0,) #dgamma(3,0.6)        #a    <br>  theta[2] ~ T(dnorm(0,5),0,) #dgamma(10,1)         #e<br>  theta[3] ~ T(dnorm(0,5),0,) #dgamma(3, 0.06)      #r<br>  theta[4] ~ T(dnorm(0,0.1),0,)<br>})<br>Consts &lt;- list(n = num_days - 1)<br>nimbleData &lt;- list(y=daily_cases,z_init=z_init)<br>inits &lt;- list(theta=c(1,1,1,0.001),p=0.3)<br>nimbleModel &lt;- nimbleModel(code=Model, name=&#39;nimbleModel&#39;, constants = Consts, data = nimbleData,inits = inits)<br>MCMCconfig &lt;- configureMCMC(nimbleModel,monitors=c(&quot;theta&quot;,&quot;p&quot;))</div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><br>modelMCMC &lt;- buildMCMC(MCMCconfig)<br>compiled_model &lt;- compileNimble(nimbleModel, showCompilerOutput = TRUE)<br></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div>compiled_model_MCMC &lt;- compileNimble(modelMCMC, project = nimbleModel)<br>results &lt;- runMCMC(compiled_model_MCMC, niter = 50000, nburnin = 30000, nchains = 1, thin=10, <br>                   inits=inits, progressBar = T, samplesAsCodaMCMC = T)<br></div><div><br></div><div><br></div><div><br></div><div>Thank you!</div><div>Debbie</div></div><br><div class=\"gmail_quote\"></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><div dir=\"ltr\" class=\"gmail_attr\">On Mon, Jun 27, 2022 at 9:18 AM &#39;David Pleydell&#39; via nimble-users &lt;<a href data-email-masked rel=\"nofollow\">nimble...@googlegroups.com</a>&gt; wrote:<br></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><div class=\"gmail_quote\"><div>For anyone reading through this thread, and interested in how we fitted the mentioned African Swine Fever spatial spread model, a pre-proof version of the paper is now available online <a href=\"https://doi.org/10.1016/j.epidem.2022.100596\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://doi.org/10.1016/j.epidem.2022.100596&amp;source=gmail&amp;ust=1792476783102000&amp;usg=AOvVaw10q-dncXGE5IEn9H2bynQC\">https://doi.org/10.1016/j.epidem.2022.100596</a></div><div><br></div><div>Cheers</div><div>David</div><div><br></div><div><br></div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><div></div><div>One alternative to help overcome the first problem is to switch to a stochastic model. Using something like the tau-leap method you can track when individuals enter and leave each compartment. We did this recently in a spatial SIR model for African Swine Fever spread among wild boar, and used 10-day aggregates of observed cases (in each pixel) in our likelihood calculations (we used a Poisson likelihood, with the expected value obtained from Monte Carlo simulation). <a href=\"https://we.tl/t-YTasoc83UF\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://we.tl/t-YTasoc83UF&amp;source=gmail&amp;ust=1792476783102000&amp;usg=AOvVaw3pxxfDLhpbRSn3KGKRIyRP\">Here&#39;s a temporary link to the paper</a>, which has just been accepted for publication in a special issue of Epidemics. Normally you should be able to access our code via the links in the paper. Feel free to shoot me a message if you need some pointers navigating the code to the parts which are relevant to you.<br><br></div></blockquote></div>\r\n\r\n<p></p></blockquote></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\r\n\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;nimble-users&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">nimble-users...@googlegroups.com</a>.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\r\nTo view this discussion on the web visit <a href=\"https://groups.google.com/d/msgid/nimble-users/0ab4b844-c53e-46e5-914f-332b532ec004n%40googlegroups.com?utm_medium=email&amp;utm_source=footer\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msgid/nimble-users/0ab4b844-c53e-46e5-914f-332b532ec004n%2540googlegroups.com?utm_medium%3Demail%26utm_source%3Dfooter&amp;source=gmail&amp;ust=1792476783102000&amp;usg=AOvVaw2hlr1COC-xWDCWxEvgcKrR\">https://groups.google.com/d/msgid/nimble-users/0ab4b844-c53e-46e5-914f-332b532ec004n%40googlegroups.com</a>.<br>\r\n</blockquote></div>\r\n"
+    ]
+   ]
+  }
+ ]
+}

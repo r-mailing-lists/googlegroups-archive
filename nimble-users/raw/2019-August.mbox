@@ -1,0 +1,3019 @@
+From ua7799393a04672fe at groups.google.com  Mon Aug  5 17:58:31 2019
+From: ua7799393a04672fe at groups.google.com (Meridith Bartley)
+Date: Mon, 05 Aug 2019 17:58:31 +0000
+Subject: Re: Poisson HMM - convergence/autocorrelation issues
+Message-ID: <Lguu1OfpfOc.G_q8qdQYCgAJ@nimble-users.groups.google.com>
+In-Reply-To: <Lguu1OfpfOc.uhADWOctEAAJ@nimble-users.groups.google.com>
+References: <Lguu1OfpfOc.uhADWOctEAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Lguu1OfpfOc/m/G_q8qdQYCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Perry!
+
+I've added
+
+simulatedData <- model$y
+model$setData(list(y = simulatedData))
+
+to the code.
+
+The separated y_l and y_diff aren't separately known when the latent state is high (1), only the combined y for each t. In this case using a multinomial distribution, the data, y, may be separated into y_l and y_diff to correspond with the two lambda parameters.
+
+However, when the latent state is low (0) then we want to constrict y_l = y and y_diff =  0. This is hard to code in Nimble where if/then statements aren't available for these parameters.
+
+In previous non-Nimble code this was accomplished via the following:
+
+for (t in 1:seconds) {
+  if (state[t] == 0) {
+    y_l[t] <- y[t]
+    y_diff[t] <- 0
+  } else {
+    split <- rmultinom(1,
+                       size = y[t],
+                       prob = c(lambda_l,
+                                lambda_diff))
+    y_l[t] <- split[1]
+    y_diff[t] <- split[2]
+  }
+}
+
+but I'm unable to figure out how to code this clearly in Nimble. Would a user-defined function be useful here?
+
+Thanks so much!
+Meridith
+
+On Monday, July 22, 2019 at 3:08:54 PM UTC-4, Meridith Bartley wrote:
+> Hey all,
+>
+> I've been using NIMBLE to implement a discrete-time Poisson Hidden Markov Model, but am having convergence issues with the lambda parameters. I have tried RW, conjugate, and blocking samplers for these parameters, both a poisson and zero inflated poisson distribution for the data, thinning, as well as some fist shaking at the computer. Any help/further suggestions would be greatly appreciated.
+>
+> I'm including a brief model overview below, and have attached NIMBLE code and simulated latent state values for reproducibility. In the code I am holding the latent states as constants to try and isolate the issues with the lambda convergence, but ultimately these will be estimated as well.
+>
+> Cheers,
+> Meridith
+>
+> 2-state Penalized HMM Model  (see attached for NIMBLE model code)
+>
+> Observed Data:
+> Y_t ~ Poisson(lambda_{X_t})
+>
+> Augmented Data Scheme:
+> Y_t = Y_Low + Y_Diff * I{X_t = H}
+>
+> Y_L ~ Pois(lambda_{X_t = L})
+> Y_Diff ~ Pois(lambda_{X_t = H})
+>
+> Lambda Priors:
+> lambda_{X_t = L} ~ Gamma(shape = .005, rate = .7)
+> lambda_{X_t = H} ~ Gamma(shape = .05, rate = .7)
+>
+> Latent States:
+> X_t ~ Mult(1, P_{X_{t-1}}) (Bernulloi in commented out code due to 2-states, but generalized to Mult)
+>
+> Probability Transition Matrix Priors
+>  P[i, ] ~ Dirch(alpha = theta[i, ] )
+>
+>
+> where theta provides a penalty tuning parameter.
+>
+> theta = [tau, 1
+>               1, tau]
+>
+> where a larger tau value places more weight on staying in a latent state for a longer period of time before switching (i.e. from Low to High or vic versa).
+
+From udd632bd3bbcdd7e9 at groups.google.com  Mon Aug  5 18:54:22 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Mon, 05 Aug 2019 18:54:22 +0000
+Subject: Re: Poisson HMM - convergence/autocorrelation issues
+Message-ID: <Lguu1OfpfOc.67iXyVNrCgAJ@nimble-users.groups.google.com>
+In-Reply-To: <Lguu1OfpfOc.G_q8qdQYCgAJ@nimble-users.groups.google.com>
+References: <Lguu1OfpfOc.uhADWOctEAAJ@nimble-users.groups.google.com> <Lguu1OfpfOc.G_q8qdQYCgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Lguu1OfpfOc/m/67iXyVNrCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Meredith,
+
+NIMBLE, along with JAGS and WinBUGS/OpenBUGS, uses a declarative model language.  That mean none of them will support the if-then structure you have or the re-use of split in the style of iterative (typical) programming. In other words, you can't re-use split for each t, because once it is declared it is part of the graph as declared, so you will need to index it by t.  Also model declarations need indexing. It is also not clear if you are trying to have a variable follow a multinomial (dmultinom) or to draw from a multinomial (rmultinom) in a nimbleFunction outside of a model, because it is not typical for an "r" function to appear in model code.  So, I can't really tell what you're trying to do.  If you are trying to write model code, and if I guess at your intention, it might be something like this:
+
+nimbleCode({
+for(t in 1:seconds) {
+  split[t, 1:2] ~ dmultinom(size = y[t],
+                                 prob = c(lambda_l,
+                                               lambda_diff))
+  y_l[t] <- (state[t] == 0) * y[t] + (state[t] != 0) * split[t, 1]
+  y_diff[t] <- (state[t] != 0) * split[t, 2]
+})
+
+HTH
+-Perry
+
+On Mon, Aug 5, 2019 at 1:58 PM Meridith Bartley <docba...@gmail.com> wrote:
+
+> Thanks Perry!
+>
+> I've added
+>
+> simulatedData <- model$y
+> model$setData(list(y = simulatedData))
+>
+> to the code.
+>
+> The separated y_l and y_diff aren't separately known when the latent state is high (1), only the combined y for each t. In this case using a multinomial distribution, the data, y, may be separated into y_l and y_diff to correspond with the two lambda parameters.
+>
+> However, when the latent state is low (0) then we want to constrict y_l = y and y_diff =  0. This is hard to code in Nimble where if/then statements aren't available for these parameters.
+>
+> In previous non-Nimble code this was accomplished via the following:
+>
+> for (t in 1:seconds) {
+>   if (state[t] == 0) {
+>     y_l[t] <- y[t]
+>     y_diff[t] <- 0
+>   } else {
+>     split <- rmultinom(1,
+>                        size = y[t],
+>                        prob = c(lambda_l,
+>                                 lambda_diff))
+>     y_l[t] <- split[1]
+>     y_diff[t] <- split[2]
+>   }
+> }
+>
+> but I'm unable to figure out how to code this clearly in Nimble. Would a user-defined function be useful here?
+>
+> Thanks so much!
+> Meridith
+>
+>
+>
+>
+> On Monday, July 22, 2019 at 3:08:54 PM UTC-4, Meridith Bartley wrote:
+> > Hey all,
+> >
+> > I've been using NIMBLE to implement a discrete-time Poisson Hidden Markov Model, but am having convergence issues with the lambda parameters. I have tried RW, conjugate, and blocking samplers for these parameters, both a poisson and zero inflated poisson distribution for the data, thinning, as well as some fist shaking at the computer. Any help/further suggestions would be greatly appreciated.
+> >
+> > I'm including a brief model overview below, and have attached NIMBLE code and simulated latent state values for reproducibility. In the code I am holding the latent states as constants to try and isolate the issues with the lambda convergence, but ultimately these will be estimated as well.
+> >
+> > Cheers,
+> > Meridith
+> >
+> > 2-state Penalized HMM Model  (see attached for NIMBLE model code)
+> >
+> > Observed Data:
+> > Y_t ~ Poisson(lambda_{X_t})
+> >
+> > Augmented Data Scheme:
+> > Y_t = Y_Low + Y_Diff * I{X_t = H}
+> >
+> > Y_L ~ Pois(lambda_{X_t = L})
+> > Y_Diff ~ Pois(lambda_{X_t = H})
+> >
+> > Lambda Priors:
+> > lambda_{X_t = L} ~ Gamma(shape = .005, rate = .7)
+> > lambda_{X_t = H} ~ Gamma(shape = .05, rate = .7)
+> >
+> > Latent States:
+> > X_t ~ Mult(1, P_{X_{t-1}}) (Bernulloi in commented out code due to 2-states, but generalized to Mult)
+> >
+> > Probability Transition Matrix Priors
+> >  P[i, ] ~ Dirch(alpha = theta[i, ] )
+> >
+> >
+> > where theta provides a penalty tuning parameter.
+> >
+> > theta = [tau, 1
+> >               1, tau]
+> >
+> > where a larger tau value places more weight on staying in a latent state for a longer period of time before switching (i.e. from Low to High or vic versa).
+>
+
+> --
+
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/8d506e72-138a-4a91-94f8-ba916a43d733%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/8d506e72-138a-4a91-94f8-ba916a43d733%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u35cf403e5052bfe0 at groups.google.com  Tue Aug 13 17:42:55 2019
+From: u35cf403e5052bfe0 at groups.google.com (Lawson, Andrew B.)
+Date: Tue, 13 Aug 2019 17:42:55 +0000
+Subject: MICAR and MPCAR models on Nimble
+Message-ID: <h0YJ5_7Ym7Y.RXEXu5V9DAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/h0YJ5_7Ym7Y/m/RXEXu5V9DAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+For those interested in multivariate CAR modeling on Nimble:
+as you may be aware Nimble does not currently have the equivalent to the mv.car distribution
+which is available on Win/OpenBUGS. This distribution is an implementation of the multivariate ICAR
+(MICAR), and it is the only MCAR distribution so far available.
+
+On Nimble, the univariate ICAR and PCAR models are available (as in BUGS) . The linear model of coregionalisation (LMC)
+allows the construction of MCAR models from combinations of univariate ICAR and PCAR distributions. As Nimble allows the
+use of Cholesky decomposition it is possible to hand code both the MICAR and MPCAR models directly.
+
+This has now been done and benchmark tests demonstrate that even without the conjugate Wishart sampling in the mv.car in BUGS ,
+the Nimble implimentation of MICAR (the equivalent to mv.car) is marginally faster in execution, for the same data, than mv.car.
+One major advantage of the the Nimble implementation of LMC is that the MPCAR can also be computed and so individual spatial correlation parameters can be estimated for each disease, as well as cross correlations. The MPCAR is not available on Win/OpenBUGS.
+
+Code for both models for the Georgia county level 3 disease example is attached here
+
+There is also a new dedicated GitHub repository for Nimble Bayesian Disease Mapping  code here:
+
+https://github.com/Andrew9Lawson/Bayesian_DM_Nimble_code
+
+Thanks also to Chris Paciorek for fixing bugs in the original Nimble code.
+
+best wishes
+Andrew
+
+Division of Biostatistics and Bioinformatics
+Department of Public Health Sciences
+Medical University of South Carolina
+Charleston
+29425
+South Carolina
+USA
+ph: 843-876-1865
+
+new 3rd edition of BDM book:
+
+www.crcpress.com/9781138575424 <http://www.crcpress.com/9781138575424>
+
+Handbook of Spatial Epidemiology:
+
+www.crcpress.com/9781482253016 <http://www.crcpress.com/9781482253016>
+
+From u35cf403e5052bfe0 at groups.google.com  Wed Aug 14 19:37:22 2019
+From: u35cf403e5052bfe0 at groups.google.com (Lawson, Andrew B.)
+Date: Wed, 14 Aug 2019 19:37:22 +0000
+Subject: A query about 'order'
+Message-ID: <V5FcskyNnMs.x8jwEoVvDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/V5FcskyNnMs/m/x8jwEoVvDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I have a query about the R function 'order'. I would like to return the ordering
+of sorted items from a vector to a label vector and the R function 'order' does this.
+I tried to use nimbleRcall to get this working but it gives an error
+
+This is the code I used:
+
+order <- nimbleRcall(function(x = double(1)){}, Rfun = 'order',
+                    returnType = integer(1))
+
+and the nimble program code is
+
+CST<-nimbleCode({
+for (i in 1:m){
+for (j in 1:J){
+y0[i,j]~dpois(expe[i,j]*lam0[i,j])
+log(lam0[i,j])<-a0+b0[1]*x1[i]+b0[2]*x2[i]
+}}
+for(i in 1:m){
+for(j in 1:J){
+for(l in 1:m){
+z0[i,j,l]<-2*exp(-abs(lam0[i,j]-lam0[l,j]))/(1+exp(-abs(lam0[i,j]-lam0[l,j])))}
+as[1:m]<-z0[i,j,1:m]
+C[1:m]<-order(as)
+ylab[i,j]<-C[m]
+}}
+})
+
+This gives the following error when using nimbleModel:
+defining model...
+Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+  R function 'order' has arguments that cannot be evaluated; either the function must be a nimbleFunction or values for the following inputs must be specified as constants in the model: as.
+
+Any help appreciated
+
+Andrew
+
+From udd632bd3bbcdd7e9 at groups.google.com  Wed Aug 14 19:43:45 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Wed, 14 Aug 2019 19:43:45 +0000
+Subject: Re: A query about 'order'
+Message-ID: <V5FcskyNnMs.2nT7Td5vDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <V5FcskyNnMs.x8jwEoVvDAAJ@nimble-users.groups.google.com>
+References: <V5FcskyNnMs.x8jwEoVvDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/V5FcskyNnMs/m/2nT7Td5vDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+To give a quick reply, have you tried using a different name for "order"?  Unfortunately, sometimes nimble doesn't always find things as you would hope based on R's scoping, and it may be finding R's order instead of the order you created.  Giving a unique name might help.  Also I think you will need C[1:m]<-order(as[1:m]), that is with indices for as.
+
+-Perry
+
+On Wed, Aug 14, 2019 at 12:37 PM Lawson, Andrew B. <laws...@musc.edu> wrote:
+
+> I have a query about the R function 'order'. I would like to return the ordering
+> of sorted items from a vector to a label vector and the R function 'order' does this.
+> I tried to use nimbleRcall to get this working but it gives an error
+>
+> This is the code I used:
+>
+> order <- nimbleRcall(function(x = double(1)){}, Rfun = 'order',
+>                     returnType = integer(1))
+>
+> and the nimble program code is
+>
+> CST<-nimbleCode({
+> for (i in 1:m){
+> for (j in 1:J){
+> y0[i,j]~dpois(expe[i,j]*lam0[i,j])
+> log(lam0[i,j])<-a0+b0[1]*x1[i]+b0[2]*x2[i]
+> }}
+> for(i in 1:m){
+> for(j in 1:J){
+> for(l in 1:m){
+> z0[i,j,l]<-2*exp(-abs(lam0[i,j]-lam0[l,j]))/(1+exp(-abs(lam0[i,j]-lam0[l,j])))}
+> as[1:m]<-z0[i,j,1:m]
+> C[1:m]<-order(as)
+> ylab[i,j]<-C[m]
+> }}
+> })
+>
+> This gives the following error when using nimbleModel:
+> defining model...
+> Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+>   R function 'order' has arguments that cannot be evaluated; either the function must be a nimbleFunction or values for the following inputs must be specified as constants in the model: as.
+>
+>
+> Any help appreciated
+>
+> Andrew
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/MN2PR11MB409556789810EAD4EF558E07A3AD0%40MN2PR11MB4095.namprd11.prod.outlook.com <https://groups.google.com/d/msgid/nimble-users/MN2PR11MB409556789810EAD4EF558E07A3AD0%40MN2PR11MB4095.namprd11.prod.outlook.com?utm_medium=email&utm_source=footer>.
+
+From u35cf403e5052bfe0 at groups.google.com  Thu Aug 15 17:57:31 2019
+From: u35cf403e5052bfe0 at groups.google.com (Lawson, Andrew B.)
+Date: Thu, 15 Aug 2019 17:57:31 +0000
+Subject: RE: A query about 'order'
+Message-ID: <V5FcskyNnMs.0vRe86a4DAAJ@nimble-users.groups.google.com>
+In-Reply-To: <V5FcskyNnMs.x8jwEoVvDAAJ@nimble-users.groups.google.com>
+References: <V5FcskyNnMs.x8jwEoVvDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/V5FcskyNnMs/m/0vRe86a4DAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello Perry
+
+That worked…the renaming…thanks
+
+Andrew
+
+Division of Biostatistics and Bioinformatics
+
+Department of Public Health Sciences
+
+Medical University of South Carolina
+
+Charleston
+
+29425
+
+South Carolina
+
+USA
+
+ph: 843-876-1865
+
+new 3rd edition of BDM book:
+
+www.crcpress.com/9781138575424 <http://www.crcpress.com/9781138575424>
+
+Handbook of Spatial Epidemiology:
+
+www.crcpress.com/9781482253016 <http://www.crcpress.com/9781482253016>
+
+From: Perry de Valpine <pdeva...@berkeley.edu>
+Sent: Wednesday, August 14, 2019 3:44 PM
+To: Lawson, Andrew B. <laws...@musc.edu>
+Cc: nimble-users <nimble...@googlegroups.com>
+Subject: Re: A query about 'order'
+
+CAUTION: External
+
+To give a quick reply, have you tried using a different name for "order"?  Unfortunately, sometimes nimble doesn't always find things as you would hope based on R's scoping, and it may be finding R's order instead of the order you created.  Giving a unique name might help.  Also I think you will need C[1:m]<-order(as[1:m]), that is with indices for as.
+
+-Perry
+
+On Wed, Aug 14, 2019 at 12:37 PM Lawson, Andrew B. <laws...@musc.edu> wrote:
+>
+> I have a query about the R function 'order'. I would like to return the ordering
+>
+> of sorted items from a vector to a label vector and the R function 'order' does this.
+>
+> I tried to use nimbleRcall to get this working but it gives an error
+>
+>
+>
+> This is the code I used:
+>
+>
+>
+> order <- nimbleRcall(function(x = double(1)){}, Rfun = 'order',
+>
+>                     returnType = integer(1))
+>
+>
+>
+> and the nimble program code is
+>
+>
+>
+> CST<-nimbleCode({
+>
+> for (i in 1:m){
+>
+> for (j in 1:J){
+>
+> y0[i,j]~dpois(expe[i,j]*lam0[i,j])
+>
+> log(lam0[i,j])<-a0+b0[1]*x1[i]+b0[2]*x2[i]
+>
+> }}
+>
+> for(i in 1:m){
+>
+> for(j in 1:J){
+>
+> for(l in 1:m){
+>
+> z0[i,j,l]<-2*exp(-abs(lam0[i,j]-lam0[l,j]))/(1+exp(-abs(lam0[i,j]-lam0[l,j])))}
+>
+> as[1:m]<-z0[i,j,1:m]
+>
+> C[1:m]<-order(as)
+>
+> ylab[i,j]<-C[m]
+>
+> }}
+>
+> })
+>
+>
+>
+> This gives the following error when using nimbleModel:
+>
+> defining model...
+>
+> Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+>
+>   R function 'order' has arguments that cannot be evaluated; either the function must be a nimbleFunction or values for the following inputs must be specified as constants in the model: as.
+>
+>
+>
+>
+>
+> Any help appreciated
+>
+>
+>
+> Andrew
+>
+>
+>
+>
+>
+>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/nimble-users/MN2PR11MB409556789810EAD4EF558E07A3AD0%40MN2PR11MB4095.namprd11.prod.outlook.com <https://groups.google.com/d/msgid/nimble-users/MN2PR11MB409556789810EAD4EF558E07A3AD0%40MN2PR11MB4095.namprd11.prod.outlook.com?utm_medium=email&utm_source=footer>.
+
+From u27debeac26f66a0b at groups.google.com  Mon Aug 19 16:13:59 2019
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez)
+Date: Mon, 19 Aug 2019 16:13:59 +0000
+Subject: Sampler
+Message-ID: <T8SvQMMWwFc.fxUPAYBODgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/T8SvQMMWwFc/m/fxUPAYBODgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Nimble Team,
+
+Thank you very much for your continuous improvements in this great software, and for your work solving the questions in this group.
+
+I'm trying to use a constrained sampler like that kindly Perry de Valpine posted here some time ago (https://groups.google.com/forum/#!searchin/nimble-users/dsum%7Csort:date/nimble-users/z1o2Fi9bO1A/Ae2HE71qFAAJ) but using a tridimensional latent node y[i,j, k] and a constraint node C[i,j,k], to sample while obey the constraints "y = C". C is the sum of two nodes, one observed, and other partially observed
+
+RW_constrained <- nimbleFunction(
+
+    contains = sampler_BASE,
+
+    setup = function(model, mvSaved, target, control) {
+
+        scale = control$scale
+
+        constraintNode <- control$constraintNode
+
+        calcNodes <- model$getDependencies(target)
+
+    },
+
+    run = function() {
+
+        target_vals <- values(model, target)
+
+        current_w <- target_vals
+
+        if(abs(model[[constraintNode]] - current_w) > 1e-6) print('Looks like the constraint is being violated\n');
+
+        values(model, target) <<- target_vals
+
+        accept <- decide(calculateDiff(model, calcNodes))
+
+        if(accept) {
+
+            copy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+
+        } else {
+
+            copy(from = mvSaved, to = model, row = 1, nodes = calcNodes, logProb = TRUE)
+
+        }
+
+    },
+
+    methods = list(
+
+        reset = function() {}
+
+    )
+
+)
+
+I compiled:
+
+...
+
+mcmcspec$removeSamplers('y')
+
+mcmcspec$addSampler(target = c('y'), type = RW_constrained, control = list(scale = 0.5, constraintNode = c('C')))
+
+...
+
+but I get this error:
+
+CMCMC <- compileNimble(MCMC, project = Rmodel)
+
+compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+
+Error: In sizeBinaryCwise: Dimensions do not matchin a way that can be handled.
+
+ This occurred for: map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w
+
+ This was part of the call:  abs(map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w)
+
+How could I solve it?
+
+Thank you
+
+From udd632bd3bbcdd7e9 at groups.google.com  Mon Aug 19 17:16:39 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Mon, 19 Aug 2019 17:16:39 +0000
+Subject: Re: MICAR and MPCAR models on Nimble
+Message-ID: <h0YJ5_7Ym7Y.cYTMVr7wDQAJ@nimble-users.groups.google.com>
+In-Reply-To: <h0YJ5_7Ym7Y.RXEXu5V9DAAJ@nimble-users.groups.google.com>
+References: <h0YJ5_7Ym7Y.RXEXu5V9DAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/h0YJ5_7Ym7Y/m/cYTMVr7wDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for creating and sharing this, Andrew.
+
+-Perry
+
+On Tue, Aug 13, 2019 at 10:42 AM Lawson, Andrew B. <laws...@musc.edu> wrote:
+
+> For those interested in multivariate CAR modeling on Nimble:
+> as you may be aware Nimble does not currently have the equivalent to the mv.car distribution
+> which is available on Win/OpenBUGS. This distribution is an implementation of the multivariate ICAR
+> (MICAR), and it is the only MCAR distribution so far available.
+>
+> On Nimble, the univariate ICAR and PCAR models are available (as in BUGS) . The linear model of coregionalisation (LMC)
+> allows the construction of MCAR models from combinations of univariate ICAR and PCAR distributions. As Nimble allows the
+> use of Cholesky decomposition it is possible to hand code both the MICAR and MPCAR models directly.
+>
+> This has now been done and benchmark tests demonstrate that even without the conjugate Wishart sampling in the mv.car in BUGS ,
+> the Nimble implimentation of MICAR (the equivalent to mv.car) is marginally faster in execution, for the same data, than mv.car.
+> One major advantage of the the Nimble implementation of LMC is that the MPCAR can also be computed and so individual spatial correlation parameters can be estimated for each disease, as well as cross correlations. The MPCAR is not available on Win/OpenBUGS.
+>
+> Code for both models for the Georgia county level 3 disease example is attached here
+>
+> There is also a new dedicated GitHub repository for Nimble Bayesian Disease Mapping  code here:
+>
+> https://github.com/Andrew9Lawson/Bayesian_DM_Nimble_code
+>
+> Thanks also to Chris Paciorek for fixing bugs in the original Nimble code.
+>
+> best wishes
+> Andrew
+>
+>
+> Division of Biostatistics and Bioinformatics
+> Department of Public Health Sciences
+> Medical University of South Carolina
+> Charleston
+> 29425
+> South Carolina
+> USA
+> ph: 843-876-1865
+>
+>
+> new 3rd edition of BDM book:
+>
+> www.crcpress.com/9781138575424 <http://www.crcpress.com/9781138575424>
+>
+> Handbook of Spatial Epidemiology:
+>
+> www.crcpress.com/9781482253016 <http://www.crcpress.com/9781482253016>
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/MN2PR11MB4095A029226325AC75D467EAA3D20%40MN2PR11MB4095.namprd11.prod.outlook.com.
+
+From u46f76d1903dc6874 at groups.google.com  Thu Aug 22 22:34:27 2019
+From: u46f76d1903dc6874 at groups.google.com (Vincent Landau)
+Date: Thu, 22 Aug 2019 22:34:27 +0000
+Subject: Writing a wrapper function in R for NIMBLE
+Message-ID: <wND-HgRF_7U.WBT20bJODwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/wND-HgRF_7U/m/WBT20bJODwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi All,
+
+I'm using NIMBLE to fit Bayesian models via MCMC as part of an R package I'm developing, so I need to be able to run NIMBLE from inside a function. In this function I'm registering a new distribution, building, compiling, and finally running the model. Everything works when I take it outside of the function and run it in the local scope/environment, but when running it as a function, I get this output:
+
+Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+  R function 'dtvgeom' does not exist.
+In addition:
+1: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: dtvgeom.
+2: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: ptvgeom.
+
+General guidance on how to write a wrapper function to call NIMBLE should be enough for me to solve the problem.
+
+Thanks for any help!
+
+- Vincent
+
+From u46f76d1903dc6874 at groups.google.com  Thu Aug 22 23:19:29 2019
+From: u46f76d1903dc6874 at groups.google.com (Vincent Landau)
+Date: Thu, 22 Aug 2019 23:19:29 +0000
+Subject: Re: Writing a wrapper function in R for NIMBLE
+Message-ID: <wND-HgRF_7U.MBe7widRDwAJ@nimble-users.groups.google.com>
+In-Reply-To: <wND-HgRF_7U.WBT20bJODwAJ@nimble-users.groups.google.com>
+References: <wND-HgRF_7U.WBT20bJODwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/wND-HgRF_7U/m/MBe7widRDwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I found a fix by doing assignment using <<- to assign the nimbleFunctions to the parent environment.
+
+On Thursday, August 22, 2019 at 4:34:27 PM UTC-6, Vincent Landau wrote:
+> Hi All,
+>
+> I'm using NIMBLE to fit Bayesian models via MCMC as part of an R package I'm developing, so I need to be able to run NIMBLE from inside a function. In this function I'm registering a new distribution, building, compiling, and finally running the model. Everything works when I take it outside of the function and run it in the local scope/environment, but when running it as a function, I get this output:
+>
+> Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+>   R function 'dtvgeom' does not exist.
+> In addition:
+> 1: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: dtvgeom.
+> 2: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: ptvgeom.
+>
+> General guidance on how to write a wrapper function to call NIMBLE should be enough for me to solve the problem.
+>
+> Thanks for any help!
+>
+> - Vincent
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Aug 23 01:22:07 2019
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Fri, 23 Aug 2019 01:22:07 +0000
+Subject: Re: Sampler
+Message-ID: <T8SvQMMWwFc.diCwkDKqAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <T8SvQMMWwFc.fxUPAYBODgAJ@nimble-users.groups.google.com>
+References: <T8SvQMMWwFc.fxUPAYBODgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/T8SvQMMWwFc/m/diCwkDKqAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jose,
+
+I suspect the issue is that the result of using value() is one-dimensional (i.e., a vector not a scalar), so
+target_values and therefore current_w are one-dimensional as well and can't be compared against model[[constraintNode]].
+
+Can you try:
+abs(model[[constraintNode]] - current_w[1]
+
+and see if that works?
+
+I'm assuming that 'constraintNode' is a scalar ...
+
+Chris
+
+On Mon, Aug 19, 2019 at 9:14 AM Jose Jimenez <Jose.J...@uclm.es> wrote:
+
+> Dear Nimble Team,
+>
+>
+> Thank you very much for your continuous improvements in this great software, and for your work solving the questions in this group.
+>
+>
+> I'm trying to use a constrained sampler like that kindly Perry de Valpine posted here some time ago (https://groups.google.com/forum/#!searchin/nimble-users/dsum%7Csort:date/nimble-users/z1o2Fi9bO1A/Ae2HE71qFAAJ) but using a tridimensional latent node y[i,j, k] and a constraint node C[i,j,k], to sample while obey the constraints "y = C". C is the sum of two nodes, one observed, and other partially observed
+>
+>
+>
+> RW_constrained <- nimbleFunction(
+>
+>     contains = sampler_BASE,
+>
+>     setup = function(model, mvSaved, target, control) {
+>
+>         scale = control$scale
+>
+>         constraintNode <- control$constraintNode
+>
+>         calcNodes <- model$getDependencies(target)
+>
+>     },
+>
+>     run = function() {
+>
+>         target_vals <- values(model, target)
+>
+>         current_w <- target_vals
+>
+>         if(abs(model[[constraintNode]] - current_w) > 1e-6) print('Looks like the constraint is being violated\n');
+>
+>         values(model, target) <<- target_vals
+>
+>         accept <- decide(calculateDiff(model, calcNodes))
+>
+>         if(accept) {
+>
+>             copy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+>
+>         } else {
+>
+>             copy(from = mvSaved, to = model, row = 1, nodes = calcNodes, logProb = TRUE)
+>
+>         }
+>
+>     },
+>
+>     methods = list(
+>
+>         reset = function() {}
+>
+>     )
+>
+> )
+>
+>
+>
+> I compiled:
+>
+> ...
+>
+> mcmcspec$removeSamplers('y')
+>
+> mcmcspec$addSampler(target = c('y'), type = RW_constrained, control = list(scale = 0.5, constraintNode = c('C')))
+>
+> ...
+>
+>
+>
+> but I get this error:
+>
+> CMCMC <- compileNimble(MCMC, project = Rmodel)
+>
+> compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+>
+> Error: In sizeBinaryCwise: Dimensions do not matchin a way that can be handled.
+>
+>  This occurred for: map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w
+>
+>  This was part of the call:  abs(map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w)
+>
+>
+>
+> How could I solve it?
+>
+> Thank you
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u27debeac26f66a0b at groups.google.com  Fri Aug 23 14:32:39 2019
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez Garcia-Herrera)
+Date: Fri, 23 Aug 2019 14:32:39 +0000
+Subject: RE: Sampler
+Message-ID: <T8SvQMMWwFc.XZPaQ1bVAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <T8SvQMMWwFc.fxUPAYBODgAJ@nimble-users.groups.google.com>
+References: <T8SvQMMWwFc.fxUPAYBODgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/T8SvQMMWwFc/m/XZPaQ1bVAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Chris,
+
+Actually I’m using a three-dimensional array for both target (y[i,j,k]) and constraint (C[i,j,k]) nodes. Using “w[1]” I get:
+
+CMCMC <- compileNimble(MCMC, project = Rmodel)
+
+compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+
+Error in sizeIndexingBracket(<environment>, new("symbolTable", .xData = <environment>),  :
+
+  Error in 'current_w[1]'; has 'current_w' been created?
+
+De: Chris Paciorek [mailto:christophe...@gmail.com]
+Enviado el: viernes, 23 de agosto de 2019 3:22
+Para: Jose Jimenez Garcia-Herrera
+CC: nimble-users
+Asunto: Re: Sampler
+
+Hi Jose,
+
+I suspect the issue is that the result of using value() is one-dimensional (i.e., a vector not a scalar), so
+
+target_values and therefore current_w are one-dimensional as well and can't be compared against model[[constraintNode]].
+
+Can you try:
+
+abs(model[[constraintNode]] - current_w[1]
+
+and see if that works?
+
+I'm assuming that 'constraintNode' is a scalar ...
+
+Chris
+
+On Mon, Aug 19, 2019 at 9:14 AM Jose Jimenez <Jose.J...@uclm.es> wrote:
+>
+> Dear Nimble Team,
+>
+>
+>
+> Thank you very much for your continuous improvements in this great software, and for your work solving the questions in this group.
+>
+>
+>
+> I'm trying to use a constrained sampler like that kindly Perry de Valpine posted here some time ago (https://groups.google.com/forum/#!searchin/nimble-users/dsum%7Csort:date/nimble-users/z1o2Fi9bO1A/Ae2HE71qFAAJ) but using a tridimensional latent node y[i,j, k] and a constraint node C[i,j,k], to sample while obey the constraints "y = C". C is the sum of two nodes, one observed, and other partially observed
+>
+>
+>
+> RW_constrained <- nimbleFunction(
+>
+>     contains = sampler_BASE,
+>
+>     setup = function(model, mvSaved, target, control) {
+>
+>         scale = control$scale
+>
+>         constraintNode <- control$constraintNode
+>
+>         calcNodes <- model$getDependencies(target)
+>
+>     },
+>
+>     run = function() {
+>
+>         target_vals <- values(model, target)
+>
+>         current_w <- target_vals
+>
+>         if(abs(model[[constraintNode]] - current_w) > 1e-6) print('Looks like the constraint is being violated\n');
+>
+>         values(model, target) <<- target_vals
+>
+>         accept <- decide(calculateDiff(model, calcNodes))
+>
+>         if(accept) {
+>
+>             copy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+>
+>         } else {
+>
+>             copy(from = mvSaved, to = model, row = 1, nodes = calcNodes, logProb = TRUE)
+>
+>         }
+>
+>     },
+>
+>     methods = list(
+>
+>         reset = function() {}
+>
+>     )
+>
+> )
+>
+>
+>
+> I compiled:
+>
+> ...
+>
+> mcmcspec$removeSamplers('y')
+>
+> mcmcspec$addSampler(target = c('y'), type = RW_constrained, control = list(scale = 0.5, constraintNode = c('C')))
+>
+> ...
+>
+>
+>
+> but I get this error:
+>
+> CMCMC <- compileNimble(MCMC, project = Rmodel)
+>
+> compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+>
+> Error: In sizeBinaryCwise: Dimensions do not matchin a way that can be handled.
+>
+>  This occurred for: map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w
+>
+>  This was part of the call:  abs(map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w)
+>
+>
+>
+> How could I solve it?
+>
+> Thank you
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Aug 23 15:07:10 2019
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Fri, 23 Aug 2019 15:07:10 +0000
+Subject: Re: Sampler
+Message-ID: <T8SvQMMWwFc.ST2xcDjXAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <T8SvQMMWwFc.XZPaQ1bVAgAJ@nimble-users.groups.google.com>
+References: <T8SvQMMWwFc.fxUPAYBODgAJ@nimble-users.groups.google.com> <T8SvQMMWwFc.XZPaQ1bVAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/T8SvQMMWwFc/m/ST2xcDjXAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi Jose, can you send a minimal reproducible example, so I can take a look more closely?
+
+If you prefer, feel free to send it directly to me (off-list).
+
+Chris
+
+On Fri, Aug 23, 2019 at 7:32 AM Jose Jimenez Garcia-Herrera <Jose.J...@uclm.es> wrote:
+>
+> Hi Chris,
+>
+>
+>
+> Actually I’m using a three-dimensional array for both target (y[i,j,k]) and constraint (C[i,j,k]) nodes. Using “w[1]” I get:
+>
+>
+>
+> CMCMC <- compileNimble(MCMC, project = Rmodel)
+>
+> compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+>
+> Error in sizeIndexingBracket(<environment>, new("symbolTable", .xData = <environment>),  :
+>
+>   Error in 'current_w[1]'; has 'current_w' been created?
+>
+>
+>
+>
+>
+> De: Chris Paciorek [mailto:christophe...@gmail.com]
+> Enviado el: viernes, 23 de agosto de 2019 3:22
+> Para: Jose Jimenez Garcia-Herrera
+> CC: nimble-users
+> Asunto: Re: Sampler
+>
+>
+>
+> Hi Jose,
+>
+>
+>
+> I suspect the issue is that the result of using value() is one-dimensional (i.e., a vector not a scalar), so
+>
+> target_values and therefore current_w are one-dimensional as well and can't be compared against model[[constraintNode]].
+>
+>
+>
+> Can you try:
+>
+> abs(model[[constraintNode]] - current_w[1]
+>
+>
+>
+> and see if that works?
+>
+>
+>
+> I'm assuming that 'constraintNode' is a scalar ...
+>
+>
+>
+> Chris
+>
+>
+>
+>
+>
+> On Mon, Aug 19, 2019 at 9:14 AM Jose Jimenez <Jose.J...@uclm.es> wrote:
+> >
+> > Dear Nimble Team,
+> >
+> >
+> >
+> > Thank you very much for your continuous improvements in this great software, and for your work solving the questions in this group.
+> >
+> >
+> >
+> > I'm trying to use a constrained sampler like that kindly Perry de Valpine posted here some time ago (https://groups.google.com/forum/#!searchin/nimble-users/dsum%7Csort:date/nimble-users/z1o2Fi9bO1A/Ae2HE71qFAAJ) but using a tridimensional latent node y[i,j, k] and a constraint node C[i,j,k], to sample while obey the constraints "y = C". C is the sum of two nodes, one observed, and other partially observed
+> >
+> >
+> >
+> > RW_constrained <- nimbleFunction(
+> >
+> >     contains = sampler_BASE,
+> >
+> >     setup = function(model, mvSaved, target, control) {
+> >
+> >         scale = control$scale
+> >
+> >         constraintNode <- control$constraintNode
+> >
+> >         calcNodes <- model$getDependencies(target)
+> >
+> >     },
+> >
+> >     run = function() {
+> >
+> >         target_vals <- values(model, target)
+> >
+> >         current_w <- target_vals
+> >
+> >         if(abs(model[[constraintNode]] - current_w) > 1e-6) print('Looks like the constraint is being violated\n');
+> >
+> >         values(model, target) <<- target_vals
+> >
+> >         accept <- decide(calculateDiff(model, calcNodes))
+> >
+> >         if(accept) {
+> >
+> >             copy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+> >
+> >         } else {
+> >
+> >             copy(from = mvSaved, to = model, row = 1, nodes = calcNodes, logProb = TRUE)
+> >
+> >         }
+> >
+> >     },
+> >
+> >     methods = list(
+> >
+> >         reset = function() {}
+> >
+> >     )
+> >
+> > )
+> >
+> >
+> >
+> > I compiled:
+> >
+> > ...
+> >
+> > mcmcspec$removeSamplers('y')
+> >
+> > mcmcspec$addSampler(target = c('y'), type = RW_constrained, control = list(scale = 0.5, constraintNode = c('C')))
+> >
+> > ...
+> >
+> >
+> >
+> > but I get this error:
+> >
+> > CMCMC <- compileNimble(MCMC, project = Rmodel)
+> >
+> > compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> >
+> > Error: In sizeBinaryCwise: Dimensions do not matchin a way that can be handled.
+> >
+> >  This occurred for: map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w
+> >
+> >  This was part of the call:  abs(map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w)
+> >
+> >
+> >
+> > How could I solve it?
+> >
+> > Thank you
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Aug 23 15:15:31 2019
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Fri, 23 Aug 2019 15:15:31 +0000
+Subject: Re: Writing a wrapper function in R for NIMBLE
+Message-ID: <wND-HgRF_7U._OzYDq3XAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <wND-HgRF_7U.MBe7widRDwAJ@nimble-users.groups.google.com>
+References: <wND-HgRF_7U.WBT20bJODwAJ@nimble-users.groups.google.com> <wND-HgRF_7U.MBe7widRDwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/wND-HgRF_7U/m/_OzYDq3XAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ok, good, glad you found something that worked. In general for a user-defined distribution in a package that depends on NIMBLE,
+I think you want the distribution to be created such that it is an object in the namespace of your package.
+
+The NIMBLE team is working currently on a couple packages that will depend on NIMBLE, so may one of the core developers might chime in here
+with other thoughts on this topic in coming weeks.
+
+Chris
+
+On Thu, Aug 22, 2019 at 4:19 PM Vincent Landau <vin...@csp-inc.org> wrote:
+
+> I found a fix by doing assignment using <<- to assign the nimbleFunctions to the parent environment.
+>
+> On Thursday, August 22, 2019 at 4:34:27 PM UTC-6, Vincent Landau wrote:
+> > Hi All,
+> >
+> > I'm using NIMBLE to fit Bayesian models via MCMC as part of an R package I'm developing, so I need to be able to run NIMBLE from inside a function. In this function I'm registering a new distribution, building, compiling, and finally running the model. Everything works when I take it outside of the function and run it in the local scope/environment, but when running it as a function, I get this output:
+> >
+> > Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+> >   R function 'dtvgeom' does not exist.
+> > In addition:
+> > 1: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: dtvgeom.
+> > 2: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: ptvgeom.
+> >
+> > General guidance on how to write a wrapper function to call NIMBLE should be enough for me to solve the problem.
+> >
+> > Thanks for any help!
+> >
+> > - Vincent
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/ee40d0e4-999a-4e68-a67e-e90c81854520%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/ee40d0e4-999a-4e68-a67e-e90c81854520%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u46f76d1903dc6874 at groups.google.com  Fri Aug 23 15:29:10 2019
+From: u46f76d1903dc6874 at groups.google.com (Vincent Landau)
+Date: Fri, 23 Aug 2019 15:29:10 +0000
+Subject: Re: Writing a wrapper function in R for NIMBLE
+Message-ID: <wND-HgRF_7U.mepcQRKGDwAJ@nimble-users.groups.google.com>
+In-Reply-To: <wND-HgRF_7U._OzYDq3XAgAJ@nimble-users.groups.google.com>
+References: <wND-HgRF_7U.WBT20bJODwAJ@nimble-users.groups.google.com> <wND-HgRF_7U._OzYDq3XAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/wND-HgRF_7U/m/mepcQRKGDwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Oh that makes a lot of sense! I'm up for any suggestions to make the setup more logical and robust, so I'd be happy to get any input from those developers. Hopefully they do chime in!
+
+On Friday, August 23, 2019 at 9:15:31 AM UTC-6, Chris Paciorek wrote:
+
+> Ok, good, glad you found something that worked. In general for a user-defined distribution in a package that depends on NIMBLE,
+> I think you want the distribution to be created such that it is an object in the namespace of your package.
+>
+> The NIMBLE team is working currently on a couple packages that will depend on NIMBLE, so may one of the core developers might chime in here
+> with other thoughts on this topic in coming weeks.
+>
+> Chris
+>
+
+> On Thu, Aug 22, 2019 at 4:19 PM Vincent Landau <vin...@csp-inc.org> wrote:
+
+> > I found a fix by doing assignment using <<- to assign the nimbleFunctions to the parent environment.
+> >
+> > On Thursday, August 22, 2019 at 4:34:27 PM UTC-6, Vincent Landau wrote:
+> > > Hi All,
+> > >
+> > > I'm using NIMBLE to fit Bayesian models via MCMC as part of an R package I'm developing, so I need to be able to run NIMBLE from inside a function. In this function I'm registering a new distribution, building, compiling, and finally running the model. Everything works when I take it outside of the function and run it in the local scope/environment, but when running it as a function, I get this output:
+> > >
+> > > Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+> > >   R function 'dtvgeom' does not exist.
+> > > In addition:
+> > > 1: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: dtvgeom.
+> > > 2: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: ptvgeom.
+> > >
+> > > General guidance on how to write a wrapper function to call NIMBLE should be enough for me to solve the problem.
+> > >
+> > > Thanks for any help!
+> > >
+> > > - Vincent
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble...@googlegroups.com.
+
+> >
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/ee40d0e4-999a-4e68-a67e-e90c81854520%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/ee40d0e4-999a-4e68-a67e-e90c81854520%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Aug 23 16:00:03 2019
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Fri, 23 Aug 2019 16:00:03 +0000
+Subject: Re: Sampler
+Message-ID: <T8SvQMMWwFc.OiZ6WRvaAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <T8SvQMMWwFc.XZPaQ1bVAgAJ@nimble-users.groups.google.com>
+References: <T8SvQMMWwFc.fxUPAYBODgAJ@nimble-users.groups.google.com> <T8SvQMMWwFc.XZPaQ1bVAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/T8SvQMMWwFc/m/OiZ6WRvaAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi Jose, in your RW_constrained, it should look like this (i.e., only have the [1] indexing when you use current_w, not when it is created.
+
+        current_w <- target_vals
+        if(abs(model[[constraintNode]] - current_w[1]) > 1e-6) print('Looks like the constraint is being violated\n')
+
+The NIMBLE compiler will create current_w as a vector and then in the next line, you use the first element.
+
+That will solve the particular error. However, there is a bigger issue here - 'constraintNode' is 'C' in your model, and that is a 3-d array.
+But you are comparing to an individual element of 'y.full', which is a scalar.  I think you probably need to have the constraintNode
+for each element of 'y.full' be the corresponding element of 'C'.
+
+Chris
+Chris
+
+On Fri, Aug 23, 2019 at 7:32 AM Jose Jimenez Garcia-Herrera <Jose.J...@uclm.es> wrote:
+
+> Hi Chris,
+>
+>
+>
+> Actually I’m using a three-dimensional array for both target (y[i,j,k]) and constraint (C[i,j,k]) nodes. Using “w[1]” I get:
+>
+>
+>
+> CMCMC <- compileNimble(MCMC, project = Rmodel)
+>
+> compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+>
+> Error in sizeIndexingBracket(<environment>, new("symbolTable", .xData = <environment>),  :
+>
+>   Error in 'current_w[1]'; has 'current_w' been created?
+>
+>
+>
+>
+>
+> De: Chris Paciorek [mailto:christophe...@gmail.com]
+> Enviado el: viernes, 23 de agosto de 2019 3:22
+> Para: Jose Jimenez Garcia-Herrera
+> CC: nimble-users
+> Asunto: Re: Sampler
+>
+>
+>
+> Hi Jose,
+>
+>
+>
+> I suspect the issue is that the result of using value() is one-dimensional (i.e., a vector not a scalar), so
+>
+> target_values and therefore current_w are one-dimensional as well and can't be compared against model[[constraintNode]].
+>
+>
+>
+> Can you try:
+>
+> abs(model[[constraintNode]] - current_w[1]
+>
+>
+>
+> and see if that works?
+>
+>
+>
+> I'm assuming that 'constraintNode' is a scalar ...
+>
+>
+>
+> Chris
+>
+>
+>
+>
+>
+> On Mon, Aug 19, 2019 at 9:14 AM Jose Jimenez <Jose.J...@uclm.es> wrote:
+> >
+> > Dear Nimble Team,
+> >
+> >
+> >
+> > Thank you very much for your continuous improvements in this great software, and for your work solving the questions in this group.
+> >
+> >
+> >
+> > I'm trying to use a constrained sampler like that kindly Perry de Valpine posted here some time ago (https://groups.google.com/forum/#!searchin/nimble-users/dsum%7Csort:date/nimble-users/z1o2Fi9bO1A/Ae2HE71qFAAJ) but using a tridimensional latent node y[i,j, k] and a constraint node C[i,j,k], to sample while obey the constraints "y = C". C is the sum of two nodes, one observed, and other partially observed
+> >
+> >
+> >
+> > RW_constrained <- nimbleFunction(
+> >
+> >     contains = sampler_BASE,
+> >
+> >     setup = function(model, mvSaved, target, control) {
+> >
+> >         scale = control$scale
+> >
+> >         constraintNode <- control$constraintNode
+> >
+> >         calcNodes <- model$getDependencies(target)
+> >
+> >     },
+> >
+> >     run = function() {
+> >
+> >         target_vals <- values(model, target)
+> >
+> >         current_w <- target_vals
+> >
+> >         if(abs(model[[constraintNode]] - current_w) > 1e-6) print('Looks like the constraint is being violated\n');
+> >
+> >         values(model, target) <<- target_vals
+> >
+> >         accept <- decide(calculateDiff(model, calcNodes))
+> >
+> >         if(accept) {
+> >
+> >             copy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+> >
+> >         } else {
+> >
+> >             copy(from = mvSaved, to = model, row = 1, nodes = calcNodes, logProb = TRUE)
+> >
+> >         }
+> >
+> >     },
+> >
+> >     methods = list(
+> >
+> >         reset = function() {}
+> >
+> >     )
+> >
+> > )
+> >
+> >
+> >
+> > I compiled:
+> >
+> > ...
+> >
+> > mcmcspec$removeSamplers('y')
+> >
+> > mcmcspec$addSampler(target = c('y'), type = RW_constrained, control = list(scale = 0.5, constraintNode = c('C')))
+> >
+> > ...
+> >
+> >
+> >
+> > but I get this error:
+> >
+> > CMCMC <- compileNimble(MCMC, project = Rmodel)
+> >
+> > compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> >
+> > Error: In sizeBinaryCwise: Dimensions do not matchin a way that can be handled.
+> >
+> >  This occurred for: map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w
+> >
+> >  This was part of the call:  abs(map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w)
+> >
+> >
+> >
+> > How could I solve it?
+> >
+> > Thank you
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Fri Aug 23 16:18:42 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Fri, 23 Aug 2019 16:18:42 +0000
+Subject: NIMBLE-related ecological statistics post-doc: application deadline extended
+Message-ID: <VpNW_1g41UM.eJ0etB_bAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VpNW_1g41UM/m/eJ0etB_bAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear nimble-users,
+
+Here is a post-doc position for statistical modeling of large carnivore populations in Scandinavia using nimble: https://tinyurl.com/y5l86e3g <https://t.co/uRZ93tsF46?amp=1>
+
+The position is based near Oslo and will involve collaboration with the nimble team in Berkeley, California, USA as well as great people in Montpellier, France and Maryland, USA.
+
+The primary emphasis for this position is experience with Bayesian statistical modeling.  This is more important than experience with ecology or spatial capture-recapture models.  Therefore this position provides an ideal opportunity for a Ph.D. in Statistics to gain experience working on ecological statistical problems.
+
+Please help us spread the word.
+
+-Perry
+
+From udd632bd3bbcdd7e9 at groups.google.com  Fri Aug 23 16:27:55 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Fri, 23 Aug 2019 16:27:55 +0000
+Subject: Re: NIMBLE-related ecological statistics post-doc: application deadline extended
+Message-ID: <VpNW_1g41UM.8SMfl6DbAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <VpNW_1g41UM.eJ0etB_bAgAJ@nimble-users.groups.google.com>
+References: <VpNW_1g41UM.eJ0etB_bAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/VpNW_1g41UM/m/8SMfl6DbAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+P.S. The stated desired start date is soon, but they will be willing to delay that, so don't decide not to apply just because of that.
+
+On Fri, Aug 23, 2019 at 9:18 AM Perry de Valpine <pdeva...@berkeley.edu> wrote:
+> Dear nimble-users,
+>
+> Here is a post-doc position for statistical modeling of large carnivore populations in Scandinavia using nimble: https://tinyurl.com/y5l86e3g <https://t.co/uRZ93tsF46?amp=1>
+>
+> The position is based near Oslo and will involve collaboration with the nimble team in Berkeley, California, USA as well as great people in Montpellier, France and Maryland, USA.
+>
+> The primary emphasis for this position is experience with Bayesian statistical modeling.  This is more important than experience with ecology or spatial capture-recapture models.  Therefore this position provides an ideal opportunity for a Ph.D. in Statistics to gain experience working on ecological statistical problems.
+>
+> Please help us spread the word.
+>
+> -Perry
+
+From u27debeac26f66a0b at groups.google.com  Sat Aug 24 09:17:45 2019
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez Garcia-Herrera)
+Date: Sat, 24 Aug 2019 09:17:45 +0000
+Subject: RE: Sampler
+Message-ID: <T8SvQMMWwFc.GZGU47sSAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <T8SvQMMWwFc.XZPaQ1bVAgAJ@nimble-users.groups.google.com>
+References: <T8SvQMMWwFc.fxUPAYBODgAJ@nimble-users.groups.google.com> <T8SvQMMWwFc.XZPaQ1bVAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/T8SvQMMWwFc/m/GZGU47sSAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you, Chris. The RW_constrained sampler is working know.
+
+Best regards
+
+De: Chris Paciorek [mailto:christophe...@gmail.com]
+Enviado el: viernes, 23 de agosto de 2019 18:00
+Para: Jose Jimenez Garcia-Herrera
+CC: nimble-users
+Asunto: Re: Sampler
+
+hi Jose, in your RW_constrained, it should look like this (i.e., only have the [1] indexing when you use current_w, not when it is created.
+
+        current_w <- target_vals
+        if(abs(model[[constraintNode]] - current_w[1]) > 1e-6) print('Looks like the constraint is being violated\n')
+
+The NIMBLE compiler will create current_w as a vector and then in the next line, you use the first element.
+
+That will solve the particular error. However, there is a bigger issue here - 'constraintNode' is 'C' in your model, and that is a 3-d array.
+
+But you are comparing to an individual element of 'y.full', which is a scalar.  I think you probably need to have the constraintNode
+
+for each element of 'y.full' be the corresponding element of 'C'.
+
+Chris
+
+Chris
+
+On Fri, Aug 23, 2019 at 7:32 AM Jose Jimenez Garcia-Herrera <Jose.J...@uclm.es> wrote:
+>
+> Hi Chris,
+>
+>
+>
+> Actually I’m using a three-dimensional array for both target (y[i,j,k]) and constraint (C[i,j,k]) nodes. Using “w[1]” I get:
+>
+>
+>
+> CMCMC <- compileNimble(MCMC, project = Rmodel)
+>
+> compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+>
+> Error in sizeIndexingBracket(<environment>, new("symbolTable", .xData = <environment>),  :
+>
+>   Error in 'current_w[1]'; has 'current_w' been created?
+>
+>
+>
+>
+>
+> De: Chris Paciorek [mailto:christophe...@gmail.com]
+> Enviado el: viernes, 23 de agosto de 2019 3:22
+> Para: Jose Jimenez Garcia-Herrera
+> CC: nimble-users
+> Asunto: Re: Sampler
+>
+>
+>
+> Hi Jose,
+>
+>
+>
+> I suspect the issue is that the result of using value() is one-dimensional (i.e., a vector not a scalar), so
+>
+> target_values and therefore current_w are one-dimensional as well and can't be compared against model[[constraintNode]].
+>
+>
+>
+> Can you try:
+>
+> abs(model[[constraintNode]] - current_w[1]
+>
+>
+>
+> and see if that works?
+>
+>
+>
+> I'm assuming that 'constraintNode' is a scalar ...
+>
+>
+>
+> Chris
+>
+>
+>
+>
+>
+> On Mon, Aug 19, 2019 at 9:14 AM Jose Jimenez <Jose.J...@uclm.es> wrote:
+> >
+> > Dear Nimble Team,
+> >
+> >
+> >
+> > Thank you very much for your continuous improvements in this great software, and for your work solving the questions in this group.
+> >
+> >
+> >
+> > I'm trying to use a constrained sampler like that kindly Perry de Valpine posted here some time ago (https://groups.google.com/forum/#!searchin/nimble-users/dsum%7Csort:date/nimble-users/z1o2Fi9bO1A/Ae2HE71qFAAJ) but using a tridimensional latent node y[i,j, k] and a constraint node C[i,j,k], to sample while obey the constraints "y = C". C is the sum of two nodes, one observed, and other partially observed
+> >
+> >
+> >
+> > RW_constrained <- nimbleFunction(
+> >
+> >     contains = sampler_BASE,
+> >
+> >     setup = function(model, mvSaved, target, control) {
+> >
+> >         scale = control$scale
+> >
+> >         constraintNode <- control$constraintNode
+> >
+> >         calcNodes <- model$getDependencies(target)
+> >
+> >     },
+> >
+> >     run = function() {
+> >
+> >         target_vals <- values(model, target)
+> >
+> >         current_w <- target_vals
+> >
+> >         if(abs(model[[constraintNode]] - current_w) > 1e-6) print('Looks like the constraint is being violated\n');
+> >
+> >         values(model, target) <<- target_vals
+> >
+> >         accept <- decide(calculateDiff(model, calcNodes))
+> >
+> >         if(accept) {
+> >
+> >             copy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+> >
+> >         } else {
+> >
+> >             copy(from = mvSaved, to = model, row = 1, nodes = calcNodes, logProb = TRUE)
+> >
+> >         }
+> >
+> >     },
+> >
+> >     methods = list(
+> >
+> >         reset = function() {}
+> >
+> >     )
+> >
+> > )
+> >
+> >
+> >
+> > I compiled:
+> >
+> > ...
+> >
+> > mcmcspec$removeSamplers('y')
+> >
+> > mcmcspec$addSampler(target = c('y'), type = RW_constrained, control = list(scale = 0.5, constraintNode = c('C')))
+> >
+> > ...
+> >
+> >
+> >
+> > but I get this error:
+> >
+> > CMCMC <- compileNimble(MCMC, project = Rmodel)
+> >
+> > compiling... this may take a minute. Use 'showCompilerOutput = TRUE' to see C++ compilation details.
+> >
+> > Error: In sizeBinaryCwise: Dimensions do not matchin a way that can be handled.
+> >
+> >  This occurred for: map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w
+> >
+> >  This was part of the call:  abs(map("model_oB_oBconstraintNode_cB_cB",3,name,list,list) - current_w)
+> >
+> >
+> >
+> > How could I solve it?
+> >
+> > Thank you
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6c62fbee-677a-43c3-8a6d-21189f8e162d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Sat Aug 24 14:36:07 2019
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Sat, 24 Aug 2019 14:36:07 +0000
+Subject: Re: Writing a wrapper function in R for NIMBLE
+Message-ID: <wND-HgRF_7U.mmAEbRskAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <wND-HgRF_7U.mepcQRKGDwAJ@nimble-users.groups.google.com>
+References: <wND-HgRF_7U.WBT20bJODwAJ@nimble-users.groups.google.com> <wND-HgRF_7U.mepcQRKGDwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/wND-HgRF_7U/m/mmAEbRskAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Vincent, thanks for your interest and use of NIMBLE.  I'm happy to hear about your plans for incorporating NIMBLE into your own R package(s).  I've done some work along the same lines, so let me try to provide some guidance for you.
+
+But first, one question.  In your initial post, you said you're trying to register a NIMBLE distribution from *within a package function*.  It might complicate things if your custom distribution(s) need to be defined *inside package function(s)*.  So, is it the case that (1) your custom distribution(s) are dynamic, that is, they depend on the argument(s) to package function(s)?  Or, (2) your distribution(s) are static, and fully known in advance, and thus could be defined inside your package, and subsequently be used inside your package function(s)?
+
+Assuming (2) is the case, which would be simpler, then, I would suggest the following:
+
+In your package NAMESPACE file, make sure (a) to import the nimble package, and (b) to export your custom distribution.  That is, include the lines:
+
+import(nimble)
+export(dtvgeom)
+
+Heads up, you may also need to import the methods package:
+
+import(methods)
+
+In your package DESCRIPTION file, explicitly have your package "depend" on nimble.  That is, include the line, e.g.:
+
+Depends: R (>= 3.6.1),nimble
+
+Then, in your package R source files, (e.g., yourPackage / R / foo.R), include the definition of your custom distribution, making sure to export it.  So, that would look something like:
+
+#' Description of your distribution
+#' ....
+#' @export
+dtvgeom <- nimbleFunction(
+  run = function(...) {
+    ...
+  }, check = FALSE
+)
+
+Including the "check = FALSE" will avoid warnings, in some cases.  It's safe to include that, if you're entirely confident the definition of your custom distribution is correct.
+
+Then, you'll be able to use the dtvgeom distribution inside your other package functions.
+
+Please let us know if anything here is unclear, and/or how it works for you.
+
+Cheers!  Keep in touch!
+Daniel
+
+On Fri, Aug 23, 2019 at 11:29 AM Vincent Landau <vin...@csp-inc.org> wrote:
+
+> Oh that makes a lot of sense! I'm up for any suggestions to make the setup more logical and robust, so I'd be happy to get any input from those developers. Hopefully they do chime in!
+>
+> On Friday, August 23, 2019 at 9:15:31 AM UTC-6, Chris Paciorek wrote:
+> > Ok, good, glad you found something that worked. In general for a user-defined distribution in a package that depends on NIMBLE,
+> > I think you want the distribution to be created such that it is an object in the namespace of your package.
+> >
+> > The NIMBLE team is working currently on a couple packages that will depend on NIMBLE, so may one of the core developers might chime in here
+> > with other thoughts on this topic in coming weeks.
+> >
+> > Chris
+> >
+> > On Thu, Aug 22, 2019 at 4:19 PM Vincent Landau <vin...@csp-inc.org> wrote:
+> > > I found a fix by doing assignment using <<- to assign the nimbleFunctions to the parent environment.
+> > >
+> > > On Thursday, August 22, 2019 at 4:34:27 PM UTC-6, Vincent Landau wrote:
+> > > > Hi All,
+> > > >
+> > > > I'm using NIMBLE to fit Bayesian models via MCMC as part of an R package I'm developing, so I need to be able to run NIMBLE from inside a function. In this function I'm registering a new distribution, building, compiling, and finally running the model. Everything works when I take it outside of the function and run it in the local scope/environment, but when running it as a function, I get this output:
+> > > >
+> > > > Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+> > > >   R function 'dtvgeom' does not exist.
+> > > > In addition:
+> > > > 1: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: dtvgeom.
+> > > > 2: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: ptvgeom.
+> > > >
+> > > > General guidance on how to write a wrapper function to call NIMBLE should be enough for me to solve the problem.
+> > > >
+> > > > Thanks for any help!
+> > > >
+> > > > - Vincent
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/ee40d0e4-999a-4e68-a67e-e90c81854520%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/ee40d0e4-999a-4e68-a67e-e90c81854520%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/5f79d348-32e8-4e69-8f0c-790b7e1e327b%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/5f79d348-32e8-4e69-8f0c-790b7e1e327b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u46f76d1903dc6874 at groups.google.com  Sat Aug 24 17:31:51 2019
+From: u46f76d1903dc6874 at groups.google.com (Vincent Landau)
+Date: Sat, 24 Aug 2019 17:31:51 +0000
+Subject: Re: Writing a wrapper function in R for NIMBLE
+Message-ID: <wND-HgRF_7U.SzjamFjbDwAJ@nimble-users.groups.google.com>
+In-Reply-To: <wND-HgRF_7U.mmAEbRskAwAJ@nimble-users.groups.google.com>
+References: <wND-HgRF_7U.WBT20bJODwAJ@nimble-users.groups.google.com> <wND-HgRF_7U.mmAEbRskAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/wND-HgRF_7U/m/SzjamFjbDwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks very much Daniel! I'll give this a shot and post back to this thread if I have any issues.
+
+On Saturday, August 24, 2019 at 8:36:07 AM UTC-6, Daniel Turek wrote:
+
+> Vincent, thanks for your interest and use of NIMBLE.  I'm happy to hear about your plans for incorporating NIMBLE into your own R package(s).  I've done some work along the same lines, so let me try to provide some guidance for you.
+>
+> But first, one question.  In your initial post, you said you're trying to register a NIMBLE distribution from *within a package function*.  It might complicate things if your custom distribution(s) need to be defined *inside package function(s)*.  So, is it the case that (1) your custom distribution(s) are dynamic, that is, they depend on the argument(s) to package function(s)?  Or, (2) your distribution(s) are static, and fully known in advance, and thus could be defined inside your package, and subsequently be used inside your package function(s)?
+>
+> Assuming (2) is the case, which would be simpler, then, I would suggest the following:
+>
+> In your package NAMESPACE file, make sure (a) to import the nimble package, and (b) to export your custom distribution.  That is, include the lines:
+>
+> import(nimble)
+> export(dtvgeom)
+>
+> Heads up, you may also need to import the methods package:
+>
+> import(methods)
+>
+> In your package DESCRIPTION file, explicitly have your package "depend" on nimble.  That is, include the line, e.g.:
+>
+> Depends: R (>= 3.6.1),nimble
+>
+> Then, in your package R source files, (e.g., yourPackage / R / foo.R), include the definition of your custom distribution, making sure to export it.  So, that would look something like:
+>
+> #' Description of your distribution
+> #' ....
+> #' @export
+> dtvgeom <- nimbleFunction(
+>   run = function(...) {
+>     ...
+>   }, check = FALSE
+> )
+>
+> Including the "check = FALSE" will avoid warnings, in some cases.  It's safe to include that, if you're entirely confident the definition of your custom distribution is correct.
+>
+> Then, you'll be able to use the dtvgeom distribution inside your other package functions.
+>
+> Please let us know if anything here is unclear, and/or how it works for you.
+>
+> Cheers!  Keep in touch!
+> Daniel
+>
+>
+>
+>
+>
+
+> On Fri, Aug 23, 2019 at 11:29 AM Vincent Landau <vin...@csp-inc.org> wrote:
+
+> > Oh that makes a lot of sense! I'm up for any suggestions to make the setup more logical and robust, so I'd be happy to get any input from those developers. Hopefully they do chime in!
+> >
+> > On Friday, August 23, 2019 at 9:15:31 AM UTC-6, Chris Paciorek wrote:
+> > > Ok, good, glad you found something that worked. In general for a user-defined distribution in a package that depends on NIMBLE,
+> > > I think you want the distribution to be created such that it is an object in the namespace of your package.
+> > >
+> > > The NIMBLE team is working currently on a couple packages that will depend on NIMBLE, so may one of the core developers might chime in here
+> > > with other thoughts on this topic in coming weeks.
+> > >
+> > > Chris
+> > >
+> > > On Thu, Aug 22, 2019 at 4:19 PM Vincent Landau <vin...@csp-inc.org> wrote:
+> > > > I found a fix by doing assignment using <<- to assign the nimbleFunctions to the parent environment.
+> > > >
+> > > > On Thursday, August 22, 2019 at 4:34:27 PM UTC-6, Vincent Landau wrote:
+> > > > > Hi All,
+> > > > >
+> > > > > I'm using NIMBLE to fit Bayesian models via MCMC as part of an R package I'm developing, so I need to be able to run NIMBLE from inside a function. In this function I'm registering a new distribution, building, compiling, and finally running the model. Everything works when I take it outside of the function and run it in the local scope/environment, but when running it as a function, I get this output:
+> > > > >
+> > > > > Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames,  :
+> > > > >   R function 'dtvgeom' does not exist.
+> > > > > In addition:
+> > > > > 1: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: dtvgeom.
+> > > > > 2: For this nimbleFunction to compile, these objects must be defined as nimbleFunctions, nimbleFunctionLists, or nimbleLists before compilation: ptvgeom.
+> > > > >
+> > > > > General guidance on how to write a wrapper function to call NIMBLE should be enough for me to solve the problem.
+> > > > >
+> > > > > Thanks for any help!
+> > > > >
+> > > > > - Vincent
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/ee40d0e4-999a-4e68-a67e-e90c81854520%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/ee40d0e4-999a-4e68-a67e-e90c81854520%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble...@googlegroups.com.
+
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/5f79d348-32e8-4e69-8f0c-790b7e1e327b%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/5f79d348-32e8-4e69-8f0c-790b7e1e327b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u13cf56e0d64188ae at groups.google.com  Tue Aug 27 21:31:43 2019
+From: u13cf56e0d64188ae at groups.google.com (Xinyu Zhang)
+Date: Tue, 27 Aug 2019 21:31:43 +0000
+Subject: About nimble error
+Message-ID: <SFTpgYkLqmQ.e0ZL4YxVAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/SFTpgYkLqmQ/m/e0ZL4YxVAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everybody,
+
+I am trying to use nimble to fit Bayesian Occupancy Model and when I try to view the mcmcplots, I get error message "
+Plots for beta01
+
+beta01. Error in bw.SJ(x, method = "ste"): sample is too sparse to find TD
+Plots for beta03
+
+beta03. Error in bw.SJ(x, method = "ste"): sample is too sparse to find TD
+Plots for beta04
+
+beta04. Error in bw.SJ(x, method = "ste"): sample is too sparse to find TD
+Plots for beta05
+
+beta05. Error in bw.SJ(x, method = "ste"): sample is too sparse to find TD"
+
+Did anyone meet that kind of error before? Can anybody help me about that?
+
+Thank you so much
+
+From udd632bd3bbcdd7e9 at groups.google.com  Tue Aug 27 22:35:23 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Tue, 27 Aug 2019 22:35:23 +0000
+Subject: Re: About nimble error
+Message-ID: <SFTpgYkLqmQ.V92j0I6-BAAJ@nimble-users.groups.google.com>
+In-Reply-To: <SFTpgYkLqmQ.e0ZL4YxVAAAJ@nimble-users.groups.google.com>
+References: <SFTpgYkLqmQ.e0ZL4YxVAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/SFTpgYkLqmQ/m/V92j0I6-BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The error seems to be coming from bandwidth selection of kernel smoothing in mcmcplots, which is not part of nimble.  It may be that the posterior is not mixed or has some other problem.  Can you look at the posterior sample directly and provide more information about the model?
+
+-Perry
+
+On Tue, Aug 27, 2019 at 2:31 PM Xinyu Zhang <zhan...@wfu.edu> wrote:
+
+> Hi everybody,
+>
+> I am trying to use nimble to fit Bayesian Occupancy Model and when I try to view the mcmcplots, I get error message "
+> Plots for beta01
+>
+> beta01. Error in bw.SJ(x, method = "ste"): sample is too sparse to find TD
+> Plots for beta03
+>
+> beta03. Error in bw.SJ(x, method = "ste"): sample is too sparse to find TD
+> Plots for beta04
+>
+> beta04. Error in bw.SJ(x, method = "ste"): sample is too sparse to find TD
+> Plots for beta05
+>
+> beta05. Error in bw.SJ(x, method = "ste"): sample is too sparse to find TD"
+>
+>
+> Did anyone meet that kind of error before? Can anybody help me about that?
+>
+>
+> Thank you so much
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/1a15b1f3-7c05-4d39-af59-0377b66dcb29%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/1a15b1f3-7c05-4d39-af59-0377b66dcb29%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4b31e1109581a8a9 at groups.google.com  Thu Aug 29 16:32:11 2019
+From: u4b31e1109581a8a9 at groups.google.com (Samba Kumar)
+Date: Thu, 29 Aug 2019 16:32:11 +0000
+Subject: Implementation of hierarchical model in Nimble and Winbugs
+Message-ID: <MyDvb0ks460.YfBsg3AuAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/MyDvb0ks460/m/YfBsg3AuAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+Have any of you in the list converted WinBUGS model to NIMBLE and
+compared results.
+
+I had implemented a hierarchical spatial (CAR) model with and without
+indicator variables in WinBUGS and I am facing problems when I run the
+same model in NIMBLE.
+
+The posterior distributions of parameters for the model WITHOUT
+indicator variables are very similar between WinBUGS and NIMBLE.
+However, the model WITH indicator variables seems to have problem when
+implemented in NIMBLE. The posterior summaries of indicator variables,
+as well as the MC errors, obtained in NIMBLE are quite different from
+WinBUGS estimates. I have used these binary indicator variables to
+assess the relative importance of predictor variables, following the
+modelling structure suggested by Kuo and Mallick 1998. The WinBUGS
+results of the indicator variables make ecological sense, while Nimble
+doesn't.
+
+I was wondering why the inclusion of indicator variables should yield
+such drastically different results between WinBUGS and Nimble.
+
+I would greatly appreciate any insights and pointers.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Thu Aug 29 18:37:27 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Thu, 29 Aug 2019 18:37:27 +0000
+Subject: Re: Implementation of hierarchical model in Nimble and Winbugs
+Message-ID: <MyDvb0ks460.6NQE96UuBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <MyDvb0ks460.YfBsg3AuAAAJ@nimble-users.groups.google.com>
+References: <MyDvb0ks460.YfBsg3AuAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/MyDvb0ks460/m/6NQE96UuBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Can you provide a reproducible example, on-list if possible, off-list if you prefer?
+Thanks.
+-Perry
+
+On Thu, Aug 29, 2019 at 9:32 AM Samba Kumar <samb...@gmail.com> wrote:
+
+> Hi,
+>
+> Have any of you in the list converted WinBUGS model to NIMBLE and
+> compared results.
+>
+> I had implemented a hierarchical spatial (CAR) model with and without
+> indicator variables in WinBUGS and I am facing problems when I run the
+> same model in NIMBLE.
+>
+> The posterior distributions of parameters for the model WITHOUT
+> indicator variables are very similar between WinBUGS and NIMBLE.
+> However, the model WITH indicator variables seems to have problem when
+> implemented in NIMBLE. The posterior summaries of indicator variables,
+> as well as the MC errors, obtained in NIMBLE are quite different from
+> WinBUGS estimates. I have used these binary indicator variables to
+> assess the relative importance of predictor variables, following the
+> modelling structure suggested by Kuo and Mallick 1998. The WinBUGS
+> results of the indicator variables make ecological sense, while Nimble
+> doesn't.
+>
+> I was wondering why the inclusion of indicator variables should yield
+> such drastically different results between WinBUGS and Nimble.
+>
+> I would greatly appreciate any insights and pointers.
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/b78cee23-1a0d-4626-8fce-44138abbda30%40googlegroups.com.
+
+From ubebd85531a67ef86 at groups.google.com  Fri Aug 30 09:15:09 2019
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Fri, 30 Aug 2019 09:15:09 +0000
+Subject: segfault with nimArray
+Message-ID: <Xsjt9axTwok.ACoe8StlAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Xsjt9axTwok/m/ACoe8StlAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi
+
+I'm getting segfaults when trying to assign values to a 3D nimArray. A short reproducible example is attached.
+
+I've the latest CRAN version of Nimble, on R 3.4.4, on Ubuntu.
+
+Any hints as to what is causing this?
+
+Best
+David
+
+From u023fa3ad935fe77a at groups.google.com  Fri Aug 30 12:12:08 2019
+From: u023fa3ad935fe77a at groups.google.com (tom labone)
+Date: Fri, 30 Aug 2019 12:12:08 +0000
+Subject: Simple Code Runs in JAGS but not in Nimble
+Message-ID: <GhRLyxqQYGI.M7ARoTNoBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/GhRLyxqQYGI/m/M7ARoTNoBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The following example runs fine with JAGS but generates errors with Nimble. Can anyone point out what I am doing wrong? Thanks.
+
+M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+       336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+       196,199,198,172,153,165,157,132,99
+)
+
+u <- 0.035 * M
+
+m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+       0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+       0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+       0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+       0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+       0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+       0.10140678, 0.09963913, 0.07657229, 0.06314739
+)
+
+library(R2jags)
+
+jagsdat <- data.frame(M=M,m=m,u=u)
+
+modelA <- function() {
+  for (i in 1:37) {
+    M[i] ~ dnorm(mu[i],tau[i])
+    mu[i] <- beta*m[i]
+    tau[i] <- pow(u[i],-2)
+  }
+  beta ~ dlnorm(log(2000),log(3))
+}
+
+par <- c("beta")
+
+start <- list(list("beta"=2000))
+
+fit.jags <- jags(
+  data=jagsdat,
+  inits=start,
+  parameters.to.save=par,
+  n.chains=1,
+  n.iter=1E+5,
+  n.burnin=5000,
+  model.file=modelA,
+  n.thin=1
+)
+
+library(nimble)
+
+Idata <- list(
+  M = M,
+  u = u,
+  m = m
+)
+
+modelA <- nimbleCode( {
+  for (i in 1:37) {
+    M[i] ~ dnorm(mu[i],u[i])
+    mu[i] <- beta*m[i]
+  }
+  beta ~ dlnorm(log(2000),log(3))
+})
+
+par <- c("beta")
+
+Init <- list("beta"=2000)
+
+fit.nim <- nimbleMCMC(
+  modelA,
+  monitors=par,
+  thin = 1,
+  niter = 1E+5,
+  nburnin = 0,
+  nchains = 1,
+  check = TRUE,
+  setSeed = FALSE,
+  progressBar = getNimbleOption("MCMCprogressBar"),
+  samples = TRUE,
+  samplesAsCodaMCMC = TRUE,
+  summary = TRUE,
+  WAIC = FALSE
+)
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Fri Aug 30 12:31:24 2019
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Fri, 30 Aug 2019 12:31:24 +0000
+Subject: Re: Simple Code Runs in JAGS but not in Nimble
+Message-ID: <GhRLyxqQYGI.AO9UyUBpBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <GhRLyxqQYGI.M7ARoTNoBgAJ@nimble-users.groups.google.com>
+References: <GhRLyxqQYGI.M7ARoTNoBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/GhRLyxqQYGI/m/AO9UyUBpBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Good question.  I appears like you didn't provide the model "constants" (right-hand-side fixed constants, in this case "m" and "u"), or the model "data" (in this case, looks like "M"), or the initial values list which you defined (Init) to the nimbleMCMC() call.  Without those values, the "model" being used in the MCMC is essentially a graphical structure with placeholders to hold all these values, but it will not find (or populate) the actual values into the model from scoping of of the variables you created in the R global environment.  Rather, you get to explicitly provide those to calls such as nimbleModel, or in your case, nimbleMCMC.
+
+I've added those few lines below (commented with "NEW"), and it seems to run without a hitch.
+
+Keep us posted if this works for you, and thanks for your use of NIMBLE.
+
+M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+       336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+       196,199,198,172,153,165,157,132,99
+)
+
+u <- 0.035 * M
+
+m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+       0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+       0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+       0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+       0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+       0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+       0.10140678, 0.09963913, 0.07657229, 0.06314739
+)
+
+library(nimble)
+
+modelA <- nimbleCode( {
+  for (i in 1:37) {
+    M[i] ~ dnorm(mu[i],u[i])
+    mu[i] <- beta*m[i]
+  }
+  beta ~ dlnorm(log(2000),log(3))
+})
+
+par <- c("beta")
+
+Init <- list("beta"=2000)
+
+fit.nim <- nimbleMCMC(
+  modelA,
+
+  constants = list(m = m, u = u),    ## NEW
+  data = list(M = M),                ## NEW
+  inits = Init,                      ## NEW
+
+  monitors=par,
+  thin = 1,
+  niter = 1E+5,
+  nburnin = 0,
+  nchains = 1,
+  check = TRUE,
+  setSeed = FALSE,
+  progressBar = getNimbleOption("MCMCprogressBar"),
+  samples = TRUE,
+  samplesAsCodaMCMC = TRUE,
+  summary = TRUE,
+  WAIC = FALSE
+)
+
+On Fri, Aug 30, 2019 at 2:12 PM tom labone <labon...@gmail.com> wrote:
+
+> The following example runs fine with JAGS but generates errors with Nimble. Can anyone point out what I am doing wrong? Thanks.
+>
+>
+> M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+>        336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+>        196,199,198,172,153,165,157,132,99
+> )
+>
+> u <- 0.035 * M
+>
+> m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+>        0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+>        0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+>        0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+>        0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+>        0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+>        0.10140678, 0.09963913, 0.07657229, 0.06314739
+> )
+>
+>
+> library(R2jags)
+>
+> jagsdat <- data.frame(M=M,m=m,u=u)
+>
+> modelA <- function() {
+>   for (i in 1:37) {
+>     M[i] ~ dnorm(mu[i],tau[i])
+>     mu[i] <- beta*m[i]
+>     tau[i] <- pow(u[i],-2)
+>   }
+>   beta ~ dlnorm(log(2000),log(3))
+> }
+>
+> par <- c("beta")
+>
+> start <- list(list("beta"=2000))
+>
+> fit.jags <- jags(
+>   data=jagsdat,
+>   inits=start,
+>   parameters.to.save=par,
+>   n.chains=1,
+>   n.iter=1E+5,
+>   n.burnin=5000,
+>   model.file=modelA,
+>   n.thin=1
+> )
+>
+>
+> library(nimble)
+>
+> Idata <- list(
+>   M = M,
+>   u = u,
+>   m = m
+> )
+>
+> modelA <- nimbleCode( {
+>   for (i in 1:37) {
+>     M[i] ~ dnorm(mu[i],u[i])
+>     mu[i] <- beta*m[i]
+>   }
+>   beta ~ dlnorm(log(2000),log(3))
+> })
+>
+> par <- c("beta")
+>
+> Init <- list("beta"=2000)
+>
+> fit.nim <- nimbleMCMC(
+>   modelA,
+>   monitors=par,
+>   thin = 1,
+>   niter = 1E+5,
+>   nburnin = 0,
+>   nchains = 1,
+>   check = TRUE,
+>   setSeed = FALSE,
+>   progressBar = getNimbleOption("MCMCprogressBar"),
+>   samples = TRUE,
+>   samplesAsCodaMCMC = TRUE,
+>   summary = TRUE,
+>   WAIC = FALSE
+> )
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAEOJdLWNUpWzuWYLoKGYqDc9_9smpkiSXnHhkQvkUYEDzBWF6g%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAEOJdLWNUpWzuWYLoKGYqDc9_9smpkiSXnHhkQvkUYEDzBWF6g%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From u46f76d1903dc6874 at groups.google.com  Fri Aug 30 20:53:48 2019
+From: u46f76d1903dc6874 at groups.google.com (Vincent Landau)
+Date: Fri, 30 Aug 2019 20:53:48 +0000
+Subject: Can some vector elements be stochastic and others deterministic in NIMBLE?
+Message-ID: <ohCUg9_jtac.4twv8EuLAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ohCUg9_jtac/m/4twv8EuLAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+A nice trick in JAGS allows to users to feed parameter vectors as data with NA in the indices of parameters you want to sample, and fixed values for parameters you don't want to sample. This comes in handy, for example, when considering multiple random effects in multiple regression. If I have a vector of standard deviations for the random effects for each regression coefficient, i can fix the values to be 0 for the indices of parameters I don't want random effects on, and NAs in the indices of the parameters that I do want random effects on. This is super helpful because it allows you to tell the model which parameters should have random effects and which shouldn't -- no need to make a separate model file for every scenario. Is this possible to do in NIMBLE as well?
+
+One other question, I saw this in the docs:
+> 1. The appearance of the same node on the left-hand side of both a <- and a ∼ declaration (used in WinBUGS for data assignment for the value of a stochastic node).
+Does that mean I can't assign some elements in a vector (or matrix) with <- and sample others stochastically?
+
+Thanks very much for any insight/help!
+
+- Vincent
+
+From udd632bd3bbcdd7e9 at groups.google.com  Fri Aug 30 21:29:16 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Fri, 30 Aug 2019 21:29:16 +0000
+Subject: Re: Can some vector elements be stochastic and others deterministic in NIMBLE?
+Message-ID: <ohCUg9_jtac.VO0mxJqGBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <ohCUg9_jtac.4twv8EuLAAAJ@nimble-users.groups.google.com>
+References: <ohCUg9_jtac.4twv8EuLAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ohCUg9_jtac/m/VO0mxJqGBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Vincent,
+
+Thanks for the questions.  They touch on a bunch of issues.
+
+Yes, some elements of a non-scalar variable can be deterministic (created with "<-") while others can be stochastic (created with "~").
+
+If your model is called m, you can explore model-querying features to see this.  E.g. m$getNodeNames(stochOnly = TRUE) or m$getNodeNames(determOnly = TRUE).
+
+You can also have some stochastic nodes in a variable that are data and others that are not data.  This is distinct from deterministic vs. not deterministic.  Yes, nodes for which "data" is provided as NA will not be data but will instead be sampled, similar to what JAGS does.  You can explore these aspects of a model with, e.g., m$getNodeNames(dataOnly = TRUE) or m$getNodeNames(includeData = FALSE).
+
+The prohibition on declaring a node with both "<-" and "~" is for a node, not for a different nodes in the same variable.
+x[1] <- 2
+x[2] ~ dnorm(0, 1)
+is fine but
+x[1] <- 2
+x[1] ~ dnorm(0, 1)
+is not allowed.
+
+Finally, I believe the trick you are referring to, writing multiple random effects in a model and then turning some off in effect by setting their standard deviation to zero, leads to inefficient sampling (in nimble or jags).  That occurs because the MCMC does not see the situation and will still attempt to update every random effect on every iteration even though no value other than 0 (or whatever the mean is) will ever be accepted.  NIMBLE provides model-definition-time if-then-else so that you can turn model components on and off when you build the model, which means they won't exist and won't be sampled.  It can be a little cumbersome and we'd love to have someone write a more sophisticated system, but it is there and saves you from having many different model files.  You can learn more about that in the user manual or ask further questions if it's not clear.
+
+-Perry
+
+On Fri, Aug 30, 2019 at 1:53 PM Vincent Landau <vin...@csp-inc.org> wrote:
+
+> Hi all,
+>
+> A nice trick in JAGS allows to users to feed parameter vectors as data with NA in the indices of parameters you want to sample, and fixed values for parameters you don't want to sample. This comes in handy, for example, when considering multiple random effects in multiple regression. If I have a vector of standard deviations for the random effects for each regression coefficient, i can fix the values to be 0 for the indices of parameters I don't want random effects on, and NAs in the indices of the parameters that I do want random effects on. This is super helpful because it allows you to tell the model which parameters should have random effects and which shouldn't -- no need to make a separate model file for every scenario. Is this possible to do in NIMBLE as well?
+>
+> One other question, I saw this in the docs:
+> > 1. The appearance of the same node on the left-hand side of both a <- and a ∼ declaration (used in WinBUGS for data assignment for the value of a stochastic node).
+> Does that mean I can't assign some elements in a vector (or matrix) with <- and sample others stochastically?
+>
+> Thanks very much for any insight/help!
+>
+> - Vincent
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/4ab2ec40-cf06-496a-8507-85b7ec8479ca%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/4ab2ec40-cf06-496a-8507-85b7ec8479ca%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u46f76d1903dc6874 at groups.google.com  Fri Aug 30 22:12:03 2019
+From: u46f76d1903dc6874 at groups.google.com (Vincent Landau)
+Date: Fri, 30 Aug 2019 22:12:03 +0000
+Subject: Re: Can some vector elements be stochastic and others deterministic in NIMBLE?
+Message-ID: <ohCUg9_jtac.YDvC-5CPAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <ohCUg9_jtac.4twv8EuLAAAJ@nimble-users.groups.google.com>
+References: <ohCUg9_jtac.4twv8EuLAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ohCUg9_jtac/m/YDvC-5CPAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks very much for the insight, Perry! I may try it first using the "trick" (despite it's inefficiency), just to make sure I have it working, but once I have that going I'll definitely try using model-definition-time if-then-else to turn on and off the components I don't need.
+
+Thanks again, and thanks very much for your (and all of the other developers') work on NIMBLE! The software is great!
+
+On Friday, August 30, 2019 at 3:29:16 PM UTC-6, pdevalpine wrote:
+
+> Hi Vincent,
+>
+> Thanks for the questions.  They touch on a bunch of issues.
+>
+> Yes, some elements of a non-scalar variable can be deterministic (created with "<-") while others can be stochastic (created with "~").
+>
+> If your model is called m, you can explore model-querying features to see this.  E.g. m$getNodeNames(stochOnly = TRUE) or m$getNodeNames(determOnly = TRUE).
+>
+> You can also have some stochastic nodes in a variable that are data and others that are not data.  This is distinct from deterministic vs. not deterministic.  Yes, nodes for which "data" is provided as NA will not be data but will instead be sampled, similar to what JAGS does.  You can explore these aspects of a model with, e.g., m$getNodeNames(dataOnly = TRUE) or m$getNodeNames(includeData = FALSE).
+>
+> The prohibition on declaring a node with both "<-" and "~" is for a node, not for a different nodes in the same variable.
+> x[1] <- 2
+> x[2] ~ dnorm(0, 1)
+> is fine but
+> x[1] <- 2
+> x[1] ~ dnorm(0, 1)
+> is not allowed.
+>
+> Finally, I believe the trick you are referring to, writing multiple random effects in a model and then turning some off in effect by setting their standard deviation to zero, leads to inefficient sampling (in nimble or jags).  That occurs because the MCMC does not see the situation and will still attempt to update every random effect on every iteration even though no value other than 0 (or whatever the mean is) will ever be accepted.  NIMBLE provides model-definition-time if-then-else so that you can turn model components on and off when you build the model, which means they won't exist and won't be sampled.  It can be a little cumbersome and we'd love to have someone write a more sophisticated system, but it is there and saves you from having many different model files.  You can learn more about that in the user manual or ask further questions if it's not clear.
+>
+> -Perry
+>
+
+> On Fri, Aug 30, 2019 at 1:53 PM Vincent Landau <vin...@csp-inc.org> wrote:
+
+> > Hi all,
+> >
+> > A nice trick in JAGS allows to users to feed parameter vectors as data with NA in the indices of parameters you want to sample, and fixed values for parameters you don't want to sample. This comes in handy, for example, when considering multiple random effects in multiple regression. If I have a vector of standard deviations for the random effects for each regression coefficient, i can fix the values to be 0 for the indices of parameters I don't want random effects on, and NAs in the indices of the parameters that I do want random effects on. This is super helpful because it allows you to tell the model which parameters should have random effects and which shouldn't -- no need to make a separate model file for every scenario. Is this possible to do in NIMBLE as well?
+> >
+> > One other question, I saw this in the docs:
+> > > 1. The appearance of the same node on the left-hand side of both a <- and a ∼ declaration (used in WinBUGS for data assignment for the value of a stochastic node).
+> > Does that mean I can't assign some elements in a vector (or matrix) with <- and sample others stochastically?
+> >
+> > Thanks very much for any insight/help!
+> >
+> > - Vincent
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble...@googlegroups.com.
+
+> >
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/4ab2ec40-cf06-496a-8507-85b7ec8479ca%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/4ab2ec40-cf06-496a-8507-85b7ec8479ca%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u023fa3ad935fe77a at groups.google.com  Sat Aug 31 10:52:27 2019
+From: u023fa3ad935fe77a at groups.google.com (tom labone)
+Date: Sat, 31 Aug 2019 10:52:27 +0000
+Subject: Re: Simple Code Runs in JAGS but not in Nimble
+Message-ID: <GhRLyxqQYGI.OIH-Lm-yBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <GhRLyxqQYGI.AO9UyUBpBgAJ@nimble-users.groups.google.com>
+References: <GhRLyxqQYGI.M7ARoTNoBgAJ@nimble-users.groups.google.com> <GhRLyxqQYGI.AO9UyUBpBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/GhRLyxqQYGI/m/OIH-Lm-yBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you. If I had paid close enough attention I should have caught that. Hopefully this will be a more worthy question: The above code is cleaned up and expanded to include a truncated normal prior on a new parameter Q. JAGS and Stan both return a value of around 1.78 but Nimble gives me 1, which is the lower limit of the truncated normal. I suspect that I am not expressing the truncated normal properly in Nimble, but I can't identify the error. Note that I am using R3.6.1 on a Linux 19.2 machine with the most current versions of JAGS, Stan, and Nimble.
+
+###############################################################################
+
+M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+       336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+       196,199,198,172,153,165,157,132,99
+)
+
+u <- 0.035 * M
+
+m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+       0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+       0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+       0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+       0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+       0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+       0.10140678, 0.09963913, 0.07657229, 0.06314739
+)
+
+###############################################################################
+
+library(R2jags)
+
+modelA <- function() {
+  for (i in 1:37) {
+    M[i] ~ dnorm(mu[i],tau[i])
+    mu[i] <- beta*m[i]
+
+    tau[i] <- pow(Q*u[i],-2)}
+  beta ~ dlnorm(log(2000),log(3))
+  Q ~ dnorm(1,1) ; T(1,)
+}
+
+fit.jags <- jags(
+  data=data.frame(M=M,m=m,u=u),
+  inits=list(list("beta"=2000,"Q"=2)),
+  parameters.to.save=c("beta","Q"),
+
+  n.chains=1,
+  n.iter=1E+5,
+  n.burnin=5000,
+  model.file=modelA,
+  n.thin=1
+)
+
+fit.jags
+
+###############################################################################
+
+library(nimble)
+
+modelB <- nimbleCode( {
+
+  for (i in 1:37) {
+
+    M[i] ~ dnorm(mu[i],Q*u[i])
+
+    mu[i] <- beta*m[i]
+  }
+  beta ~ dlnorm(log(2000),log(3))
+
+  Q ~ T(dnorm(1,1),1,)
+})
+
+fit.nim <- nimbleMCMC(
+  modelB,
+  monitors=c("beta","Q"),
+  inits=list("beta"=2000,"Q"=2),
+  constants=list(m=m,u=u),
+  data=list(M=M),
+
+  thin = 1,
+  niter = 1E+5,
+  nburnin = 0,
+  nchains = 1,
+  check = TRUE,
+  setSeed = FALSE,
+  progressBar = getNimbleOption("MCMCprogressBar"),
+  samples = TRUE,
+  samplesAsCodaMCMC = TRUE,
+  summary = TRUE,
+  WAIC = FALSE
+)
+
+fit.nim$summary
+
+On Fri, Aug 30, 2019 at 8:31 AM Daniel Turek <db...@williams.edu> wrote:
+> Good question.  I appears like you didn't provide the model "constants" (right-hand-side fixed constants, in this case "m" and "u"), or the model "data" (in this case, looks like "M"), or the initial values list which you defined (Init) to the nimbleMCMC() call.  Without those values, the "model" being used in the MCMC is essentially a graphical structure with placeholders to hold all these values, but it will not find (or populate) the actual values into the model from scoping of of the variables you created in the R global environment.  Rather, you get to explicitly provide those to calls such as nimbleModel, or in your case, nimbleMCMC.
+>
+> I've added those few lines below (commented with "NEW"), and it seems to run without a hitch.
+>
+> Keep us posted if this works for you, and thanks for your use of NIMBLE.
+>
+>
+> M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+>        336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+>        196,199,198,172,153,165,157,132,99
+> )
+>
+> u <- 0.035 * M
+>
+> m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+>        0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+>        0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+>        0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+>        0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+>        0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+>        0.10140678, 0.09963913, 0.07657229, 0.06314739
+> )
+>
+>
+> library(nimble)
+>
+>
+> modelA <- nimbleCode( {
+>   for (i in 1:37) {
+>     M[i] ~ dnorm(mu[i],u[i])
+>     mu[i] <- beta*m[i]
+>   }
+>   beta ~ dlnorm(log(2000),log(3))
+> })
+>
+> par <- c("beta")
+>
+> Init <- list("beta"=2000)
+>
+> fit.nim <- nimbleMCMC(
+>   modelA,
+>   constants = list(m = m, u = u),    ## NEW
+>   data = list(M = M),                ## NEW
+>   inits = Init,                      ## NEW
+>   monitors=par,
+>   thin = 1,
+>   niter = 1E+5,
+>   nburnin = 0,
+>   nchains = 1,
+>   check = TRUE,
+>   setSeed = FALSE,
+>   progressBar = getNimbleOption("MCMCprogressBar"),
+>   samples = TRUE,
+>   samplesAsCodaMCMC = TRUE,
+>   summary = TRUE,
+>   WAIC = FALSE
+> )
+>
+> On Fri, Aug 30, 2019 at 2:12 PM tom labone <labon...@gmail.com> wrote:
+> > The following example runs fine with JAGS but generates errors with Nimble. Can anyone point out what I am doing wrong? Thanks.
+> >
+> >
+> > M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+> >        336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+> >        196,199,198,172,153,165,157,132,99
+> > )
+> >
+> > u <- 0.035 * M
+> >
+> > m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+> >        0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+> >        0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+> >        0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+> >        0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+> >        0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+> >        0.10140678, 0.09963913, 0.07657229, 0.06314739
+> > )
+> >
+> >
+> > library(R2jags)
+> >
+> > jagsdat <- data.frame(M=M,m=m,u=u)
+> >
+> > modelA <- function() {
+> >   for (i in 1:37) {
+> >     M[i] ~ dnorm(mu[i],tau[i])
+> >     mu[i] <- beta*m[i]
+> >     tau[i] <- pow(u[i],-2)
+> >   }
+> >   beta ~ dlnorm(log(2000),log(3))
+> > }
+> >
+> > par <- c("beta")
+> >
+> > start <- list(list("beta"=2000))
+> >
+> > fit.jags <- jags(
+> >   data=jagsdat,
+> >   inits=start,
+> >   parameters.to.save=par,
+> >   n.chains=1,
+> >   n.iter=1E+5,
+> >   n.burnin=5000,
+> >   model.file=modelA,
+> >   n.thin=1
+> > )
+> >
+> >
+> > library(nimble)
+> >
+> > Idata <- list(
+> >   M = M,
+> >   u = u,
+> >   m = m
+> > )
+> >
+> > modelA <- nimbleCode( {
+> >   for (i in 1:37) {
+> >     M[i] ~ dnorm(mu[i],u[i])
+> >     mu[i] <- beta*m[i]
+> >   }
+> >   beta ~ dlnorm(log(2000),log(3))
+> > })
+> >
+> > par <- c("beta")
+> >
+> > Init <- list("beta"=2000)
+> >
+> > fit.nim <- nimbleMCMC(
+> >   modelA,
+> >   monitors=par,
+> >   thin = 1,
+> >   niter = 1E+5,
+> >   nburnin = 0,
+> >   nchains = 1,
+> >   check = TRUE,
+> >   setSeed = FALSE,
+> >   progressBar = getNimbleOption("MCMCprogressBar"),
+> >   samples = TRUE,
+> >   samplesAsCodaMCMC = TRUE,
+> >   summary = TRUE,
+> >   WAIC = FALSE
+> > )
+> >
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAEOJdLWNUpWzuWYLoKGYqDc9_9smpkiSXnHhkQvkUYEDzBWF6g%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAEOJdLWNUpWzuWYLoKGYqDc9_9smpkiSXnHhkQvkUYEDzBWF6g%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Sat Aug 31 13:39:43 2019
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Sat, 31 Aug 2019 13:39:43 +0000
+Subject: Re: Simple Code Runs in JAGS but not in Nimble
+Message-ID: <GhRLyxqQYGI.skXFwI-7BgAJ@nimble-users.groups.google.com>
+In-Reply-To: <GhRLyxqQYGI.OIH-Lm-yBgAJ@nimble-users.groups.google.com>
+References: <GhRLyxqQYGI.M7ARoTNoBgAJ@nimble-users.groups.google.com> <GhRLyxqQYGI.OIH-Lm-yBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/GhRLyxqQYGI/m/skXFwI-7BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It looks like you want Q*u[i] to be the standard deviation.  In JAGS, you create tau = precision = 1/(Q*u[i])^2.  In nimble it looks like you are using Q*u[i] and expecting it to be standard deviation.
+
+nimble uses the same default parameterization as BUGS/JAGS, not R.  It does extend BUGS/JAGS by supporting alternative parameterizations via named parameters. Therefore the models you've used are not the same.  In nimble you are saying precision = Q*u[i].  It looks like what you intend is
+
+M[i] ~ dnorm(mu[i], sd = Q*u[i])
+
+Distributions and parameterizations are described in the nimble User Manual available at r-nimble.org <http://r-nimble.org>.
+
+-Perry
+
+On Sat, Aug 31, 2019 at 3:52 AM tom labone <labon...@gmail.com> wrote:
+
+> Thank you. If I had paid close enough attention I should have caught that. Hopefully this will be a more worthy question: The above code is cleaned up and expanded to include a truncated normal prior on a new parameter Q. JAGS and Stan both return a value of around 1.78 but Nimble gives me 1, which is the lower limit of the truncated normal. I suspect that I am not expressing the truncated normal properly in Nimble, but I can't identify the error. Note that I am using R3.6.1 on a Linux 19.2 machine with the most current versions of JAGS, Stan, and Nimble.
+>
+> ###############################################################################
+>
+> M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+>        336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+>        196,199,198,172,153,165,157,132,99
+> )
+>
+> u <- 0.035 * M
+>
+> m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+>        0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+>        0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+>        0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+>        0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+>        0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+>        0.10140678, 0.09963913, 0.07657229, 0.06314739
+> )
+>
+> ###############################################################################
+>
+> library(R2jags)
+>
+> modelA <- function() {
+>   for (i in 1:37) {
+>     M[i] ~ dnorm(mu[i],tau[i])
+>     mu[i] <- beta*m[i]
+>     tau[i] <- pow(Q*u[i],-2)}
+>   beta ~ dlnorm(log(2000),log(3))
+>   Q ~ dnorm(1,1) ; T(1,)
+> }
+>
+> fit.jags <- jags(
+>   data=data.frame(M=M,m=m,u=u),
+>   inits=list(list("beta"=2000,"Q"=2)),
+>   parameters.to.save=c("beta","Q"),
+>   n.chains=1,
+>   n.iter=1E+5,
+>   n.burnin=5000,
+>   model.file=modelA,
+>   n.thin=1
+> )
+> fit.jags
+>
+> ###############################################################################
+>
+> library(nimble)
+>
+> modelB <- nimbleCode( {
+>   for (i in 1:37) {
+>     M[i] ~ dnorm(mu[i],Q*u[i])
+>     mu[i] <- beta*m[i]
+>   }
+>   beta ~ dlnorm(log(2000),log(3))
+>   Q ~ T(dnorm(1,1),1,)
+> })
+>
+> fit.nim <- nimbleMCMC(
+>   modelB,
+>   monitors=c("beta","Q"),
+>   inits=list("beta"=2000,"Q"=2),
+>   constants=list(m=m,u=u),
+>   data=list(M=M),
+>   thin = 1,
+>   niter = 1E+5,
+>   nburnin = 0,
+>   nchains = 1,
+>   check = TRUE,
+>   setSeed = FALSE,
+>   progressBar = getNimbleOption("MCMCprogressBar"),
+>   samples = TRUE,
+>   samplesAsCodaMCMC = TRUE,
+>   summary = TRUE,
+>   WAIC = FALSE
+> )
+>
+> fit.nim$summary
+>
+> On Fri, Aug 30, 2019 at 8:31 AM Daniel Turek <db...@williams.edu> wrote:
+> > Good question.  I appears like you didn't provide the model "constants" (right-hand-side fixed constants, in this case "m" and "u"), or the model "data" (in this case, looks like "M"), or the initial values list which you defined (Init) to the nimbleMCMC() call.  Without those values, the "model" being used in the MCMC is essentially a graphical structure with placeholders to hold all these values, but it will not find (or populate) the actual values into the model from scoping of of the variables you created in the R global environment.  Rather, you get to explicitly provide those to calls such as nimbleModel, or in your case, nimbleMCMC.
+> >
+> > I've added those few lines below (commented with "NEW"), and it seems to run without a hitch.
+> >
+> > Keep us posted if this works for you, and thanks for your use of NIMBLE.
+> >
+> >
+> > M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+> >        336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+> >        196,199,198,172,153,165,157,132,99
+> > )
+> >
+> > u <- 0.035 * M
+> >
+> > m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+> >        0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+> >        0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+> >        0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+> >        0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+> >        0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+> >        0.10140678, 0.09963913, 0.07657229, 0.06314739
+> > )
+> >
+> >
+> > library(nimble)
+> >
+> >
+> > modelA <- nimbleCode( {
+> >   for (i in 1:37) {
+> >     M[i] ~ dnorm(mu[i],u[i])
+> >     mu[i] <- beta*m[i]
+> >   }
+> >   beta ~ dlnorm(log(2000),log(3))
+> > })
+> >
+> > par <- c("beta")
+> >
+> > Init <- list("beta"=2000)
+> >
+> > fit.nim <- nimbleMCMC(
+> >   modelA,
+> >   constants = list(m = m, u = u),    ## NEW
+> >   data = list(M = M),                ## NEW
+> >   inits = Init,                      ## NEW
+> >   monitors=par,
+> >   thin = 1,
+> >   niter = 1E+5,
+> >   nburnin = 0,
+> >   nchains = 1,
+> >   check = TRUE,
+> >   setSeed = FALSE,
+> >   progressBar = getNimbleOption("MCMCprogressBar"),
+> >   samples = TRUE,
+> >   samplesAsCodaMCMC = TRUE,
+> >   summary = TRUE,
+> >   WAIC = FALSE
+> > )
+> >
+> > On Fri, Aug 30, 2019 at 2:12 PM tom labone <labon...@gmail.com> wrote:
+> > > The following example runs fine with JAGS but generates errors with Nimble. Can anyone point out what I am doing wrong? Thanks.
+> > >
+> > >
+> > > M <- c(478,484,462,507,496,498,446,409,438,409,374,355,345,
+> > >        336,338,320,315,297,306,278,264,230,253,240,238,196,193,184,
+> > >        196,199,198,172,153,165,157,132,99
+> > > )
+> > >
+> > > u <- 0.035 * M
+> > >
+> > > m <- c(0.30850690, 0.30772010, 0.30680934, 0.28516078, 0.27964722, 0.27834434,
+> > >        0.26891796, 0.24924162, 0.24457801, 0.23979401, 0.23556186,
+> > >        0.21868168, 0.21468435, 0.21077073, 0.20693837, 0.19237601, 0.18891670,
+> > >        0.18552603, 0.17261481, 0.16954175, 0.16652757, 0.15229209,
+> > >        0.14960320, 0.14696430, 0.14437428, 0.13933664, 0.12980318, 0.12752724,
+> > >        0.11674930, 0.11470851, 0.11270424, 0.10503833, 0.10320631,
+> > >        0.10140678, 0.09963913, 0.07657229, 0.06314739
+> > > )
+> > >
+> > >
+> > > library(R2jags)
+> > >
+> > > jagsdat <- data.frame(M=M,m=m,u=u)
+> > >
+> > > modelA <- function() {
+> > >   for (i in 1:37) {
+> > >     M[i] ~ dnorm(mu[i],tau[i])
+> > >     mu[i] <- beta*m[i]
+> > >     tau[i] <- pow(u[i],-2)
+> > >   }
+> > >   beta ~ dlnorm(log(2000),log(3))
+> > > }
+> > >
+> > > par <- c("beta")
+> > >
+> > > start <- list(list("beta"=2000))
+> > >
+> > > fit.jags <- jags(
+> > >   data=jagsdat,
+> > >   inits=start,
+> > >   parameters.to.save=par,
+> > >   n.chains=1,
+> > >   n.iter=1E+5,
+> > >   n.burnin=5000,
+> > >   model.file=modelA,
+> > >   n.thin=1
+> > > )
+> > >
+> > >
+> > > library(nimble)
+> > >
+> > > Idata <- list(
+> > >   M = M,
+> > >   u = u,
+> > >   m = m
+> > > )
+> > >
+> > > modelA <- nimbleCode( {
+> > >   for (i in 1:37) {
+> > >     M[i] ~ dnorm(mu[i],u[i])
+> > >     mu[i] <- beta*m[i]
+> > >   }
+> > >   beta ~ dlnorm(log(2000),log(3))
+> > > })
+> > >
+> > > par <- c("beta")
+> > >
+> > > Init <- list("beta"=2000)
+> > >
+> > > fit.nim <- nimbleMCMC(
+> > >   modelA,
+> > >   monitors=par,
+> > >   thin = 1,
+> > >   niter = 1E+5,
+> > >   nburnin = 0,
+> > >   nchains = 1,
+> > >   check = TRUE,
+> > >   setSeed = FALSE,
+> > >   progressBar = getNimbleOption("MCMCprogressBar"),
+> > >   samples = TRUE,
+> > >   samplesAsCodaMCMC = TRUE,
+> > >   summary = TRUE,
+> > >   WAIC = FALSE
+> > > )
+> > >
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAEOJdLWNUpWzuWYLoKGYqDc9_9smpkiSXnHhkQvkUYEDzBWF6g%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAEOJdLWNUpWzuWYLoKGYqDc9_9smpkiSXnHhkQvkUYEDzBWF6g%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAEOJdLXsshSF0Ca6Jwrjo5zeppr29ZYq8-hppGqaJqjhOopF8w%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAEOJdLXsshSF0Ca6Jwrjo5zeppr29ZYq8-hppGqaJqjhOopF8w%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Sat Aug 31 15:54:52 2019
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Sat, 31 Aug 2019 15:54:52 +0000
+Subject: Re: segfault with nimArray
+Message-ID: <Xsjt9axTwok.L1wr6O_CBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <Xsjt9axTwok.ACoe8StlAAAJ@nimble-users.groups.google.com>
+References: <Xsjt9axTwok.ACoe8StlAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Xsjt9axTwok/m/L1wr6O_CBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi David,
+
+I simplified your initialization of the array and this should work:
+
+        output <- nimArray(dim=c(nRunParcels, ndays+1, nstates))
+
+Note that nDim shouldn't be needed as the compiler can determine there are three dimensions at compile time.
+
+That said I didn't look deeply enough to figure out what the error was. I'll file a bug report so one of us can
+look more deeply when time permits.
+
+Chris
+
+On Fri, Aug 30, 2019 at 2:15 AM 'David Pleydell' via nimble-users <nimble...@googlegroups.com> wrote:
+
+> Hi
+>
+> I'm getting segfaults when trying to assign values to a 3D nimArray. A short reproducible example is attached.
+>
+> I've the latest CRAN version of Nimble, on R 3.4.4, on Ubuntu.
+>
+> Any hints as to what is causing this?
+>
+> Best
+> David
+>
+>
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/b4356696-2821-4788-b29a-87001b5b08dc%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/b4356696-2821-4788-b29a-87001b5b08dc%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
