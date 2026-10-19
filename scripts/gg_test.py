@@ -86,6 +86,17 @@ class ParseListing(unittest.TestCase):
         self.assertEqual(total, 413)
         self.assertEqual(sorted(listed), [("P1", 1, "2017-07-14T02:40:00Z"), ("T9", 7, "2020-09-13T12:26:40Z")])
 
+    def test_a_list_that_google_itself_ends_short_of_its_count_is_complete(self):
+        # stan-users: Google counts 4100 and its last page shows 4081–4089.
+        self.assertTrue(gg.google_ran_out(4092, "1–30 of 4100", "4081–4089 of 4100"))
+        self.assertTrue(gg.google_ran_out(4089, "1–30 of 4,100", "4,081–4,089 of 4,100"))
+        # A full last page, or rows numbered but not read, is a list cut short.
+        self.assertFalse(gg.google_ran_out(4080, "1–30 of 4100", "4051–4080 of 4100"))
+        self.assertFalse(gg.google_ran_out(4000, "1–30 of 4100", "4081–4089 of 4100"))
+        # One page, or a page that said nothing: no way to tell.
+        self.assertFalse(gg.google_ran_out(9, "1–9 of 12", "1–9 of 12"))
+        self.assertFalse(gg.google_ran_out(9, "", ""))
+
     def test_only_a_link_into_the_group_is_a_conversation(self):
         # shinyapps-users' welcome text links to a forum category at /c/shiny.
         self.assertEqual(gg.thread_from_href("shinyapps-users", "./g/shinyapps-users/c/NakBajSs_4A"), "NakBajSs_4A")
@@ -284,6 +295,26 @@ class Addresses(unittest.TestCase):
                     gg.cmd_check("all")
                 self.assertTrue(stop.exception.code)
                 self.assertNotIn("al.smith", sys.stderr.getvalue() + str(stop.exception.code))
+            finally:
+                sys.stderr = err
+                os.chdir(cwd)
+
+    def test_the_check_names_the_field_of_a_whole_address_but_not_the_address(self):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            err, sys.stderr = sys.stderr, __import__("io").StringIO()
+            try:
+                os.makedirs("grp/processed")
+                with open("grp/config.json", "w") as f:
+                    json.dump({"list": "grp"}, f)
+                with open("grp/processed/2020-09.json", "w") as f:
+                    json.dump([{"from_name": "Al", "body_plain": "mail al.smith@example.org\n@app.route('/')"}], f)
+                with self.assertRaises(SystemExit):
+                    gg.cmd_check("grp")
+                said = sys.stderr.getvalue()
+                self.assertIn("grp/processed/2020-09.json: 2 whole addresses (body_plain 1, 1 only in the file's escaped text)", said)
+                self.assertNotIn("al.smith", said)
             finally:
                 sys.stderr = err
                 os.chdir(cwd)

@@ -237,6 +237,7 @@ def cmd_list(group):
     from playwright.sync_api import sync_playwright
 
     ids, total, gname = [], None, google_name(group)
+    first_shown = last_shown = ""
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(user_agent=UA, locale="en-US")
@@ -250,6 +251,7 @@ def cmd_list(group):
             m = re.search(r"of ([\d,]+)", shown)
             if m:
                 total = int(m.group(1).replace(",", ""))
+            first_shown, last_shown = first_shown or shown, shown or last_shown
             print(f"  {shown or '?'}: {len(ids)} conversations so far", file=sys.stderr)
             button = page.query_selector("div[aria-label='Next page']")
             if not button or button.get_attribute("aria-disabled") == "true":
@@ -267,7 +269,27 @@ def cmd_list(group):
     write_threads(group, merged)
     print(f"{group}: {len(ids)} conversations listed, the group says {total}; {len(merged)} in threads.txt")
     if total is not None and len(ids) < total:
-        sys.exit(f"{group}: the list ended before the count the group gives")
+        if not google_ran_out(len(ids), first_shown, last_shown):
+            sys.exit(f"{group}: the list ended before the count the group gives")
+        print(f"{group}: Google's own list ends there ({last_shown}); "
+              "it counts conversations it shows no one signed out")
+
+
+def shown_rows(shown):
+    """The first and last row a page of the list says it shows, from its
+    "1–30 of 4100", or None."""
+    m = re.search(r"([\d,]+)\s*[–-]\s*([\d,]+) of", shown or "")
+    return tuple(int(x.replace(",", "")) for x in m.groups()) if m else None
+
+
+def google_ran_out(listed, first_shown, last_shown):
+    """Whether a list that stopped short of the group's count stopped
+    because Google had no more to show: its last page is only part full,
+    and every row it numbered was read."""
+    first, last = shown_rows(first_shown), shown_rows(last_shown)
+    if not first or not last or last == first:
+        return False
+    return last[1] - last[0] < first[1] - first[0] and listed >= last[1]
 
 
 def cmd_fetch(group, everything):
@@ -531,6 +553,40 @@ def cmd_scrub(group):
         print(f"{group}: addresses cut in {changed} conversations", file=sys.stderr)
 
 
+def json_fields(value, key=""):
+    """(field, text) for every string in a decoded JSON value."""
+    if isinstance(value, str):
+        yield key, value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            yield from json_fields(v, k)
+    elif isinstance(value, list):
+        for v in value:
+            yield from json_fields(v, key)
+
+
+def fields_holding_addresses(text):
+    """Which fields of a JSON file hold its whole addresses, by name and
+    count, for the check to say where they are without saying what they
+    are. Those found only in the file's text, and not in any field once it
+    is decoded, are counted apart: an escape such as \\n can join a word to
+    what follows it."""
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return ""
+    counts = {}
+    for field, s in json_fields(value):
+        n = whole_addresses(s)
+        if n:
+            counts[field or "(value)"] = counts.get(field or "(value)", 0) + n
+    parts = [f"{field} {n}" for field, n in sorted(counts.items())]
+    escaped = whole_addresses(text) - sum(counts.values())
+    if escaped > 0:
+        parts.append(f"{escaped} only in the file's escaped text")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
 def cmd_check(group):
     """Stop if any file about to be published holds a whole address. It
     says where, never what: the run's log is public."""
@@ -543,9 +599,11 @@ def cmd_check(group):
     found = 0
     for path in paths:
         with open(path, encoding="utf-8", errors="replace") as f:
-            n = whole_addresses(f.read())
+            text = f.read()
+        n = whole_addresses(text)
         if n:
-            print(f"{path}: {n} whole addresses", file=sys.stderr)
+            where = fields_holding_addresses(text) if path.endswith(".json") else ""
+            print(f"{path}: {n} whole addresses{where}", file=sys.stderr)
             found += n
     if found:
         sys.exit(f"check: {found} whole addresses; nothing is published until they are cut")

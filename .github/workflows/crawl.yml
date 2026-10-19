@@ -126,28 +126,53 @@ jobs:
         env:
           ALIASES: aliases.json
 
-      # Nothing is committed if a whole address got through.
+      # Nothing made from the conversations is committed if a whole address
+      # got through. The check says in which file and field, never what.
       - name: Check for addresses
+        id: check
+        continue-on-error: true
         run: python3 -I scripts/gg.py check "$GROUP"
 
+      # When the check fails, the conversations as fetched are still kept,
+      # once they pass the check by themselves: fetching them took hours.
+      # threads.txt stays out, so that the daily run, which parses every
+      # listed group, passes this one over until it is crawled again; that
+      # run lists it anew and finds every conversation already stored.
       - name: Commit the group
         env:
           MISSING: ${{ steps.fetch.outputs.missing }}
           LISTED: ${{ steps.fetch.outputs.listed }}
+          CHECK: ${{ steps.check.outcome }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -- "$GROUP"
+          if [ "$CHECK" = success ]; then
+            git add -- "$GROUP"
+            message="chore: crawl $GROUP"
+          else
+            python3 -I scripts/gg.py check "$GROUP/source"
+            git add -- "$GROUP/source"
+            message="chore: crawl $GROUP (conversations only)"
+          fi
           if git diff --staged --quiet; then
             echo "Nothing new for $GROUP"
+            if [ "$CHECK" != success ]; then
+              echo "::error::$GROUP: the address check failed (see that step)"
+              exit 1
+            fi
             exit 0
           fi
-          git commit -q -m "chore: crawl $GROUP"
+          git commit -q -m "$message"
           for try in 1 2 3 4 5; do
             git pull -q --rebase --autostash origin main && git push -q origin HEAD:main && break
             sleep $((try * 20))
           done
           echo "$GROUP: $((LISTED - MISSING)) of $LISTED conversations stored" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CHECK" != success ]; then
+            echo "$GROUP: the address check failed; only the conversations were committed" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$GROUP: the address check failed (see that step); the conversations are kept, the rest waits for a fix"
+            exit 1
+          fi
           if [ "$MISSING" -gt 0 ]; then
             echo "::warning::$GROUP: $MISSING conversations still missing; run this again for the group"
           fi
