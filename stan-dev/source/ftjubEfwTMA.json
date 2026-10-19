@@ -1,0 +1,263 @@
+{
+ "thread": "ftjubEfwTMA",
+ "subject": "unfolding 2nd/3rd-order auto-diff",
+ "messages_listed": 11,
+ "last_activity": "2013-12-23T17:16:51Z",
+ "messages": [
+  {
+   "id": "NkaTw0Sd_GIJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-12-13T23:27:27Z",
+   "subject": "unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     1,
+     "Michael wants to speed up the 2nd and 3rd order auto-diff\r<br>types fvar&lt;var&gt; and fvar&lt;fvar&lt;var&gt; &gt; that we need for RHMC.\r<br>(We also need fvar&lt;var&gt; for Hessian calcs.)\r<br>\r<br>The only way I see to do that is by unfolding (partially\r<br>evaluating) the derivatives that we&#39;d get by brute-force\r<br>auto-diff.\r<br>\r<br>I&#39;m going to use exp(x) as an example.  Binary ops go the same\r<br>way, but with twice as many input terms.\r<br>\r<br>2nd Order\r<br>---------\r<br>\r<br>Here&#39;s how exp() looks in agrad/fwd:\r<br>\r<br>   template &lt;typename T&gt;\r<br>   inline\r<br>   fvar&lt;T&gt; exp(const fvar&lt;T&gt;&amp; x) {\r<br>     return fvar&lt;T&gt;(exp(x.val_), x.d_ * exp(x.val_));\r<br>   }\r<br>\r<br>This would be better coded without the duplicated exp() application as:\r<br>\r<br>   template &lt;typename T&gt;\r<br>   inline\r<br>   fvar&lt;T&gt; exp(const fvar&lt;T&gt;&amp; x) {\r<br>     T exp_x_v = exp(x.val_);\r<br>     return fvar&lt;T&gt;(exp_x_v, x.d_ * exp_x_v);\r<br>   }\r<br>\r<br>Instantiating with T=var in the second-order case yields\r<br>\r<br>   inline\r<br>   fvar&lt;var&gt; exp(const fvar&lt;var&gt;&amp; x) {\r<br>     var exp_x_v = exp(x.val_);\r<br>     return fvar&lt;var&gt;(exp_x_v,\r<br>                      x.d_ * exp_x_v);\r<br>   }\r<br>\r<br>Given that we have good implementations of exp(var) and (var * var),\r<br>I don&#39;t see how this could be sped up at all.\r<br>\r<br>\r<br>3rd Order\r<br>---------\r<br>\r<br>Instantiating T to fvar&lt;var&gt; in the templated implementation of exp(),\r<br>we get:\r<br>\r<br>\r<br>   inline\r<br>   fvar&lt;fvar&lt;var&gt; &gt; exp(const fvar&lt;fvar&lt;var&gt; &gt;&amp; x) {\r<br>     return fvar&lt;fvar&lt;var&gt; &gt;(exp(x.val_), x.d_ * exp(x.val_));\r<br>   }\r<br>\r<br>The key to going further is to unfold x into its value and tangent\r<br>components:\r<br>\r<br>   (a,b) = (x.val_, x.d_)\r<br>\r<br>for which the types of a and b are fvar&lt;var&gt;, so themselves can\r<br>be unfolded into value and tangent components:\r<br>\r<br>   a = (c,d) = (x.val_.val_, x.val_.d_)\r<br>   b = (e,f) = (x.d_.val_, x.d_.d_)\r<br>\r<br>The types of c, d, e, and f are var.\r<br>\r<br>Then you need to plug in and evaluate, which I find easier to\r<br>do in brackets notation:\r<br>\r<br>    exp([(c,d),(e,f)])                   // 3rd order op\r<br>\r<br>    =  [exp(c,d), (e,f) * exp(c,d)]      // 2nd order ops\r<br>\r<br>    =  [( exp(c),                        // 1st order ops\r<br>          d * exp(c) ),\r<br>        ( e * exp(c),\r<br>          e * exp(c) * d + f * exp(c) ) ]\r<br>\r<br>Thus we can write out the specialization to fvar&lt;fvar&lt;var&gt; &gt; as:\r<br>\r<br>   inline\r<br>   fvar&lt;fvar&lt;var&gt; &gt; exp(const fvar&lt;fvar&lt;var&gt; &gt;&amp; x) {\r<br>     var c = x.val_.val_;\r<br>     var d = x.val_.d_;\r<br>     var e = x.d_.val_;\r<br>     var f = x.d_.d_;\r<br>     var exp_c = exp(c);\r<br>     var e_times_exp_c = e * exp_c;\r<br>     return fvar&lt;fvar&lt;var&gt; &gt;(fvar&lt;var&gt;(exp_c,\r<br>                                       d * exp_c),\r<br>                             fvar&lt;var&gt;(e_times_exp_c,\r<br>                                       e_times_exp_c * d + f * exp_c));\r<br>   }\r<br>\r<br>Everything from the template instantiation should get inlined\r<br>and essentially produce code equal to the above (I think --- I may\r<br>be missing something that&#39;d get calculated twice).  It&#39;s hard\r<br>to predict compiler behavior, so maybe it&#39;d be better to write\r<br>it out explicitly anyway.  I&#39;m not sure if it&#39;d be easier to read by\r<br>renaming variables c to vv, d to vd, e to dv, and f to dd.\r<br>\r<br>Also, we don&#39;t really need the e and f temps as they don&#39;t get reused.\r<br>\r<br>The only speedup I can see helping on top of this is to write\r<br>a custom vari extension for:\r<br>\r<br>   foo(u,v,w,x) = u * v + w * x\r<br>\r<br>This would be substantially faster than evaluating the expression in\r<br>the last line of (6), which puts three expressions on the expression\r<br>tree and requires three virtual calls instead of one.  We only need the\r<br>function for var inputs here, so we might as well just implement the\r<br>vari specialization directly instead of the function.  No need to expose\r<br>this 2D dot-product function in the Stan language itself.\r<br>\r<br>exp() is relatively easy.  But we can work on a few functions at a time\r<br>because it&#39;s only adding speed, not functionality.\r<br>\r<br>The test should be of all four values (c,d,e,f) and their derivatives\r<br>against the explicit template specialization.  But I&#39;m not sure how we\r<br>can force the compiler to use the less specialized function for one call and\r<br>the more specialized one for another if they&#39;re in the same namespace.\r<br>Anyone know how to do that?  See:\r<br>\r<br>   <a href=\"http://stackoverflow.com/questions/6674795/how-to-call-generic-template-function-in-a-specialization-version\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://stackoverflow.com/questions/6674795/how-to-call-generic-template-function-in-a-specialization-version&amp;source=gmail&amp;ust=1792475283265000&amp;usg=AOvVaw2n8lSpzr5uSGc73lRyyFch\">http://stackoverflow.com/questions/6674795/how-to-call-generic-template-function-in-a-specialization-version</a>\r<br>\r<br>So I think that&#39;s going to make testing really painful, too, because\r<br>it&#39;ll require copying the template definition into new name for testing\r<br>against the specialization.\r<br>\r<br>If that&#39;s still not clear, I can write the exp() specialization for\r<br>fvar&lt;fvar&lt;var&gt; &gt; and test it.  Daniel, if I do that, where do you think\r<br>it should go --- we have agrad/fwd and agrad/rev, so I&#39;m thinking\r<br>agrad/fwd_rev and agrad/fwd_rev_rev respectively.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "F_U8VEBybhwJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2013-12-21T22:23:20Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     2,
+     "&gt; This would be better coded without the duplicated exp() application as:\r<br>&gt; \r<br>&gt;  template &lt;typename T&gt;\r<br>&gt;  inline\r<br>&gt;  fvar&lt;T&gt; exp(const fvar&lt;T&gt;&amp; x) {\r<br>&gt;    T exp_x_v = exp(x.val_);\r<br>&gt;    return fvar&lt;T&gt;(exp_x_v, x.d_ * exp_x_v);\r<br>&gt;  }\r<br>&gt; \r<br>&gt; Instantiating with T=var in the second-order case yields\r<br>&gt; \r<br>&gt;  inline\r<br>&gt;  fvar&lt;var&gt; exp(const fvar&lt;var&gt;&amp; x) {\r<br>&gt;    var exp_x_v = exp(x.val_);\r<br>&gt;    return fvar&lt;var&gt;(exp_x_v,\r<br>&gt;                     x.d_ * exp_x_v);\r<br>&gt;  }\r<br>&gt; \r<br>&gt; Given that we have good implementations of exp(var) and (var * var),\r<br>&gt; I don&#39;t see how this could be sped up at all.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "But given the more efficient generic implementation above\r<br>this specialization wouldn&#39;t add much, right?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; The only speedup I can see helping on top of this is to write\r<br>&gt; a custom vari extension for:\r<br>&gt; \r<br>&gt;  foo(u,v,w,x) = u * v + w * x\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Is this an actual four-argument function or some kind of expression template?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; So I think that&#39;s going to make testing really painful, too, because\r<br>&gt; it&#39;ll require copying the template definition into new name for testing\r<br>&gt; against the specialization.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Why don&#39;t we just test against finite-diffs?  I think we can take the factor of 2 hit\r<br>in performance if we&#39;re just running tests.\r<br>\r<br>When Dan and I were going through this we also talked about the adjoint values\r<br>in the vars.  If we were really slick then we could compute those in the specialization\r<br>and then specialize the chainable call to use them.  Thoughts on this added step?\r<br>Sorry for taking so long, but I think I&#39;m finally ready to sit down and run through a few\r<br>of these once we&#39;ve decided on the full approach.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "wAHeP75ObeoJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-12-21T22:59:03Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\">On Saturday, December 21, 2013 5:23:20 PM UTC-5, Michael Betancourt wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">&gt; So I think that&#39;s going to make testing really painful, too, because\n<br>&gt; it&#39;ll require copying the template definition into new name for testing\n<br>&gt; against the specialization.\n<br>\n<br>Why don&#39;t we just test against finite-diffs?  I think we can take the factor of 2 hit\n<br>in performance if we&#39;re just running tests.\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>and / or we should have for each distribution:<br><br>-- draw many realizations from that distribution with given parameters<br>-- calculate the gradient and Hessian at those parameters<br>-- do a score test <br><br>That would test the prng, the gradient, Hessian, and the gradient * Hessian<br><br>Ben<br><br></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "f_BQ5LQjz6UJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-12-22T01:02:41Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 12/21/13, 5:23 PM, Michael Betancourt wrote:\r<br>&gt;&gt; This would be better coded without the duplicated exp() application as:\r<br>&gt;&gt;\r<br>&gt;&gt;   template &lt;typename T&gt;\r<br>&gt;&gt;   inline\r<br>&gt;&gt;   fvar&lt;T&gt; exp(const fvar&lt;T&gt;&amp; x) {\r<br>&gt;&gt;     T exp_x_v = exp(x.val_);\r<br>&gt;&gt;     return fvar&lt;T&gt;(exp_x_v, x.d_ * exp_x_v);\r<br>&gt;&gt;   }\r<br>&gt;&gt;\r<br>&gt;&gt; Instantiating with T=var in the second-order case yields\r<br>&gt;&gt;\r<br>&gt;&gt;   inline\r<br>&gt;&gt;   fvar&lt;var&gt; exp(const fvar&lt;var&gt;&amp; x) {\r<br>&gt;&gt;     var exp_x_v = exp(x.val_);\r<br>&gt;&gt;     return fvar&lt;var&gt;(exp_x_v,\r<br>&gt;&gt;                      x.d_ * exp_x_v);\r<br>&gt;&gt;   }\r<br>&gt;&gt;\r<br>&gt;&gt; Given that we have good implementations of exp(var) and (var * var),\r<br>&gt;&gt; I don&#39;t see how this could be sped up at all.\r<br>&gt;\r<br>&gt; But given the more efficient generic implementation above\r<br>&gt; this specialization wouldn&#39;t add much, right?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Correct.\r<br>\r<br>But in other functions, the expression might not be so simple\r<br>and it might be worth writing something custom for the tangent\r<br>value of the fvar.  The actual value should already have our best\r<br>reverse-mode implementation.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;&gt; The only speedup I can see helping on top of this is to write\r<br>&gt;&gt; a custom vari extension for:\r<br>&gt;&gt;\r<br>&gt;&gt;   foo(u,v,w,x) = u * v + w * x\r<br>&gt;\r<br>&gt; Is this an actual four-argument function or some kind of expression template?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "We don&#39;t have the template metaprogramming mechanisms\r<br>in place to evaluate fvar expression templates, so just an inlined\r<br>function.  It might be worth thinking about moving to expression\r<br>templates.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;&gt; So I think that&#39;s going to make testing really painful, too, because\r<br>&gt;&gt; it&#39;ll require copying the template definition into new name for testing\r<br>&gt;&gt; against the specialization.\r<br>&gt;\r<br>&gt; Why don&#39;t we just test against finite-diffs?  I think we can take the factor of 2 hit\r<br>&gt; in performance if we&#39;re just running tests.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That makes sense.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; When Dan and I were going through this we also talked about the adjoint values\r<br>&gt; in the vars.  If we were really slick then we could compute those in the specialization\r<br>&gt; and then specialize the chainable call to use them.  Thoughts on this added step?\r<br>&gt; Sorry for taking so long, but I think I&#39;m finally ready to sit down and run through a few\r<br>&gt; of these once we&#39;ve decided on the full approach.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "This would just be a precalculated vari implementation.  You\r<br>can use the existing precomputed adjoint value implementation\r<br>of vari.  Well, I only see precomp_v_vari now in /agrad/rev/internal/.\r<br>I was thinking of something like operators and partials only more\r<br>lightweight and with a fixed number of pre-built derivatives.\r<br>\r<br>You could go even further and have one of the vari compute all of\r<br>the adjoint passing, but that&#39;s a lot harder to code and get right.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Mrg5TSTueYsJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2013-12-22T17:37:16Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     1,
+     "Let me rephrase my question -- why does the fvar&lt;fvar&lt;var&gt; specialization just\r<br>create and then fill the fvar&lt;var&gt; and not the value/adjoint of the four underlying vars?\r<br>It is straightforward to compute everything for the vars -- is there an autodiff limitation?\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Dec 21, 2013, at 8:02 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>\r<br>&gt;&gt; When Dan and I were going through this we also talked about the adjoint values\r<br>&gt;&gt; in the vars.  If we were really slick then we could compute those in the specialization\r<br>&gt;&gt; and then specialize the chainable call to use them.  Thoughts on this added step?\r<br>&gt;&gt; Sorry for taking so long, but I think I&#39;m finally ready to sit down and run through a few\r<br>&gt;&gt; of these once we&#39;ve decided on the full approach.\r<br>&gt; \r<br>&gt; This would just be a precalculated vari implementation.  You\r<br>&gt; can use the existing precomputed adjoint value implementation\r<br>&gt; of vari.  Well, I only see precomp_v_vari now in /agrad/rev/internal/.\r<br>&gt; I was thinking of something like operators and partials only more\r<br>&gt; lightweight and with a fixed number of pre-built derivatives.\r<br>&gt; \r<br>&gt; You could go even further and have one of the vari compute all of\r<br>&gt; the adjoint passing, but that&#39;s a lot harder to code and get right.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "kNjV_tTZt7cJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-12-22T23:23:28Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 12/22/13, 12:37 PM, Michael Betancourt wrote:\r<br>&gt; Let me rephrase my question -- why does the fvar&lt;fvar&lt;var&gt; specialization just\r<br>&gt; create and then fill the fvar&lt;var&gt; and not the value/adjoint of the four underlying vars?\r<br>&gt; It is straightforward to compute everything for the vars -- is there an autodiff limitation?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "You need an underlying vari class for the four underlying\r<br>vars.  Given that, you can fill in whatever you want.\r<br>In my example, all four vari were computed at once and then\r<br>built out and returned.  I like to think of it this way:\r<br>\r<br>   exp([(a,b),(c,d)] = [(e,f),(g,h)]\r<br>\r<br>Each of the a,b,c,d are input var (underlyingly the vari is\r<br>what matters) and e,f,g,h are output vars.\r<br>\r<br>In code, the general pattern is this:\r<br>\r<br>    inline fvar&lt;fvar&lt;var&gt; &gt;\r<br>    exp(const fvar&lt;fvar&lt;var&gt; &gt;&amp; x) {\r<br>      var a = x.val_.val_;\r<br>      var b = x.val_.d_;\r<br>      var c = x.d_.val_;\r<br>      var d = x.d_.val_;\r<br>\r<br>      var e = ...\r<br>      var f = ...\r<br>      var g = ...\r<br>      var h = ...\r<br>      return fvar&lt;fvar&lt;var&gt; &gt;(fvar&lt;var&gt;(e,f),\r<br>                              fvar&lt;var&gt;(g,h));\r<br>    }\r<br>\r<br>If you create a vari class that generally just holds the\r<br>adjoint value and the pointer to the vari input, then you\r<br>can do all the calculations in each class and then just return\r<br>instances of the is vari class (wrapped in var) for each of\r<br>the four var that make up an fvar&lt;fvar&lt;var&gt; &gt;.\r<br>\r<br>If you want to instead rethink fvar&lt;fvar&lt;var&gt; &gt; as not being\r<br>compounded out of four var, that&#39;s a different issue.  I&#39;m sure\r<br>there&#39;d be some way to do it, but you lose the automatic\r<br>implementation.  As is, we get the fvar&lt;fvar&lt;T&gt;&gt; for free through\r<br>the implementation of fvar&lt;S&gt; (not exactly for free --- everything\r<br>has to be templated enough in the implementation to let fvar&lt;T&gt;\r<br>be plugged in for S and var for T).\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>&gt;\r<br>&gt; On Dec 21, 2013, at 8:02 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;\r<br>&gt;&gt;&gt; When Dan and I were going through this we also talked about the adjoint values\r<br>&gt;&gt;&gt; in the vars.  If we were really slick then we could compute those in the specialization\r<br>&gt;&gt;&gt; and then specialize the chainable call to use them.  Thoughts on this added step?\r<br>&gt;&gt;&gt; Sorry for taking so long, but I think I&#39;m finally ready to sit down and run through a few\r<br>&gt;&gt;&gt; of these once we&#39;ve decided on the full approach.\r<br>&gt;&gt;\r<br>&gt;&gt; This would just be a precalculated vari implementation.  You\r<br>&gt;&gt; can use the existing precomputed adjoint value implementation\r<br>&gt;&gt; of vari.  Well, I only see precomp_v_vari now in /agrad/rev/internal/.\r<br>&gt;&gt; I was thinking of something like operators and partials only more\r<br>&gt;&gt; lightweight and with a fixed number of pre-built derivatives.\r<br>&gt;&gt;\r<br>&gt;&gt; You could go even further and have one of the vari compute all of\r<br>&gt;&gt; the adjoint passing, but that&#39;s a lot harder to code and get right.\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "vI0slCN-V6gJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-12-22T23:47:58Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 12/21/13, 5:59 PM, Ben Goodrich wrote:\r<br>&gt; On Saturday, December 21, 2013 5:23:20 PM UTC-5, Michael Betancourt wrote:\r<br>&gt;\r<br>&gt;      &gt; So I think that&#39;s going to make testing really painful, too, because\r<br>&gt;      &gt; it&#39;ll require copying the template definition into new name for testing\r<br>&gt;      &gt; against the specialization.\r<br>&gt;\r<br>&gt;     Why don&#39;t we just test against finite-diffs?  I think we can take the factor of 2 hit\r<br>&gt;     in performance if we&#39;re just running tests.\r<br>&gt;\r<br>&gt;\r<br>&gt; and / or we should have for each distribution:\r<br>&gt;\r<br>&gt; -- draw many realizations from that distribution with given parameters\r<br>&gt; -- calculate the gradient and Hessian at those parameters\r<br>&gt; -- do a score test\r<br>\r<br>"
+    ],
+    [
+     1,
+     "What&#39;s a score test?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; That would test the prng, the gradient, Hessian, and the gradient * Hessian\r<br>\r<br>"
+    ],
+    [
+     1,
+     "How does gradient * Hessian get tested?  Is that related to the score test?\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "w0joHPQTs3oJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-12-23T00:21:58Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\">On Sunday, December 22, 2013 6:47:58 PM UTC-5, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\nOn 12/21/13, 5:59 PM, Ben Goodrich wrote:\n<br>&gt; On Saturday, December 21, 2013 5:23:20 PM UTC-5, Michael Betancourt wrote:\n<br>&gt;\n<br>&gt;      &gt; So I think that&#39;s going to make testing really painful, too, because\n<br>&gt;      &gt; it&#39;ll require copying the template definition into new name for testing\n<br>&gt;      &gt; against the specialization.\n<br>&gt;\n<br>&gt;     Why don&#39;t we just test against finite-diffs?  I think we can take the factor of 2 hit\n<br>&gt;     in performance if we&#39;re just running tests.\n<br>&gt;\n<br>&gt;\n<br>&gt; and / or we should have for each distribution:\n<br>&gt;\n<br>&gt; -- draw many realizations from that distribution with given parameters\n<br>&gt; -- calculate the gradient and Hessian at those parameters\n<br>&gt; -- do a score test\n<br>\n<br>What&#39;s a score test?\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>Also called the LM test. I don&#39;t know what it is called in computer science.<br><br><a href=\"http://en.wikipedia.org/wiki/Score_test\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://en.wikipedia.org/wiki/Score_test&amp;source=gmail&amp;ust=1792475283270000&amp;usg=AOvVaw1yvN9QmoOkwaS1lLwErDE-\">http://en.wikipedia.org/wiki/Score_test</a><br> <br></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\n&gt; That would test the prng, the gradient, Hessian, and the gradient * Hessian\n<br>\n<br>How does gradient * Hessian get tested?  Is that related to the score test?\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>Well, it doesn&#39;t exactly. But I was presuming that we were inverting the observed negative Hessian via the eigendecomposition, so assuming we can flip the eigenvalues, it is about the same thing.<br><br>Ben<br><br></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "Slub7FHKkx8J",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2013-12-23T00:37:41Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     1,
+     "<div dir=\"auto\"><div>To be clear where just taking about functions here.  Even once we have generalized operands and partials I&#39;m not sure we want to rely on asymptotics for tests, especially when we can just test the derivatives directly.</div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"auto\"><div><br>On Dec 22, 2013, at 7:21 PM, Ben Goodrich &lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt; wrote:<br><br></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"auto\"><blockquote type=\"cite\"><div><div dir=\"ltr\">On Sunday, December 22, 2013 6:47:58 PM UTC-5, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nOn 12/21/13, 5:59 PM, Ben Goodrich wrote:\r\n<br>&gt; On Saturday, December 21, 2013 5:23:20 PM UTC-5, Michael Betancourt wrote:\r\n<br>&gt;\r\n<br>&gt;      &gt; So I think that&#39;s going to make testing really painful, too, because\r\n<br>&gt;      &gt; it&#39;ll require copying the template definition into new name for testing\r\n<br>&gt;      &gt; against the specialization.\r\n<br>&gt;\r\n<br>&gt;     Why don&#39;t we just test against finite-diffs?  I think we can take the factor of 2 hit\r\n<br>&gt;     in performance if we&#39;re just running tests.\r\n<br>&gt;\r\n<br>&gt;\r\n<br>&gt; and / or we should have for each distribution:\r\n<br>&gt;\r\n<br>&gt; -- draw many realizations from that distribution with given parameters\r\n<br>&gt; -- calculate the gradient and Hessian at those parameters\r\n<br>&gt; -- do a score test\r\n<br>\r\n<br>What&#39;s a score test?\r\n<br></blockquote><div><br>Also called the LM test. I don&#39;t know what it is called in computer science.<br><br><a href=\"http://en.wikipedia.org/wiki/Score_test\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://en.wikipedia.org/wiki/Score_test&amp;source=gmail&amp;ust=1792475283271000&amp;usg=AOvVaw3wEj57-LWFW8hpkyO7zPU5\">http://en.wikipedia.org/wiki/Score_test</a><br> <br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n&gt; That would test the prng, the gradient, Hessian, and the gradient * Hessian\r\n<br>\r\n<br>How does gradient * Hessian get tested?  Is that related to the score test?\r\n<br></blockquote><div><br>Well, it doesn&#39;t exactly. But I was presuming that we were inverting the observed negative Hessian via the eigendecomposition, so assuming we can flip the eigenvalues, it is about the same thing.<br><br>Ben<br><br></div></div>\r\n\r\n<p></p></div></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"auto\"><blockquote type=\"cite\"><div>\r\n\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475283271000&amp;usg=AOvVaw1R_oJewx-XJn6D-zmPLsPx\">https://groups.google.com/groups/opt_out</a>.<br>\r\n</div></blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "otx1AfXwn0sJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2013-12-23T00:50:15Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     1,
+     "I don&#39;t get what you&#39;re saying about varis.  You&#39;re just using vars here (and in the exp example) and not any particular vari.  My biggest confusion is that you&#39;re defining four vars but I don&#39;t see how all eight of the underlying doubles are specified.\r<br>\r<br>When I go through the dual number algebra I get a map from the eight doubles in the input fvar&lt;fvar&lt;var&gt;&gt; to the eight doubles implicit in the output value which doesn&#39;t quite align with what you have here.\r<br>"
+    ],
+    [
+     3,
+     "\r<br>&gt; On Dec 22, 2013, at 6:23 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; \r<br>&gt; \r<br>&gt;&gt; On 12/22/13, 12:37 PM, Michael Betancourt wrote:\r<br>&gt;&gt; Let me rephrase my question -- why does the fvar&lt;fvar&lt;var&gt; specialization just\r<br>&gt;&gt; create and then fill the fvar&lt;var&gt; and not the value/adjoint of the four underlying vars?\r<br>&gt;&gt; It is straightforward to compute everything for the vars -- is there an autodiff limitation?\r<br>&gt; \r<br>&gt; You need an underlying vari class for the four underlying\r<br>&gt; vars.  Given that, you can fill in whatever you want.\r<br>&gt; In my example, all four vari were computed at once and then\r<br>&gt; built out and returned.  I like to think of it this way:\r<br>&gt; \r<br>&gt;  exp([(a,b),(c,d)] = [(e,f),(g,h)]\r<br>&gt; \r<br>&gt; Each of the a,b,c,d are input var (underlyingly the vari is\r<br>&gt; what matters) and e,f,g,h are output vars.\r<br>&gt; \r<br>&gt; In code, the general pattern is this:\r<br>&gt; \r<br>&gt;   inline fvar&lt;fvar&lt;var&gt; &gt;\r<br>&gt;   exp(const fvar&lt;fvar&lt;var&gt; &gt;&amp; x) {\r<br>&gt;     var a = x.val_.val_;\r<br>&gt;     var b = x.val_.d_;\r<br>&gt;     var c = x.d_.val_;\r<br>&gt;     var d = x.d_.val_;\r<br>&gt; \r<br>&gt;     var e = ...\r<br>&gt;     var f = ...\r<br>&gt;     var g = ...\r<br>&gt;     var h = ...\r<br>&gt;     return fvar&lt;fvar&lt;var&gt; &gt;(fvar&lt;var&gt;(e,f),\r<br>&gt;                             fvar&lt;var&gt;(g,h));\r<br>&gt;   }\r<br>&gt; \r<br>&gt; If you create a vari class that generally just holds the\r<br>&gt; adjoint value and the pointer to the vari input, then you\r<br>&gt; can do all the calculations in each class and then just return\r<br>&gt; instances of the is vari class (wrapped in var) for each of\r<br>&gt; the four var that make up an fvar&lt;fvar&lt;var&gt; &gt;.\r<br>&gt; \r<br>&gt; If you want to instead rethink fvar&lt;fvar&lt;var&gt; &gt; as not being\r<br>&gt; compounded out of four var, that&#39;s a different issue.  I&#39;m sure\r<br>&gt; there&#39;d be some way to do it, but you lose the automatic\r<br>&gt; implementation.  As is, we get the fvar&lt;fvar&lt;T&gt;&gt; for free through\r<br>&gt; the implementation of fvar&lt;S&gt; (not exactly for free --- everything\r<br>&gt; has to be templated enough in the implementation to let fvar&lt;T&gt;\r<br>&gt; be plugged in for S and var for T).\r<br>&gt; \r<br>&gt; - Bob\r<br>&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; On Dec 21, 2013, at 8:02 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;&gt; \r<br>&gt;&gt;&gt;&gt; When Dan and I were going through this we also talked about the adjoint values\r<br>&gt;&gt;&gt;&gt; in the vars.  If we were really slick then we could compute those in the specialization\r<br>&gt;&gt;&gt;&gt; and then specialize the chainable call to use them.  Thoughts on this added step?\r<br>&gt;&gt;&gt;&gt; Sorry for taking so long, but I think I&#39;m finally ready to sit down and run through a few\r<br>&gt;&gt;&gt;&gt; of these once we&#39;ve decided on the full approach.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; This would just be a precalculated vari implementation.  You\r<br>&gt;&gt;&gt; can use the existing precomputed adjoint value implementation\r<br>&gt;&gt;&gt; of vari.  Well, I only see precomp_v_vari now in /agrad/rev/internal/.\r<br>&gt;&gt;&gt; I was thinking of something like operators and partials only more\r<br>&gt;&gt;&gt; lightweight and with a fixed number of pre-built derivatives.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; You could go even further and have one of the vari compute all of\r<br>&gt;&gt;&gt; the adjoint passing, but that&#39;s a lot harder to code and get right.\r<br>&gt; \r<br>"
+    ],
+    [
+     3,
+     "&gt; -- \r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475283272000&amp;usg=AOvVaw1sfqJ9emtLEZA-__PetPQJ\">https://groups.google.com/groups/opt_out</a>.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Cos_AYGRkvcJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-12-23T17:16:51Z",
+   "subject": "Re: [stan-dev] unfolding 2nd/3rd-order auto-diff",
+   "parts": [
+    [
+     1,
+     "In cases where there&#39;s only a single daughter in the\r<br>expression tree for each of the four vari that you\r<br>produce, you can use agrad::precomp_v_vari from:\r<br>\r<br>   agrad/rev/internal/precomp_v_vari.hpp\r<br>\r<br>The constructor takes the value, the vari to which\r<br>the derivative will be propagated, and the partial.\r<br>\r<br>If you look at binary operations like multiplication (*),\r<br>you&#39;ll find you need more than eight doubles.  You have\r<br>8 var coming in and you need 4 going out, so the ones going\r<br>out need a bit more connectivity.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>\r<br>\r<br>On 12/22/13, 7:50 PM, Michael Betancourt wrote:\r<br>&gt; I don&#39;t get what you&#39;re saying about varis.  You&#39;re just using vars here (and in the exp example) and not any particular vari.  My biggest confusion is that you&#39;re defining four vars but I don&#39;t see how all eight of the underlying doubles are specified.\r<br>&gt;\r<br>&gt; When I go through the dual number algebra I get a map from the eight doubles in the input fvar&lt;fvar&lt;var&gt;&gt; to the eight doubles implicit in the output value which doesn&#39;t quite align with what you have here.\r<br>&gt;\r<br>&gt;&gt; On Dec 22, 2013, at 6:23 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;&gt; On 12/22/13, 12:37 PM, Michael Betancourt wrote:\r<br>&gt;&gt;&gt; Let me rephrase my question -- why does the fvar&lt;fvar&lt;var&gt; specialization just\r<br>&gt;&gt;&gt; create and then fill the fvar&lt;var&gt; and not the value/adjoint of the four underlying vars?\r<br>&gt;&gt;&gt; It is straightforward to compute everything for the vars -- is there an autodiff limitation?\r<br>&gt;&gt;\r<br>&gt;&gt; You need an underlying vari class for the four underlying\r<br>&gt;&gt; vars.  Given that, you can fill in whatever you want.\r<br>&gt;&gt; In my example, all four vari were computed at once and then\r<br>&gt;&gt; built out and returned.  I like to think of it this way:\r<br>&gt;&gt;\r<br>&gt;&gt;   exp([(a,b),(c,d)] = [(e,f),(g,h)]\r<br>&gt;&gt;\r<br>&gt;&gt; Each of the a,b,c,d are input var (underlyingly the vari is\r<br>&gt;&gt; what matters) and e,f,g,h are output vars.\r<br>&gt;&gt;\r<br>&gt;&gt; In code, the general pattern is this:\r<br>&gt;&gt;\r<br>&gt;&gt;    inline fvar&lt;fvar&lt;var&gt; &gt;\r<br>&gt;&gt;    exp(const fvar&lt;fvar&lt;var&gt; &gt;&amp; x) {\r<br>&gt;&gt;      var a = x.val_.val_;\r<br>&gt;&gt;      var b = x.val_.d_;\r<br>&gt;&gt;      var c = x.d_.val_;\r<br>&gt;&gt;      var d = x.d_.val_;\r<br>&gt;&gt;\r<br>&gt;&gt;      var e = ...\r<br>&gt;&gt;      var f = ...\r<br>&gt;&gt;      var g = ...\r<br>&gt;&gt;      var h = ...\r<br>&gt;&gt;      return fvar&lt;fvar&lt;var&gt; &gt;(fvar&lt;var&gt;(e,f),\r<br>&gt;&gt;                              fvar&lt;var&gt;(g,h));\r<br>&gt;&gt;    }\r<br>&gt;&gt;\r<br>&gt;&gt; If you create a vari class that generally just holds the\r<br>&gt;&gt; adjoint value and the pointer to the vari input, then you\r<br>&gt;&gt; can do all the calculations in each class and then just return\r<br>&gt;&gt; instances of the is vari class (wrapped in var) for each of\r<br>&gt;&gt; the four var that make up an fvar&lt;fvar&lt;var&gt; &gt;.\r<br>&gt;&gt;\r<br>&gt;&gt; If you want to instead rethink fvar&lt;fvar&lt;var&gt; &gt; as not being\r<br>&gt;&gt; compounded out of four var, that&#39;s a different issue.  I&#39;m sure\r<br>&gt;&gt; there&#39;d be some way to do it, but you lose the automatic\r<br>&gt;&gt; implementation.  As is, we get the fvar&lt;fvar&lt;T&gt;&gt; for free through\r<br>&gt;&gt; the implementation of fvar&lt;S&gt; (not exactly for free --- everything\r<br>&gt;&gt; has to be templated enough in the implementation to let fvar&lt;T&gt;\r<br>&gt;&gt; be plugged in for S and var for T).\r<br>&gt;&gt;\r<br>&gt;&gt; - Bob\r<br>&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; On Dec 21, 2013, at 8:02 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; When Dan and I were going through this we also talked about the adjoint values\r<br>&gt;&gt;&gt;&gt;&gt; in the vars.  If we were really slick then we could compute those in the specialization\r<br>&gt;&gt;&gt;&gt;&gt; and then specialize the chainable call to use them.  Thoughts on this added step?\r<br>&gt;&gt;&gt;&gt;&gt; Sorry for taking so long, but I think I&#39;m finally ready to sit down and run through a few\r<br>&gt;&gt;&gt;&gt;&gt; of these once we&#39;ve decided on the full approach.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; This would just be a precalculated vari implementation.  You\r<br>&gt;&gt;&gt;&gt; can use the existing precomputed adjoint value implementation\r<br>&gt;&gt;&gt;&gt; of vari.  Well, I only see precomp_v_vari now in /agrad/rev/internal/.\r<br>&gt;&gt;&gt;&gt; I was thinking of something like operators and partials only more\r<br>&gt;&gt;&gt;&gt; lightweight and with a fixed number of pre-built derivatives.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; You could go even further and have one of the vari compute all of\r<br>&gt;&gt;&gt;&gt; the adjoint passing, but that&#39;s a lot harder to code and get right.\r<br>&gt;&gt;\r<br>&gt;&gt; --\r<br>&gt;&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt;&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt;&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475283273000&amp;usg=AOvVaw1-25BYSTyHYrtgQZSTiLo7\">https://groups.google.com/groups/opt_out</a>.\r<br>&gt;\r<br>"
+    ]
+   ]
+  }
+ ]
+}

@@ -1,0 +1,171 @@
+{
+ "thread": "w3IkGXLqs6k",
+ "subject": "discrete Gibbs; Markov blanket with DB-like data; Dawid & Skene (1979) model",
+ "messages_listed": 7,
+ "last_activity": "2012-10-29T05:33:04Z",
+ "messages": [
+  {
+   "id": "PqKOGwtoTAEJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-26T19:17:53Z",
+   "subject": "discrete Gibbs; Markov blanket with DB-like data; Dawid & Skene (1979) model",
+   "parts": [
+    [
+     1,
+     "Time to do discrete parameters (and another Bob mail-novel).\r<br>\r<br>First an example that&#39;s more indicative of coding\r<br>Markov blankets than LDA, which is relatively easy.\r<br>\r<br>Dawid and Skene (1979) introduced a model of\r<br>data coding by multiple coders where the truth\r<br>wasn&#39;t known.  Here&#39;s what it would look like in\r<br>Stan if Stan did discrete sampling:\r<br>\r<br>---------------------------------\r<br>data {\r<br>   int&lt;lower=2&gt; K;              // number of categories\r<br>   int&lt;lower=1&gt; I;              // number of items\r<br>   int&lt;lower=1&gt; J;              // number of coders\r<br>   int&lt;lower=1&gt; N;              // number of observations\r<br>   int&lt;lower=1,upper=J&gt; jj[N];  // coder for observation n\r<br>   int&lt;lower=1,upper=I&gt; ii[N];  // item for observation n\r<br>   int&lt;lower=1,upper=K&gt; y[N];   // label for observation n\r<br>}\r<br>parameters {\r<br>   simplex[K] pi;               // prevalence of categories\r<br>   simplex[K] theta[J,K];       // response of anotator j to category k\r<br>   int&lt;lower=1,upper=K&gt; z[I];   // true category of item i\r<br>}\r<br>model {\r<br>   for (i in 1:I)\r<br>     z[i] ~ categorical(pi);\r<br>   for (n in 1:N)\r<br>     y[n] ~ categorical(theta[jj[n],z[ii[n]]]);\r<br>}\r<br>-------------------------------------\r<br>\r<br>It uses the standard DB-like encoding of the data with y[N],\r<br>ii[N] and jj[N].  In general, every item is only coded by\r<br>a subset of the coders.\r<br>\r<br>The relevant lines of the model for sampling a given discrete\r<br>z[j] for j in 1:I are\r<br>\r<br>   * i s.t. (i == j) in the first loop, and\r<br>\r<br>   * n s.t. (ii[n] == j) in the second loop.\r<br>\r<br>It&#39;s the second of these that&#39;s particularly problematic\r<br>because it&#39;s data dependent --- there&#39;s no way to annotate the\r<br>relevant loop indexes at compile time.\r<br>\r<br>What I did to run the model(* see P.S.) in RStan 1.0.2 (I&#39;m a very happy\r<br>RStan user) was sum out the z[i]:\r<br>\r<br>---------------------------------\r<br>data {\r<br>   int&lt;lower=2&gt; K;              // number of categories\r<br>   int&lt;lower=1&gt; I;              // number of items\r<br>   int&lt;lower=1&gt; J;              // number of coders\r<br>   int&lt;lower=1&gt; N;              // number of observations\r<br>   int&lt;lower=1,upper=J&gt; jj[N];  // coder for observation n\r<br>   int&lt;lower=1,upper=I&gt; ii[N];  // item for observation n\r<br>   int&lt;lower=1,upper=K&gt; y[N];   // label for observation n\r<br>}\r<br>parameters {\r<br>   simplex[K] pi;               // prevalence of categories\r<br>   simplex[K] theta[J,K];       // response of anotator j to category k\r<br>}\r<br>model {\r<br>   real cat_log[I,K];  // vector of log probs (up to const) for item i\r<br>   for (k in 1:K)\r<br>     for (i in 1:I)\r<br>       cat_log[i,k] &lt;- log(pi[k]);\r<br>   for (n in 1:N)\r<br>     for (k in 1:K)\r<br>       cat_log[ii[n],k] &lt;- cat_log[ii[n],k] + log(theta[jj[n],k,y[n]]);\r<br>\r<br>   for (i in 1:I)\r<br>     lp__ &lt;- lp__ + log_sum_exp(cat_log[i]);\r<br>}\r<br>------------------------------------\r<br>\r<br>The log_sum_exp just helps with arithmetic stability.\r<br>\r<br>This is the same kind of code as we&#39;d need for Gibbs.\r<br>(This isn&#39;t actually how I coded the first loop -- it can\r<br>be optimized by computing log(pi[k]) once for i=1 and\r<br>reusing it, but the above is simpler to understand.)\r<br>\r<br>We could instead of this summing out as in the current Stan,\r<br>declare the z[I] parameter and have a Gibbs block like this:\r<br>\r<br>------------------------------\r<br>gibbs {\r<br>   real cat_log[I,K];  // vector of log probs (up to const) for item i\r<br>   for (k in 1:K)\r<br>     for (i in 1:I)\r<br>       cat_log[i,k] &lt;- log(pi[k]);\r<br>   for (n in 1:N)\r<br>     for (k in 1:K)\r<br>       cat_log[ii[n],k] &lt;- cat_log[ii[n],k] + log(theta[jj[n],k,y[n]]);\r<br>\r<br>   for (i in 1:I)\r<br>     z[i] ~ categorical_log(cat_log[i]);\r<br>}\r<br>--------------------------------\r<br>\r<br>where the &quot;_log&quot; in &quot;categorical_log&quot; here just indicates the params\r<br>are on the (unnormalized) log scale rather than a simplex:\r<br>\r<br>   categorical_log(z|alpha) = categorical(z|softmax(exp(alpha)))\r<br>\r<br>Implementing discrete sampling this way would be:\r<br>\r<br>  * very very easy to implement, and\r<br>\r<br>  * optimally efficient to sample (given we&#39;re doing Gibbs/slice).\r<br>\r<br>Basically, we&#39;d just do it the same way we&#39;d do generated\r<br>quantities -- the ~ just indicates a randomly generated variate.\r<br>And with the Markov blanket in hand, we can&#39;t do much better\r<br>computation-wise.  Users can even control shared subcomputations.\r<br>\r<br>The big downside is that it&#39;s an enormous burden on the users compared\r<br>to the &quot;natural&quot; specification of the model in the first example.\r<br>One upside is that by the time they&#39;ve figured out Gibbs,\r<br>they can probably marginalize out the discrete params!\r<br>\r<br>You could add the same calcs to generated quantities and either\r<br>save the category distributions for z[i] or actually sample.\r<br>\r<br>A serious problem with the suggested model (not the approach,\r<br>just the particular coding above) is that it computes all the probs\r<br>first, then samples them all.  Usually Gibbs is implemented in a\r<br>rotated style, where you sample, e.g.,\r<br>\r<br>   x[1], y[1], z[1] init\r<br>\r<br>   x[2] | y[1], z[1]\r<br>   y[2] | x[2], z[1]\r<br>   z[2] | x[2], y[2]\r<br>\r<br>   x[3] | y[2], z[2]\r<br>...\r<br>\r<br>What the above model codes is this:\r<br>\r<br>   x[2] | y[1], z[1]\r<br>   y[2] | x[1], z[1]\r<br>   z[2] | x[1], y[1]\r<br>\r<br>Nice for parallelism, but not so nice for mixing.\r<br>\r<br>We can solve that problem with the same kind of gibbs block.\r<br>To make the models efficient in these non-full data designs, we&#39;d\r<br>need to compute DB-like indexes.  All we need is to be able to find,\r<br>given j in 1:I, the n such that (ii[n] == j).  It would even be\r<br>possible to compute these indexes in the transformed data block.\r<br>More on this later.\r<br>\r<br>BUGS and JAGS compute the Markov blanket for each variable\r<br>by expanding out the plates of the graphical model\r<br>explicitly.  If we restrict the expressiveness of Stan a bit,\r<br>we could do the same kind of thing.\r<br>\r<br>- Bob\r<br>\r<br>P.S.  This model rocks in Stan, by the way -- it&#39;s what I\r<br>showed you the fits for.  We&#39;ve got about 30 datasets\r<br>for different words, with Mechanical Turk coders identifying\r<br>the dictionary meaning for a word in context.  We have I=1000, K=7,\r<br>N=25,000 and it converges in fewer than 10 steps and mixes\r<br>very very well (n_eff is between 1/3 and 2/3 the number of draws!).\r<br>It takes about 2 minutes for 500 iterations of a chain, and\r<br>even runs on Becky&#39;s ancient 2GB 32-bit Windows machine.  The discrete\r<br>form of the model is a bit of a strain on JAGS -- Becky couldn&#39;t\r<br>get it in memory and it took hours to run without good\r<br>mixing on my machine -- I haven&#39;t done the fair comparison\r<br>of using the marginalized out model in JAGS.  The obvious\r<br>next step is to do something hierarchical over the 30\r<br>data sets -- I already fit hierarchical models for theta within\r<br>datasets.  We also want to fit item effects, so I&#39;m going to\r<br>move it all over to a more multilevel-like logistic structure\r<br>as Andrew and Jennifer first suggested about four years ago!\r<br>(I&#39;ve done this in JAGS already, but didn&#39;t have enough data to\r<br>pin down the difficulty per item -- that&#39;s why we collected so\r<br>much data, 25 labels per word instance.)\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "5cCtDPKx_owJ",
+   "from": "Matt Hoffman",
+   "author": "1004dd6f66bb10c3",
+   "date": "2012-10-27T00:44:16Z",
+   "subject": "Re: [stan-dev] discrete Gibbs; Markov blanket with DB-like data; Dawid & Skene (1979) model",
+   "parts": [
+    [
+     1,
+     "I like the Gibbs block idea. But I&#39;m not sure that this example is\r<br>quite correct. This is a valid Gibbs sampler:\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;   x[1], y[1], z[1] init\r<br>&gt;\r<br>&gt;   x[2] | y[1], z[1]\r<br>&gt;   y[2] | x[2], z[1]\r<br>&gt;   z[2] | x[2], y[2]\r<br>&gt;\r<br>&gt;   x[3] | y[2], z[2]\r<br>\r<br>"
+    ],
+    [
+     1,
+     "This is not:\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;   x[2] | y[1], z[1]\r<br>&gt;   y[2] | x[1], z[1]\r<br>&gt;   z[2] | x[1], y[1]\r<br>\r<br>"
+    ],
+    [
+     1,
+     "It&#39;s not just a question of mixing speed, it&#39;s a question of\r<br>correctness. Consider two binary variables x and y, with contingency\r<br>table\r<br>\r<br>p(x=0, y=0) = 0.25\r<br>p(x=1, y=0) = 0.25\r<br>p(x=0, y=1) = 0.5\r<br>p(x=1, y=1) = 0\r<br>\r<br>suppose x[1] = 0, y[1] = 0. Then if we resample x and y given their\r<br>previous values simultaneously, then there&#39;s a positive probability\r<br>(1/3) of arriving in the 0-probability state x=1, y=1. Clearly that&#39;s\r<br>not ok.\r<br>\r<br>I&#39;m sure that allowing users to implement their own Gibbs samplers\r<br>will lead to all kinds of nasty bugs getting posted to stan-users. But\r<br>that certainly doesn&#39;t mean we shouldn&#39;t do it!\r<br>\r<br>Matt\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "-xZuZeFsJ7YJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-27T21:25:33Z",
+   "subject": "Re: [stan-dev] discrete Gibbs; Markov blanket with DB-like data; Dawid & Skene (1979) model",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 10/26/12 8:44 PM, Matt Hoffman wrote:\r<br>&gt; I like the Gibbs block idea. But I&#39;m not sure that this example is\r<br>&gt; quite correct. This is a valid Gibbs sampler:\r<br>&gt;\r<br>&gt;&gt;    x[1], y[1], z[1] init\r<br>&gt;&gt;\r<br>&gt;&gt;    x[2] | y[1], z[1]\r<br>&gt;&gt;    y[2] | x[2], z[1]\r<br>&gt;&gt;    z[2] | x[2], y[2]\r<br>&gt;&gt;\r<br>&gt;&gt;    x[3] | y[2], z[2]\r<br>&gt;\r<br>&gt; This is not:\r<br>&gt;\r<br>&gt;&gt;    x[2] | y[1], z[1]\r<br>&gt;&gt;    y[2] | x[1], z[1]\r<br>&gt;&gt;    z[2] | x[1], y[1]\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Very good point.  You&#39;d actually have to sample from\r<br>the joint\r<br>\r<br>   x[2], y[2], z[2] |\r<br>\r<br>to do them all at once, or you could block them as\r<br>\r<br>   x[2], y[2] | z[1]\r<br>"
+    ],
+    [
+     2,
+     "   z[2]       | x[2], y[2]\r<br>\r<br>"
+    ],
+    [
+     1,
+     "...\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I&#39;m sure that allowing users to implement their own Gibbs samplers\r<br>&gt; will lead to all kinds of nasty bugs getting posted to stan-users.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I&#39;d be first in line!\r<br>"
+    ],
+    [
+     2,
+     "\r<br> &gt; But\r<br> &gt; that certainly doesn&#39;t mean we shouldn&#39;t do it!\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I agree.  I think the proposal will allow pretty much\r<br>optimal Gibbs, although it leans very heavily on the\r<br>user&#39;s coding.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "kBY89qcf4M0J",
+   "from": "Andrew Gelman",
+   "author": "da33143a8db60ce8",
+   "date": "2012-10-28T01:42:09Z",
+   "subject": "discrete data and possible inconsistency",
+   "parts": [
+    [
+     1,
+     "Hi--I have a thought.  Suppose we go with the current plan and program discrete data by requiring the user to specify the relevant portions of the log posterior.  Then there is the potential for inconsistency, if the user mistypes or misunderstands the model.  Here&#39;s a way we could check this.  When the density ratio is calculated (for Metrop accept/reject or for slice or whatever), we could usually use the shorter fast formula suppled by the user.  But every once in awhile we could compute the ratio using the full joint posterior.  If these two ratios are ever different (by more than some small round-off value), this would indicate a mistake, and we could print out an error message.\r<br>A\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Oct 27, 2012, at 5:25 PM, Bob Carpenter wrote:\r<br>\r<br>&gt; \r<br>&gt; \r<br>&gt; On 10/26/12 8:44 PM, Matt Hoffman wrote:\r<br>&gt;&gt; I like the Gibbs block idea. But I&#39;m not sure that this example is\r<br>&gt;&gt; quite correct. This is a valid Gibbs sampler:\r<br>&gt;&gt; \r<br>&gt;&gt;&gt;   x[1], y[1], z[1] init\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;   x[2] | y[1], z[1]\r<br>&gt;&gt;&gt;   y[2] | x[2], z[1]\r<br>&gt;&gt;&gt;   z[2] | x[2], y[2]\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;   x[3] | y[2], z[2]\r<br>&gt;&gt; \r<br>&gt;&gt; This is not:\r<br>&gt;&gt; \r<br>&gt;&gt;&gt;   x[2] | y[1], z[1]\r<br>&gt;&gt;&gt;   y[2] | x[1], z[1]\r<br>&gt;&gt;&gt;   z[2] | x[1], y[1]\r<br>&gt; \r<br>&gt; Very good point.  You&#39;d actually have to sample from\r<br>&gt; the joint\r<br>&gt; \r<br>&gt;  x[2], y[2], z[2] |\r<br>&gt; \r<br>&gt; to do them all at once, or you could block them as\r<br>&gt; \r<br>&gt;  x[2], y[2] | z[1]\r<br>&gt;  z[2]       | x[2], y[2]\r<br>&gt; \r<br>&gt; ...\r<br>&gt; \r<br>&gt;&gt; I&#39;m sure that allowing users to implement their own Gibbs samplers\r<br>&gt;&gt; will lead to all kinds of nasty bugs getting posted to stan-users.\r<br>&gt; \r<br>&gt; I&#39;d be first in line!\r<br>&gt; \r<br>&gt; &gt; But\r<br>&gt; &gt; that certainly doesn&#39;t mean we shouldn&#39;t do it!\r<br>&gt; \r<br>&gt; I agree.  I think the proposal will allow pretty much\r<br>&gt; optimal Gibbs, although it leans very heavily on the\r<br>&gt; user&#39;s coding.\r<br>&gt; \r<br>&gt; - Bob\r<br>&gt; \r<br>"
+    ],
+    [
+     1,
+     "&gt; -- \r<br>&gt; \r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Hr-O4sCXGwQJ",
+   "from": "Matt Hoffman",
+   "author": "1004dd6f66bb10c3",
+   "date": "2012-10-28T03:04:41Z",
+   "subject": "Re: [stan-dev] discrete data and possible inconsistency",
+   "parts": [
+    [
+     1,
+     "I really like this idea. We could also have it as a command-line\r<br>option (or the R equivalent), similar to the current functionality for\r<br>testing gradients. Then, once you&#39;re confident your Gibbs sampler&#39;s\r<br>implemented correctly you can take the water wings\r<br>(<a href=\"http://en.wikipedia.org/wiki/Inflatable_armbands\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://en.wikipedia.org/wiki/Inflatable_armbands&amp;source=gmail&amp;ust=1792477847077000&amp;usg=AOvVaw14H1dRQe00o87BZIFaqAdd\">http://en.wikipedia.org/wiki/Inflatable_armbands</a>) off.\r<br>\r<br>This could be useful even for 100% discrete models like collapsed LDA!\r<br>I&#39;m always terrified (often with justification) that I&#39;m implementing\r<br>my samplers incorrectly, but I&#39;m also always too lazy to implement a\r<br>Cook et al. style validation scheme. It&#39;d be great to know that Stan&#39;s\r<br>watching my back.\r<br>\r<br>Matt\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Sat, Oct 27, 2012 at 6:42 PM, Andrew Gelman &lt;<a href data-email-masked rel=\"nofollow\">gel...@stat.columbia.edu</a>&gt; wrote:\r<br>&gt; Hi--I have a thought.  Suppose we go with the current plan and program discrete data by requiring the user to specify the relevant portions of the log posterior.  Then there is the potential for inconsistency, if the user mistypes or misunderstands the model.  Here&#39;s a way we could check this.  When the density ratio is calculated (for Metrop accept/reject or for slice or whatever), we could usually use the shorter fast formula suppled by the user.  But every once in awhile we could compute the ratio using the full joint posterior.  If these two ratios are ever different (by more than some small round-off value), this would indicate a mistake, and we could print out an error message.\r<br>&gt; A\r<br>&gt;\r<br>&gt; On Oct 27, 2012, at 5:25 PM, Bob Carpenter wrote:\r<br>&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; On 10/26/12 8:44 PM, Matt Hoffman wrote:\r<br>&gt;&gt;&gt; I like the Gibbs block idea. But I&#39;m not sure that this example is\r<br>&gt;&gt;&gt; quite correct. This is a valid Gibbs sampler:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;   x[1], y[1], z[1] init\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;   x[2] | y[1], z[1]\r<br>&gt;&gt;&gt;&gt;   y[2] | x[2], z[1]\r<br>&gt;&gt;&gt;&gt;   z[2] | x[2], y[2]\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;   x[3] | y[2], z[2]\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; This is not:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;   x[2] | y[1], z[1]\r<br>&gt;&gt;&gt;&gt;   y[2] | x[1], z[1]\r<br>&gt;&gt;&gt;&gt;   z[2] | x[1], y[1]\r<br>&gt;&gt;\r<br>&gt;&gt; Very good point.  You&#39;d actually have to sample from\r<br>&gt;&gt; the joint\r<br>&gt;&gt;\r<br>&gt;&gt;  x[2], y[2], z[2] |\r<br>&gt;&gt;\r<br>&gt;&gt; to do them all at once, or you could block them as\r<br>&gt;&gt;\r<br>&gt;&gt;  x[2], y[2] | z[1]\r<br>&gt;&gt;  z[2]       | x[2], y[2]\r<br>&gt;&gt;\r<br>&gt;&gt; ...\r<br>&gt;&gt;\r<br>&gt;&gt;&gt; I&#39;m sure that allowing users to implement their own Gibbs samplers\r<br>&gt;&gt;&gt; will lead to all kinds of nasty bugs getting posted to stan-users.\r<br>&gt;&gt;\r<br>&gt;&gt; I&#39;d be first in line!\r<br>&gt;&gt;\r<br>&gt;&gt; &gt; But\r<br>&gt;&gt; &gt; that certainly doesn&#39;t mean we shouldn&#39;t do it!\r<br>&gt;&gt;\r<br>&gt;&gt; I agree.  I think the proposal will allow pretty much\r<br>&gt;&gt; optimal Gibbs, although it leans very heavily on the\r<br>&gt;&gt; user&#39;s coding.\r<br>&gt;&gt;\r<br>&gt;&gt; - Bob\r<br>&gt;&gt;\r<br>&gt;&gt; --\r<br>&gt;&gt;\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; --\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "oZ8i2nDVc9wJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-28T05:41:37Z",
+   "subject": "Re: [stan-dev] discrete data and possible inconsistency",
+   "parts": [
+    [
+     1,
+     "Yes, this is a very good idea for all the reasons\r<br>Matt and Andrew say.\r<br>\r<br>Somebody (Michael?  Andrew?) brought up the idea of\r<br>using the full log prob to check the conditionals during\r<br>the meeting --- it&#39;s in my notebook with stars next\r<br>to it.\r<br>\r<br>We have similar tests in many places using auto-dif on\r<br>simple definitions to test hand-derived derivatives.\r<br>It&#39;s also very much like the finite-diff gradient\r<br>check Matt originally suggested would be so helpful.\r<br>\r<br>If we go to NASA-style triple redundancy, we could\r<br>probably write a paper about testing our derivatives:\r<br>by hand, by auto-dif, by finite diffs.   Qudruple\r<br>redundancy could be had with symbolic derivatives\r<br>from sympy or Mathematica.\r<br>\r<br>Speaking of tests, we really need to do the first\r<br>thing Michael said we should do for debugging and\r<br>allow dumping of each leapfrog step with unconstrained\r<br>parameters and gradients (we could also dump constrained\r<br>params).\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On 10/27/12 9:42 PM, Andrew Gelman wrote:\r<br>&gt; Hi--I have a thought.  Suppose we go with the current plan and program discrete data by requiring the user to specify the relevant portions of the log posterior.  Then there is the potential for inconsistency, if the user mistypes or misunderstands the model.  Here&#39;s a way we could check this.  When the density ratio is calculated (for Metrop accept/reject or for slice or whatever), we could usually use the shorter fast formula suppled by the user.  But every once in awhile we could compute the ratio using the full joint posterior.  If these two ratios are ever different (by more than some small round-off value), this would indicate a mistake, and we could print out an error message.\r<br>&gt; A\r<br>&gt;\r<br>&gt; On Oct 27, 2012, at 5:25 PM, Bob Carpenter wrote:\r<br>&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; On 10/26/12 8:44 PM, Matt Hoffman wrote:\r<br>&gt;&gt;&gt; I like the Gibbs block idea. But I&#39;m not sure that this example is\r<br>&gt;&gt;&gt; quite correct. This is a valid Gibbs sampler:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    x[1], y[1], z[1] init\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    x[2] | y[1], z[1]\r<br>&gt;&gt;&gt;&gt;    y[2] | x[2], z[1]\r<br>&gt;&gt;&gt;&gt;    z[2] | x[2], y[2]\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    x[3] | y[2], z[2]\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; This is not:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    x[2] | y[1], z[1]\r<br>&gt;&gt;&gt;&gt;    y[2] | x[1], z[1]\r<br>&gt;&gt;&gt;&gt;    z[2] | x[1], y[1]\r<br>&gt;&gt;\r<br>&gt;&gt; Very good point.  You&#39;d actually have to sample from\r<br>&gt;&gt; the joint\r<br>&gt;&gt;\r<br>&gt;&gt;   x[2], y[2], z[2] |\r<br>&gt;&gt;\r<br>&gt;&gt; to do them all at once, or you could block them as\r<br>&gt;&gt;\r<br>&gt;&gt;   x[2], y[2] | z[1]\r<br>&gt;&gt;   z[2]       | x[2], y[2]\r<br>&gt;&gt;\r<br>&gt;&gt; ...\r<br>&gt;&gt;\r<br>&gt;&gt;&gt; I&#39;m sure that allowing users to implement their own Gibbs samplers\r<br>&gt;&gt;&gt; will lead to all kinds of nasty bugs getting posted to stan-users.\r<br>&gt;&gt;\r<br>&gt;&gt; I&#39;d be first in line!\r<br>&gt;&gt;\r<br>&gt;&gt;&gt; But\r<br>&gt;&gt;&gt; that certainly doesn&#39;t mean we shouldn&#39;t do it!\r<br>&gt;&gt;\r<br>&gt;&gt; I agree.  I think the proposal will allow pretty much\r<br>&gt;&gt; optimal Gibbs, although it leans very heavily on the\r<br>&gt;&gt; user&#39;s coding.\r<br>&gt;&gt;\r<br>&gt;&gt; - Bob\r<br>&gt;&gt;\r<br>&gt;&gt; --\r<br>&gt;&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "NBJyRNbnMsMJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2012-10-29T05:33:04Z",
+   "subject": "Re: [stan-dev] discrete data and possible inconsistency",
+   "parts": [
+    [
+     1,
+     "Yeah, we had discussed adding some means to validate the consistency of the conditional distributions, if we allow users to define them independently of the joint.  \r<br>\r<br>Personally I think this is a great idea -- for every freedom we give the user we introduce some means of validation to avoid the inevitable errors.  Not only for conditional distributions  but also, for example, implementing gradients by hand.  If the issue is speed we&#39;d compare the user&#39;s implementation against autodiff, and if they were implementing by hand because autodiff couldn&#39;t handle something we&#39;d compare against finite differences.\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Oct 28, 2012, at 1:41 AM, Bob Carpenter wrote:\r<br>\r<br>&gt; Yes, this is a very good idea for all the reasons\r<br>&gt; Matt and Andrew say.\r<br>&gt; \r<br>&gt; Somebody (Michael?  Andrew?) brought up the idea of\r<br>&gt; using the full log prob to check the conditionals during\r<br>&gt; the meeting --- it&#39;s in my notebook with stars next\r<br>&gt; to it.\r<br>&gt; \r<br>&gt; We have similar tests in many places using auto-dif on\r<br>&gt; simple definitions to test hand-derived derivatives.\r<br>&gt; It&#39;s also very much like the finite-diff gradient\r<br>&gt; check Matt originally suggested would be so helpful.\r<br>&gt; \r<br>&gt; If we go to NASA-style triple redundancy, we could\r<br>&gt; probably write a paper about testing our derivatives:\r<br>&gt; by hand, by auto-dif, by finite diffs.   Qudruple\r<br>&gt; redundancy could be had with symbolic derivatives\r<br>&gt; from sympy or Mathematica.\r<br>&gt; \r<br>&gt; Speaking of tests, we really need to do the first\r<br>&gt; thing Michael said we should do for debugging and\r<br>&gt; allow dumping of each leapfrog step with unconstrained\r<br>&gt; parameters and gradients (we could also dump constrained\r<br>&gt; params).\r<br>&gt; \r<br>&gt; - Bob\r<br>&gt; \r<br>&gt; On 10/27/12 9:42 PM, Andrew Gelman wrote:\r<br>&gt;&gt; Hi--I have a thought.  Suppose we go with the current plan and program discrete data by requiring the user to specify the relevant portions of the log posterior.  Then there is the potential for inconsistency, if the user mistypes or misunderstands the model.  Here&#39;s a way we could check this.  When the density ratio is calculated (for Metrop accept/reject or for slice or whatever), we could usually use the shorter fast formula suppled by the user.  But every once in awhile we could compute the ratio using the full joint posterior.  If these two ratios are ever different (by more than some small round-off value), this would indicate a mistake, and we could print out an error message.\r<br>&gt;&gt; A\r<br>&gt;&gt; \r<br>&gt;&gt; On Oct 27, 2012, at 5:25 PM, Bob Carpenter wrote:\r<br>&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; On 10/26/12 8:44 PM, Matt Hoffman wrote:\r<br>&gt;&gt;&gt;&gt; I like the Gibbs block idea. But I&#39;m not sure that this example is\r<br>&gt;&gt;&gt;&gt; quite correct. This is a valid Gibbs sampler:\r<br>&gt;&gt;&gt;&gt; \r<br>&gt;&gt;&gt;&gt;&gt;   x[1], y[1], z[1] init\r<br>&gt;&gt;&gt;&gt;&gt; \r<br>&gt;&gt;&gt;&gt;&gt;   x[2] | y[1], z[1]\r<br>&gt;&gt;&gt;&gt;&gt;   y[2] | x[2], z[1]\r<br>&gt;&gt;&gt;&gt;&gt;   z[2] | x[2], y[2]\r<br>&gt;&gt;&gt;&gt;&gt; \r<br>&gt;&gt;&gt;&gt;&gt;   x[3] | y[2], z[2]\r<br>&gt;&gt;&gt;&gt; \r<br>&gt;&gt;&gt;&gt; This is not:\r<br>&gt;&gt;&gt;&gt; \r<br>&gt;&gt;&gt;&gt;&gt;   x[2] | y[1], z[1]\r<br>&gt;&gt;&gt;&gt;&gt;   y[2] | x[1], z[1]\r<br>&gt;&gt;&gt;&gt;&gt;   z[2] | x[1], y[1]\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; Very good point.  You&#39;d actually have to sample from\r<br>&gt;&gt;&gt; the joint\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;  x[2], y[2], z[2] |\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; to do them all at once, or you could block them as\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;  x[2], y[2] | z[1]\r<br>&gt;&gt;&gt;  z[2]       | x[2], y[2]\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; ...\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;&gt; I&#39;m sure that allowing users to implement their own Gibbs samplers\r<br>&gt;&gt;&gt;&gt; will lead to all kinds of nasty bugs getting posted to stan-users.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; I&#39;d be first in line!\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;&gt; But\r<br>&gt;&gt;&gt;&gt; that certainly doesn&#39;t mean we shouldn&#39;t do it!\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; I agree.  I think the proposal will allow pretty much\r<br>&gt;&gt;&gt; optimal Gibbs, although it leans very heavily on the\r<br>&gt;&gt;&gt; user&#39;s coding.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; - Bob\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; --\r<br>&gt;&gt;&gt; \r<br>&gt;&gt; \r<br>&gt; \r<br>"
+    ],
+    [
+     1,
+     "&gt; -- \r<br>&gt; \r<br>&gt; \r<br>\r<br>"
+    ]
+   ]
+  }
+ ]
+}

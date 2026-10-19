@@ -1,0 +1,71 @@
+{
+ "thread": "3y0pgwdAJ5g",
+ "subject": "vector view rewrite",
+ "messages_listed": 3,
+ "last_activity": "2012-10-29T18:17:15Z",
+ "messages": [
+  {
+   "id": "IJCFEj_NQNMJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-28T07:00:56Z",
+   "subject": "vector view rewrite",
+   "parts": [
+    [
+     1,
+     "I rewrote VectorView as a single template class VV, but haven&#39;t\r<br>pushed it or tested it in context yet (just with standalone\r<br>tests).  I think it&#39;ll work for what we need it for, but would\r<br>love to get some feedback:\r<br>\r<br>\r<br>   template &lt;typename T,\r<br>             bool is_array = stan::is_vector_like&lt;T&gt;::value&gt;\r<br>   class VV {\r<br>   public:\r<br>     typedef typename scalar_type&lt;T&gt;::type scalar_t;\r<br>\r<br>     VV(const scalar_t&amp; c) : x_(&amp;c) { }\r<br>\r<br>     VV(const std::vector&lt;scalar_t&gt;&amp; v) : x_(&amp;v[0]) { }\r<br>\r<br>     template &lt;int R, int C&gt;\r<br>     VV(const Eigen::Matrix&lt;scalar_t,R,C&gt;&amp; m) : x_(&amp;m(0)) { }\r<br>\r<br>     scalar_t operator[](int i) {\r<br>       if (is_array) return x_[i];\r<br>       else return *x_;\r<br>     }\r<br>   private:\r<br>     const scalar_t* x_;\r<br>   };\r<br>\r<br>\r<br>I&#39;m saving a direct pointer to the array in the member variable x_.\r<br>This could be dangerous, because it doesn&#39;t keep up with changes to\r<br>the vectorized object.  The original implementation stored a pointer\r<br>to the wrapper.\r<br>\r<br>I&#39;m also returning a simple scalar_t.  This could be replaced\r<br>with const scalar_t&amp;.\r<br>\r<br>Do we ever need to assign through vector views?  The vector views\r<br>in normal.hpp are all const.  If we need to assign, we&#39;ll\r<br>need to take non-const constructor args and return non-const\r<br>scalar_t&amp;.\r<br>\r<br>\r<br>I needed to add the following specialization for the\r<br>scalar extractor metafunction:\r<br>\r<br>\r<br>   template &lt;typename T&gt;\r<br>   struct scalar_type&lt;Eigen::Matrix&lt;T,Eigen::Dynamic,Eigen::Dynamic&gt; &gt; {\r<br>     typedef typename scalar_type&lt;T&gt;::type type;\r<br>   };\r<br>\r<br>\r<br>And then I wrote a new metafunction is_vector_like instead of\r<br>making is_vector return true for a full matrix (dynamic rows,\r<br>dynamic columns).\r<br>\r<br>\r<br>   template &lt;typename T&gt;\r<br>   struct is_vector_like {\r<br>     // handles scalar, eigen vec, eigen row vec, std vec through is_vector\r<br>     enum { value = stan::is_vector&lt;T&gt;::value };\r<br>   };\r<br>\r<br>   template &lt;typename T&gt;\r<br>   struct is_vector_like&lt;Eigen::Matrix&lt;T,Eigen::Dynamic,Eigen::Dynamic&gt; &gt; {\r<br>     enum { value = true };\r<br>   };\r<br>\r<br>\r<br>And of course, where would we be without unit tests:\r<br>\r<br>\r<br>TEST(MetaTraits,VV) {\r<br>   using stan::VV;\r<br>   using std::vector;\r<br>   using Eigen::Matrix;\r<br>   using Eigen::Dynamic;\r<br>\r<br>   double x = 5;\r<br>   VV&lt;double&gt; x_VV(x);\r<br>   EXPECT_FLOAT_EQ(x,x_VV[0]);\r<br>   EXPECT_FLOAT_EQ(x,x_VV[1]);\r<br>   EXPECT_FLOAT_EQ(x,x_VV[2]);\r<br>\r<br>   vector&lt;double&gt; sv;\r<br>   sv.push_back(1.0);\r<br>   sv.push_back(4.0);\r<br>   sv.push_back(9.0);\r<br>   VV&lt;vector&lt;double&gt; &gt; sv_VV(sv);\r<br>   EXPECT_FLOAT_EQ(1.0,sv_VV[0]);\r<br>   EXPECT_FLOAT_EQ(4.0,sv_VV[1]);\r<br>   EXPECT_FLOAT_EQ(9.0,sv_VV[2]);\r<br>\r<br>   Matrix&lt;double,Dynamic,1&gt; v(3);\r<br>   v &lt;&lt; 1.0, 4.0, 9.0;\r<br>   VV&lt;Matrix&lt;double,Dynamic,1&gt; &gt; v_VV(v);\r<br>   EXPECT_FLOAT_EQ(1.0,v_VV[0]);\r<br>   EXPECT_FLOAT_EQ(4.0,v_VV[1]);\r<br>   EXPECT_FLOAT_EQ(9.0,v_VV[2]);\r<br>\r<br>   Matrix&lt;double,1,Dynamic&gt; rv(3);\r<br>   rv &lt;&lt; 1.0, 4.0, 9.0;\r<br>   VV&lt;Matrix&lt;double,1,Dynamic&gt; &gt; rv_VV(rv);\r<br>   EXPECT_FLOAT_EQ(1.0,rv_VV[0]);\r<br>   EXPECT_FLOAT_EQ(4.0,rv_VV[1]);\r<br>   EXPECT_FLOAT_EQ(9.0,rv_VV[2]);\r<br>\r<br>   Matrix&lt;double,Dynamic,Dynamic&gt; m(2,3);\r<br>   m &lt;&lt; 1.0, 2.0, 3.0, -100.0, -200.0, -300.0;\r<br>   VV&lt;Matrix&lt;double,Dynamic,Dynamic&gt; &gt; m_VV(m);\r<br>   int pos = 0;\r<br>   for (int j = 0; j &lt; 3; ++j) {\r<br>     for (int i = 0; i &lt; 2; ++i) {\r<br>       EXPECT_FLOAT_EQ(m(i,j),m_VV[pos]);\r<br>       ++pos;\r<br>     }\r<br>   }\r<br>}\r<br>\r<br>\r<br>- Bob\r<br>\r<br>\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "mvKreJOLcWAJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-10-29T01:45:56Z",
+   "subject": "Re: vector view rewrite",
+   "parts": [
+    [
+     2,
+     "On Sunday, October 28, 2012 3:01:01 AM UTC-4, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">     template &lt;int R, int C&gt;\n<br>     VV(const Eigen::Matrix&lt;scalar_t,R,C&gt;&amp; m) : x_(&amp;m(0)) { }\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>I don&#39;t know what would happen if m were an Eigen::DiagonalMatrix. But I also can&#39;t think of a case where we would want to make a VV out of a DiagonalMatrix. I guess we might as well make a constructor for an Eigen::Array also, although I guess that would only be relevant for now if someone were using C++ directly.</div><div><br></div><div>Ben</div><div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "VZ003tpkU-kJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-29T18:17:15Z",
+   "subject": "Re: [stan-dev] Re: vector view rewrite",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 10/28/12 9:45 PM, Ben Goodrich wrote:\r<br>&gt; On Sunday, October 28, 2012 3:01:01 AM UTC-4, Bob Carpenter wrote:\r<br>&gt;\r<br>&gt;           template &lt;int R, int C&gt;\r<br>&gt;           VV(const Eigen::Matrix&lt;scalar_t,R,C&gt;&amp; m) : x_(&amp;m(0)) { }\r<br>&gt;\r<br>&gt;\r<br>&gt; I don&#39;t know what would happen if m were an Eigen::DiagonalMatrix.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "C++ would happily convert the Eigen::DiagonalMatrix to an\r<br>Eigen::Matrix by filling in the zeroes implicit in the\r<br>diagonal matrix.  So it&#39;s very wasteful.\r<br>\r<br>It does have the advantage of providing the right semantics.\r<br>If you take mean(m), you want to count those zeroes!\r<br>"
+    ],
+    [
+     2,
+     "\r<br> &gt; But I also can&#39;t think of a case where we would want\r<br>&gt; to make a VV out of a DiagonalMatrix.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The thing to do would be to pull out the diag and use that:\r<br>\r<br>    VV(diag(m));\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I guess we might as well make a constructor for an Eigen::Array also, although I\r<br>&gt; guess that would only be relevant for now if someone were using C++ directly.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That makes sense.\r<br>\r<br>I&#39;ve just been lazy in only adding the operations we need.\r<br>(One advantage of that is that it makes the code easier to\r<br>read, test, and therefore maintain;  the disadvantage is that\r<br>things that &quot;should&quot; work won&#39;t.)\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  }
+ ]
+}

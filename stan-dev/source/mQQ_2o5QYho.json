@@ -1,0 +1,191 @@
+{
+ "thread": "mQQ_2o5QYho",
+ "subject": "functors for finite diffs, optimization, etc.",
+ "messages_listed": 11,
+ "last_activity": "2012-02-05T04:56:00Z",
+ "messages": [
+  {
+   "id": "UoK7U1WXBBgJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-02-04T19:04:51Z",
+   "subject": "functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     1,
+     "The right way to do all of these general calls seems<br>to be with the C++ notion of a callable object, or<br>functor.  This&#39;ll be true not just for the finite diffs<br>stuff, but also for operations like optimization.<p>The signature for gradient by finite diffs would be<br>something like:<p>   template &lt;typename Scalar, typename Function&gt;<br>   S<br>   grad_finite_diffs(const std::vector&lt;Scalar&gt;&amp; x,<br>                     Function&amp; f,<br>                     std::vector&lt;S&gt;&amp; grad);<p>The return is the value of the function f at x.<p>Functor f must be callable as follows:<p>     Scalar f(std::vector&lt;Scalar&gt;&amp; x);<p>This generalizes the notion of a function pointer and<br>is the standard lib way to write general &quot;algorithms&quot;<br>like this in C++11.  If f is a class or struct, it&#39;ll<br>just implement<p>    Scalar operator()(std::vector&lt;Scalar&gt;&amp; x);<p>and we&#39;re good to go (but see below for complications<br>due to int params in log_prob_grad).<p>The Scalar instances x[n] must implement<br>difference (Scalar - Scalar) and (Scalar + double),<br>the two ops involved in finite diffs.<p>We could limit the function to be stateless by<br>declaring it const.<p>The old C-style way of doing this would&#39;ve been to<br>use a function pointer.<p>Now, in order for our prob_grad objects to play nicely,<br>we&#39;re going to need to use some fancy binding for the<br>int parameters.  One way to do this would be to add<br>a functor factory:<p>   typedef double functor_t(const std::vector&lt;double&gt;&amp; x);<p>   functor_t get_prob_functor(const std::vector&lt;int&gt;&amp; params_i);<p>This seems a bit complex for users, so we could actually<br>skip the base class prob and implement prob_grad with<br>finite diffs based on plain old log_prob right in the base<br>prob_grad class.  This&#39;d then look just like what Matt did,<br>only it&#39;d actually implement the gradient function.<p>    double log_prob_grad_finite_diffs(<br>       const std::vector&lt;int&gt;&amp; params_i,<br>       const std::vector&lt;double&gt;&amp; params_r,<br>       std::vector&lt;double&gt;&amp; gradient);<p>Now we could just leave this in the base class prob_grad,<br>or noting that this is the same signature as the<br>pure virtual log_prob_grad() function, we could actually<br>implement it with this instead.<p>The clunkiness there is that you need to explicitly call<br>the parent class&#39;s implementation to get finite diffs<br>from an instance of log_prob_grad_ad.<p>Any preferences for how this goes?<p>- Bob<p><p><br></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "Aq3q9gwRGTIJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-02-04T20:47:57Z",
+   "subject": "Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     2,
+     "On Feb 4, 2:04 pm, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">c...@alias-i.com</a>&gt; wrote:\r<br>&gt; The right way to do all of these general calls seems\r<br>&gt; to be with the C++ notion of a callable object, or\r<br>&gt; functor.  This&#39;ll be true not just for the finite diffs\r<br>&gt; stuff, but also for operations like optimization.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "For: Functors\r<br>Against: Anything resembling old C style\r<br>\r<br>Also, I would definitely be for supporting Vectors in the Eigen sense\r<br>in addition to (or maybe to the exclusion of) Vectors in the std\r<br>sense.\r<br>\r<br>There is a good example of using functors with Eigen in the nonlinear\r<br>optimization module of Eigen/unsupported.\r<br>\r<br>Is there a purpose for finite-diff besides checking auto-dif? Either\r<br>way, I would also nominate &quot;complex step&quot; approximations, which are\r<br>considered better than finite-diff primarily because finite-diff is\r<br>prone to cancellation. Both involve adding a tiny h to the parameter,\r<br>but with complex step h is on the imaginary axis. The imaginary part\r<br>of the function output divided by h is a good approximation to the\r<br>partial derivative. Google [derivative &quot;complex step&quot;] for more info,\r<br>particularly anything written by Nick Higham in a matrix function\r<br>context. This should be really easy in Eigen with templated parameters\r<br>because Eigen already supports mixed operations between doubles and\r<br>complex doubles. Clearly, the downside is that this is limited to\r<br>functions that do sensible things with complex numbers.\r<br>\r<br>Ben\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "mgdIgclEzwEJ",
+   "from": "Matt Hoffman",
+   "author": "1004dd6f66bb10c3",
+   "date": "2012-02-04T21:23:17Z",
+   "subject": "Re: [stan-dev] Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     1,
+     "I&#39;ll tentatively vote for a functor factory method in prob_grad, since it&#39;ll be useful for multiple things. That said, I still think it&#39;s valuable to have a function that just makes sure your gradients are correct. This is not just for checking auto-diff, but also for users (like me) who want to eliminate the overhead of auto-diff by writing their own gradient implementations. (Although this could also be accomplished, with higher precision, by a function that compared the auto-diff-based base implementation of grad_log_prob() with the possibly handwritten top-level implementation of grad_log_prob().)<br>\n\n<br>Most of our functions don&#39;t do sensible things with complex numbers. Which I&#39;m pretty comfortable with. It would, however, definitely be better to use the two-sided method of finite differences rather than the one-sided version I&#39;ve got in there currently. (It&#39;s twice as expensive, but you don&#39;t use finite differences because it&#39;s fast.)<br>\n\n<br>Matt"
+    ],
+    [
+     3,
+     "<br><br><div class=\"gmail_quote\">On Sat, Feb 4, 2012 at 3:47 PM, Ben Goodrich <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n\n<div>On Feb 4, 2:04 pm, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">c...@alias-i.com</a>&gt; wrote:<br>\n&gt; The right way to do all of these general calls seems<br>\n&gt; to be with the C++ notion of a callable object, or<br>\n&gt; functor.  This&#39;ll be true not just for the finite diffs<br>\n&gt; stuff, but also for operations like optimization.<br>\n<br>\n</div>For: Functors<br>\nAgainst: Anything resembling old C style<br>\n<br>\nAlso, I would definitely be for supporting Vectors in the Eigen sense<br>\nin addition to (or maybe to the exclusion of) Vectors in the std<br>\nsense.<br>\n<br>\nThere is a good example of using functors with Eigen in the nonlinear<br>\noptimization module of Eigen/unsupported.<br>\n<br>\nIs there a purpose for finite-diff besides checking auto-dif? Either<br>\nway, I would also nominate &quot;complex step&quot; approximations, which are<br>\nconsidered better than finite-diff primarily because finite-diff is<br>\nprone to cancellation. Both involve adding a tiny h to the parameter,<br>\nbut with complex step h is on the imaginary axis. The imaginary part<br>\nof the function output divided by h is a good approximation to the<br>\npartial derivative. Google [derivative &quot;complex step&quot;] for more info,<br>\nparticularly anything written by Nick Higham in a matrix function<br>\ncontext. This should be really easy in Eigen with templated parameters<br>\nbecause Eigen already supports mixed operations between doubles and<br>\ncomplex doubles. Clearly, the downside is that this is limited to<br>\nfunctions that do sensible things with complex numbers.<br>\n<span><font color=\"#888888\"><br>\nBen<br>\n</font></span></blockquote></div><br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "hSrI9dSyVf0J",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-02-04T21:30:36Z",
+   "subject": "Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     1,
+     "OK. But there is already a finite-diff module in the unsupported\r<br>section of Eigen. Can&#39;t we just use that instead of reimplementing?\r<br>\r<br>Ben, who suspects he is missing something ..."
+    ]
+   ]
+  },
+  {
+   "id": "Y2jgWTi4Em8J",
+   "from": "Matt Hoffman",
+   "author": "1004dd6f66bb10c3",
+   "date": "2012-02-04T21:36:30Z",
+   "subject": "Re: [stan-dev] Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     1,
+     "I dunno, maybe that&#39;s a better thing to do. But implementing finite-diff takes about 10 lines of code, which for me was a lot faster to write than figuring out how to call and compile (link?) against an unsupported module in Eigen that I didn&#39;t know existed."
+    ],
+    [
+     3,
+     "<br>\n\n<br><div class=\"gmail_quote\">On Sat, Feb 4, 2012 at 4:30 PM, Ben Goodrich <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n\nOK. But there is already a finite-diff module in the unsupported<br>\nsection of Eigen. Can&#39;t we just use that instead of reimplementing?<br>\n<br>\nBen, who suspects he is missing something ...</blockquote></div><br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "38MqjljtyhAJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-02-04T21:51:50Z",
+   "subject": "Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     1,
+     "Ahh ... apparently stan does not include the /unsupported directory of\r<br>EIgen anyway.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "RRfb5N2c-x8J",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-02-04T23:45:36Z",
+   "subject": "Re: [stan-dev] Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     1,
+     "Glad we can agree on functors.  We can<br>template out<p>   std vectors: std::vector&lt;T&gt;<br>   Eigen column vectors: Eigen&lt;T,Dynamic,1&gt;<br>   Eigen row vectors: Eigen&lt;T,1,Dynamic&gt;<br>   Eigen matrices: Eigen&lt;T,Dynamic,Dynamic&gt;<p>because they all support size() and unary [] (for<br>matrices, size is M x N and access is column-major<br>by default).<p>Matt previously suggested that we also support<br>plain old (T*,size_t).  We could certainly implement<br>the Eigen and std::vector versions on (T*,size_t)<br>because they have size() and T* is just the start<br>iterator.  Also, instead of size_t, we can also allow<br>the end iterator.<p>    fun(T* ts, size_t length)<p>    fun(iterator&lt;T&gt;* start, iterator&lt;T&gt;* end)<p>    fun(std::vector&lt;T&gt;&amp; ts);<p>    fun(Matrix&lt;T,M,N&gt;&amp; m); // templating M&amp;N supports all versions<p>I&#39;m not sure what the cleanest most idiomatic<br>thing is to do here.  I&#39;d like to support more than<br>Eigen types here.  Eigen&lt;T,Dynamic,Dynamic&gt;<br>has a big advantage is speed and size over<br>std::vector&lt;std::vector&lt;T&gt; &gt;, because the former<br>uses one block of contiguous memory and the latter is<br>a bunch of std::vector&lt;T&gt;, each of which has its own<br>size.<p>Ben mentioned that Eigen [] checks the range, whereas<br>() doesn&#39;t, so we might even want to override for<br>more efficiency (depends on whether we want the checks<br>or not).<p>Looks like the Eigen developers are looking for<br>volunteers to write an optimization module:<p><a href=\"http://eigen.tuxfamily.org/index.php?title=Todo#Optimization_module\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://eigen.tuxfamily.org/index.php?title%3DTodo%23Optimization_module&amp;source=gmail&amp;ust=1792479421334000&amp;usg=AOvVaw11WuqGChg1Wo58hDnklwmy\">http://eigen.tuxfamily.org/index.php?title=Todo#Optimization_module</a><p>Do you know where I could find their finite<br>diff implementation?<p>I&#39;m trying to be conservative on dependencies.<br>Right now, we only depend on the supported bits of<br>Eigen and Boost as dependencies.<p>I didn&#39;t bring in the unsupported modules from<br>Eigen or the RNG lib Ben menitoned yet, but we can<br>always add more dependencies.<p>- Bob</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>On 2/4/12 4:51 PM, Ben Goodrich wrote:<br>&gt; Ahh ... apparently stan does not include the /unsupported directory of<br>&gt; EIgen anyway.<br>&gt;<br></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "qgQ7SMFYnmAJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-02-05T00:27:36Z",
+   "subject": "Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     2,
+     "On Feb 4, 6:45 pm, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">c...@alias-i.com</a>&gt; wrote:\r<br>&gt; Ben mentioned that Eigen [] checks the range, whereas\r<br>&gt; () doesn&#39;t, so we might even want to override for\r<br>&gt; more efficiency (depends on whether we want the checks\r<br>&gt; or not).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Checking depends on whether NDEBUG is defined, which our Makefile now\r<br>does appropriately.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Looks like the Eigen developers are looking for\r<br>&gt; volunteers to write an optimization module:\r<br>&gt;\r<br>&gt; <a href=\"http://eigen.tuxfamily.org/index.php?title=Todo#Optimization_module\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://eigen.tuxfamily.org/index.php?title%3DTodo%23Optimization_module&amp;source=gmail&amp;ust=1792479421335000&amp;usg=AOvVaw3BtNPFi4TWSlb231waPOiC\">http://eigen.tuxfamily.org/index.php?title=Todo#Optimization_module</a>\r<br>&gt;\r<br>&gt; Do you know where I could find their finite\r<br>&gt; diff implementation?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The documentation for both the nonlinear optimization module and the\r<br>numerical diff module are at\r<br>\r<br><a href=\"http://eigen.tuxfamily.org/dox/unsupported/modules.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://eigen.tuxfamily.org/dox/unsupported/modules.html&amp;source=gmail&amp;ust=1792479421335000&amp;usg=AOvVaw2xv5xwgKd-FMGgf-R_Y79F\">http://eigen.tuxfamily.org/dox/unsupported/modules.html</a>\r<br>\r<br>The packaging issue is that stan currently only copies eigen/Eigen\r<br>into lib and not eigen/unsupported (or any of the license, READMEs,\r<br>test, etc. stuff in eigen/)\r<br>\r<br>Ben\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "b1K9_eI7arUJ",
+   "from": "Andrew Gelman",
+   "author": "da33143a8db60ce8",
+   "date": "2012-02-05T00:46:53Z",
+   "subject": "Re: [stan-dev] Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     1,
+     "All I can say is, I&#39;m glad that all of you are on top of this.  These sort of discussions give me a sense of why Bugs, Jags, etc., become so stagnant."
+    ],
+    [
+     3,
+     "<p>On Feb 4, 2012, at 7:27 PM, Ben Goodrich wrote:<p>&gt; On Feb 4, 6:45 pm, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">c...@alias-i.com</a>&gt; wrote:<br>&gt;&gt; Ben mentioned that Eigen [] checks the range, whereas<br>&gt;&gt; () doesn&#39;t, so we might even want to override for<br>&gt;&gt; more efficiency (depends on whether we want the checks<br>&gt;&gt; or not).<br>&gt; <br>&gt; Checking depends on whether NDEBUG is defined, which our Makefile now<br>&gt; does appropriately.<br>&gt; <br>&gt;&gt; Looks like the Eigen developers are looking for<br>&gt;&gt; volunteers to write an optimization module:<br>&gt;&gt; <br>&gt;&gt; <a href=\"http://eigen.tuxfamily.org/index.php?title=Todo#Optimization_module\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://eigen.tuxfamily.org/index.php?title%3DTodo%23Optimization_module&amp;source=gmail&amp;ust=1792479421335000&amp;usg=AOvVaw3BtNPFi4TWSlb231waPOiC\">http://eigen.tuxfamily.org/index.php?title=Todo#Optimization_module</a><br>&gt;&gt; <br>&gt;&gt; Do you know where I could find their finite<br>&gt;&gt; diff implementation?<br>&gt; <br>&gt; The documentation for both the nonlinear optimization module and the<br>&gt; numerical diff module are at<br>&gt; <br>&gt; <a href=\"http://eigen.tuxfamily.org/dox/unsupported/modules.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://eigen.tuxfamily.org/dox/unsupported/modules.html&amp;source=gmail&amp;ust=1792479421335000&amp;usg=AOvVaw2xv5xwgKd-FMGgf-R_Y79F\">http://eigen.tuxfamily.org/dox/unsupported/modules.html</a><br>&gt; <br>&gt; The packaging issue is that stan currently only copies eigen/Eigen<br>&gt; into lib and not eigen/unsupported (or any of the license, READMEs,<br>&gt; test, etc. stuff in eigen/)<br>&gt; <br>&gt; Ben<p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "dtmnS3VmFrsJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-02-05T00:47:46Z",
+   "subject": "Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     2,
+     "On Feb 4, 6:45 pm, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">c...@alias-i.com</a>&gt; wrote:\r<br>&gt; Glad we can agree on functors.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Functors are good. It might be the case that lambda functions are even\r<br>better, but that is one of the few things about the c++11 standard\r<br>that clang does not support yet. G++ and most other modern compilers\r<br>do.\r<br>\r<br>Ben\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "MwA-niriVU4J",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-02-05T04:56:00Z",
+   "subject": "Re: [stan-dev] Re: functors for finite diffs, optimization, etc.",
+   "parts": [
+    [
+     1,
+     "Sorry for the confusing terminology.  To put<br>it in proper C++ lingo, functors are just<br>objects that implement the function-call<br>operator() and hence can be called like functions.<br>C++11 lambda expressions give you a way of<br>creating anonymous functor-like objects that<br>can be called like functions.<p>To define a square root callable (as opposed<br>to function pointer), we could use an explicitly<br>named functor<p>   struct sqrt_functor<br>     double operator()(double x) { return sqrt(x); }<br>   };<p>   double y = sqrt_functor(2.0);<p>or a C++ lambda expression:<p>   [](double x) { return sqrt(x); }<p>You can really think of [] as an anonymous way or<br>writing the functor&#39;s operator definition -- they use<br>the same definition starting at the argument<br>declaration (double x) (the lambda&#39;s return type is<br>automatically computed by the type of the return expression,<br>so it doesn&#39;t get declared;  thankfully they&#39;ve added<br>an &quot;auto&quot; super type inference type to make dealing with<br>this issue).<p>As a simple example, we could pass either the functor<br>or lambda expression to a function templated on<br>the callable F:<p>   template &lt;typename F, typename X&gt;<br>   double apply(F f, X x) {<br>       return f(x);<br>   }<p>Now the following four expressions all return<br>the square root of 2:<p>directly apply functor:<p>    sqrt_functor()(2.0);<p>directly apply lambda expression:<p>    ([](double x) { return sqrt(x); })(2.0);<p>indirectly apply functor:<p>     apply(sqrt_functor(),2.0);<p>indirectly apply lambda expression:<p>     apply([](double x) { return sqrt(x); }, 2.0);<p>Acting like a function is an instance of what<br>C++ calls a &quot;concept&quot; -- it&#39;s the set of operations<br>and contexts an argument needs to be usable in to<br>instantiate a template.<p>So a finite differences method could be declared<br>using a templated callable and scalar as:<p>     template &lt;typename F, typename S&gt;<br>     S finite_diffs(F f, std::vector&lt;S&gt; x);<p>Though it&#39;s now more idiomatic to not call this kind<br>of thing with a vector, but with an iterator, but that<br>seems clunky in the context of multiple-argument functions.<p>The nice part of lambda expressions and functors is<br>that they have proper modern C++ behavior in that<br>they have proper value semantics, so they can be used<br>straightforwardly (and efficiently) without a whole<br>lot of reference/dereference hoo-ha.  Stan&#39;s agrad::var<br>is another instance of something designed to have<br>proper value semantics.  For simple functors like sqrt_functor,<br>it&#39;s even better in that the struct has no data, so it<br>can be treated by an optimizing compiler like a type and<br>no data need be passed anywhere.<p>Boost already provides a lot of lambda-like functionality<br>that I&#39;m using for the parser to support lazy evaluation<br>(check out Boost&#39;s Phoenix library, which generalizes<br>Boost Lambda, which generalizes Boost Bind, which<br>generalizes pre C++99&#39;s built-in bind).  Any of these<br>could also be used to define an appropriate callable.<p>Sorry -- that took a lot of explaining.<p>Back to our regularly scheduled programming.<p>- Bob</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>On 2/4/12 7:47 PM, Ben Goodrich wrote:<br>&gt; On Feb 4, 6:45 pm, Bob Carpenter&lt;<a href data-email-masked rel=\"nofollow\">c...@alias-i.com</a>&gt;  wrote:<br>&gt;&gt; Glad we can agree on functors.<br>&gt;<br>&gt; Functors are good. It might be the case that lambda functions are even<br>&gt; better, but that is one of the few things about the c++11 standard<br>&gt; that clang does not support yet. G++ and most other modern compilers<br>&gt; do.<br>&gt;<br>&gt; Ben<br>&gt;<br></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  }
+ ]
+}

@@ -1,0 +1,135 @@
+{
+ "thread": "ksSmtwYKvTg",
+ "subject": "safe pointer alloc and free (command refactor)",
+ "messages_listed": 3,
+ "last_activity": "2013-11-14T20:03:22Z",
+ "messages": [
+  {
+   "id": "UllqP7nQFdUJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-11-14T04:25:43Z",
+   "subject": "safe pointer alloc and free (command refactor)",
+   "parts": [
+    [
+     1,
+     "Looking at src/stan/gm/command.hpp, there are unsafe pointer allocations.\r<br>To be safe, you really need to put the allocation in a\r<br>try block and then a free in a catch block, as so:\r<br>\r<br>   try {\r<br>      malloc/new\r<br>      ...\r<br>   } catch (exception&amp; e) {\r<br>      free/delete\r<br>   }\r<br>   free / delete\r<br>\r<br>The first case deletes if there&#39;s an exception and the\r<br>second if there&#39;s not.  This is all encapsulated in Java&#39;s\r<br>finally block, but we don&#39;t get that sugar in C++.  You\r<br>can define a cleanup function and reuse it if it&#39;s more\r<br>than a single statement.\r<br>\r<br>And, nothing in the ... after the malloc should return\r<br>and potentially get by the free/delete ops.\r<br>\r<br>If you don&#39;t follow this pattern, you have to be really\r<br>really careful to free everything that gets allocated\r<br>some other way, which can be very error prone because\r<br>now you&#39;re tracing through spaghetti rather than simple\r<br>block scopes.\r<br>\r<br>I would *very strongly* prefer we don&#39;t use malloc or new\r<br>if we can avoid it.  On that note, let&#39;s see how that&#39;s done.\r<br>\r<br>Here&#39;s what&#39;s in the gm/command.hpp now:\r<br>\r<br>\r<br>           int sampler_select = engine_index + 10 * metric_index + 100 * static_cast&lt;int&gt;(adapt_engaged);\r<br>\r<br>           switch (sampler_select) {\r<br>\r<br>             case 0: {\r<br>               typedef stan::mcmc::unit_e_static_hmc&lt;Model, rng_t&gt; sampler;\r<br>               sampler_ptr = new sampler(model, base_rng);\r<br>               if (!init_static_hmc&lt;sampler&gt;(sampler_ptr, algo)) return 0;\r<br>               break;\r<br>             }\r<br>\r<br>             case 1: {\r<br>               typedef stan::mcmc::unit_e_nuts&lt;Model, rng_t&gt; sampler;\r<br>               sampler_ptr = new sampler(model, base_rng);\r<br>               if (!init_nuts&lt;sampler&gt;(sampler_ptr, algo)) return 0;\r<br>               break;\r<br>             }\r<br>\r<br>          }\r<br>          ...do something with sampler_ptr...\r<br>\r<br>          if (sampler_ptr) delete sampler_ptr;\r<br>\r<br>\r<br>Note that if you hit one of the return statements in the case\r<br>statement, you bypass the delete of the sampler_ptr and leak memory.\r<br>Probably not a big deal here in terms of leakage because you are just\r<br>going to exit the command, but it&#39;ll light up all the debugging tools\r<br>as an error, and it&#39;d be better not to have more false positives than\r<br>we already get in agrad.\r<br>\r<br>Here&#39;s how I&#39;d rewrite this code to avoid using pointers:\r<br>\r<br>    switch (sampler_select) {\r<br>      case 0: {\r<br>        typedef stan::mcmc::unit_e_static_hmc&lt;Model, rng_t&gt; sampler;\r<br>        sampler s(model, base_rng);\r<br>        if (!init_static_hmc&lt;sampler&gt;(s, algo))\r<br>          return 0;\r<br>        return sample(s, ...);\r<br>      }\r<br>    }\r<br>\r<br>where the ... are the other variables needed to run the sampler.\r<br>The sample() function is then templated on the sampler type:\r<br>\r<br>   template &lt;class S&gt;\r<br>   int sample(S&amp; s, ...) {\r<br>      ... do something with s ...\r<br>   }\r<br>\r<br>The type S gets inferred from the argument, which is now\r<br>properly typed rather than being a made-poor-decisions pointer (I think\r<br>that&#39;s the PC way to describe the opposite of a smart pointer --- we\r<br>wouldn&#39;t want to say &quot;dumb&quot; or &quot;stupid&quot; lest the code get offended).\r<br>\r<br>In fact, I&#39;d be tempted to have the sampler class have a flag indicating\r<br>whether to call that init_static thing so that it&#39;s part of sample, as in:\r<br>\r<br>   switch (sampler_select) {\r<br>      case 0:\r<br>        return sample(stan::mcmc::unit_e_static_hmc(model,base_rng),\r<br>                      ...);\r<br>\r<br>\r<br>   template &lt;class S&gt;\r<br>   int sample(S&amp; s, ...) {\r<br>     if (s.requires_init_static())\r<br>       if (!init_static_hmc&lt;sampler&gt;(s, algo))\r<br>         return 0;\r<br>     ... do something with s...\r<br>     return 0;  // normal return\r<br>   }\r<br>\r<br>You could probably just have something like s::requires_init_static\r<br>as a static boolean class variable so you don&#39;t even need a method.\r<br>\r<br>Also, should that return from the conditional on init_static_hmc\r<br>failing be 0 or something indicating a failure to initialize?\r<br>\r<br>Now everything&#39;s safe from leaking memory.  And there&#39;s less\r<br>duplicated code.\r<br>\r<br>I&#39;d be happy to go through and do the refactoring.  I\r<br>opened an issue:\r<br>\r<br><a href=\"https://github.com/stan-dev/stan/issues/390\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/stan-dev/stan/issues/390&amp;source=gmail&amp;ust=1792475477013000&amp;usg=AOvVaw0sS6WB3a2MRQqKaEPR3KKW\">https://github.com/stan-dev/stan/issues/390</a>\r<br>\r<br>and assigned it to myself.\r<br>\r<br>- Bob\r<br>\r<br>P.S.  I&#39;d also much rather see the numerically obfuscated switch replaced\r<br>       with an if-then structure.  But I can see how reasonable people would\r<br>       differ on this preference.\r<br>\r<br>P.P.S.  Why static_cast&lt;int&gt;(adapt_engaged);  Isn&#39;t adapt_engaged already\r<br>         boolean?  You just want to be explicit?\r<br>\r<br>P.P.P.S.  It&#39;s good style to declare variables close to where you define them.\r<br>           The sampler_ptr was defined way before the case statement to set it\r<br>           and not used in between.  But that&#39;ll be moot once we get rid of\r<br>           the pointers.\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Aa7mSQI-5u8J",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2013-11-14T09:09:43Z",
+   "subject": "Re: [stan-dev] safe pointer alloc and free (command refactor)",
+   "parts": [
+    [
+     2,
+     "&gt; In fact, I&#39;d be tempted to have the sampler class have a flag indicating\r<br>&gt; whether to call that init_static thing so that it&#39;s part of sample, as in:\r<br>&gt; \r<br>&gt;  switch (sampler_select) {\r<br>&gt;     case 0:\r<br>&gt;       return sample(stan::mcmc::unit_e_static_hmc(model,base_rng),\r<br>&gt;                     ...);\r<br>&gt; \r<br>&gt; \r<br>&gt;  template &lt;class S&gt;\r<br>&gt;  int sample(S&amp; s, ...) {\r<br>&gt;    if (s.requires_init_static())\r<br>&gt;      if (!init_static_hmc&lt;sampler&gt;(s, algo))\r<br>&gt;        return 0;\r<br>&gt;    ... do something with s...\r<br>&gt;    return 0;  // normal return\r<br>&gt;  }\r<br>&gt; \r<br>&gt; You could probably just have something like s::requires_init_static\r<br>&gt; as a static boolean class variable so you don&#39;t even need a method.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "But then we&#39;d have to have each sampler implementation be aware\r<br>of all other implementations through the possible initializations,\r<br>which break the encapsulation.  I do not like that.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Also, should that return from the conditional on init_static_hmc\r<br>&gt; failing be 0 or something indicating a failure to initialize?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I&#39;d rather it fail with 0, because it means that command.hpp is not\r<br>configured correctly.  Remember all of these things get called\r<br>in unit-tests so they&#39;d pop up in tests before we make them visible\r<br>to users.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I&#39;d be happy to go through and do the refactoring.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Just be aware that you&#39;ll have to hit other code that uses the\r<br>sampler pointers -- or at least you&#39;ll have to convert to pointers\r<br>at some place.  I don&#39;t think (pointer == 0) is used anywhere\r<br>so that shouldn&#39;t be a problem, but just in case.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; P.S.  I&#39;d also much rather see the numerically obfuscated switch replaced\r<br>&gt;      with an if-then structure.  But I can see how reasonable people would\r<br>&gt;      differ on this preference.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I draw the line after two nested ifs, especially when they&#39;re repeated\r<br>this much.  An explicit if/then would be a nightmare to read, which is\r<br>why I went to a single switch with the built up index.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; P.P.S.  Why static_cast&lt;int&gt;(adapt_engaged);  Isn&#39;t adapt_engaged already\r<br>&gt;        boolean?  You just want to be explicit?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Cast to an int for courtesy before being used in the integer arithmetic\r<br>that builds up the unique sampler index.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; P.P.P.S.  It&#39;s good style to declare variables close to where you define them.\r<br>&gt;          The sampler_ptr was defined way before the case statement to set it\r<br>&gt;          and not used in between.  But that&#39;ll be moot once we get rid of\r<br>&gt;          the pointers.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s an artifact of only having HMC samplers at the moment.  If we have\r<br>another sampler then it would have used the same sampler_ptr."
+    ]
+   ]
+  },
+  {
+   "id": "lZ8MN5XZWKQJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-11-14T20:03:22Z",
+   "subject": "Re: [stan-dev] safe pointer alloc and free (command refactor)",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 11/14/13, 4:09 AM, Michael Betancourt wrote:\r<br>&gt;&gt; In fact, I&#39;d be tempted to have the sampler class have a flag indicating\r<br>&gt;&gt; whether to call that init_static thing so that it&#39;s part of sample, as in:\r<br>&gt;&gt;\r<br>&gt;&gt;   switch (sampler_select) {\r<br>&gt;&gt;      case 0:\r<br>&gt;&gt;        return sample(stan::mcmc::unit_e_static_hmc(model,base_rng),\r<br>&gt;&gt;                      ...);\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;   template &lt;class S&gt;\r<br>&gt;&gt;   int sample(S&amp; s, ...) {\r<br>&gt;&gt;     if (s.requires_init_static())\r<br>&gt;&gt;       if (!init_static_hmc&lt;sampler&gt;(s, algo))\r<br>&gt;&gt;         return 0;\r<br>&gt;&gt;     ... do something with s...\r<br>&gt;&gt;     return 0;  // normal return\r<br>&gt;&gt;   }\r<br>&gt;&gt;\r<br>&gt;&gt; You could probably just have something like s::requires_init_static\r<br>&gt;&gt; as a static boolean class variable so you don&#39;t even need a method.\r<br>&gt;\r<br>&gt; But then we&#39;d have to have each sampler implementation be aware\r<br>&gt; of all other implementations through the possible initializations,\r<br>&gt; which break the encapsulation.  I do not like that.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Agreed.  It&#39;s a tradeoff, like all coding.  You can either repeat\r<br>yourself in multiple places or try to make a generalization.  But\r<br>it&#39;s not worth doing if the generalization is forced.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;&gt; Also, should that return from the conditional on init_static_hmc\r<br>&gt;&gt; failing be 0 or something indicating a failure to initialize?\r<br>&gt;\r<br>&gt; I&#39;d rather it fail with 0, because it means that command.hpp is not\r<br>&gt; configured correctly.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "It that&#39;s the case, raise an exception and dump out a message.\r<br>\r<br>The standard thing to do is to trust your code by unit testing,\r<br>not put in a run-time test.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Remember all of these things get called\r<br>&gt; in unit-tests so they&#39;d pop up in tests before we make them visible\r<br>&gt; to users.\r<br>&gt;\r<br>&gt;&gt; I&#39;d be happy to go through and do the refactoring.\r<br>&gt;\r<br>&gt; Just be aware that you&#39;ll have to hit other code that uses the\r<br>&gt; sampler pointers -- or at least you&#39;ll have to convert to pointers\r<br>&gt; at some place.  I don&#39;t think (pointer == 0) is used anywhere\r<br>&gt; so that shouldn&#39;t be a problem, but just in case.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Of course.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;&gt; P.S.  I&#39;d also much rather see the numerically obfuscated switch replaced\r<br>&gt;&gt;       with an if-then structure.  But I can see how reasonable people would\r<br>&gt;&gt;       differ on this preference.\r<br>&gt;\r<br>&gt; I draw the line after two nested ifs, especially when they&#39;re repeated\r<br>&gt; this much.  An explicit if/then would be a nightmare to read, which is\r<br>&gt; why I went to a single switch with the built up index.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I very strongly disagree.\r<br>\r<br>The way you have it requires lining up how the int gets constructed in\r<br>multiple loops via arithmetic and then lining up the resulting magic\r<br>numbers with the case statements.  The key to readability is having\r<br>local decisions made locally.\r<br>\r<br>Luckily, Daniel&#39;s going to break this logjam of disagreement with\r<br>an even better suggestion --- we write little functions that\r<br>do the work for us so the code&#39;s both readable, encapsulated, and\r<br>has no magic numbers or deeply nested ifs.\r<br>\r<br>I&#39;ll call that out in the next e-mail.  We&#39;ll deal with the refacroring\r<br>so you don&#39;t have to worry about it.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>\r<br>&gt;&gt; P.P.S.  Why static_cast&lt;int&gt;(adapt_engaged);  Isn&#39;t adapt_engaged already\r<br>&gt;&gt;         boolean?  You just want to be explicit?\r<br>&gt;\r<br>&gt; Cast to an int for courtesy before being used in the integer arithmetic\r<br>&gt; that builds up the unique sampler index.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "OK --- I&#39;d rather just rely on how the compiler is specified to\r<br>work in these cases, but I&#39;m not adamant about it.  Or, use\r<br>the logical nature of the boolean in a ternary/conditional operator.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;&gt; P.P.P.S.  It&#39;s good style to declare variables close to where you define them.\r<br>&gt;&gt;           The sampler_ptr was defined way before the case statement to set it\r<br>&gt;&gt;           and not used in between.  But that&#39;ll be moot once we get rid of\r<br>&gt;&gt;           the pointers.\r<br>&gt;\r<br>&gt; That&#39;s an artifact of only having HMC samplers at the moment.  If we have\r<br>&gt; another sampler then it would have used the same sampler_ptr.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Define a new one, then, or refactor the code.  Lingering variables\r<br>with multiple purposes is just hard to follow (a bad code &quot;smell&quot; as\r<br>the refactoring folks would have it).\r<br>\r<br>I know it&#39;s Java and ten years plus old, but I&#39;d highly recommend\r<br>Fowler&#39;s book &quot;Refactoring&quot;.  It&#39;s all about writing code for readability\r<br>and maintainability.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  }
+ ]
+}
