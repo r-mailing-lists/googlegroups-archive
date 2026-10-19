@@ -1,0 +1,2092 @@
+From ue0fddb5311ed7959 at groups.google.com  Fri Feb  5 00:01:47 2021
+From: ue0fddb5311ed7959 at groups.google.com (Billy Geary)
+Date: Fri, 05 Feb 2021 00:01:47 +0000
+Subject: State space models in 'long format'
+Message-ID: <xKfi2tigKJ4.ue4a1FxEBAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/xKfi2tigKJ4/m/ue4a1FxEBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi All,
+I'm trying to re-code one of the state space models in AHM2 into long format as the dataset i am testing it with is quite large, but am running into error issues in the observation process model.
+
+This is the error:
+Error in checkForRemoteErrors(val) :
+  3 nodes produced errors; first error: RUNTIME ERROR:
+Compilation error on line 53.
+Attempt to redefine node p[1]
+
+Is anyone able to see what might be triggering the error? I understand what the error means, but as far as i can see, nowhere am i re-defining the p[i], so am struggling to work out where i'm going wrong. Any help would be much appreciated.
+
+This is the model:
+cat(file = "model.txt","
+model {
+  # Priors
+  lambda ~ dunif(0, 100)     # Expected initial abundance
+
+  # Model for ’immigration-free’ population growth rate
+  for(i in 1:M){
+    for(t in 1:(T-1)){
+      alpha.gam[i,t] ~ dnorm(mu.alpha.gam, tau.alpha.gam)
+    }
+  }
+  mu.alpha.gam <- log(mean.gamma)
+  mean.gamma ~ dunif(0.9, 1.1) # Mean of gamma
+  tau.alpha.gam <- pow(sd.alpha.gam, -2)
+  sd.alpha.gam ~ dnorm(0, 100) I(0.001,)   # Site/ year-level OD
+
+  ## Model for detection probability ##
+  for(i in 1:M){
+    for(t in 1:T){
+      alpha.p[i,t] ~ dnorm(mu.alpha.p, tau.alpha.p)
+    }
+  }
+  mu.alpha.p <- logit(mean.p)
+  mean.p ~ dunif(0, 1)            # Mean detectability
+  tau.alpha.p <- pow(sd.alpha.p, -2)
+  sd.alpha.p ~ dnorm(0,0.01) I(0.001,) # Site/year-level overdispersion
+
+  for (v in 1:1){
+    beta.p[v] ~ dnorm(0, 0.1) # Covariate coefficient prior
+  }
+
+  for(t in 1:(T-1)){         # Model for random immigration
+    log(rho[t]) <- logrho[t]
+    logrho[t] ~ dnorm(0, tau.rho)
+  }
+  tau.rho <- pow(sd.rho, -2)
+  sd.rho ~ dnorm(0, 0.5)I(0.001,)  # Half-normal prior for sd
+
+  # Likelihood
+  # State process
+  for(i in 1:M){
+    # Initial conditions
+    N[i,1] ~ dpois(lambda)
+    # Transition model
+    for(t in 2:T){
+      N[i,t] ~ dpois(N[i,t-1] * gamma[i, t-1] + rho[t-1])
+      log(gamma[i, t-1]) <- loggam[i, t-1]
+      loggam[i, t-1] <- alpha.gam[i, t-1]
+    }
+    # Observation process as long format
+    for(i in 1:nObs){
+      C[i] ~ dbin(p[i], N[SiteNo[i],Session[i]])
+      logit(p[i]) <-  alpha.p[SiteNo[i],Session[i]] + beta.p[1] * Year[i]
+    }
+  }
+}
+")
+
+From u4f80e1927b0757cb at groups.google.com  Fri Feb  5 00:48:30 2021
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Fri, 05 Feb 2021 00:48:30 +0000
+Subject: Re: State space models in 'long format'
+Message-ID: <xKfi2tigKJ4.npKVZOlGBAAJ@hmecology.groups.google.com>
+In-Reply-To: <xKfi2tigKJ4.ue4a1FxEBAAJ@hmecology.groups.google.com>
+References: <xKfi2tigKJ4.ue4a1FxEBAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/xKfi2tigKJ4/m/npKVZOlGBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Simplifying things a bit:
+
+for(i in 1:M){
+
+    # Observation process as long format
+    for(i in 1:nObs){
+
+      logit(p[i]) <-  alpha.p[SiteNo[i],Session[i]] + beta.p[1] * Year[i]
+    }
+  }
+
+You are using the same index for site and observation within site (i), and also indexing p by only one index (which may or may not be OK). That's why the re-definition is happening. You should change the interior observation loop to use a different index (eg, j), and also index p and its linear predictor components by both i and j if necessary (if p is supposed to vary by both site and occasion). If p varies only by site (i) but not by occasion (j), which I suspect is true in this case, you could also leave it indexed only by i and move the logit(p) line out of the interior (j) loop.
+
+Ken
+
+On Thursday, February 4, 2021 at 7:01:47 PM UTC-5 billy...@gmail.com wrote:
+> Hi All,
+> I'm trying to re-code one of the state space models in AHM2 into long format as the dataset i am testing it with is quite large, but am running into error issues in the observation process model.
+>
+> This is the error:
+> Error in checkForRemoteErrors(val) :
+>   3 nodes produced errors; first error: RUNTIME ERROR:
+> Compilation error on line 53.
+> Attempt to redefine node p[1]
+>
+> Is anyone able to see what might be triggering the error? I understand what the error means, but as far as i can see, nowhere am i re-defining the p[i], so am struggling to work out where i'm going wrong. Any help would be much appreciated.
+>
+>
+> This is the model:
+> cat(file = "model.txt","
+> model {
+>   # Priors
+>   lambda ~ dunif(0, 100)     # Expected initial abundance
+>
+>   # Model for ’immigration-free’ population growth rate
+>   for(i in 1:M){
+>     for(t in 1:(T-1)){
+>       alpha.gam[i,t] ~ dnorm(mu.alpha.gam, tau.alpha.gam)
+>     }
+>   }
+>   mu.alpha.gam <- log(mean.gamma)
+>   mean.gamma ~ dunif(0.9, 1.1) # Mean of gamma
+>   tau.alpha.gam <- pow(sd.alpha.gam, -2)
+>   sd.alpha.gam ~ dnorm(0, 100) I(0.001,)   # Site/ year-level OD
+>
+>   ## Model for detection probability ##
+>   for(i in 1:M){
+>     for(t in 1:T){
+>       alpha.p[i,t] ~ dnorm(mu.alpha.p, tau.alpha.p)
+>     }
+>   }
+>   mu.alpha.p <- logit(mean.p)
+>   mean.p ~ dunif(0, 1)            # Mean detectability
+>   tau.alpha.p <- pow(sd.alpha.p, -2)
+>   sd.alpha.p ~ dnorm(0,0.01) I(0.001,) # Site/year-level overdispersion
+>
+>   for (v in 1:1){
+>     beta.p[v] ~ dnorm(0, 0.1) # Covariate coefficient prior
+>   }
+>
+>   for(t in 1:(T-1)){         # Model for random immigration
+>     log(rho[t]) <- logrho[t]
+>     logrho[t] ~ dnorm(0, tau.rho)
+>   }
+>   tau.rho <- pow(sd.rho, -2)
+>   sd.rho ~ dnorm(0, 0.5)I(0.001,)  # Half-normal prior for sd
+>
+>   # Likelihood
+>   # State process
+>   for(i in 1:M){
+>     # Initial conditions
+>     N[i,1] ~ dpois(lambda)
+>     # Transition model
+>     for(t in 2:T){
+>       N[i,t] ~ dpois(N[i,t-1] * gamma[i, t-1] + rho[t-1])
+>       log(gamma[i, t-1]) <- loggam[i, t-1]
+>       loggam[i, t-1] <- alpha.gam[i, t-1]
+>     }
+>     # Observation process as long format
+>     for(i in 1:nObs){
+>       C[i] ~ dbin(p[i], N[SiteNo[i],Session[i]])
+>       logit(p[i]) <-  alpha.p[SiteNo[i],Session[i]] + beta.p[1] * Year[i]
+>     }
+>   }
+> }
+> ")
+>
+
+From u00ebeb6e0521112d at groups.google.com  Tue Feb  9 08:18:39 2021
+From: u00ebeb6e0521112d at groups.google.com (Kery Marc)
+Date: Tue, 09 Feb 2021 08:18:39 +0000
+Subject: FW: quantitative ecologist faculty position
+Message-ID: <0j-sYgpViUY.w2QZPcyZBQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/0j-sYgpViUY/m/w2QZPcyZBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+here is what appears to be a very interesting position for the audience of these lists.
+
+Best regards  --- Marc
+
+From u58f9caa88f82c33a at groups.google.com  Wed Feb 10 10:39:31 2021
+From: u58f9caa88f82c33a at groups.google.com (=?utf-8?b?VGjDoG5oIFbEg24gTmd1eeG7hW4=?=)
+Date: Wed, 10 Feb 2021 10:39:31 +0000
+Subject: Re: New R package "ubms"
+Message-ID: <xc35BHNk4ss.llOpgBDwBQAJ@hmecology.groups.google.com>
+In-Reply-To: <xc35BHNk4ss.5y94u1fZAgAJ@hmecology.groups.google.com>
+References: <xc35BHNk4ss.5y94u1fZAgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/xc35BHNk4ss/m/llOpgBDwBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Ken,
+
+I am using the ubms package to estimate the occupancy pattern of rare species (which means low detection data), and the package is working very well. I am super happy with it.
+
+When I compare the candidate models by using modSel(), a concern comes to me. I searched around but failed, so I hope you can help to solve it.
+
+As you might know, in unmarked package, we have the ΔAIC for each candidate model. Models within ΔAIC of 2 (or say with ΔAIC<2) are considered to have the same support as the top model (which has lowest AIC). By this way, I take all models which have ΔAIC<2 into further running.
+In the meanwhile, the ubms package ranks the candidate models by using elpd. And you also pointed out that the comparison of elpf_diff and se_diff can help to indicate the models with higher elpd are performed better. The question came to me at this step: which models I should select for further running? All of my models have elpf_diff higher than se_diff at least 2 or 3 times. And I could not take them all in the next running.
+
+So my question is: do we have any kind of that  ΔAIC<2 "threshold" for ubms package?
+
+Please let me know if my phrase was not clear, or if you need more information from me.
+
+Thank you and best regards,
+Thanh
+
+On Monday, 25 January 2021 at 22:09:36 UTC+7 Ken Kellner wrote:
+> Hi all,
+>
+> My R package "ubms" is now available on CRAN[1]. The package fits a variety of hierarchical models (single-season and dynamic occupancy, N-mixture, Royle-Nichols, distance sampling, etc.) in a Bayesian framework with Stan [2], using a formula-based interface almost identical to package "unmarked". You can specify random effects on model parameters as well using the same syntax as package "lme4".
+>
+> Also included are tools for assessing model fit, calculating WAIC and leave-one-out cross validation (LOO), model selection, prediction, plotting residuals and covariate effects, and extracting posterior distributions of latent states (e.g. site abundance/occupancy). And of course you get the full MCMC sample output from Stan so you can apply any other tools that interact with Stan.
+>
+> I see ubms as an intermediate step along the continuum from unmarked/MARK/PRESENCE to writing custom models in BUGS/JAGS/Nimble/Stan. It is not meant to replace either approach but rather to supplement them, for situations when you need a Bayesian framework and “off-the-shelf” model structures are adequate. In such situations ubms should be a fast and easy solution.
+>
+> If you'd like to see more details, the package website is here [3], an extended demo of the package features here [4], and a comparison with JAGS here [5]. Feel free to contact me with questions or issues, or submit bug reports on Github [6]. I hope you find the package useful!
+>
+> Ken
+>
+> [1] https://cran.r-project.org/web/packages/ubms/index.html
+> [2] https://mc-stan.org/
+> [3] https://kenkellner.com/ubms/
+> [4] https://kenkellner.com/blog/ubms-vignette.html
+> [5] https://kenkellner.com/ubms/articles/JAGS-comparison.html
+> [6] https://github.com/kenkellner/ubms/issues
+
+From u4f80e1927b0757cb at groups.google.com  Wed Feb 10 13:13:16 2021
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Wed, 10 Feb 2021 13:13:16 +0000
+Subject: Re: New R package "ubms"
+Message-ID: <xc35BHNk4ss.jI8_lHT4BQAJ@hmecology.groups.google.com>
+In-Reply-To: <xc35BHNk4ss.5y94u1fZAgAJ@hmecology.groups.google.com>
+References: <xc35BHNk4ss.5y94u1fZAgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/xc35BHNk4ss/m/jI8_lHT4BQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Thanh,
+
+It's a bit hard to discuss this without an example selection table, so I've pasted one I made below:
+
+              elpd nparam elpd_diff se_diff weight
+sfit_opt -1163.452 25.225     0.000   0.000   0.95
+sfit     -1206.496  3.949   -43.044   9.197   0.05
+sfit_2   -1257.392  1.860   -93.940  12.716   0.00
+
+The "top" ranked model (with highest/least negative elpd) is first in the table, and all other models are being compared pairwise to the top model. Both 'sfit' and 'sfit_2' have have an absolute difference in elpd much larger than the standard error of this difference. As far as I know there isn't a widely accepted rule of thumb like delta AIC < 2 for this situation, but one approach is to see if elpd_diff +/- 1 SE overlaps 0, and if not, the model with the higher/more positive elpd is considered better (see e.g. https://meridian.allenpress.com/jfwm/article/10/2/691/433057/Bayesian-Model-Selection-in-Fisheries-Management). Following that rule 'sfit_opt' is expected to have better predictive performance than either 'sfit' or 'sfit_2' and so I would move forward using only 'sfit_opt'. In this case model selection made the correct choice, since I simulated the dataset with the same model as 'sfit_opt'.
+
+When you say "All of my models have elpf_diff higher than se_diff at least 2 or 3 times" are you describing a situation like my example here? If so it sounds like your top model is probably much better than any other model, since abs(elpd_diff) +/- se_diff for other models would not overlap 0.
+
+On the other hand if you have one elpd_diff much smaller than the corresponding se_diff (e.g., fake example below)
+
+elpd_diff se_diff
+ 0.000     0.000
+-4.044     9.197
+-93.940    12.716
+
+That would imply similar support for both the top and 2nd ranked models, but not the third. If they all have abs(elpd_diff) < se_diff, then model selection has failed in the same way that it would if every model you fit had delta AIC < 2.
+
+Ken
+
+On Wednesday, February 10, 2021 at 5:39:31 AM UTC-5 thanh...@gmail.com wrote:
+> Dear Ken,
+>
+> I am using the ubms package to estimate the occupancy pattern of rare species (which means low detection data), and the package is working very well. I am super happy with it.
+>
+> When I compare the candidate models by using modSel(), a concern comes to me. I searched around but failed, so I hope you can help to solve it.
+>
+> As you might know, in unmarked package, we have the ΔAIC for each candidate model. Models within ΔAIC of 2 (or say with ΔAIC<2) are considered to have the same support as the top model (which has lowest AIC). By this way, I take all models which have ΔAIC<2 into further running.
+> In the meanwhile, the ubms package ranks the candidate models by using elpd. And you also pointed out that the comparison of elpf_diff and se_diff can help to indicate the models with higher elpd are performed better. The question came to me at this step: which models I should select for further running? All of my models have elpf_diff higher than se_diff at least 2 or 3 times. And I could not take them all in the next running.
+>
+> So my question is: do we have any kind of that  ΔAIC<2 "threshold" for ubms package?
+>
+> Please let me know if my phrase was not clear, or if you need more information from me.
+>
+> Thank you and best regards,
+> Thanh
+>
+> On Monday, 25 January 2021 at 22:09:36 UTC+7 Ken Kellner wrote:
+> > Hi all,
+> >
+> > My R package "ubms" is now available on CRAN[1]. The package fits a variety of hierarchical models (single-season and dynamic occupancy, N-mixture, Royle-Nichols, distance sampling, etc.) in a Bayesian framework with Stan [2], using a formula-based interface almost identical to package "unmarked". You can specify random effects on model parameters as well using the same syntax as package "lme4".
+> >
+> > Also included are tools for assessing model fit, calculating WAIC and leave-one-out cross validation (LOO), model selection, prediction, plotting residuals and covariate effects, and extracting posterior distributions of latent states (e.g. site abundance/occupancy). And of course you get the full MCMC sample output from Stan so you can apply any other tools that interact with Stan.
+> >
+> > I see ubms as an intermediate step along the continuum from unmarked/MARK/PRESENCE to writing custom models in BUGS/JAGS/Nimble/Stan. It is not meant to replace either approach but rather to supplement them, for situations when you need a Bayesian framework and “off-the-shelf” model structures are adequate. In such situations ubms should be a fast and easy solution.
+> >
+> > If you'd like to see more details, the package website is here [3], an extended demo of the package features here [4], and a comparison with JAGS here [5]. Feel free to contact me with questions or issues, or submit bug reports on Github [6]. I hope you find the package useful!
+> >
+> > Ken
+> >
+> > [1] https://cran.r-project.org/web/packages/ubms/index.html
+> > [2] https://mc-stan.org/
+> > [3] https://kenkellner.com/ubms/
+> > [4] https://kenkellner.com/blog/ubms-vignette.html
+> > [5] https://kenkellner.com/ubms/articles/JAGS-comparison.html
+> > [6] https://github.com/kenkellner/ubms/issues
+
+From u58f9caa88f82c33a at groups.google.com  Wed Feb 10 16:05:09 2021
+From: u58f9caa88f82c33a at groups.google.com (=?utf-8?b?VGjDoG5oIFbEg24gTmd1eeG7hW4=?=)
+Date: Wed, 10 Feb 2021 16:05:09 +0000
+Subject: Re: New R package "ubms"
+Message-ID: <xc35BHNk4ss.T9cvj9UBBgAJ@hmecology.groups.google.com>
+In-Reply-To: <xc35BHNk4ss.jI8_lHT4BQAJ@hmecology.groups.google.com>
+References: <xc35BHNk4ss.5y94u1fZAgAJ@hmecology.groups.google.com> <xc35BHNk4ss.jI8_lHT4BQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/xc35BHNk4ss/m/T9cvj9UBBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ken,
+
+Thank you for the clear explanation. It corrected my understanding of the model selection in ubms.
+
+Your examples somehow fit my current situation. Below is output for one of my species:
+     Model         elpd  elpd_diff      se_diff  Rhat
+ADM_02  -344.571        0.000 0.000 1
+ADM_01  -355.648     -11.077 7.283 1
+ADM_00  -371.794     -27.222 9.387 1
+
+In this case, the ADM_02 is clearly the best-supported model.
+
+And for my 2nd species, the model selection output:
+   Model        elpd  elpd_diff      se_diff  Rhat
+ASR_02 -419.753        0.000 0.000 1
+ASR_00 -423.587       -3.834 4.728 1
+ASR_01 -425.236       -5.483 4.035 1
+
+This mean the ASR_02 and ASR_00 are having similar support and I would use them in the next steps. And I might ignore the ASR_01
+
+Thanks again,
+Thanh
+
+On Wednesday, 10 February 2021 at 20:13:16 UTC+7 Ken Kellner wrote:
+> Hi Thanh,
+>
+> It's a bit hard to discuss this without an example selection table, so I've pasted one I made below:
+>
+>               elpd nparam elpd_diff se_diff weight
+> sfit_opt -1163.452 25.225     0.000   0.000   0.95
+> sfit     -1206.496  3.949   -43.044   9.197   0.05
+> sfit_2   -1257.392  1.860   -93.940  12.716   0.00
+>
+> The "top" ranked model (with highest/least negative elpd) is first in the table, and all other models are being compared pairwise to the top model. Both 'sfit' and 'sfit_2' have have an absolute difference in elpd much larger than the standard error of this difference. As far as I know there isn't a widely accepted rule of thumb like delta AIC < 2 for this situation, but one approach is to see if elpd_diff +/- 1 SE overlaps 0, and if not, the model with the higher/more positive elpd is considered better (see e.g. https://meridian.allenpress.com/jfwm/article/10/2/691/433057/Bayesian-Model-Selection-in-Fisheries-Management). Following that rule 'sfit_opt' is expected to have better predictive performance than either 'sfit' or 'sfit_2' and so I would move forward using only 'sfit_opt'. In this case model selection made the correct choice, since I simulated the dataset with the same model as 'sfit_opt'.
+>
+> When you say "All of my models have elpf_diff higher than se_diff at least 2 or 3 times" are you describing a situation like my example here? If so it sounds like your top model is probably much better than any other model, since abs(elpd_diff) +/- se_diff for other models would not overlap 0.
+>
+> On the other hand if you have one elpd_diff much smaller than the corresponding se_diff (e.g., fake example below)
+>
+> elpd_diff se_diff
+>  0.000     0.000
+> -4.044     9.197
+> -93.940    12.716
+>
+> That would imply similar support for both the top and 2nd ranked models, but not the third. If they all have abs(elpd_diff) < se_diff, then model selection has failed in the same way that it would if every model you fit had delta AIC < 2.
+>
+> Ken
+>
+> On Wednesday, February 10, 2021 at 5:39:31 AM UTC-5 thanh...@gmail.com wrote:
+> > Dear Ken,
+> >
+> > I am using the ubms package to estimate the occupancy pattern of rare species (which means low detection data), and the package is working very well. I am super happy with it.
+> >
+> > When I compare the candidate models by using modSel(), a concern comes to me. I searched around but failed, so I hope you can help to solve it.
+> >
+> > As you might know, in unmarked package, we have the ΔAIC for each candidate model. Models within ΔAIC of 2 (or say with ΔAIC<2) are considered to have the same support as the top model (which has lowest AIC). By this way, I take all models which have ΔAIC<2 into further running.
+> > In the meanwhile, the ubms package ranks the candidate models by using elpd. And you also pointed out that the comparison of elpf_diff and se_diff can help to indicate the models with higher elpd are performed better. The question came to me at this step: which models I should select for further running? All of my models have elpf_diff higher than se_diff at least 2 or 3 times. And I could not take them all in the next running.
+> >
+> > So my question is: do we have any kind of that  ΔAIC<2 "threshold" for ubms package?
+> >
+> > Please let me know if my phrase was not clear, or if you need more information from me.
+> >
+> > Thank you and best regards,
+> > Thanh
+> >
+> > On Monday, 25 January 2021 at 22:09:36 UTC+7 Ken Kellner wrote:
+> > > Hi all,
+> > >
+> > > My R package "ubms" is now available on CRAN[1]. The package fits a variety of hierarchical models (single-season and dynamic occupancy, N-mixture, Royle-Nichols, distance sampling, etc.) in a Bayesian framework with Stan [2], using a formula-based interface almost identical to package "unmarked". You can specify random effects on model parameters as well using the same syntax as package "lme4".
+> > >
+> > > Also included are tools for assessing model fit, calculating WAIC and leave-one-out cross validation (LOO), model selection, prediction, plotting residuals and covariate effects, and extracting posterior distributions of latent states (e.g. site abundance/occupancy). And of course you get the full MCMC sample output from Stan so you can apply any other tools that interact with Stan.
+> > >
+> > > I see ubms as an intermediate step along the continuum from unmarked/MARK/PRESENCE to writing custom models in BUGS/JAGS/Nimble/Stan. It is not meant to replace either approach but rather to supplement them, for situations when you need a Bayesian framework and “off-the-shelf” model structures are adequate. In such situations ubms should be a fast and easy solution.
+> > >
+> > > If you'd like to see more details, the package website is here [3], an extended demo of the package features here [4], and a comparison with JAGS here [5]. Feel free to contact me with questions or issues, or submit bug reports on Github [6]. I hope you find the package useful!
+> > >
+> > > Ken
+> > >
+> > > [1] https://cran.r-project.org/web/packages/ubms/index.html
+> > > [2] https://mc-stan.org/
+> > > [3] https://kenkellner.com/ubms/
+> > > [4] https://kenkellner.com/blog/ubms-vignette.html
+> > > [5] https://kenkellner.com/ubms/articles/JAGS-comparison.html
+> > > [6] https://github.com/kenkellner/ubms/issues
+
+From u58a62321f08f30f8 at groups.google.com  Thu Feb 11 20:37:38 2021
+From: u58a62321f08f30f8 at groups.google.com (Chris Sutherland)
+Date: Thu, 11 Feb 2021 20:37:38 +0000
+Subject: MSc in Statistical Ecology at University of St Andrews, UK
+Message-ID: <Qwm57CUQRJs.-fWUIElfBgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/Qwm57CUQRJs/m/-fWUIElfBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Colleagues
+
+Apologies for cross-posting and for this non-modelling related message. Please feel free to pass this on to anyone you think might be considering a MSc and has interests in statistical ecology.
+
+We are very pleased to announce that we are taking applications for the second intake of our new MSc in Statistical Ecology detailed in the attached leaflet. This year there are two fee-waiver scholarships available, which can be applied for when applying for admission to the MSc.
+
+The MSc aims to give students
+a sound understanding of the statistical foundations of modern methods in statistical ecology
+Knowledge and skills to use these methods effectively
+experience of applying them to real-world problems, under the supervision of experts, some of whom are leading researchers in this field
+
+The Programme involves two semesters of taught courses and a 3-month summer research dissertation. It is taught by staff at the interdisciplinary Centre for Research into Ecological and Environmental Modelling (https://www.creem.st-andrews.ac.uk/). The summer dissertation includes optional placements with collaborators in the UK or abroad, to give students experience of dealing with real-world problems in statistical ecology.
+
+We are delighted to announce that we intend to award scholarships to partially or fully cover MSc fees to selected successful applicants.
+
+More information is available here:
+
+Course details: https://www.st-andrews.ac.uk/subjects/statistics/statistical-ecology-msc/
+
+Scholarship: https://www.st-andrews.ac.uk/study/fees-and-funding/postgraduate/scholarships/statistical-ecology/
+
+For any additional information, please direct enquiries to ma...@st-andrews.ac.uk.
+
+Chris Sutherland
+
+ <https://www.st-andrews.ac.uk/>
+
+School of Mathematics and Statistics
+
+Mathematical Institute, North Haugh
+
+University of St Andrews
+
+St Andrews, Fife, KY16 9SS
+
+Email : ma...@st-andrews.ac.uk
+
+www.st-andrews.ac.uk <https://www.st-andrews.ac.uk/>
+
+Know The Covid Code <https://www.st-andrews.ac.uk/coronavirus/covid-code/>
+
+ <https://www.st-andrews.ac.uk/coronavirus/covid-code/>
+
+Download NHS Scotland's Protect Scotland app <https://protect.scot/>
+
+The University of St Andrews is a charity registered in Scotland, No: SC013532
+
+From u61b4a5163f7b7d9c at groups.google.com  Fri Feb 12 16:51:22 2021
+From: u61b4a5163f7b7d9c at groups.google.com (Helen Moor)
+Date: Fri, 12 Feb 2021 16:51:22 +0000
+Subject: Dyn occ model - parameter estimate bias with missing sites?
+Message-ID: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/rePLXG9oBrc/m/PbDmeYShBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all
+
+I am fitting a dynamic occupancy model for 20 years of data, where some sites begin to exist later in the time series and other sites disappear after some years. I am trying to account for that with a matrix EXTANT (dimensions nsites x nyears), which takes on values of 1 or 0 for a site existing or not in a given year.
+
+The formulation is currently as follows (with a random effect for the area a site belongs to, and a single covariate effect on gamma):
+
+   for (i in 1:nsite){
+        # psi1:
+        logit(psi1[i]) <- alpha.psi1[area[i]]
+        z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+       # persistence phi:
+        logit(phi[i]) <- alpha.phi[area[i]]
+
+      for (k in 1:(nyear-1)){
+            # colonisation gamma:
+            logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+            muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+            z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+        } #k
+    } #i
+
+Now I wonder whether this is sufficient or whether I would have to include EXTANT in the logit model for the covariate effect on colonization probability (or initial occupancy, or persistence) as well, in order not to bias parameter estimates?
+
+i.e. should I add EXTANT here too, and would that be the correct way of doing it?:
+logit(gamma[i,k]) <- ( alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]  )*EXTANT[i,(k)]
+
+Much obliged!
+Helen
+
+From u00ebeb6e0521112d at groups.google.com  Fri Feb 12 17:38:26 2021
+From: u00ebeb6e0521112d at groups.google.com (Kery Marc)
+Date: Fri, 12 Feb 2021 17:38:26 +0000
+Subject: RE: Dyn occ model - parameter estimate bias with missing sites?
+Message-ID: <rePLXG9oBrc.9R_dCxakBgAJ@hmecology.groups.google.com>
+In-Reply-To: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+References: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/rePLXG9oBrc/m/9R_dCxakBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Helen,
+
+I think this is quite an interesting topic and an important one for the analysis of opportunistic ("citizen-science", CS) data.
+
+In principle, I am quite convinced that you don't need to include in your model such a term EXTANT if you just set to NA the data for the years when a site is not extant. In that case, the information for parameter estimation will only come from the data when a site is extant. (Note: it would be wrong to have zeroes in the data also for years when a site is not extant.) A second approach that should be equivalent is to define the likelihood only for those years when a site is extant, by giving a starting and an ending year.
+
+If sites are missing at random (MAR, which is a strong and often violated assumption for CS data), then you should get unbiased parameter estimates in either case. Only if you want to add up the occupied sites, then you would have to take into account the sites that don't exist yet or anymore.
+
+If on the other hand, sites are not missing at random (MNAR), then the missing value-generating mechanism needs to be modelled as well in order to avoid bias in the parameters of interest.
+
+Now, in spite of this I am not entirely sure even about the MAR case. A colleague once told me that they thought they found strange estimates from a dynamic occupancy model fit to CS data that were due to the manner in which sites got recruited into their study (they got what they believed were spurious trends).
+
+I don't understand this sufficiently well so to investigate I would do what I always do in that case: run some simulations.
+
+Best regards  --- Marc
+
+PS: Where is your observation model ? I assume you don't have temporal replication within a year/site so you model apparent presence/absence, right ?
+
+From: hmec...@googlegroups.com [hmec...@googlegroups.com] on behalf of Helen Moor [hele...@gmx.ch]
+Sent: Friday, February 12, 2021 17:51
+To: hmecology: Hierarchical Modeling in Ecology
+Subject: Dyn occ model - parameter estimate bias with missing sites?
+
+Dear all
+
+I am fitting a dynamic occupancy model for 20 years of data, where some sites begin to exist later in the time series and other sites disappear after some years. I am trying to account for that with a matrix EXTANT (dimensions nsites x nyears), which takes on values of 1 or 0 for a site existing or not in a given year.
+
+The formulation is currently as follows (with a random effect for the area a site belongs to, and a single covariate effect on gamma):
+
+   for (i in 1:nsite){
+        # psi1:
+        logit(psi1[i]) <- alpha.psi1[area[i]]
+        z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+       # persistence phi:
+        logit(phi[i]) <- alpha.phi[area[i]]
+
+      for (k in 1:(nyear-1)){
+            # colonisation gamma:
+            logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+            muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+            z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+        } #k
+    } #i
+
+Now I wonder whether this is sufficient or whether I would have to include EXTANT in the logit model for the covariate effect on colonization probability (or initial occupancy, or persistence) as well, in order not to bias parameter estimates?
+
+i.e. should I add EXTANT here too, and would that be the correct way of doing it?:
+logit(gamma[i,k]) <- ( alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]  )*EXTANT[i,(k)]
+
+Much obliged!
+Helen
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u61b4a5163f7b7d9c at groups.google.com  Mon Feb 15 08:59:29 2021
+From: u61b4a5163f7b7d9c at groups.google.com (Helen Moor)
+Date: Mon, 15 Feb 2021 08:59:29 +0000
+Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+Message-ID: <rePLXG9oBrc.mmx-Oao_AAAJ@hmecology.groups.google.com>
+In-Reply-To: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+References: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/rePLXG9oBrc/m/mmx-Oao_AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Marc,
+
+Thank you very much for your explanations! Your suggestion that NAs in y exclude such data points from contributing to parameter estimation is very helpful and should make the problem relatively easy to address. I will investigate this with simulations, and also try to compare results to a version with start and end years for each site (although I first need to figure out how to code that in JAGS).
+
+What makes our case perhaps somewhat special is a combination of sources of missing data. On the one hand we have (more or less randomly) missing data where sites did not get visited (but do exist); on the other hand, we have sites that actually get created (or destroyed) during the time series. We are modelling amphibians and investigate artificially created new ponds within a set of pre-existing ponds. (I didn't explain that very well, and also omitted the observation model, in an attempt to keep it simple; see below for the full version.)
+
+So far we tried to account for these two different sources of missing data in two different ways. Where sites were not visited, we set y=0 and forced detection probability to p=0 as well, by means of an array DETECTABLE, that is zero when a site was not visited and one otherwise. Where sites did not exist, we used the already discussed matrix EXTANT, that is zero when a site does not exist and one otherwise.
+Perhaps a combination of [y=0 and p=0] for missing observations with y=NA for missing sites could be a simple solution?
+
+I shall try it with simulations.
+Best regards,
+Helen
+
+### Observation model:
+
+# separate loop over sites and years for j=3 p components
+
+for (i in 1:nsite){
+
+      for (k in 1:nyear){
+             logit(p[i,1,k]) <- det.int <http://det.int> + beta.obs[x.observer[i,1,k]]   ## Observer effect on first two visits (night time)
+             logit(p[i,2,k]) <- det.int <http://det.int> + beta.obs[x.observer[i,2,k]]   ## Observer effect on first two visits  (night time)
+             logit(p[i,3,k]) <- det.int <http://det.int> + day.const                               ## Constant for third visit (day time)
+
+     }
+}
+for (i in 1:nsite){
+
+      for (j in 1:nrep){
+            for (k in 1:nyear){
+                  muy[i,j,k] <- z[i,k]*p[i,j,k] *DETECTABLE[i,j,k]
+                  y[i,j,k] ~ dbern(muy[i,j,k])
+            } #k
+       } #j
+} #i
+
+### Process model:
+
+for (i in 1:nsite){
+
+        # psi1:
+        logit(psi1[i]) <- alpha.psi1[area[i]]
+        z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+
+       # persistence phi:
+        logit(phi[i]) <- alpha.phi[area[i]]
+
+      for (k in 1:(nyear-1)){
+
+            # colonisation gamma:
+            logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+
+            muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+            z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+        } #k
+    } #i
+
+marc.kery schrieb am Freitag, 12. Februar 2021 um 18:38:26 UTC+1:
+> Dear Helen,
+>
+> I think this is quite an interesting topic and an important one for the analysis of opportunistic ("citizen-science", CS) data.
+>
+> In principle, I am quite convinced that you don't need to include in your model such a term EXTANT if you just set to NA the data for the years when a site is not extant. In that case, the information for parameter estimation will only come from the data when a site is extant. (Note: it would be wrong to have zeroes in the data also for years when a site is not extant.) A second approach that should be equivalent is to define the likelihood only for those years when a site is extant, by giving a starting and an ending year.
+>
+> If sites are missing at random (MAR, which is a strong and often violated assumption for CS data), then you should get unbiased parameter estimates in either case. Only if you want to add up the occupied sites, then you would have to take into account the sites that don't exist yet or anymore.
+>
+> If on the other hand, sites are not missing at random (MNAR), then the missing value-generating mechanism needs to be modelled as well in order to avoid bias in the parameters of interest.
+>
+> Now, in spite of this I am not entirely sure even about the MAR case. A colleague once told me that they thought they found strange estimates from a dynamic occupancy model fit to CS data that were due to the manner in which sites got recruited into their study (they got what they believed were spurious trends).
+>
+> I don't understand this sufficiently well so to investigate I would do what I always do in that case: run some simulations.
+>
+> Best regards  --- Marc
+>
+> PS: Where is your observation model ? I assume you don't have temporal replication within a year/site so you model apparent presence/absence, right ?
+>
+> From: hmec...@googlegroups.com [hmec...@googlegroups.com] on behalf of Helen Moor [hele...@gmx.ch]
+> Sent: Friday, February 12, 2021 17:51
+> To: hmecology: Hierarchical Modeling in Ecology
+> Subject: Dyn occ model - parameter estimate bias with missing sites?
+>
+> Dear all
+>
+> I am fitting a dynamic occupancy model for 20 years of data, where some sites begin to exist later in the time series and other sites disappear after some years. I am trying to account for that with a matrix EXTANT (dimensions nsites x nyears), which takes on values of 1 or 0 for a site existing or not in a given year.
+>
+> The formulation is currently as follows (with a random effect for the area a site belongs to, and a single covariate effect on gamma):
+>
+>    for (i in 1:nsite){
+>         # psi1:
+>         logit(psi1[i]) <- alpha.psi1[area[i]]
+>         z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+>        # persistence phi:
+>         logit(phi[i]) <- alpha.phi[area[i]]
+>
+>       for (k in 1:(nyear-1)){
+>             # colonisation gamma:
+>             logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+>             muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+>             z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+>         } #k
+>     } #i
+>
+> Now I wonder whether this is sufficient or whether I would have to include EXTANT in the logit model for the covariate effect on colonization probability (or initial occupancy, or persistence) as well, in order not to bias parameter estimates?
+>
+> i.e. should I add EXTANT here too, and would that be the correct way of doing it?:
+> logit(gamma[i,k]) <- ( alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]  )*EXTANT[i,(k)]
+>
+> Much obliged!
+> Helen
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u00ebeb6e0521112d at groups.google.com  Mon Feb 15 09:29:14 2021
+From: u00ebeb6e0521112d at groups.google.com (Kery Marc)
+Date: Mon, 15 Feb 2021 09:29:14 +0000
+Subject: RE: Dyn occ model - parameter estimate bias with missing sites?
+Message-ID: <rePLXG9oBrc.nGaD3UlBAAAJ@hmecology.groups.google.com>
+In-Reply-To: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+References: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/rePLXG9oBrc/m/nGaD3UlBAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Helen,
+
+One thing you should check out are the combined species distribution and habitat availability models that MacKenzie, Miller and others developed about 10 years ago, e.g.:
+https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.2041-210X.2011.00110.x
+https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.1365-2656.2012.02001.x
+
+I think that these models are formulated as multistate models, where the state of a site is defined not by a single species only (which is an amphibian species in their case), but by an amphibian plus the presence or absence of its egg-laying habitat (the pond). I imagine that an alternative to such joint species-habitat modeling would be to keep the two processes separate and have one model for the presence and absence of the habitat and then another, conditional model for the occurrence of the species. In that case, you would have a model such as:
+h(i,t) ~ xxx, where h is a binary indicator for presence or absence of the pond and xxx would be some model for pond occurrence.
+
+And then, you would formulate the occupancy model for your frog something like this:
+z(i,t) ~ dbern(psi * h(i,t))
+
+Now, looking again at your code below, I see that your solution is really almost the same (only part shown, and my 'h' is your 'EXTANT'):
+
+z[i,(k+1)] ~ dbern(muZ[i,(k+1)] * EXTANT[i,(k+1)])
+
+Only you don't write a model for h/EXTANT, but just provide it as data. So, I still wonder whether ignoring the EXTANT information and simply putting NAs in the data when a pond does not exist would introduce bias in your parameter estimates, but I do now think that your approach with EXTANT is a good one. However I would not use the DETECTABLE construct, but simply have NAs in the detection histories when a site was not visited; this seems much more natural to me, although perhaps your approach produces the same results.
+
+Best regards  --- Marc
+
+From: hmec...@googlegroups.com [hmec...@googlegroups.com] on behalf of Helen Moor [hele...@gmx.ch]
+
+Sent: Monday, February 15, 2021 09:59
+
+To: hmecology: Hierarchical Modeling in Ecology
+
+Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+
+Dear Marc,
+
+Thank you very much for your explanations! Your suggestion that NAs in y exclude such data points from contributing to parameter estimation is very helpful and should make the problem relatively easy to address. I will investigate this with simulations, and also try to compare results to a version with start and end years for each site (although I first need to figure out how to code that in JAGS).
+
+What makes our case perhaps somewhat special is a combination of sources of missing data. On the one hand we have (more or less randomly) missing data where sites did not get visited (but do exist); on the other hand, we have sites that actually get created (or destroyed) during the time series. We are modelling amphibians and investigate artificially created new ponds within a set of pre-existing ponds. (I didn't explain that very well, and also omitted the observation model, in an attempt to keep it simple; see below for the full version.)
+
+So far we tried to account for these two different sources of missing data in two different ways. Where sites were not visited, we set y=0 and forced detection probability to p=0 as well, by means of an array DETECTABLE, that is zero when a site was not visited and one otherwise. Where sites did not exist, we used the already discussed matrix EXTANT, that is zero when a site does not exist and one otherwise.
+Perhaps a combination of [y=0 and p=0] for missing observations with y=NA for missing sites could be a simple solution?
+
+I shall try it with simulations.
+Best regards,
+Helen
+
+### Observation model:
+
+# separate loop over sites and years for j=3 p components
+for (i in 1:nsite){
+      for (k in 1:nyear){
+             logit(p[i,1,k]) <- det.int <http://det.int> + beta.obs[x.observer[i,1,k]]   ## Observer effect on first two visits (night time)
+             logit(p[i,2,k]) <- det.int <http://det.int> + beta.obs[x.observer[i,2,k]]   ## Observer effect on first two visits  (night time)
+             logit(p[i,3,k]) <- det.int <http://det.int> + day.const                               ## Constant for third visit (day time)
+     }
+}
+for (i in 1:nsite){
+      for (j in 1:nrep){
+            for (k in 1:nyear){
+                  muy[i,j,k] <- z[i,k]*p[i,j,k] *DETECTABLE[i,j,k]
+                  y[i,j,k] ~ dbern(muy[i,j,k])
+            } #k
+       } #j
+} #i
+
+### Process model:
+for (i in 1:nsite){
+
+        # psi1:
+        logit(psi1[i]) <- alpha.psi1[area[i]]
+        z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+
+       # persistence phi:
+        logit(phi[i]) <- alpha.phi[area[i]]
+
+      for (k in 1:(nyear-1)){
+
+            # colonisation gamma:
+            logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+
+            muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+            z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+        } #k
+    } #i
+
+marc.kery schrieb am Freitag, 12. Februar 2021 um 18:38:26 UTC+1:
+> Dear Helen,
+>
+> I think this is quite an interesting topic and an important one for the analysis of opportunistic ("citizen-science", CS) data.
+>
+> In principle, I am quite convinced that you don't need to include in your model such a term EXTANT if you just set to NA the data for the years when a site is not extant. In that case, the information for parameter estimation will only come from the data when a site is extant. (Note: it would be wrong to have zeroes in the data also for years when a site is not extant.) A second approach that should be equivalent is to define the likelihood only for those years when a site is extant, by giving a starting and an ending year.
+>
+> If sites are missing at random (MAR, which is a strong and often violated assumption for CS data), then you should get unbiased parameter estimates in either case. Only if you want to add up the occupied sites, then you would have to take into account the sites that don't exist yet or anymore.
+>
+> If on the other hand, sites are not missing at random (MNAR), then the missing value-generating mechanism needs to be modelled as well in order to avoid bias in the parameters of interest.
+>
+> Now, in spite of this I am not entirely sure even about the MAR case. A colleague once told me that they thought they found strange estimates from a dynamic occupancy model fit to CS data that were due to the manner in which sites got recruited into their study (they got what they believed were spurious trends).
+>
+> I don't understand this sufficiently well so to investigate I would do what I always do in that case: run some simulations.
+>
+> Best regards  --- Marc
+>
+> PS: Where is your observation model ? I assume you don't have temporal replication within a year/site so you model apparent presence/absence, right ?
+>
+> From: hmec...@googlegroups.com <http://UrlBlockedError.aspx> [hmec...@googlegroups.com <http://UrlBlockedError.aspx>] on behalf of Helen Moor [hele...@gmx.ch <http://UrlBlockedError.aspx>]
+> Sent: Friday, February 12, 2021 17:51
+> To: hmecology: Hierarchical Modeling in Ecology
+> Subject: Dyn occ model - parameter estimate bias with missing sites?
+>
+> Dear all
+>
+> I am fitting a dynamic occupancy model for 20 years of data, where some sites begin to exist later in the time series and other sites disappear after some years. I am trying to account for that with a matrix EXTANT (dimensions nsites x nyears), which takes on values of 1 or 0 for a site existing or not in a given year.
+>
+> The formulation is currently as follows (with a random effect for the area a site belongs to, and a single covariate effect on gamma):
+>
+>    for (i in 1:nsite){
+>         # psi1:
+>         logit(psi1[i]) <- alpha.psi1[area[i]]
+>         z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+>        # persistence phi:
+>         logit(phi[i]) <- alpha.phi[area[i]]
+>
+>       for (k in 1:(nyear-1)){
+>             # colonisation gamma:
+>             logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+>             muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+>             z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+>         } #k
+>     } #i
+>
+> Now I wonder whether this is sufficient or whether I would have to include EXTANT in the logit model for the covariate effect on colonization probability (or initial occupancy, or persistence) as well, in order not to bias parameter estimates?
+>
+> i.e. should I add EXTANT here too, and would that be the correct way of doing it?:
+> logit(gamma[i,k]) <- ( alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]  )*EXTANT[i,(k)]
+>
+> Much obliged!
+> Helen
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com <http://UrlBlockedError.aspx>.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/d83f3548-ec2a-4bab-a5b9-7805e3a0d13dn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/d83f3548-ec2a-4bab-a5b9-7805e3a0d13dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u983257fd4b8064bd at groups.google.com  Tue Feb 16 11:59:30 2021
+From: u983257fd4b8064bd at groups.google.com (Tom)
+Date: Tue, 16 Feb 2021 11:59:30 +0000
+Subject: Community N-mixture model with detection history from sub-counts
+Message-ID: <YKzyVc8ekKM.Nhv7hhGYAAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/YKzyVc8ekKM/m/Nhv7hhGYAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear All,
+
+ I am hoping folk could share their thoughts regarding the legitimacy of a community N-mixture model I want to try.
+
+First some background: We have bird abundance data collected at 190 point count locations grouped in 18 transects, located in a range of habitats. We visited each location 8 times over the course of a year and conducted 10-minute, unlimited radius counts.
+
+Point count locations were >200m apart and we were very careful to avoid double counting, so I think it is ok to assume populations were closed during each visit. However, because visits were separated by several weeks, populations were unlikely to be closed between visits. I base this on some earlier N-mixture modelling, which suggested very low detectability and high estimates of abundance. My understanding from AHM1 is that this is a likely consequence of violating the closure assumption.
+
+However, I hope all is not lost. Inspired by Alldredge et al (2007) “Time-of-Detection method for estimating abundance from point-count surveys” The Auk, when we collected the data, each visit (i.e. total 10-minute count) was divided into four 2.5-minute sub-counts. So we have detection history for each individual in the four sub-counts of each visit (e.g. 1,0,1,0; or 0,0,1,0 etc.). Could I use this detection history to estimate detectability during each point count, and treat each visit as a separate “season” without the expectation that populations would be closed between visits? Does this sound like a legitimate approach?
+
+My proposed model is below, which is largely based on the DRY model in Chapter 11 of AHM1. If I incorporate the detection histories from the sub-counts, can I just run the same model, but with sub-count detection rather than visit detection? And then replace the current “season” parameter with “visit”?
+
+I would really appreciate anyone’s thoughts about this.
+
+Many thanks,
+
+Tom
+
+# Count of each species i at site j during visit k. Can I just reframe the model so that k = sub-count detection rather than visit detection?
+
+Counti,j,k ~ Binomial(Ni,j, pi,j,k)
+
+ # Probability of detection, with a habitat-specific intercept, and species-specific slopes based on time of count (minutes after dawn) and season. Can I replace “season” with “visit”?
+
+Logit(pi,j,k) = alpha0habitat + alpha1i x timej,k + alpha2i x seasonj,k
+
+ # True abundance as a function of landscape structure, with data augmentation
+
+Ni,j ~ Poisson(phii,j, lambdai,j)
+
+ # Landscape structures A and B, with a random effect of transect gamma to account for possible spatial autocorrelation
+
+log(lambdai,j) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj + gammatransectj
+
+From u6742ec693593af53 at groups.google.com  Wed Feb 17 06:09:23 2021
+From: u6742ec693593af53 at groups.google.com (Morgan Tingley)
+Date: Wed, 17 Feb 2021 06:09:23 +0000
+Subject: Re: Community N-mixture model with detection history from sub-counts
+Message-ID: <YKzyVc8ekKM.FF1tD4vTAAAJ@hmecology.groups.google.com>
+In-Reply-To: <YKzyVc8ekKM.Nhv7hhGYAAAJ@hmecology.groups.google.com>
+References: <YKzyVc8ekKM.Nhv7hhGYAAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/YKzyVc8ekKM/m/FF1tD4vTAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Tom,
+
+Yup, the general strategy you propose will work. You can use the internal-survey repeats to estimate per-survey detectability. The question, then, is how you structure the model with respect to the multiple visits. If you believe that you have closure violations, then you should allow occupancy to change from "season" to "season" (i.e. visit to visit). In your current model, you do that only by treating the same site as independent in different visits. That's a problem, because they are not independent at all -- this lack of independence will inflate parameter estimates.
+
+A better solution would be to allow for temporal autocorrelation. My preference in that case would be to do something like this:
+
+Counti,j,k,t ~ Binomial(Ni,j,t, pi,j,k,t)
+where t = visit number
+
+then for visit 1:
+log(lambdai,j,t=1) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj
+(I'm presuming that gamma*transect term is no longer needed)
+
+and for visit t >1
+log(lambdai,j,t) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj  + phi x Ni,j,t-1
+
+Where the lambda at visit t is correlated, via phi, with the true N at time t-1. This creates a temporal autocorrelation at your sites from visit to visit, and corrects for the lack of independence, all while allowing lambda to change from visit to visit via immigration / emigration.
+
+If you're curious, I recently worked with the wonderful Flavia Montaño‐Centellas on just this sort of model – a multi-season community N-mixture model – which we published in Ecography in the context of community assembly in Bolivia. See here:  https://onlinelibrary.wiley.com/doi/full/10.1111/ecog.05379  (PDF is open access, but email me if you for some reason can't access it).
+
+On Tuesday, February 16, 2021 at 3:59:30 AM UTC-8 Tom wrote:
+>
+> Dear All,
+>
+>  I am hoping folk could share their thoughts regarding the legitimacy of a community N-mixture model I want to try.
+>
+> First some background: We have bird abundance data collected at 190 point count locations grouped in 18 transects, located in a range of habitats. We visited each location 8 times over the course of a year and conducted 10-minute, unlimited radius counts.
+>
+> Point count locations were >200m apart and we were very careful to avoid double counting, so I think it is ok to assume populations were closed during each visit. However, because visits were separated by several weeks, populations were unlikely to be closed between visits. I base this on some earlier N-mixture modelling, which suggested very low detectability and high estimates of abundance. My understanding from AHM1 is that this is a likely consequence of violating the closure assumption.
+>
+> However, I hope all is not lost. Inspired by Alldredge et al (2007) “Time-of-Detection method for estimating abundance from point-count surveys” The Auk, when we collected the data, each visit (i.e. total 10-minute count) was divided into four 2.5-minute sub-counts. So we have detection history for each individual in the four sub-counts of each visit (e.g. 1,0,1,0; or 0,0,1,0 etc.). Could I use this detection history to estimate detectability during each point count, and treat each visit as a separate “season” without the expectation that populations would be closed between visits? Does this sound like a legitimate approach?
+>
+> My proposed model is below, which is largely based on the DRY model in Chapter 11 of AHM1. If I incorporate the detection histories from the sub-counts, can I just run the same model, but with sub-count detection rather than visit detection? And then replace the current “season” parameter with “visit”?
+>
+> I would really appreciate anyone’s thoughts about this.
+>
+> Many thanks,
+>
+> Tom
+>
+>
+>
+> # Count of each species i at site j during visit k. Can I just reframe the model so that k = sub-count detection rather than visit detection?
+>
+> Counti,j,k ~ Binomial(Ni,j, pi,j,k)
+>
+>  # Probability of detection, with a habitat-specific intercept, and species-specific slopes based on time of count (minutes after dawn) and season. Can I replace “season” with “visit”?
+>
+> Logit(pi,j,k) = alpha0habitat + alpha1i x timej,k + alpha2i x seasonj,k
+>
+>  # True abundance as a function of landscape structure, with data augmentation
+>
+> Ni,j ~ Poisson(phii,j, lambdai,j)
+>
+>  # Landscape structures A and B, with a random effect of transect gamma to account for possible spatial autocorrelation
+>
+> log(lambdai,j) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj + gammatransectj
+
+From u983257fd4b8064bd at groups.google.com  Wed Feb 17 18:58:27 2021
+From: u983257fd4b8064bd at groups.google.com (Tom Bradfer-Lawrence)
+Date: Wed, 17 Feb 2021 18:58:27 +0000
+Subject: Re: Community N-mixture model with detection history from sub-counts
+Message-ID: <YKzyVc8ekKM.WmJS8YL9AAAJ@hmecology.groups.google.com>
+In-Reply-To: <YKzyVc8ekKM.FF1tD4vTAAAJ@hmecology.groups.google.com>
+References: <YKzyVc8ekKM.Nhv7hhGYAAAJ@hmecology.groups.google.com> <YKzyVc8ekKM.FF1tD4vTAAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/YKzyVc8ekKM/m/WmJS8YL9AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Morgan,
+
+Thanks so much for your response, and the link to the Montano-Centellas paper. It's really useful.
+
+If you don't mind, please could you clarify a couple of things? In your email, for visit t > 1 you include the terms phi x Ni,j,t-1. In the paper this is phii,t-1 x Ni,j,t-1. I think it should be the latter?
+
+>From my understanding of the paper, this phi term ties each species' abundance at Nt-1 to Nt ? So I assume that this phi is separate to the data augmentation phi which I included in my model: Ni,j ~ Poisson(phii,j, lambdai,j), and I just need to give the latter another name to distinguish between them?
+
+Many thanks,
+Tom
+
+On Wed, Feb 17, 2021 at 6:09 AM Morgan Tingley <mtin...@gmail.com> wrote:
+
+> Hi Tom,
+>
+> Yup, the general strategy you propose will work. You can use the internal-survey repeats to estimate per-survey detectability. The question, then, is how you structure the model with respect to the multiple visits. If you believe that you have closure violations, then you should allow occupancy to change from "season" to "season" (i.e. visit to visit). In your current model, you do that only by treating the same site as independent in different visits. That's a problem, because they are not independent at all -- this lack of independence will inflate parameter estimates.
+>
+> A better solution would be to allow for temporal autocorrelation. My preference in that case would be to do something like this:
+>
+> Counti,j,k,t ~ Binomial(Ni,j,t, pi,j,k,t)
+> where t = visit number
+>
+> then for visit 1:
+> log(lambdai,j,t=1) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj
+> (I'm presuming that gamma*transect term is no longer needed)
+>
+> and for visit t >1
+> log(lambdai,j,t) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj  + phi x Ni,j,t-1
+>
+> Where the lambda at visit t is correlated, via phi, with the true N at time t-1. This creates a temporal autocorrelation at your sites from visit to visit, and corrects for the lack of independence, all while allowing lambda to change from visit to visit via immigration / emigration.
+>
+> If you're curious, I recently worked with the wonderful Flavia Montaño‐Centellas on just this sort of model – a multi-season community N-mixture model – which we published in Ecography in the context of community assembly in Bolivia. See here:  https://onlinelibrary.wiley.com/doi/full/10.1111/ecog.05379  (PDF is open access, but email me if you for some reason can't access it).
+>
+> On Tuesday, February 16, 2021 at 3:59:30 AM UTC-8 Tom wrote:
+> >
+> > Dear All,
+> >
+> >  I am hoping folk could share their thoughts regarding the legitimacy of a community N-mixture model I want to try.
+> >
+> > First some background: We have bird abundance data collected at 190 point count locations grouped in 18 transects, located in a range of habitats. We visited each location 8 times over the course of a year and conducted 10-minute, unlimited radius counts.
+> >
+> > Point count locations were >200m apart and we were very careful to avoid double counting, so I think it is ok to assume populations were closed during each visit. However, because visits were separated by several weeks, populations were unlikely to be closed between visits. I base this on some earlier N-mixture modelling, which suggested very low detectability and high estimates of abundance. My understanding from AHM1 is that this is a likely consequence of violating the closure assumption.
+> >
+> > However, I hope all is not lost. Inspired by Alldredge et al (2007) “Time-of-Detection method for estimating abundance from point-count surveys” The Auk, when we collected the data, each visit (i.e. total 10-minute count) was divided into four 2.5-minute sub-counts. So we have detection history for each individual in the four sub-counts of each visit (e.g. 1,0,1,0; or 0,0,1,0 etc.). Could I use this detection history to estimate detectability during each point count, and treat each visit as a separate “season” without the expectation that populations would be closed between visits? Does this sound like a legitimate approach?
+> >
+> > My proposed model is below, which is largely based on the DRY model in Chapter 11 of AHM1. If I incorporate the detection histories from the sub-counts, can I just run the same model, but with sub-count detection rather than visit detection? And then replace the current “season” parameter with “visit”?
+> >
+> > I would really appreciate anyone’s thoughts about this.
+> >
+> > Many thanks,
+> >
+> > Tom
+> >
+> >
+> >
+> > # Count of each species i at site j during visit k. Can I just reframe the model so that k = sub-count detection rather than visit detection?
+> >
+> > Counti,j,k ~ Binomial(Ni,j, pi,j,k)
+> >
+> >  # Probability of detection, with a habitat-specific intercept, and species-specific slopes based on time of count (minutes after dawn) and season. Can I replace “season” with “visit”?
+> >
+> > Logit(pi,j,k) = alpha0habitat + alpha1i x timej,k + alpha2i x seasonj,k
+> >
+> >  # True abundance as a function of landscape structure, with data augmentation
+> >
+> > Ni,j ~ Poisson(phii,j, lambdai,j)
+> >
+> >  # Landscape structures A and B, with a random effect of transect gamma to account for possible spatial autocorrelation
+> >
+> > log(lambdai,j) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj + gammatransectj
+>
+
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> ---
+> You received this message because you are subscribed to a topic in the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/hmecology/YKzyVc8ekKM/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to hmecology+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/hmecology/981f28b4-126e-46ed-91da-51e79bf4fadcn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/981f28b4-126e-46ed-91da-51e79bf4fadcn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u6742ec693593af53 at groups.google.com  Wed Feb 17 23:06:52 2021
+From: u6742ec693593af53 at groups.google.com (Morgan Tingley)
+Date: Wed, 17 Feb 2021 23:06:52 +0000
+Subject: Re: Community N-mixture model with detection history from sub-counts
+Message-ID: <YKzyVc8ekKM.kszUUhELAQAJ@hmecology.groups.google.com>
+In-Reply-To: <YKzyVc8ekKM.WmJS8YL9AAAJ@hmecology.groups.google.com>
+References: <YKzyVc8ekKM.Nhv7hhGYAAAJ@hmecology.groups.google.com> <YKzyVc8ekKM.WmJS8YL9AAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/YKzyVc8ekKM/m/kszUUhELAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Tom,
+
+For phi as a temporal autocorrelation term, yes I was using a short-hand.  Phi should be species-specific, so it should be indexed by species (i). Whether phi varies from time period to time period, depends. In our case (Montano-Centellas et al.), our time periods were each in different seasons, so we figured that the temporal autocorrelation may not be constant. In your case, given how close your visits are in time, you could perhaps better assume that phi is constant from visit to visit. In that case, phi would just be a vector of length n.species, indexed in your model as phi[i].
+
+For phi in your original model, yes, sorry for the confusion, that's a different term (just same greek letter, yikes).
+
+Although to be honest, I'm not exactly sure what "data augmentation" means in the context of your equation for true abundance, N. A Poisson distribution takes one term, and only one term, lambda. In your equation:
+Ni,j ~ Poisson(phii,j, lambdai,j)
+I don't know what that means, or even how it would work. If I gave that equation to JAGS, I'm pretty sure JAGS would give me an error. So this is an aside from your original query, but I'm not sure what you mean by "data augmentation" in this context.
+
+cheers,
+Morgan Tingley
+
+On Wed, Feb 17, 2021 at 10:58 AM Tom Bradfer-Lawrence <tom.bradfe...@gmail.com> wrote:
+> Hi Morgan,
+>
+> Thanks so much for your response, and the link to the Montano-Centellas paper. It's really useful.
+>
+> If you don't mind, please could you clarify a couple of things? In your email, for visit t > 1 you include the terms phi x Ni,j,t-1. In the paper this is phii,t-1 x Ni,j,t-1. I think it should be the latter?
+>
+> From my understanding of the paper, this phi term ties each species' abundance at Nt-1 to Nt ? So I assume that this phi is separate to the data augmentation phi which I included in my model: Ni,j ~ Poisson(phii,j, lambdai,j), and I just need to give the latter another name to distinguish between them?
+>
+> Many thanks,
+> Tom
+>
+> On Wed, Feb 17, 2021 at 6:09 AM Morgan Tingley <mtin...@gmail.com> wrote:
+> > Hi Tom,
+> >
+> > Yup, the general strategy you propose will work. You can use the internal-survey repeats to estimate per-survey detectability. The question, then, is how you structure the model with respect to the multiple visits. If you believe that you have closure violations, then you should allow occupancy to change from "season" to "season" (i.e. visit to visit). In your current model, you do that only by treating the same site as independent in different visits. That's a problem, because they are not independent at all -- this lack of independence will inflate parameter estimates.
+> >
+> > A better solution would be to allow for temporal autocorrelation. My preference in that case would be to do something like this:
+> >
+> > Counti,j,k,t ~ Binomial(Ni,j,t, pi,j,k,t)
+> > where t = visit number
+> >
+> > then for visit 1:
+> > log(lambdai,j,t=1) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj
+> > (I'm presuming that gamma*transect term is no longer needed)
+> >
+> > and for visit t >1
+> > log(lambdai,j,t) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj  + phi x Ni,j,t-1
+> >
+> > Where the lambda at visit t is correlated, via phi, with the true N at time t-1. This creates a temporal autocorrelation at your sites from visit to visit, and corrects for the lack of independence, all while allowing lambda to change from visit to visit via immigration / emigration.
+> >
+> > If you're curious, I recently worked with the wonderful Flavia Montaño‐Centellas on just this sort of model – a multi-season community N-mixture model – which we published in Ecography in the context of community assembly in Bolivia. See here:  https://onlinelibrary.wiley.com/doi/full/10.1111/ecog.05379  (PDF is open access, but email me if you for some reason can't access it).
+> >
+> > On Tuesday, February 16, 2021 at 3:59:30 AM UTC-8 Tom wrote:
+> > >
+> > > Dear All,
+> > >
+> > >  I am hoping folk could share their thoughts regarding the legitimacy of a community N-mixture model I want to try.
+> > >
+> > > First some background: We have bird abundance data collected at 190 point count locations grouped in 18 transects, located in a range of habitats. We visited each location 8 times over the course of a year and conducted 10-minute, unlimited radius counts.
+> > >
+> > > Point count locations were >200m apart and we were very careful to avoid double counting, so I think it is ok to assume populations were closed during each visit. However, because visits were separated by several weeks, populations were unlikely to be closed between visits. I base this on some earlier N-mixture modelling, which suggested very low detectability and high estimates of abundance. My understanding from AHM1 is that this is a likely consequence of violating the closure assumption.
+> > >
+> > > However, I hope all is not lost. Inspired by Alldredge et al (2007) “Time-of-Detection method for estimating abundance from point-count surveys” The Auk, when we collected the data, each visit (i.e. total 10-minute count) was divided into four 2.5-minute sub-counts. So we have detection history for each individual in the four sub-counts of each visit (e.g. 1,0,1,0; or 0,0,1,0 etc.). Could I use this detection history to estimate detectability during each point count, and treat each visit as a separate “season” without the expectation that populations would be closed between visits? Does this sound like a legitimate approach?
+> > >
+> > > My proposed model is below, which is largely based on the DRY model in Chapter 11 of AHM1. If I incorporate the detection histories from the sub-counts, can I just run the same model, but with sub-count detection rather than visit detection? And then replace the current “season” parameter with “visit”?
+> > >
+> > > I would really appreciate anyone’s thoughts about this.
+> > >
+> > > Many thanks,
+> > >
+> > > Tom
+> > >
+> > >
+> > >
+> > > # Count of each species i at site j during visit k. Can I just reframe the model so that k = sub-count detection rather than visit detection?
+> > >
+> > > Counti,j,k ~ Binomial(Ni,j, pi,j,k)
+> > >
+> > >  # Probability of detection, with a habitat-specific intercept, and species-specific slopes based on time of count (minutes after dawn) and season. Can I replace “season” with “visit”?
+> > >
+> > > Logit(pi,j,k) = alpha0habitat + alpha1i x timej,k + alpha2i x seasonj,k
+> > >
+> > >  # True abundance as a function of landscape structure, with data augmentation
+> > >
+> > > Ni,j ~ Poisson(phii,j, lambdai,j)
+> > >
+> > >  # Landscape structures A and B, with a random effect of transect gamma to account for possible spatial autocorrelation
+> > >
+> > > log(lambdai,j) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj + gammatransectj
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked: for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> > ---
+> > You received this message because you are subscribed to a topic in the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> > To unsubscribe from this topic, visit https://groups.google.com/d/topic/hmecology/YKzyVc8ekKM/unsubscribe.
+> > To unsubscribe from this group and all its topics, send an email to hmecology+...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/hmecology/981f28b4-126e-46ed-91da-51e79bf4fadcn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/981f28b4-126e-46ed-91da-51e79bf4fadcn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u58a62321f08f30f8 at groups.google.com  Thu Feb 18 09:05:44 2021
+From: u58a62321f08f30f8 at groups.google.com (Chris Sutherland)
+Date: Thu, 18 Feb 2021 09:05:44 +0000
+Subject: Ecological & Environmental Statistician post in Scotland
+Message-ID: <A8OyEWf07_8.Kw2Jfb8rAQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/A8OyEWf07_8/m/Kw2Jfb8rAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+An ecological statistician job opening in Scotland that may be of interest to this community
+
+-----Original Message-----
+From: On Behalf Of Ken Newman
+Sent: 18 February 2021 06:07
+Subject: Ecological & Environmental Statistician post in Scotland
+
+Biomathematics & Statistics Scotland (BioSS) is looking to fill a newly created position of Ecological & Environmental Statistician.
+
+This is an exciting opportunity to participate in the development of and application of statistical methodology to ecological and environmental problems, with primary focus on impacts of offshore renewable energy on marine mammals and seabirds.
+
+Please feel free to share the attached announcement and position details with others who might be interested.
+
+The closing date for applications is 9th March 2021.
+
+Ken
+
+--
+Biomathematics and Statistics Scotland (BioSS) is formally part of The James Hutton Institute (JHI), a registered Scottish charity No. SC041796 and a company limited by guarantee No. SC374831
+
+From u58a62321f08f30f8 at groups.google.com  Thu Feb 18 09:24:13 2021
+From: u58a62321f08f30f8 at groups.google.com (Chris Sutherland)
+Date: Thu, 18 Feb 2021 09:24:13 +0000
+Subject: Wildlife Biometrician at NH Fish and Game Department
+Message-ID: <vZQ9vcYr0rY.ug85p8EsAQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/vZQ9vcYr0rY/m/ug85p8EsAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Another biometrician job, this time in New Hampshire.
+
+From: On Behalf Of Catherine Callahan
+Sent: 17 February 2021 17:17
+Subject: Wildlife Biometrician at NH Fish and Game Department
+
+The State of New Hampshire, Fish and Game Department has a full time vacancy for wildlife biometrician. Summary: Designs data collection procedures and performs data analysis for wildlife projects, employing current statistical methods and modeling techniques, and works with Wildlife Division staff to coordinate data collection for management and research purposes.  The State of NH compensation package features excellent benefits. Application close date March 5, 2021. Details in the attached job description. For further information please contact: Mark Ellingwood, Chief of Wildlife Division at (603) 271-2461.
+
+From u983257fd4b8064bd at groups.google.com  Thu Feb 18 12:55:23 2021
+From: u983257fd4b8064bd at groups.google.com (Tom Bradfer-Lawrence)
+Date: Thu, 18 Feb 2021 12:55:23 +0000
+Subject: Re: Community N-mixture model with detection history from sub-counts
+Message-ID: <YKzyVc8ekKM.nEhefUc4AQAJ@hmecology.groups.google.com>
+In-Reply-To: <YKzyVc8ekKM.kszUUhELAQAJ@hmecology.groups.google.com>
+References: <YKzyVc8ekKM.Nhv7hhGYAAAJ@hmecology.groups.google.com> <YKzyVc8ekKM.kszUUhELAQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/YKzyVc8ekKM/m/nEhefUc4AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Morgan,
+
+Thanks for the clarification. That's a good point about whether the temporal autocorrelation should vary or not among visits. I will have to give it a bit of thought whether it is appropriate in our case. Perhaps I will vary it between the two halves of the year, which correspond to dry and wet season in our landscape.
+
+Just to explain about "data augmentation". I realise I made an error before regarding the data augmentation phi, I'm getting my Greek letters confused. Kery and Royle's AHM1 uses omega as data augmentation to account for never-detected species in the regional pool. Later on K&R use phi to account for zero inflation, but state that a model could have both data augmentation and zero inflation. Anyway, currently in my JAGS script for the abundance portion of the model (very similar to K&R's script) reads:
+
+for(i in 1:nspec){
+    for (j in 1:nsite){
+    a[j,i] ~ dbern(phi[i])
+    N[j,i] ~ dpois(a[j,i] * lambda[j,i])
+
+log(lambda[j,i]) <- beta0[j] +                      # Habitat-specific intercept
+    beta1[i] * LandscapeA[i] +                     # Species-specific slopes
+    beta2[i] * LandscapeB[i]
+}
+}
+
+With the phi term coming from a distribution of phi[i] ~ dunif(0,1) to account for zero inflation. The model does work in its current form. However, given the new approach with the temporal autocorrelation, I think I will start again from scratch and assess whether I need to include a zero inflation component at all. I also suspect that I don't need to include data augmentation for the never-detected species. I guess it depends on the study questions, but I think these rare (or rarely detected) species are likely unimportant for our work.
+
+Many thanks again for your help with this.
+Kind regards,
+Tom
+
+On Wed, Feb 17, 2021 at 11:06 PM Morgan Tingley <mtin...@gmail.com> wrote:
+> Hi Tom,
+>
+> For phi as a temporal autocorrelation term, yes I was using a short-hand.  Phi should be species-specific, so it should be indexed by species (i). Whether phi varies from time period to time period, depends. In our case (Montano-Centellas et al.), our time periods were each in different seasons, so we figured that the temporal autocorrelation may not be constant. In your case, given how close your visits are in time, you could perhaps better assume that phi is constant from visit to visit. In that case, phi would just be a vector of length n.species, indexed in your model as phi[i].
+>
+> For phi in your original model, yes, sorry for the confusion, that's a different term (just same greek letter, yikes).
+>
+> Although to be honest, I'm not exactly sure what "data augmentation" means in the context of your equation for true abundance, N. A Poisson distribution takes one term, and only one term, lambda. In your equation:
+> Ni,j ~ Poisson(phii,j, lambdai,j)
+> I don't know what that means, or even how it would work. If I gave that equation to JAGS, I'm pretty sure JAGS would give me an error. So this is an aside from your original query, but I'm not sure what you mean by "data augmentation" in this context.
+>
+> cheers,
+> Morgan Tingley
+>
+> On Wed, Feb 17, 2021 at 10:58 AM Tom Bradfer-Lawrence <tom.bradfe...@gmail.com> wrote:
+> > Hi Morgan,
+> >
+> > Thanks so much for your response, and the link to the Montano-Centellas paper. It's really useful.
+> >
+> > If you don't mind, please could you clarify a couple of things? In your email, for visit t > 1 you include the terms phi x Ni,j,t-1. In the paper this is phii,t-1 x Ni,j,t-1. I think it should be the latter?
+> >
+> > From my understanding of the paper, this phi term ties each species' abundance at Nt-1 to Nt ? So I assume that this phi is separate to the data augmentation phi which I included in my model: Ni,j ~ Poisson(phii,j, lambdai,j), and I just need to give the latter another name to distinguish between them?
+> >
+> > Many thanks,
+> > Tom
+> >
+> > On Wed, Feb 17, 2021 at 6:09 AM Morgan Tingley <mtin...@gmail.com> wrote:
+> > > Hi Tom,
+> > >
+> > > Yup, the general strategy you propose will work. You can use the internal-survey repeats to estimate per-survey detectability. The question, then, is how you structure the model with respect to the multiple visits. If you believe that you have closure violations, then you should allow occupancy to change from "season" to "season" (i.e. visit to visit). In your current model, you do that only by treating the same site as independent in different visits. That's a problem, because they are not independent at all -- this lack of independence will inflate parameter estimates.
+> > >
+> > > A better solution would be to allow for temporal autocorrelation. My preference in that case would be to do something like this:
+> > >
+> > > Counti,j,k,t ~ Binomial(Ni,j,t, pi,j,k,t)
+> > > where t = visit number
+> > >
+> > > then for visit 1:
+> > > log(lambdai,j,t=1) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj
+> > > (I'm presuming that gamma*transect term is no longer needed)
+> > >
+> > > and for visit t >1
+> > > log(lambdai,j,t) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj  + phi x Ni,j,t-1
+> > >
+> > > Where the lambda at visit t is correlated, via phi, with the true N at time t-1. This creates a temporal autocorrelation at your sites from visit to visit, and corrects for the lack of independence, all while allowing lambda to change from visit to visit via immigration / emigration.
+> > >
+> > > If you're curious, I recently worked with the wonderful Flavia Montaño‐Centellas on just this sort of model – a multi-season community N-mixture model – which we published in Ecography in the context of community assembly in Bolivia. See here:  https://onlinelibrary.wiley.com/doi/full/10.1111/ecog.05379  (PDF is open access, but email me if you for some reason can't access it).
+> > >
+> > > On Tuesday, February 16, 2021 at 3:59:30 AM UTC-8 Tom wrote:
+> > > >
+> > > > Dear All,
+> > > >
+> > > >  I am hoping folk could share their thoughts regarding the legitimacy of a community N-mixture model I want to try.
+> > > >
+> > > > First some background: We have bird abundance data collected at 190 point count locations grouped in 18 transects, located in a range of habitats. We visited each location 8 times over the course of a year and conducted 10-minute, unlimited radius counts.
+> > > >
+> > > > Point count locations were >200m apart and we were very careful to avoid double counting, so I think it is ok to assume populations were closed during each visit. However, because visits were separated by several weeks, populations were unlikely to be closed between visits. I base this on some earlier N-mixture modelling, which suggested very low detectability and high estimates of abundance. My understanding from AHM1 is that this is a likely consequence of violating the closure assumption.
+> > > >
+> > > > However, I hope all is not lost. Inspired by Alldredge et al (2007) “Time-of-Detection method for estimating abundance from point-count surveys” The Auk, when we collected the data, each visit (i.e. total 10-minute count) was divided into four 2.5-minute sub-counts. So we have detection history for each individual in the four sub-counts of each visit (e.g. 1,0,1,0; or 0,0,1,0 etc.). Could I use this detection history to estimate detectability during each point count, and treat each visit as a separate “season” without the expectation that populations would be closed between visits? Does this sound like a legitimate approach?
+> > > >
+> > > > My proposed model is below, which is largely based on the DRY model in Chapter 11 of AHM1. If I incorporate the detection histories from the sub-counts, can I just run the same model, but with sub-count detection rather than visit detection? And then replace the current “season” parameter with “visit”?
+> > > >
+> > > > I would really appreciate anyone’s thoughts about this.
+> > > >
+> > > > Many thanks,
+> > > >
+> > > > Tom
+> > > >
+> > > >
+> > > >
+> > > > # Count of each species i at site j during visit k. Can I just reframe the model so that k = sub-count detection rather than visit detection?
+> > > >
+> > > > Counti,j,k ~ Binomial(Ni,j, pi,j,k)
+> > > >
+> > > >  # Probability of detection, with a habitat-specific intercept, and species-specific slopes based on time of count (minutes after dawn) and season. Can I replace “season” with “visit”?
+> > > >
+> > > > Logit(pi,j,k) = alpha0habitat + alpha1i x timej,k + alpha2i x seasonj,k
+> > > >
+> > > >  # True abundance as a function of landscape structure, with data augmentation
+> > > >
+> > > > Ni,j ~ Poisson(phii,j, lambdai,j)
+> > > >
+> > > >  # Landscape structures A and B, with a random effect of transect gamma to account for possible spatial autocorrelation
+> > > >
+> > > > log(lambdai,j) = beta0i + beta1i x landscapeAj + beta2i x landscapeBj + gammatransectj
+> > >
+> > > --
+> > > *** Three hierarchical modeling email lists ***
+> > > (1) unmarked: for questions specific to the R package unmarked
+> > > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > > (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> > > ---
+> > > You received this message because you are subscribed to a topic in the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/hmecology/YKzyVc8ekKM/unsubscribe.
+> > > To unsubscribe from this group and all its topics, send an email to hmecology+...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/hmecology/981f28b4-126e-46ed-91da-51e79bf4fadcn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/981f28b4-126e-46ed-91da-51e79bf4fadcn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u61b4a5163f7b7d9c at groups.google.com  Fri Feb 19 15:29:28 2021
+From: u61b4a5163f7b7d9c at groups.google.com (Helen Moor)
+Date: Fri, 19 Feb 2021 15:29:28 +0000
+Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+Message-ID: <rePLXG9oBrc.h59rWTp7BgAJ@hmecology.groups.google.com>
+In-Reply-To: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+References: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/rePLXG9oBrc/m/h59rWTp7BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Marc,
+
+Many thanks for the references and your assessment. Modelling also the habitat dynamics is very interesting, and it is good to see that my deterministic case is a comparable special case of this, where EXTANT is given as data instead of estimated.
+
+Regarding the DETECTABLE construct, NAs in y where sites were not visited seem more natural to me also. A colleague and mentor suggested the formulation that sets y=0 and p=0 in these cases, arguing that in this way, we maximize the information we provide to the model (we did not go look, hence can fix p=0). I compared the two approaches, and there was no difference in results, so this might be a matter of taste.
+
+Now I have spent some time simulating and testing different model formulations to appease my worries about biased parameter estimates. Specifically, I have compared four formulations to estimate effects of a single site-specific, time-invariant covariate on colonization rate, when some sites only appear later in the time series:
+
+1a: EXTANT in the Bernoulli trials (e.g. z[i,1] ~ dbern(psi1* EXTANT[i,1])), while the logit model reads: logit(gamma[i,k]) <- alpha.gamma + beta.gamma* xdat[i,k]
+
+1b: EXTANT in the Bernoulli trials  (e.g. z[i,1] ~ dbern(psi1* EXTANT[i,1])) AND in the logit model, as simple multiplier:  logit(gamma[i,k]) <- (alpha.gamma + beta.gamma* xdat[i,k]) * EXTANT[i,k]
+
+2_Indexed: a version without extant but start and end years for each site (looping over these years only)
+
+3_NAs: a version without extant, but NA in y where sites do not exist
+
+Curiously, there are very slight but systematic (i.e. consistent across model runs) differences in parameter estimates from these different formulations (see figures below). The first three formulations are more similar to each other, sometimes overlap, and which is closest to the truth depends on the dataset generated. The last version 3_NAs appears to deviate the most from the others in terms of estimates. On the natural/probability scale, however, the differences are minute. Can they be considered equivalent? I am not sure.
+
+My simulation efforts haven’t really given me conclusive evidence for which formulation is best (or whether there truly is a difference). I might just keep my existing formulation 1a, with EXTANT in the Bernoullis, or else go for your suggestion of using start and end years as indices.
+
+Thanks again!
+
+Best, Helen
+
+Fig. 1: Mean parameter estimates (alpha and gamma) from 10 runs per model formulation. Blue: 1a with extant in Bernoulli; red: 1b with extant in Bernoulli and in logit-linear model for gamma; yellow: 2_Indexed with start and end year index instead of extant; cyan: 3_NAs, with NAs in y where sites do not exist instead of extant. Vertical dotted lines indicate the 25% and 75% limits of the credible interval for the estimate from each model. For this dataset, 1a (blue) was closest to the truth (black vertical broken line), while 3_NAs was farthest from it.
+
+Fig. 2: Response of colonization probability gamma to the x covariate (site-specific, time-invariant). Black circles show truth for all sites, lines are plotting using mean of mean estimates across 10 models per formulation. The difference between the different formulations on this scale is very slight.
+
+marc.kery schrieb am Montag, 15. Februar 2021 um 10:29:14 UTC+1:
+> Dear Helen,
+>
+> One thing you should check out are the combined species distribution and habitat availability models that MacKenzie, Miller and others developed about 10 years ago, e.g.:
+> https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.2041-210X.2011.00110.x
+> https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.1365-2656.2012.02001.x
+>
+> I think that these models are formulated as multistate models, where the state of a site is defined not by a single species only (which is an amphibian species in their case), but by an amphibian plus the presence or absence of its egg-laying habitat (the pond). I imagine that an alternative to such joint species-habitat modeling would be to keep the two processes separate and have one model for the presence and absence of the habitat and then another, conditional model for the occurrence of the species. In that case, you would have a model such as:
+> h(i,t) ~ xxx, where h is a binary indicator for presence or absence of the pond and xxx would be some model for pond occurrence.
+>
+> And then, you would formulate the occupancy model for your frog something like this:
+> z(i,t) ~ dbern(psi * h(i,t))
+>
+> Now, looking again at your code below, I see that your solution is really almost the same (only part shown, and my 'h' is your 'EXTANT'):
+> z[i,(k+1)] ~ dbern(muZ[i,(k+1)] * EXTANT[i,(k+1)])
+>
+> Only you don't write a model for h/EXTANT, but just provide it as data. So, I still wonder whether ignoring the EXTANT information and simply putting NAs in the data when a pond does not exist would introduce bias in your parameter estimates, but I do now think that your approach with EXTANT is a good one. However I would not use the DETECTABLE construct, but simply have NAs in the detection histories when a site was not visited; this seems much more natural to me, although perhaps your approach produces the same results.
+>
+> Best regards  --- Marc
+>
+>
+> From: hmec...@googlegroups.com [hmec...@googlegroups.com] on behalf of Helen Moor [hele...@gmx.ch]
+> Sent: Monday, February 15, 2021 09:59
+>
+> To: hmecology: Hierarchical Modeling in Ecology
+> Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+>
+>
+> Dear Marc,
+>
+> Thank you very much for your explanations! Your suggestion that NAs in y exclude such data points from contributing to parameter estimation is very helpful and should make the problem relatively easy to address. I will investigate this with simulations, and also try to compare results to a version with start and end years for each site (although I first need to figure out how to code that in JAGS).
+>
+> What makes our case perhaps somewhat special is a combination of sources of missing data. On the one hand we have (more or less randomly) missing data where sites did not get visited (but do exist); on the other hand, we have sites that actually get created (or destroyed) during the time series. We are modelling amphibians and investigate artificially created new ponds within a set of pre-existing ponds. (I didn't explain that very well, and also omitted the observation model, in an attempt to keep it simple; see below for the full version.)
+>
+> So far we tried to account for these two different sources of missing data in two different ways. Where sites were not visited, we set y=0 and forced detection probability to p=0 as well, by means of an array DETECTABLE, that is zero when a site was not visited and one otherwise. Where sites did not exist, we used the already discussed matrix EXTANT, that is zero when a site does not exist and one otherwise.
+> Perhaps a combination of [y=0 and p=0] for missing observations with y=NA for missing sites could be a simple solution?
+>
+> I shall try it with simulations.
+> Best regards,
+> Helen
+>
+>
+> ### Observation model:
+>
+> # separate loop over sites and years for j=3 p components
+> for (i in 1:nsite){
+>       for (k in 1:nyear){
+>              logit(p[i,1,k]) <- det.int <http://det.int> + beta.obs[x.observer[i,1,k]]   ## Observer effect on first two visits (night time)
+>              logit(p[i,2,k]) <- det.int <http://det.int> + beta.obs[x.observer[i,2,k]]   ## Observer effect on first two visits  (night time)
+>              logit(p[i,3,k]) <- det.int <http://det.int> + day.const                               ## Constant for third visit (day time)
+>      }
+> }
+> for (i in 1:nsite){
+>       for (j in 1:nrep){
+>             for (k in 1:nyear){
+>                   muy[i,j,k] <- z[i,k]*p[i,j,k] *DETECTABLE[i,j,k]
+>                   y[i,j,k] ~ dbern(muy[i,j,k])
+>             } #k
+>        } #j
+> } #i
+>
+> ### Process model:
+> for (i in 1:nsite){
+>
+>         # psi1:
+>         logit(psi1[i]) <- alpha.psi1[area[i]]
+>         z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+>
+>        # persistence phi:
+>         logit(phi[i]) <- alpha.phi[area[i]]
+>
+>
+>       for (k in 1:(nyear-1)){
+>
+>             # colonisation gamma:
+>             logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+>
+>             muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+>             z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+>         } #k
+>     } #i
+>
+> marc.kery schrieb am Freitag, 12. Februar 2021 um 18:38:26 UTC+1:
+> > Dear Helen,
+> >
+> > I think this is quite an interesting topic and an important one for the analysis of opportunistic ("citizen-science", CS) data.
+> >
+> > In principle, I am quite convinced that you don't need to include in your model such a term EXTANT if you just set to NA the data for the years when a site is not extant. In that case, the information for parameter estimation will only come from the data when a site is extant. (Note: it would be wrong to have zeroes in the data also for years when a site is not extant.) A second approach that should be equivalent is to define the likelihood only for those years when a site is extant, by giving a starting and an ending year.
+> >
+> > If sites are missing at random (MAR, which is a strong and often violated assumption for CS data), then you should get unbiased parameter estimates in either case. Only if you want to add up the occupied sites, then you would have to take into account the sites that don't exist yet or anymore.
+> >
+> > If on the other hand, sites are not missing at random (MNAR), then the missing value-generating mechanism needs to be modelled as well in order to avoid bias in the parameters of interest.
+> >
+> > Now, in spite of this I am not entirely sure even about the MAR case. A colleague once told me that they thought they found strange estimates from a dynamic occupancy model fit to CS data that were due to the manner in which sites got recruited into their study (they got what they believed were spurious trends).
+> >
+> > I don't understand this sufficiently well so to investigate I would do what I always do in that case: run some simulations.
+> >
+> > Best regards  --- Marc
+> >
+> > PS: Where is your observation model ? I assume you don't have temporal replication within a year/site so you model apparent presence/absence, right ?
+> >
+> > From: hmec...@googlegroups.com <http://UrlBlockedError.aspx> [hmec...@googlegroups.com <http://UrlBlockedError.aspx>] on behalf of Helen Moor [hele...@gmx.ch <http://UrlBlockedError.aspx>]
+> > Sent: Friday, February 12, 2021 17:51
+> > To: hmecology: Hierarchical Modeling in Ecology
+> > Subject: Dyn occ model - parameter estimate bias with missing sites?
+> >
+> > Dear all
+> >
+> > I am fitting a dynamic occupancy model for 20 years of data, where some sites begin to exist later in the time series and other sites disappear after some years. I am trying to account for that with a matrix EXTANT (dimensions nsites x nyears), which takes on values of 1 or 0 for a site existing or not in a given year.
+> >
+> > The formulation is currently as follows (with a random effect for the area a site belongs to, and a single covariate effect on gamma):
+> >
+> >    for (i in 1:nsite){
+> >         # psi1:
+> >         logit(psi1[i]) <- alpha.psi1[area[i]]
+> >         z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+> >        # persistence phi:
+> >         logit(phi[i]) <- alpha.phi[area[i]]
+> >
+> >       for (k in 1:(nyear-1)){
+> >             # colonisation gamma:
+> >             logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+> >             muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+> >             z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+> >         } #k
+> >     } #i
+> >
+> > Now I wonder whether this is sufficient or whether I would have to include EXTANT in the logit model for the covariate effect on colonization probability (or initial occupancy, or persistence) as well, in order not to bias parameter estimates?
+> >
+> > i.e. should I add EXTANT here too, and would that be the correct way of doing it?:
+> > logit(gamma[i,k]) <- ( alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]  )*EXTANT[i,(k)]
+> >
+> > Much obliged!
+> > Helen
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked: for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com <http://UrlBlockedError.aspx>.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/d83f3548-ec2a-4bab-a5b9-7805e3a0d13dn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/d83f3548-ec2a-4bab-a5b9-7805e3a0d13dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u00ebeb6e0521112d at groups.google.com  Sun Feb 21 12:45:48 2021
+From: u00ebeb6e0521112d at groups.google.com (Kery Marc)
+Date: Sun, 21 Feb 2021 12:45:48 +0000
+Subject: RE: Dyn occ model - parameter estimate bias with missing sites?
+Message-ID: <rePLXG9oBrc.X1OEQHUPBwAJ@hmecology.groups.google.com>
+In-Reply-To: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+References: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/rePLXG9oBrc/m/X1OEQHUPBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Helen,
+
+pfuhhh ! That looks confusing to me... don't have any meaningful interpretations of any of these right now. Hopefully somebody else has ?
+
+Just two comments:
+- I am worried that there is bias in all four variants. You only ran 10 simreps, but they all cluster fairly tightly, suggesting bias in both intercepts. Perhaps just as a benchmark I'd run everything without any NAs and see whether things are right then ?
+- in variant 1b, you say colonization probability is 0.5 when a pond doesn't exist (because the inverse logit of 0 is 0.5). That doesn't seem sensible to me, although I don't see how it could affect the results.
+
+Happy Sunday,
+
+Marc
+
+From: hmec...@googlegroups.com [hmec...@googlegroups.com] on behalf of Helen Moor [hele...@gmx.ch]
+
+Sent: Friday, February 19, 2021 16:29
+
+To: hmecology: Hierarchical Modeling in Ecology
+Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+
+Dear Marc,
+
+Many thanks for the references and your assessment. Modelling also the habitat dynamics is very interesting, and it is good to see that my deterministic case is a comparable special case of this, where EXTANT is given as data instead of estimated.
+
+Regarding the DETECTABLE construct, NAs in y where sites were not visited seem more natural to me also. A colleague and mentor suggested the formulation that sets y=0 and p=0 in these cases, arguing that in this way, we maximize the information we provide to the model (we did not go look, hence can fix p=0). I compared the two approaches, and there was no difference in results, so this might be a matter of taste.
+
+Now I have spent some time simulating and testing different model formulations to appease my worries about biased parameter estimates. Specifically, I have compared four formulations to estimate effects of a single site-specific, time-invariant covariate on colonization rate, when some sites only appear later in the time series:
+
+1a: EXTANT in the Bernoulli trials (e.g. z[i,1] ~ dbern(psi1* EXTANT[i,1])), while the logit model reads: logit(gamma[i,k]) <- alpha.gamma + beta.gamma* xdat[i,k]
+
+1b: EXTANT in the Bernoulli trials  (e.g. z[i,1] ~ dbern(psi1* EXTANT[i,1])) AND in the logit model, as simple multiplier:  logit(gamma[i,k]) <- (alpha.gamma + beta.gamma* xdat[i,k]) * EXTANT[i,k]
+
+2_Indexed: a version without extant but start and end years for each site (looping over these years only)
+
+3_NAs: a version without extant, but NA in y where sites do not exist
+
+Curiously, there are very slight but systematic (i.e. consistent across model runs) differences in parameter estimates from these different formulations (see figures below). The first three formulations are more similar to each other, sometimes overlap, and which is closest to the truth depends on the dataset generated. The last version 3_NAs appears to deviate the most from the others in terms of estimates. On the natural/probability scale, however, the differences are minute. Can they be considered equivalent? I am not sure.
+
+My simulation efforts haven’t really given me conclusive evidence for which formulation is best (or whether there truly is a difference). I might just keep my existing formulation 1a, with EXTANT in the Bernoullis, or else go for your suggestion of using start and end years as indices.
+
+Thanks again!
+
+Best, Helen
+
+Fig. 1: Mean parameter estimates (alpha and gamma) from 10 runs per model formulation. Blue: 1a with extant in Bernoulli; red: 1b with extant in Bernoulli and in logit-linear model for gamma; yellow: 2_Indexed with start and end year index instead of extant; cyan: 3_NAs, with NAs in y where sites do not exist instead of extant. Vertical dotted lines indicate the 25% and 75% limits of the credible interval for the estimate from each model. For this dataset, 1a (blue) was closest to the truth (black vertical broken line), while 3_NAs was farthest from it.
+
+Fig. 2: Response of colonization probability gamma to the x covariate (site-specific, time-invariant). Black circles show truth for all sites, lines are plotting using mean of mean estimates across 10 models per formulation. The difference between the different formulations on this scale is very slight.
+
+marc.kery schrieb am Montag, 15. Februar 2021 um 10:29:14 UTC+1:
+> Dear Helen,
+>
+> One thing you should check out are the combined species distribution and habitat availability models that MacKenzie, Miller and others developed about 10 years ago, e.g.:
+> https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.2041-210X.2011.00110.x
+> https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.1365-2656.2012.02001.x
+>
+> I think that these models are formulated as multistate models, where the state of a site is defined not by a single species only (which is an amphibian species in their case), but by an amphibian plus the presence or absence of its egg-laying habitat (the pond). I imagine that an alternative to such joint species-habitat modeling would be to keep the two processes separate and have one model for the presence and absence of the habitat and then another, conditional model for the occurrence of the species. In that case, you would have a model such as:
+> h(i,t) ~ xxx, where h is a binary indicator for presence or absence of the pond and xxx would be some model for pond occurrence.
+>
+> And then, you would formulate the occupancy model for your frog something like this:
+> z(i,t) ~ dbern(psi * h(i,t))
+>
+> Now, looking again at your code below, I see that your solution is really almost the same (only part shown, and my 'h' is your 'EXTANT'):
+> z[i,(k+1)] ~ dbern(muZ[i,(k+1)] * EXTANT[i,(k+1)])
+>
+> Only you don't write a model for h/EXTANT, but just provide it as data. So, I still wonder whether ignoring the EXTANT information and simply putting NAs in the data when a pond does not exist would introduce bias in your parameter estimates, but I do now think that your approach with EXTANT is a good one. However I would not use the DETECTABLE construct, but simply have NAs in the detection histories when a site was not visited; this seems much more natural to me, although perhaps your approach produces the same results.
+>
+> Best regards  --- Marc
+>
+>
+> From: hmec...@googlegroups.com <http://UrlBlockedError.aspx> [hmec...@googlegroups.com <http://UrlBlockedError.aspx>] on behalf of Helen Moor [hele...@gmx.ch <http://UrlBlockedError.aspx>]
+> Sent: Monday, February 15, 2021 09:59
+>
+> To: hmecology: Hierarchical Modeling in Ecology
+> Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+>
+>
+> Dear Marc,
+>
+> Thank you very much for your explanations! Your suggestion that NAs in y exclude such data points from contributing to parameter estimation is very helpful and should make the problem relatively easy to address. I will investigate this with simulations, and also try to compare results to a version with start and end years for each site (although I first need to figure out how to code that in JAGS).
+>
+> What makes our case perhaps somewhat special is a combination of sources of missing data. On the one hand we have (more or less randomly) missing data where sites did not get visited (but do exist); on the other hand, we have sites that actually get created (or destroyed) during the time series. We are modelling amphibians and investigate artificially created new ponds within a set of pre-existing ponds. (I didn't explain that very well, and also omitted the observation model, in an attempt to keep it simple; see below for the full version.)
+>
+> So far we tried to account for these two different sources of missing data in two different ways. Where sites were not visited, we set y=0 and forced detection probability to p=0 as well, by means of an array DETECTABLE, that is zero when a site was not visited and one otherwise. Where sites did not exist, we used the already discussed matrix EXTANT, that is zero when a site does not exist and one otherwise.
+> Perhaps a combination of [y=0 and p=0] for missing observations with y=NA for missing sites could be a simple solution?
+>
+> I shall try it with simulations.
+> Best regards,
+> Helen
+>
+>
+> ### Observation model:
+>
+> # separate loop over sites and years for j=3 p components
+> for (i in 1:nsite){
+>       for (k in 1:nyear){
+>              logit(p[i,1,k]) <-  det.int <http://det.int> + beta.obs[x.observer[i,1,k]]   ## Observer effect on first two visits (night time)
+>              logit(p[i,2,k]) <-  det.int <http://det.int> + beta.obs[x.observer[i,2,k]]   ## Observer effect on first two visits  (night time)
+>              logit(p[i,3,k]) <-  det.int <http://det.int> + day.const                               ## Constant for third visit (day time)
+>      }
+> }
+> for (i in 1:nsite){
+>       for (j in 1:nrep){
+>             for (k in 1:nyear){
+>                   muy[i,j,k] <- z[i,k]*p[i,j,k] *DETECTABLE[i,j,k]
+>                   y[i,j,k] ~ dbern(muy[i,j,k])
+>             } #k
+>        } #j
+> } #i
+>
+> ### Process model:
+> for (i in 1:nsite){
+>
+>         # psi1:
+>         logit(psi1[i]) <- alpha.psi1[area[i]]
+>         z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+>
+>        # persistence phi:
+>         logit(phi[i]) <- alpha.phi[area[i]]
+>
+>
+>       for (k in 1:(nyear-1)){
+>
+>             # colonisation gamma:
+>             logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+>
+>             muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+>             z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+>         } #k
+>     } #i
+>
+> marc.kery schrieb am Freitag, 12. Februar 2021 um 18:38:26 UTC+1:
+> > Dear Helen,
+> >
+> > I think this is quite an interesting topic and an important one for the analysis of opportunistic ("citizen-science", CS) data.
+> >
+> > In principle, I am quite convinced that you don't need to include in your model such a term EXTANT if you just set to NA the data for the years when a site is not extant. In that case, the information for parameter estimation will only come from the data when a site is extant. (Note: it would be wrong to have zeroes in the data also for years when a site is not extant.) A second approach that should be equivalent is to define the likelihood only for those years when a site is extant, by giving a starting and an ending year.
+> >
+> > If sites are missing at random (MAR, which is a strong and often violated assumption for CS data), then you should get unbiased parameter estimates in either case. Only if you want to add up the occupied sites, then you would have to take into account the sites that don't exist yet or anymore.
+> >
+> > If on the other hand, sites are not missing at random (MNAR), then the missing value-generating mechanism needs to be modelled as well in order to avoid bias in the parameters of interest.
+> >
+> > Now, in spite of this I am not entirely sure even about the MAR case. A colleague once told me that they thought they found strange estimates from a dynamic occupancy model fit to CS data that were due to the manner in which sites got recruited into their study (they got what they believed were spurious trends).
+> >
+> > I don't understand this sufficiently well so to investigate I would do what I always do in that case: run some simulations.
+> >
+> > Best regards  --- Marc
+> >
+> > PS: Where is your observation model ? I assume you don't have temporal replication within a year/site so you model apparent presence/absence, right ?
+> >
+> > From: hmec...@googlegroups.com <http://UrlBlockedError.aspx> [hmec...@googlegroups.com <http://UrlBlockedError.aspx>] on behalf of Helen Moor [hele...@gmx.ch <http://UrlBlockedError.aspx>]
+> > Sent: Friday, February 12, 2021 17:51
+> > To: hmecology: Hierarchical Modeling in Ecology
+> > Subject: Dyn occ model - parameter estimate bias with missing sites?
+> >
+> > Dear all
+> >
+> > I am fitting a dynamic occupancy model for 20 years of data, where some sites begin to exist later in the time series and other sites disappear after some years. I am trying to account for that with a matrix EXTANT (dimensions nsites x nyears), which takes on values of 1 or 0 for a site existing or not in a given year.
+> >
+> > The formulation is currently as follows (with a random effect for the area a site belongs to, and a single covariate effect on gamma):
+> >
+> >    for (i in 1:nsite){
+> >         # psi1:
+> >         logit(psi1[i]) <- alpha.psi1[area[i]]
+> >         z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+> >        # persistence phi:
+> >         logit(phi[i]) <- alpha.phi[area[i]]
+> >
+> >       for (k in 1:(nyear-1)){
+> >             # colonisation gamma:
+> >             logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+> >             muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+> >             z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+> >         } #k
+> >     } #i
+> >
+> > Now I wonder whether this is sufficient or whether I would have to include EXTANT in the logit model for the covariate effect on colonization probability (or initial occupancy, or persistence) as well, in order not to bias parameter estimates?
+> >
+> > i.e. should I add EXTANT here too, and would that be the correct way of doing it?:
+> > logit(gamma[i,k]) <- ( alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]  )*EXTANT[i,(k)]
+> >
+> > Much obliged!
+> > Helen
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked: for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com <http://UrlBlockedError.aspx>.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com <http://UrlBlockedError.aspx>.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/d83f3548-ec2a-4bab-a5b9-7805e3a0d13dn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/d83f3548-ec2a-4bab-a5b9-7805e3a0d13dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/4671f9e6-ec80-4314-bc1f-1bc6de1a7898n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/4671f9e6-ec80-4314-bc1f-1bc6de1a7898n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u61b4a5163f7b7d9c at groups.google.com  Thu Feb 25 08:35:12 2021
+From: u61b4a5163f7b7d9c at groups.google.com (Helen Moor)
+Date: Thu, 25 Feb 2021 08:35:12 +0000
+Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+Message-ID: <rePLXG9oBrc.7uri9i1DAQAJ@hmecology.groups.google.com>
+In-Reply-To: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+References: <rePLXG9oBrc.PbDmeYShBgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/rePLXG9oBrc/m/7uri9i1DAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Marc,
+
+Thanks for the suggestion! I have included a benchmark, where all sites exist throughout. However, that has not resolved the issue. The “benchmark” becomes its own cluster of estimates, and which of the model formulations is closest to the truth again appears to depend on the specific dataset simulated.
+
+I think this might ultimately have to do with the covariate values of the sites that don’t exist throughout, which thereby contribute less information to parameter estimation. This difference seems to interact somehow with the model formulation, generating these clustered estimates.
+
+One potential issue I noticed when simulating is the treatment of the first year of sites that emerge later in the time series. For my purposes, these should be considered empty and colonizable.
+
+ Model formulations 1a and 1b make sure that z in these sites is zero in the previous year (through EXTANT in the Bernoulli) – hence empty and colonizable.
+The year-indexed version estimates z in the first year of existence of such sites from the initial occupancy probability (psi1) – a behavior that I want to avoid, as psi1 should only apply to the first year of the entire time series, and newly created sites should only be subject to colonization.
+The version with NAs has NA in y in the previous year – which could result in both a colonization or a persistence event for the first year of newly created sites (if the model fills these NAs with estimated z values, as I assume it does?). This could bias estimates of gamma vs phi.
+
+>From these considerations, it seems to me that EXTANT in the Bernoulli is the best solution. What I still don’t understand is the difference between formulations 1a and 1b. As you say, while in 1b, gamma gets set to 0.5 where a site doesn’t exist, that shouldn’t affect results, as EXTANT in the Bernoulli sets the expected value back to zero anyway. I still don’t know why there is a difference between 1a and 1b.
+
+Overall, since the difference in absolute terms (on the probability scale) is so very small, I will move on now, using formulation 1a.
+
+Best,
+
+Helen
+
+marc.kery schrieb am Sonntag, 21. Februar 2021 um 13:45:48 UTC+1:
+> Dear Helen,
+>
+> pfuhhh ! That looks confusing to me... don't have any meaningful interpretations of any of these right now. Hopefully somebody else has ?
+>
+> Just two comments:
+> - I am worried that there is bias in all four variants. You only ran 10 simreps, but they all cluster fairly tightly, suggesting bias in both intercepts. Perhaps just as a benchmark I'd run everything without any NAs and see whether things are right then ?
+> - in variant 1b, you say colonization probability is 0.5 when a pond doesn't exist (because the inverse logit of 0 is 0.5). That doesn't seem sensible to me, although I don't see how it could affect the results.
+>
+> Happy Sunday,
+>
+> Marc
+>
+>
+> From: hmec...@googlegroups.com [hmec...@googlegroups.com] on behalf of Helen Moor [hele...@gmx.ch]
+> Sent: Friday, February 19, 2021 16:29
+>
+> To: hmecology: Hierarchical Modeling in Ecology
+> Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+> Dear Marc,
+>
+> Many thanks for the references and your assessment. Modelling also the habitat dynamics is very interesting, and it is good to see that my deterministic case is a comparable special case of this, where EXTANT is given as data instead of estimated.
+>
+> Regarding the DETECTABLE construct, NAs in y where sites were not visited seem more natural to me also. A colleague and mentor suggested the formulation that sets y=0 and p=0 in these cases, arguing that in this way, we maximize the information we provide to the model (we did not go look, hence can fix p=0). I compared the two approaches, and there was no difference in results, so this might be a matter of taste.
+>
+> Now I have spent some time simulating and testing different model formulations to appease my worries about biased parameter estimates. Specifically, I have compared four formulations to estimate effects of a single site-specific, time-invariant covariate on colonization rate, when some sites only appear later in the time series:
+>
+> 1a: EXTANT in the Bernoulli trials (e.g. z[i,1] ~ dbern(psi1* EXTANT[i,1])), while the logit model reads: logit(gamma[i,k]) <- alpha.gamma + beta.gamma* xdat[i,k]
+>
+> 1b: EXTANT in the Bernoulli trials  (e.g. z[i,1] ~ dbern(psi1* EXTANT[i,1])) AND in the logit model, as simple multiplier:  logit(gamma[i,k]) <- (alpha.gamma + beta.gamma* xdat[i,k]) * EXTANT[i,k]
+>
+> 2_Indexed: a version without extant but start and end years for each site (looping over these years only)
+>
+> 3_NAs: a version without extant, but NA in y where sites do not exist
+>
+> Curiously, there are very slight but systematic (i.e. consistent across model runs) differences in parameter estimates from these different formulations (see figures below). The first three formulations are more similar to each other, sometimes overlap, and which is closest to the truth depends on the dataset generated. The last version 3_NAs appears to deviate the most from the others in terms of estimates. On the natural/probability scale, however, the differences are minute. Can they be considered equivalent? I am not sure.
+>
+> My simulation efforts haven’t really given me conclusive evidence for which formulation is best (or whether there truly is a difference). I might just keep my existing formulation 1a, with EXTANT in the Bernoullis, or else go for your suggestion of using start and end years as indices.
+>
+> Thanks again!
+>
+> Best, Helen
+>
+> Fig. 1: Mean parameter estimates (alpha and gamma) from 10 runs per model formulation. Blue: 1a with extant in Bernoulli; red: 1b with extant in Bernoulli and in logit-linear model for gamma; yellow: 2_Indexed with start and end year index instead of extant; cyan: 3_NAs, with NAs in y where sites do not exist instead of extant. Vertical dotted lines indicate the 25% and 75% limits of the credible interval for the estimate from each model. For this dataset, 1a (blue) was closest to the truth (black vertical broken line), while 3_NAs was farthest from it.
+>
+>
+>
+> Fig. 2: Response of colonization probability gamma to the x covariate (site-specific, time-invariant). Black circles show truth for all sites, lines are plotting using mean of mean estimates across 10 models per formulation. The difference between the different formulations on this scale is very slight.
+>
+>
+>
+>
+> marc.kery schrieb am Montag, 15. Februar 2021 um 10:29:14 UTC+1:
+> > Dear Helen,
+> >
+> > One thing you should check out are the combined species distribution and habitat availability models that MacKenzie, Miller and others developed about 10 years ago, e.g.:
+> > https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.2041-210X.2011.00110.x
+> > https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.1365-2656.2012.02001.x
+> >
+> > I think that these models are formulated as multistate models, where the state of a site is defined not by a single species only (which is an amphibian species in their case), but by an amphibian plus the presence or absence of its egg-laying habitat (the pond). I imagine that an alternative to such joint species-habitat modeling would be to keep the two processes separate and have one model for the presence and absence of the habitat and then another, conditional model for the occurrence of the species. In that case, you would have a model such as:
+> > h(i,t) ~ xxx, where h is a binary indicator for presence or absence of the pond and xxx would be some model for pond occurrence.
+> >
+> > And then, you would formulate the occupancy model for your frog something like this:
+> > z(i,t) ~ dbern(psi * h(i,t))
+> >
+> > Now, looking again at your code below, I see that your solution is really almost the same (only part shown, and my 'h' is your 'EXTANT'):
+> > z[i,(k+1)] ~ dbern(muZ[i,(k+1)] * EXTANT[i,(k+1)])
+> >
+> > Only you don't write a model for h/EXTANT, but just provide it as data. So, I still wonder whether ignoring the EXTANT information and simply putting NAs in the data when a pond does not exist would introduce bias in your parameter estimates, but I do now think that your approach with EXTANT is a good one. However I would not use the DETECTABLE construct, but simply have NAs in the detection histories when a site was not visited; this seems much more natural to me, although perhaps your approach produces the same results.
+> >
+> > Best regards  --- Marc
+> >
+> >
+> > From: hmec...@googlegroups.com <http://UrlBlockedError.aspx> [hmec...@googlegroups.com <http://UrlBlockedError.aspx>] on behalf of Helen Moor [hele...@gmx.ch <http://UrlBlockedError.aspx>]
+> > Sent: Monday, February 15, 2021 09:59
+> >
+> > To: hmecology: Hierarchical Modeling in Ecology
+> > Subject: Re: Dyn occ model - parameter estimate bias with missing sites?
+> >
+> >
+> > Dear Marc,
+> >
+> > Thank you very much for your explanations! Your suggestion that NAs in y exclude such data points from contributing to parameter estimation is very helpful and should make the problem relatively easy to address. I will investigate this with simulations, and also try to compare results to a version with start and end years for each site (although I first need to figure out how to code that in JAGS).
+> >
+> > What makes our case perhaps somewhat special is a combination of sources of missing data. On the one hand we have (more or less randomly) missing data where sites did not get visited (but do exist); on the other hand, we have sites that actually get created (or destroyed) during the time series. We are modelling amphibians and investigate artificially created new ponds within a set of pre-existing ponds. (I didn't explain that very well, and also omitted the observation model, in an attempt to keep it simple; see below for the full version.)
+> >
+> > So far we tried to account for these two different sources of missing data in two different ways. Where sites were not visited, we set y=0 and forced detection probability to p=0 as well, by means of an array DETECTABLE, that is zero when a site was not visited and one otherwise. Where sites did not exist, we used the already discussed matrix EXTANT, that is zero when a site does not exist and one otherwise.
+> > Perhaps a combination of [y=0 and p=0] for missing observations with y=NA for missing sites could be a simple solution?
+> >
+> > I shall try it with simulations.
+> > Best regards,
+> > Helen
+> >
+> >
+> > ### Observation model:
+> >
+> > # separate loop over sites and years for j=3 p components
+> > for (i in 1:nsite){
+> >       for (k in 1:nyear){
+> >              logit(p[i,1,k]) <-  det.int <http://det.int> + beta.obs[x.observer[i,1,k]]   ## Observer effect on first two visits (night time)
+> >              logit(p[i,2,k]) <-  det.int <http://det.int> + beta.obs[x.observer[i,2,k]]   ## Observer effect on first two visits  (night time)
+> >              logit(p[i,3,k]) <-  det.int <http://det.int> + day.const                               ## Constant for third visit (day time)
+> >      }
+> > }
+> > for (i in 1:nsite){
+> >       for (j in 1:nrep){
+> >             for (k in 1:nyear){
+> >                   muy[i,j,k] <- z[i,k]*p[i,j,k] *DETECTABLE[i,j,k]
+> >                   y[i,j,k] ~ dbern(muy[i,j,k])
+> >             } #k
+> >        } #j
+> > } #i
+> >
+> > ### Process model:
+> > for (i in 1:nsite){
+> >
+> >         # psi1:
+> >         logit(psi1[i]) <- alpha.psi1[area[i]]
+> >         z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+> >
+> >        # persistence phi:
+> >         logit(phi[i]) <- alpha.phi[area[i]]
+> >
+> >
+> >       for (k in 1:(nyear-1)){
+> >
+> >             # colonisation gamma:
+> >             logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+> >
+> >             muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+> >             z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+> >         } #k
+> >     } #i
+> >
+> > marc.kery schrieb am Freitag, 12. Februar 2021 um 18:38:26 UTC+1:
+> > > Dear Helen,
+> > >
+> > > I think this is quite an interesting topic and an important one for the analysis of opportunistic ("citizen-science", CS) data.
+> > >
+> > > In principle, I am quite convinced that you don't need to include in your model such a term EXTANT if you just set to NA the data for the years when a site is not extant. In that case, the information for parameter estimation will only come from the data when a site is extant. (Note: it would be wrong to have zeroes in the data also for years when a site is not extant.) A second approach that should be equivalent is to define the likelihood only for those years when a site is extant, by giving a starting and an ending year.
+> > >
+> > > If sites are missing at random (MAR, which is a strong and often violated assumption for CS data), then you should get unbiased parameter estimates in either case. Only if you want to add up the occupied sites, then you would have to take into account the sites that don't exist yet or anymore.
+> > >
+> > > If on the other hand, sites are not missing at random (MNAR), then the missing value-generating mechanism needs to be modelled as well in order to avoid bias in the parameters of interest.
+> > >
+> > > Now, in spite of this I am not entirely sure even about the MAR case. A colleague once told me that they thought they found strange estimates from a dynamic occupancy model fit to CS data that were due to the manner in which sites got recruited into their study (they got what they believed were spurious trends).
+> > >
+> > > I don't understand this sufficiently well so to investigate I would do what I always do in that case: run some simulations.
+> > >
+> > > Best regards  --- Marc
+> > >
+> > > PS: Where is your observation model ? I assume you don't have temporal replication within a year/site so you model apparent presence/absence, right ?
+> > >
+> > > From: hmec...@googlegroups.com <http://UrlBlockedError.aspx> [hmec...@googlegroups.com <http://UrlBlockedError.aspx>] on behalf of Helen Moor [hele...@gmx.ch <http://UrlBlockedError.aspx>]
+> > > Sent: Friday, February 12, 2021 17:51
+> > > To: hmecology: Hierarchical Modeling in Ecology
+> > > Subject: Dyn occ model - parameter estimate bias with missing sites?
+> > >
+> > > Dear all
+> > >
+> > > I am fitting a dynamic occupancy model for 20 years of data, where some sites begin to exist later in the time series and other sites disappear after some years. I am trying to account for that with a matrix EXTANT (dimensions nsites x nyears), which takes on values of 1 or 0 for a site existing or not in a given year.
+> > >
+> > > The formulation is currently as follows (with a random effect for the area a site belongs to, and a single covariate effect on gamma):
+> > >
+> > >    for (i in 1:nsite){
+> > >         # psi1:
+> > >         logit(psi1[i]) <- alpha.psi1[area[i]]
+> > >         z[i,1] ~ dbern(psi1[i]*EXTANT[i,1])
+> > >        # persistence phi:
+> > >         logit(phi[i]) <- alpha.phi[area[i]]
+> > >
+> > >       for (k in 1:(nyear-1)){
+> > >             # colonisation gamma:
+> > >             logit(gamma[i,k]) <- alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]
+> > >             muZ[i,(k+1)]<- (z[i,k]*phi[i]) + ((1-z[i,k])*gamma[i,k])
+> > >             z[i,(k+1)] ~ dbern(muZ[i,(k+1)]*EXTANT[i,(k+1)])
+> > >         } #k
+> > >     } #i
+> > >
+> > > Now I wonder whether this is sufficient or whether I would have to include EXTANT in the logit model for the covariate effect on colonization probability (or initial occupancy, or persistence) as well, in order not to bias parameter estimates?
+> > >
+> > > i.e. should I add EXTANT here too, and would that be the correct way of doing it?:
+> > > logit(gamma[i,k]) <- ( alpha.gamma[area[i]] + beta.gamma[area[i]]* X[i,k]  )*EXTANT[i,(k)]
+> > >
+> > > Much obliged!
+> > > Helen
+> > >
+> > > --
+> > > *** Three hierarchical modeling email lists ***
+> > > (1) unmarked: for questions specific to the R package unmarked
+> > > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > > (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com <http://UrlBlockedError.aspx>.
+> > > To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/6f9923da-ab4c-4008-a7dc-c51f02536decn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked: for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com <http://UrlBlockedError.aspx>.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/d83f3548-ec2a-4bab-a5b9-7805e3a0d13dn%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/d83f3548-ec2a-4bab-a5b9-7805e3a0d13dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/4671f9e6-ec80-4314-bc1f-1bc6de1a7898n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/4671f9e6-ec80-4314-bc1f-1bc6de1a7898n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4e956cc50ac3e075 at groups.google.com  Thu Feb 25 21:37:27 2021
+From: u4e956cc50ac3e075 at groups.google.com (Marc J. Mazerolle)
+Date: Thu, 25 Feb 2021 21:37:27 +0000
+Subject: EURING 2021 registration now open
+Message-ID: <0uYce5oj6sg.ZquFlSP3AAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/0uYce5oj6sg/m/ZquFlSP3AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi (apologies for cross-postings),
+
+The EURING Analytical Meeting focuses on the advancement of statistical
+methods to estimate population parameters, with emphasis on the
+analysis of marked individuals, mainly from ringing data, but also of
+unmarked individuals. The 2021 edition of the meeting hosted by
+Université Laval, QC, Canada will take place online from 31 May to 11
+June, 2021. Daily 3 hour sessions will be at 10 am to 1 pm eastern
+daylight time (UTC−04:00).
+
+Registration for EURING 2021 is now open. You will find registration
+information, a glimpse of the program, and the link to the registration
+platform on the EURING 2021 web site:
+http://www.phidot.org/euring/registration/
+
+Note that early-bird registration closes on April 30th.
+
+For additional information, contact marc.ma...@sbf.ulaval.ca.
+
+Best,
+
+Marc
+
+--
+____________________________________
+Marc J. Mazerolle
+Professeur agrégé et directeur du bac. en environnements naturels et aménagés
+Département des sciences du bois et de la forêt
+2405 rue de la Terrasse
+Université Laval
+Québec, Québec G1V 0A6, Canada
+Tel: (418) 656-2131 ext. 407120
+Email: marc.ma...@sbf.ulaval.ca
+
+Veuillez noter que je suis en télétravail. Le meilleur moyen de me rejoindre est par courriel.
+

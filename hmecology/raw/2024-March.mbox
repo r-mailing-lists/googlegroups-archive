@@ -1,0 +1,798 @@
+From u1614faf2ff7c8fc4 at groups.google.com  Fri Mar  1 06:54:40 2024
+From: u1614faf2ff7c8fc4 at groups.google.com (Anubhav Vanamamalai)
+Date: Fri, 01 Mar 2024 06:54:40 +0000
+Subject: Re: predict() using stPGOcc model in spOccupancy
+Message-ID: <EoSCvR_MN3o.5NOToo9TAQAJ@hmecology.groups.google.com>
+In-Reply-To: <EoSCvR_MN3o.JJHm_4_SAAAJ@hmecology.groups.google.com>
+References: <EoSCvR_MN3o.JJHm_4_SAAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/EoSCvR_MN3o/m/5NOToo9TAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+A few more details with code.
+
+#Read/Import model
+ modelout.sp_1 <- readRDS("TopModel_600x25_27022024.rds")
+
+#data structure base
+num_sites <- nrow(data_msom$y)
+num_months_per_season <- 4
+num_seasons <- 24
+num_covariates<- 4 #inc intercept
+
+# Determine dimensions for X0
+X.0_dims <- c(num_sites, num_seasons, num_covariates)
+
+#covars - scaled using model scale values
+predScaled_ntl_s <- as.data.frame((lapply(1:ncol(data_msom$occ.covs$ntl_s), function(i) {
+  (data_msom$occ.covs$ntl_s[, i] - mean(data_msom_NARemoved$occ.covs$ntl_s[, i])) / sd(data_msom_NARemoved$occ.covs$ntl_s[, i])})))
+    colnames(predScaled_ntl_s) <- colnames(data_msom_NARemoved$occ.covs$ntl_s)
+
+predScaled_lstd_s <- as.data.frame((lapply(1:ncol(data_msom$occ.covs$lstd_s), function(i) {
+  (data_msom$occ.covs$lstd_s[, i] - mean(data_msom_NARemoved$occ.covs$lstd_s[, i])) / sd(data_msom_NARemoved$occ.covs$lstd_s[, i])})))
+    colnames(predScaled_lstd_s) <- colnames(data_msom_NARemoved$occ.covs$lstd_s)
+
+predScaled_evi_s <- as.data.frame((lapply(1:ncol(data_msom$occ.covs$evi_s), function(i) {
+  (data_msom$occ.covs$evi_s[, i] - mean(data_msom_NARemoved$occ.covs$evi_s[, i])) / sd(data_msom_NARemoved$occ.covs$evi_s[, i])})))
+    colnames(predScaled_evi_s) <- colnames(data_msom_NARemoved$occ.covs$evi_s)
+
+#conversion to matrices # Reshape the monthly/obs level matrix into a three-dimensional array
+predScaled_ntl_s_0 <- predScaled_ntl_s %>% as.matrix(rownames = T)
+  predScaled_ntl_s_0 <- array(predScaled_ntl_s_0, dim = (c(num_sites, num_months_per_season, num_seasons)))
+
+predScaled_lstd_s_0 <- predScaled_lstd_s %>% as.matrix(rownames = T)
+  predScaled_lstd_s_0 <- array(predScaled_lstd_s_0, dim = (c(num_sites, num_months_per_season, num_seasons)))
+
+predScaled_evi_s_0 <- predScaled_evi_s %>% as.matrix(rownames = T)
+  predScaled_evi_s_0 <- array(predScaled_evi_s_0, dim = (c(num_sites, num_months_per_season, num_seasons)))
+
+# Coordinates for prediction - all coords of all sites
+  predict_coords <- data_msom$coords
+
+#creating prediction design matrix for Occurance
+  #order: "scale(ntl_s) + scale(lstd_s) + scale(evi_s)"(from the original occ.formula)
+X.0_occ_a <- cbind(1, predScaled_ntl_s_0, predScaled_lstd_s_0, predScaled_evi_s_0)
+colnames(X.0_occ_a) <- c("","ntl_s","lstd_s","evi_s")
+X.0_occ_b <- array(X.0_occ_a, dim = X.0_dims)
+X.0_occ <- aperm(X.0_occ_b, c(1, 2, 3))
+
+#prediction for occurance
+out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
+                        t.cols = c(1, 4,7), #set 1 - monsoon
+                        n.omp.threads = 8, type = 'occupancy')
+summary(out.pred_occ)
+
+mean.psi <- apply(out.pred_occ$psi.0.samples, 2, mean)
+sd.psi <- apply(out.pred_occ$psi.0.samples, 2, sd)
+
+I'm unsure if the creation of X.0 is correct, as the output results do not seem to contain any predicted values. I also frequently run in fatal errors, where the R Session ttterminates when the prediction is run.
+
+Any guidance would be really helpful!
+
+On Thursday 29 February 2024 at 10:15:39 UTC+5:30 Anubhav Vanamamalai wrote:
+> Hello,
+>
+> I'm trying to use the model results from an stPGOcc analysis (through the spOccupancy package in R) to predict responses for detection and occurrence in a broader landscape.
+>
+> I had a few questions regarding the build of the X.0 object directly from the data object used in the original model.
+>
+> The data object of the original model contains the data matrix 'y', 'occ.covs', 'det.covs', and the coords. In the case of missing data, the data object can be used in the stPGOcc model after removing NA rows in the 'y' data matrix. This is the model procedure I've followed - by subsetting the 'data' object to generate a 'data_NAremoved' object (or list of lists) to run the analysis. I would now like to predict occurrence and detection from the model on all sites contained in the original 'data' object.
+>
+> I wanted to know if it would be possible to subset the 'data' object in a manner that allows for the generation of the X.0 design matrix directly, rather than building the X.0 matrix from scratch. The considerations would be to scale the covariates properly, based on the mean and sd values of the scaled covariates used in the original model, and only 'predict' on the new sites, or to 'predict' using the full dataset (effectively a double prediction for the sites used in the creation of the model).
+>
+> I'm having trouble with the creation of X.0 from scratch, and was not able to properly follow using the example code found in https://rdrr.io/github/doserjef/spOccupancy/man/predict.stPGOcc.html
+
+From u9723aac8fc0c9507 at groups.google.com  Fri Mar  1 14:01:50 2024
+From: u9723aac8fc0c9507 at groups.google.com (Jeff Doser)
+Date: Fri, 01 Mar 2024 14:01:50 +0000
+Subject: Re: predict() using stPGOcc model in spOccupancy
+Message-ID: <EoSCvR_MN3o.r2LXQt9qAQAJ@hmecology.groups.google.com>
+In-Reply-To: <EoSCvR_MN3o.5NOToo9TAQAJ@hmecology.groups.google.com>
+References: <EoSCvR_MN3o.JJHm_4_SAAAJ@hmecology.groups.google.com> <EoSCvR_MN3o.5NOToo9TAQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/EoSCvR_MN3o/m/r2LXQt9qAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Anubhav,
+
+Yes, it is possible to take the object formatted in the format for the "data" argument of stPGOcc() and manipulate it into the X.0 design matrix for prediction. You can predict either at just the new sites, or at all sites together. I've attached a script that shows how to do that using the "hbefTrends" data set included in the package. In the script, I first load the full data set, remove 100 sites from the data set to generate a new data set, fit the model with the new data set, and then predict occupancy probability across all sites in the original data set after manipulating the object into the required format for the X.0 design matrix. You should be able to take pretty much the same approach for predicting detection probability.
+
+After a quick glance, I don't see anything immediately wrong with the code you attached, but there could be something I'm missing without being able to run it with the data myself. As far as R terminating when the prediction is running, that could be due to your computer running out of memory. If you're predicting across a large number of sites, then the resulting object from predict() will be very large. The size of the prediction object also depends on how many MCMC samples you save from the model run. The larger the number of samples you are saving the bigger the object will be from predict(), and the more memory you will need to do the prediction. If this is the problem, one way to get around this is to break up the prediction into small chunks, where you only predict at a subset of the locations at a time.
+
+Hope that helps! If you can't get things to work after looking through the script, then feel free to send me (off-list) your code and data needed to reproduce the problems.
+
+Jeff
+
+On Fri, Mar 1, 2024 at 1:54 AM Anubhav Vanamamalai <vanu...@gmail.com> wrote:
+
+>
+> A few more details with code.
+>
+> #Read/Import model
+>  modelout.sp_1 <- readRDS("TopModel_600x25_27022024.rds")
+>
+> #data structure base
+> num_sites <- nrow(data_msom$y)
+> num_months_per_season <- 4
+> num_seasons <- 24
+> num_covariates<- 4 #inc intercept
+>
+> # Determine dimensions for X0
+> X.0_dims <- c(num_sites, num_seasons, num_covariates)
+>
+> #covars - scaled using model scale values
+> predScaled_ntl_s <- as.data.frame((lapply(1:ncol(data_msom$occ.covs$ntl_s), function(i) {
+>   (data_msom$occ.covs$ntl_s[, i] - mean(data_msom_NARemoved$occ.covs$ntl_s[, i])) / sd(data_msom_NARemoved$occ.covs$ntl_s[, i])})))
+>     colnames(predScaled_ntl_s) <- colnames(data_msom_NARemoved$occ.covs$ntl_s)
+>
+> predScaled_lstd_s <- as.data.frame((lapply(1:ncol(data_msom$occ.covs$lstd_s), function(i) {
+>   (data_msom$occ.covs$lstd_s[, i] - mean(data_msom_NARemoved$occ.covs$lstd_s[, i])) / sd(data_msom_NARemoved$occ.covs$lstd_s[, i])})))
+>     colnames(predScaled_lstd_s) <- colnames(data_msom_NARemoved$occ.covs$lstd_s)
+>
+> predScaled_evi_s <- as.data.frame((lapply(1:ncol(data_msom$occ.covs$evi_s), function(i) {
+>   (data_msom$occ.covs$evi_s[, i] - mean(data_msom_NARemoved$occ.covs$evi_s[, i])) / sd(data_msom_NARemoved$occ.covs$evi_s[, i])})))
+>     colnames(predScaled_evi_s) <- colnames(data_msom_NARemoved$occ.covs$evi_s)
+>
+> #conversion to matrices # Reshape the monthly/obs level matrix into a three-dimensional array
+> predScaled_ntl_s_0 <- predScaled_ntl_s %>% as.matrix(rownames = T)
+>   predScaled_ntl_s_0 <- array(predScaled_ntl_s_0, dim = (c(num_sites, num_months_per_season, num_seasons)))
+>
+> predScaled_lstd_s_0 <- predScaled_lstd_s %>% as.matrix(rownames = T)
+>   predScaled_lstd_s_0 <- array(predScaled_lstd_s_0, dim = (c(num_sites, num_months_per_season, num_seasons)))
+>
+> predScaled_evi_s_0 <- predScaled_evi_s %>% as.matrix(rownames = T)
+>   predScaled_evi_s_0 <- array(predScaled_evi_s_0, dim = (c(num_sites, num_months_per_season, num_seasons)))
+>
+> # Coordinates for prediction - all coords of all sites
+>   predict_coords <- data_msom$coords
+>
+> #creating prediction design matrix for Occurance
+>   #order: "scale(ntl_s) + scale(lstd_s) + scale(evi_s)"(from the original occ.formula)
+> X.0_occ_a <- cbind(1, predScaled_ntl_s_0, predScaled_lstd_s_0, predScaled_evi_s_0)
+> colnames(X.0_occ_a) <- c("","ntl_s","lstd_s","evi_s")
+> X.0_occ_b <- array(X.0_occ_a, dim = X.0_dims)
+> X.0_occ <- aperm(X.0_occ_b, c(1, 2, 3))
+>
+>
+> #prediction for occurance
+> out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
+>                         t.cols = c(1, 4,7), #set 1 - monsoon
+>                         n.omp.threads = 8, type = 'occupancy')
+> summary(out.pred_occ)
+>
+> mean.psi <- apply(out.pred_occ$psi.0.samples, 2, mean)
+> sd.psi <- apply(out.pred_occ$psi.0.samples, 2, sd)
+>
+>
+> I'm unsure if the creation of X.0 is correct, as the output results do not seem to contain any predicted values. I also frequently run in fatal errors, where the R Session ttterminates when the prediction is run.
+>
+> Any guidance would be really helpful!
+> On Thursday 29 February 2024 at 10:15:39 UTC+5:30 Anubhav Vanamamalai wrote:
+> > Hello,
+> >
+> > I'm trying to use the model results from an stPGOcc analysis (through the spOccupancy package in R) to predict responses for detection and occurrence in a broader landscape.
+> >
+> > I had a few questions regarding the build of the X.0 object directly from the data object used in the original model.
+> >
+> > The data object of the original model contains the data matrix 'y', 'occ.covs', 'det.covs', and the coords. In the case of missing data, the data object can be used in the stPGOcc model after removing NA rows in the 'y' data matrix. This is the model procedure I've followed - by subsetting the 'data' object to generate a 'data_NAremoved' object (or list of lists) to run the analysis. I would now like to predict occurrence and detection from the model on all sites contained in the original 'data' object.
+> >
+> > I wanted to know if it would be possible to subset the 'data' object in a manner that allows for the generation of the X.0 design matrix directly, rather than building the X.0 matrix from scratch. The considerations would be to scale the covariates properly, based on the mean and sd values of the scaled covariates used in the original model, and only 'predict' on the new sites, or to 'predict' using the full dataset (effectively a double prediction for the sites used in the creation of the model).
+> >
+> > I'm having trouble with the creation of X.0 from scratch, and was not able to properly follow using the example code found in https://rdrr.io/github/doserjef/spOccupancy/man/predict.stPGOcc.html
+>
+
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/hmecology/b5f9cfb8-bcac-4cca-8ab2-48609241529an%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/b5f9cfb8-bcac-4cca-8ab2-48609241529an%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u9d6a034f32ca2894 at groups.google.com  Tue Mar  5 21:12:31 2024
+From: u9d6a034f32ca2894 at groups.google.com (=?utf-8?q?Diego_Ar=C3=A9valo?=)
+Date: Tue, 05 Mar 2024 21:12:31 +0000
+Subject: Informative priors for Productivity model in an IPM
+Message-ID: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/gJsZpg1ISFE/m/zw0oF07EAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+I'm fitting an Integrated Population Model for a long-lived species, the Griffon Vulture, using capture-recapture and recovery data, productivity, and counts of breeding pairs in three sites (sites A, B and C). The study period spans 13 years, but for some years I lack of productivity and count data in sites A and B. Specifically, 4 years of productivity information (years 2, 9, 10 and 11) and 10 years of counts at site A (years 2 to 5, 7 to 10, 12 and 13), and 11 years of counts at site B (years 2 to 9, and 11 to 13).
+
+Since I'm fitting a multi-state model and estimating the movement probability between sites, the information on breeding individuals is 'shared' when we allow that individuals move from a site to another, thus, making population size estimates identifiable (albeit with lower precision) for sites A and B in the years without data. However, for the years lacking productivity information at site A, the values are quite unrealistic. Given that the Griffon Vulture is a long-lived species and typically produces a single  egg per breeding season (if we ignore replacement clutches), productivity should range between 0 and <1, commonly around 0.5. In the missing years of productivity information at site A, the estimates reach values >1, which is entirely unrealistic.
+
+Since I'm modeling the log of productivity as a GLMM with a random time effect, I've tried using informative priors for the hypermean (dunif(0,1)), but mean estimates of years without data were >1. I've even tried truncating the temporal residual term using a reasonable range of values to reduce the deviation from the overall mean, but I've observed that this negatively bias the hypermean and positively bias annual productivity  in the years without information (>1.5).
+
+Can anyone help me find a solution to 'correct' these productivity estimates? or is it statistically incorrect to force values in the absence of information into a preferred range?
+
+ Thank you in advance!
+
+Diego Arévalo
+
+From u27debeac26f66a0b at groups.google.com  Wed Mar  6 07:32:14 2024
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez Garcia-Herrera)
+Date: Wed, 06 Mar 2024 07:32:14 +0000
+Subject: RE: Informative priors for Productivity model in an IPM
+Message-ID: <gJsZpg1ISFE.fuTCMjZpAAAJ@hmecology.groups.google.com>
+In-Reply-To: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+References: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/gJsZpg1ISFE/m/fuTCMjZpAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Diego,
+
+I'm sure Michael Schaub can give you some additional advice, but you can use a binomial instead of a Poisson if the productivity (as is your case with the griffon vulture) is going to be between 0-1.
+
+Regards,
+
+José
+
+De: hmec...@googlegroups.com <hmec...@googlegroups.com> En nombre de Diego Arévalo
+Enviado el: martes, 5 de marzo de 2024 22:13
+Para: hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+Asunto: Informative priors for Productivity model in an IPM
+
+No suele recibir correos electrónicos de dareva...@gmail.com.  Por qué esto es importante <https://aka.ms/LearnAboutSenderIdentification>
+
+Dear all,
+
+I'm fitting an Integrated Population Model for a long-lived species, the Griffon Vulture, using capture-recapture and recovery data, productivity, and counts of breeding pairs in three sites (sites A, B and C). The study period spans 13 years, but for some years I lack of productivity and count data in sites A and B. Specifically, 4 years of productivity information (years 2, 9, 10 and 11) and 10 years of counts at site A (years 2 to 5, 7 to 10, 12 and 13), and 11 years of counts at site B (years 2 to 9, and 11 to 13).
+
+Since I'm fitting a multi-state model and estimating the movement probability between sites, the information on breeding individuals is 'shared' when we allow that individuals move from a site to another, thus, making population size estimates identifiable (albeit with lower precision) for sites A and B in the years without data. However, for the years lacking productivity information at site A, the values are quite unrealistic. Given that the Griffon Vulture is a long-lived species and typically produces a single  egg per breeding season (if we ignore replacement clutches), productivity should range between 0 and <1, commonly around 0.5. In the missing years of productivity information at site A, the estimates reach values >1, which is entirely unrealistic.
+
+Since I'm modeling the log of productivity as a GLMM with a random time effect, I've tried using informative priors for the hypermean (dunif(0,1)), but mean estimates of years without data were >1. I've even tried truncating the temporal residual term using a reasonable range of values to reduce the deviation from the overall mean, but I've observed that this negatively bias the hypermean and positively bias annual productivity  in the years without information (>1.5).
+
+Can anyone help me find a solution to 'correct' these productivity estimates? or is it statistically incorrect to force values in the absence of information into a preferred range?
+
+ Thank you in advance!
+
+Diego Arévalo
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/5d5cbda5-4b4f-49f6-ba09-f51e25475862n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/5d5cbda5-4b4f-49f6-ba09-f51e25475862n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u312eda23f89ab6c6 at groups.google.com  Wed Mar  6 07:44:08 2024
+From: u312eda23f89ab6c6 at groups.google.com (Michael Schaub)
+Date: Wed, 06 Mar 2024 07:44:08 +0000
+Subject: AW: Informative priors for Productivity model in an IPM
+Message-ID: <gJsZpg1ISFE.28n9h9xpAAAJ@hmecology.groups.google.com>
+In-Reply-To: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+References: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/gJsZpg1ISFE/m/28n9h9xpAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Good morning,
+
+It is certainly a good suggestion to use the binomial instead of the Poisson, perhaps this helps already. However, there may be too little information in the data because it seems that in some years where there is no productivity data, there is no count data. If this is the case (too little information), you may want to make your model more robust by introducing additional assumptions. For example, you could assume that productivity in the years with missing (productivity) data is the same as the long-term average that you estimate from the years with data.
+
+Best
+
+Michael
+
+Von: 'Jose Jimenez Garcia-Herrera' via hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+Gesendet: Mittwoch, 6. März 2024 08:32
+An: Diego Arévalo <dareva...@gmail.com>; hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+Betreff: RE: Informative priors for Productivity model in an IPM
+
+Dear Diego,
+
+I'm sure Michael Schaub can give you some additional advice, but you can use a binomial instead of a Poisson if the productivity (as is your case with the griffon vulture) is going to be between 0-1.
+
+Regards,
+
+José
+
+De:  hmec...@googlegroups.com <hmec...@googlegroups.com> En nombre de Diego Arévalo
+Enviado el: martes, 5 de marzo de 2024 22:13
+Para: hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+Asunto: Informative priors for Productivity model in an IPM
+
+No suele recibir correos electrónicos de dareva...@gmail.com.  Por qué esto es importante <https://aka.ms/LearnAboutSenderIdentification>
+
+Dear all,
+
+I'm fitting an Integrated Population Model for a long-lived species, the Griffon Vulture, using capture-recapture and recovery data, productivity, and counts of breeding pairs in three sites (sites A, B and C). The study period spans 13 years, but for some years I lack of productivity and count data in sites A and B. Specifically, 4 years of productivity information (years 2, 9, 10 and 11) and 10 years of counts at site A (years 2 to 5, 7 to 10, 12 and 13), and 11 years of counts at site B (years 2 to 9, and 11 to 13).
+
+Since I'm fitting a multi-state model and estimating the movement probability between sites, the information on breeding individuals is 'shared' when we allow that individuals move from a site to another, thus, making population size estimates identifiable (albeit with lower precision) for sites A and B in the years without data. However, for the years lacking productivity information at site A, the values are quite unrealistic. Given that the Griffon Vulture is a long-lived species and typically produces a single  egg per breeding season (if we ignore replacement clutches), productivity should range between 0 and <1, commonly around 0.5. In the missing years of productivity information at site A, the estimates reach values >1, which is entirely unrealistic.
+
+Since I'm modeling the log of productivity as a GLMM with a random time effect, I've tried using informative priors for the hypermean (dunif(0,1)), but mean estimates of years without data were >1. I've even tried truncating the temporal residual term using a reasonable range of values to reduce the deviation from the overall mean, but I've observed that this negatively bias the hypermean and positively bias annual productivity  in the years without information (>1.5).
+
+Can anyone help me find a solution to 'correct' these productivity estimates? or is it statistically incorrect to force values in the absence of information into a preferred range?
+
+ Thank you in advance!
+
+Diego Arévalo
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/5d5cbda5-4b4f-49f6-ba09-f51e25475862n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/5d5cbda5-4b4f-49f6-ba09-f51e25475862n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/DB7PR01MB42669EE9C45339CC8BE87A1C92212%40DB7PR01MB4266.eurprd01.prod.exchangelabs.com <https://groups.google.com/d/msgid/hmecology/DB7PR01MB42669EE9C45339CC8BE87A1C92212%40DB7PR01MB4266.eurprd01.prod.exchangelabs.com?utm_medium=email&utm_source=footer>.
+
+From u9d6a034f32ca2894 at groups.google.com  Wed Mar  6 11:04:27 2024
+From: u9d6a034f32ca2894 at groups.google.com (=?utf-8?q?Diego_Ar=C3=A9valo?=)
+Date: Wed, 06 Mar 2024 11:04:27 +0000
+Subject: Re: Informative priors for Productivity model in an IPM
+Message-ID: <gJsZpg1ISFE.BRzzycp0AAAJ@hmecology.groups.google.com>
+In-Reply-To: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+References: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/gJsZpg1ISFE/m/BRzzycp0AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+Thank you for all your replies. I finally found a solution following Thomas' suggestions, who wrote to me in private. It basically involved changing the log-link to a logit-link function to bound values between 0 and 1 for modeling productivity. This worked perfectly to those estimates with missing data, while the others remained very similar when using the log-link.
+
+Thanks once again.
+
+Best regards,
+
+Diego
+
+El Wednesday, March 6, 2024 a la(s) 8:44:08 AM UTC+1, Michael Schaub escribió:
+>
+> Good morning,
+>
+>
+>
+> It is certainly a good suggestion to use the binomial instead of the Poisson, perhaps this helps already. However, there may be too little information in the data because it seems that in some years where there is no productivity data, there is no count data. If this is the case (too little information), you may want to make your model more robust by introducing additional assumptions. For example, you could assume that productivity in the years with missing (productivity) data is the same as the long-term average that you estimate from the years with data.
+>
+>
+>
+> Best
+>
+>
+>
+> Michael
+>
+>
+>
+> Von: 'Jose Jimenez Garcia-Herrera' via hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+> Gesendet: Mittwoch, 6. März 2024 08:32
+> An: Diego Arévalo <dareva...@gmail.com>; hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+> Betreff: RE: Informative priors for Productivity model in an IPM
+>
+>
+>
+> Dear Diego,
+>
+>
+>
+> I'm sure Michael Schaub can give you some additional advice, but you can use a binomial instead of a Poisson if the productivity (as is your case with the griffon vulture) is going to be between 0-1.
+>
+>
+>
+> Regards,
+>
+> José
+>
+>
+>
+> De:  hmec...@googlegroups.com <hmec...@googlegroups.com> En nombre de Diego Arévalo
+> Enviado el: martes, 5 de marzo de 2024 22:13
+> Para: hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+> Asunto: Informative priors for Productivity model in an IPM
+>
+>
+>
+> No suele recibir correos electrónicos de dareva...@gmail.com.  Por qué esto es importante <https://aka.ms/LearnAboutSenderIdentification>
+>
+> Dear all,
+>
+> I'm fitting an Integrated Population Model for a long-lived species, the Griffon Vulture, using capture-recapture and recovery data, productivity, and counts of breeding pairs in three sites (sites A, B and C). The study period spans 13 years, but for some years I lack of productivity and count data in sites A and B. Specifically, 4 years of productivity information (years 2, 9, 10 and 11) and 10 years of counts at site A (years 2 to 5, 7 to 10, 12 and 13), and 11 years of counts at site B (years 2 to 9, and 11 to 13).
+>
+>
+>
+> Since I'm fitting a multi-state model and estimating the movement probability between sites, the information on breeding individuals is 'shared' when we allow that individuals move from a site to another, thus, making population size estimates identifiable (albeit with lower precision) for sites A and B in the years without data. However, for the years lacking productivity information at site A, the values are quite unrealistic. Given that the Griffon Vulture is a long-lived species and typically produces a single  egg per breeding season (if we ignore replacement clutches), productivity should range between 0 and <1, commonly around 0.5. In the missing years of productivity information at site A, the estimates reach values >1, which is entirely unrealistic.
+>
+>
+>
+> Since I'm modeling the log of productivity as a GLMM with a random time effect, I've tried using informative priors for the hypermean (dunif(0,1)), but mean estimates of years without data were >1. I've even tried truncating the temporal residual term using a reasonable range of values to reduce the deviation from the overall mean, but I've observed that this negatively bias the hypermean and positively bias annual productivity  in the years without information (>1.5).
+>
+>
+>
+> Can anyone help me find a solution to 'correct' these productivity estimates? or is it statistically incorrect to force values in the absence of information into a preferred range?
+>
+>
+>
+>  Thank you in advance!
+>
+>
+>
+> Diego Arévalo
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/5d5cbda5-4b4f-49f6-ba09-f51e25475862n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/5d5cbda5-4b4f-49f6-ba09-f51e25475862n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+>
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/DB7PR01MB42669EE9C45339CC8BE87A1C92212%40DB7PR01MB4266.eurprd01.prod.exchangelabs.com <https://groups.google.com/d/msgid/hmecology/DB7PR01MB42669EE9C45339CC8BE87A1C92212%40DB7PR01MB4266.eurprd01.prod.exchangelabs.com?utm_medium=email&utm_source=footer>.
+
+From u074a030d0cd7e490 at groups.google.com  Tue Mar 12 18:55:41 2024
+From: u074a030d0cd7e490 at groups.google.com (gferraz29)
+Date: Tue, 12 Mar 2024 18:55:41 +0000
+Subject: Inference of population size (and trend) in species that are rare and hard to detect
+Message-ID: <pVdKYJqF1ok.daFVgQtnAwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/pVdKYJqF1ok/m/daFVgQtnAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear colleagues,
+
+For once, a non-statistical modeling question that hopefully may be of relevance to this group. Student Paula Ledezma and myself used N-mixture models to estimate a 8-year time series of Resplendent Quetzal abundance based on unmarked individual point counts in the Monteverde Cloud Forest Preserve of Costa Rica. We also used the data to infer a population trend, based on the estimation of an effect of time on abundance. The greatest challenge of this work is the low detection probability of Quetzals, who seem to move about substantially between replicate point counts, combined with their low density.
+
+In the manuscript's introduction, we would like to contextualize our study among other attempts to infer temporal trends based on counts of unmarked individuals that are either difficult to detect or just move about too much for the assumption of closure between replicate counts. There seem to be few examples of this or we are not looking in the right places.
+
+Any thoughts or reading suggestions will be very welcome.
+
+Thank you,
+
+Gonçalo Ferraz
+
+From u4f80e1927b0757cb at groups.google.com  Wed Mar 20 14:46:20 2024
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Wed, 20 Mar 2024 14:46:20 +0000
+Subject: AHM workshop announcement July 22-26, 2024
+Message-ID: <66tbneCXWQY.PKLFQ_flAQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/66tbneCXWQY/m/PKLFQ_flAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+Andy Royle, Marc Kéry, Josh Twining, and I are running an in-person AHM workshop. This year it will be hosted at Michigan State University in East Lansing, MI, from July 22-26, 2024. We will show how to use likelihood and Bayesian methods to fit a large range of models that are useful for investigations of abundance and occupancy. Planned topics include:
+
+    Occupancy models for binary detection/nondetection data
+    Binomial N-mixture models for replicated count data
+    Multinomial N-mixture models for replicated capture-recapture data
+    Distance sampling models for a variety of distance sampling protocols
+    Modeling of false positives
+    Integrating multiple data types and integrated models
+
+Please send your application to Ken Kellner (kkel...@msu.edu), with CC to marc...@vogelwarte.ch, aro...@usgs.gov, and jp...@cornell.edu and describe your background and knowledge in statistical modelling, R and JAGS/Nimble, and occupancy/Nmix models, by 30 April 2024.
+
+You will find some more information in the attached flier.
+
+Thanks,
+
+Ken, Marc, Andy, and Josh
+
+From u4f80e1927b0757cb at groups.google.com  Wed Mar 20 16:38:46 2024
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Wed, 20 Mar 2024 16:38:46 +0000
+Subject: Re: AHM workshop announcement July 22-26, 2024
+Message-ID: <66tbneCXWQY.aqZL5BnsAQAJ@hmecology.groups.google.com>
+In-Reply-To: <66tbneCXWQY.PKLFQ_flAQAJ@hmecology.groups.google.com>
+References: <66tbneCXWQY.PKLFQ_flAQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/66tbneCXWQY/m/aqZL5BnsAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I managed to get my own email address wrong - it should be kell...@msu.edu, not kkel...@msu.edu. Sorry!
+
+On Wednesday, March 20, 2024 at 10:46:20 AM UTC-4 Ken Kellner wrote:
+> Hi all,
+>
+> Andy Royle, Marc Kéry, Josh Twining, and I are running an in-person AHM workshop. This year it will be hosted at Michigan State University in East Lansing, MI, from July 22-26, 2024. We will show how to use likelihood and Bayesian methods to fit a large range of models that are useful for investigations of abundance and occupancy. Planned topics include:
+>
+> Occupancy models for binary detection/nondetection data
+> Binomial N-mixture models for replicated count data
+> Multinomial N-mixture models for replicated capture-recapture data
+> Distance sampling models for a variety of distance sampling protocols
+> Modeling of false positives
+> Integrating multiple data types and integrated models
+>
+> Please send your application to Ken Kellner (kkel...@msu.edu), with CC to marc...@vogelwarte.ch, aro...@usgs.gov, and jp...@cornell.edu and describe your background and knowledge in statistical modelling, R and JAGS/Nimble, and occupancy/Nmix models, by 30 April 2024.
+>
+> You will find some more information in the attached flier.
+>
+> Thanks,
+>
+> Ken, Marc, Andy, and Josh
+
+From u6ad895aa93bfdc63 at groups.google.com  Wed Mar 20 20:37:58 2024
+From: u6ad895aa93bfdc63 at groups.google.com (John C)
+Date: Wed, 20 Mar 2024 20:37:58 +0000
+Subject: FW: Post-doc at UW-Madison
+Message-ID: <aSasENGewbk.1ZiSSSf5AQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/aSasENGewbk/m/1ZiSSSf5AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all, just forwarding along an opportunity for any post-doc seekers on the list (using dynamic integrated distribution models to forecast bird range shifts under climate change and help guide priorities for establishing/managing protected areas).
+
+Best,
+John
+
+PROJECT DESCRIPTION: Protected areas are an essential conservation strategy given the diversity of threats impacting species and natural communities throughout the world. Rising temperatures and extreme weather are forcing birds to move and adapt across a complex landscape of public and private lands. Conservation agencies and organizations invest significant time and resources in identifying, establishing, and managing protected lands to serve as refugia for threatened and declining species. An assumption is that these protected areas lower the risk of extinction and offer a path by which vulnerable species track a changing climate. Our goal is to work with private organizations and government agencies to evaluate the efficacy of their protected area approaches for reducing the vulnerability of birds to modern climate change. To do so, we will combine climate models with data from long-term avian monitoring data sets to analyze over two decades of bird range shifts and project future changes in bird communities across the Upper Great Lakes region. This project will be supported in the in the Department of Forest and Wildlife Ecology and under the supervision of Dr. Benjamin Zuckerberg.
+
+Please find the specific requirements for the positions below:
+
+Position 1: Postdoctoral Associate <https://zuckerberg.russell.wisc.edu/position-1-postdoctoral-associate/>
+
+From u2afcaa2cf02013a3 at groups.google.com  Fri Mar 22 08:45:35 2024
+From: u2afcaa2cf02013a3 at groups.google.com (TouraniM)
+Date: Fri, 22 Mar 2024 08:45:35 +0000
+Subject: PhD and MSc in applied quantitative ecology, University of Montana
+Message-ID: <UYgH9JnLyGA.REMYtkoyAQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/UYgH9JnLyGA/m/REMYtkoyAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone,
+
+There are two funded graduate opportunities (one PhD and one MSc) in applied quantitative ecology at the University of Montana. Please see the position descriptions and details here:
+
+PhD: https://jobs.rwfm.tamu.edu/view-job/?id=92462
+MSc: https://jobs.rwfm.tamu.edu/view-job/?id=92471
+
+Attached are also pdf files with details of both positions.
+
+Kind regards,
+Mahdieh Tourani
+
+From u6c32846711f6e460 at groups.google.com  Tue Mar 26 00:54:49 2024
+From: u6c32846711f6e460 at groups.google.com (Jarrad Barnes)
+Date: Tue, 26 Mar 2024 00:54:49 +0000
+Subject: spOccupancy tMsPGOcc() worked example?
+Message-ID: <mHf6GiHLxCI.ftTdw0ObAAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/mHf6GiHLxCI/m/ftTdw0ObAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all, I'm dipping my toe into the spOccupancy package as I'm interested in developing a multi-species multi-season occupancy model, but I'm swimming a bit. I'm familiar with occupancy models through other packages (notably unmarked and camtrapR), but spOccupancy is a bit of a different beast for me. I've played through the simulated data for tMsPGOcc() but I would really like to see a worked example with real data so I can see how I might shape my own dataset to this function. I haven't had any luck online finding one, but I'm hoping there might be someone or something that can provide a direction with this. Thanks for any help/insight. Jarrad
+
+From u864675a31b6a7e6b at groups.google.com  Tue Mar 26 19:04:59 2024
+From: u864675a31b6a7e6b at groups.google.com (=?utf-8?q?Torbj=C3=B8rn_H=C3=A5kan_Ergon?=)
+Date: Tue, 26 Mar 2024 19:04:59 +0000
+Subject: =?utf-8?q?Postdoc_position_on_cod_demography_in_Troms=C3=B8=2C_Norway?=
+Message-ID: <lPpE9wl4JjI.CtmpsqkPAAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/lPpE9wl4JjI/m/CtmpsqkPAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+A fully funded 2-year Postdoc position is available at the Institute of Marine Research (IMR), Tromsø, Norway. The successful candidate will investigate phenotypic and demographic changes in coastal cod populations using individual-based data. We are looking for a statistical ecologist, ideally with experience in acoustic telemetry or spatial mark-recapture methods.
+
+Application deadline April 30, 2024.
+
+For more information and to apply:  https://www.jobbnorge.no/en/available-jobs/job/260670/eco-evolutionary-dynamics-in-the-coastal-zone
+
+Project’s website:  https://www.codchange-project.com/
+
+Please help spread the word!
+
+Albert Fernández Chacón (IMR, Tromsø), Esben Moland Olsen (IMR, Flødevigen), Torbjørn Ergon (University of Oslo)
+
+From u9723aac8fc0c9507 at groups.google.com  Fri Mar 29 13:14:04 2024
+From: u9723aac8fc0c9507 at groups.google.com (Jeff Doser)
+Date: Fri, 29 Mar 2024 13:14:04 +0000
+Subject: Re: spOccupancy tMsPGOcc() worked example?
+Message-ID: <mHf6GiHLxCI.pOuvUCVtAAAJ@hmecology.groups.google.com>
+In-Reply-To: <mHf6GiHLxCI.ftTdw0ObAAAJ@hmecology.groups.google.com>
+References: <mHf6GiHLxCI.ftTdw0ObAAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/mHf6GiHLxCI/m/pOuvUCVtAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jarrad,
+
+I've attached a script that walks through an example using tMsPGOcc() with the Hubbard Brook bird data that is included as part of the package. I'm hoping at some point to put together a vignette on the package website that walks through the multi-species, multi-season models, but in the meantime, you might also take a look at this data formatting vignette <https://www.jeffdoser.com/files/spoccupancy-web/articles/dataformatting> (which is for single-season models but could be adapted accordingly) and this vignette on single-species multi-season models <https://www.jeffdoser.com/files/spoccupancy-web/articles/spacetimemodelshtml> (which are very similar in form to the multi-species functions).
+
+Hope that helps!
+
+Jeff
+
+On Mon, Mar 25, 2024 at 8:54 PM Jarrad Barnes <jarrad...@gmail.com> wrote:
+
+> Hi all, I'm dipping my toe into the spOccupancy package as I'm interested in developing a multi-species multi-season occupancy model, but I'm swimming a bit. I'm familiar with occupancy models through other packages (notably unmarked and camtrapR), but spOccupancy is a bit of a different beast for me. I've played through the simulated data for tMsPGOcc() but I would really like to see a worked example with real data so I can see how I might shape my own dataset to this function. I haven't had any luck online finding one, but I'm hoping there might be someone or something that can provide a direction with this. Thanks for any help/insight. Jarrad
+>
+
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/hmecology/a1c9d8cb-18bd-4189-a6a4-3c70372ee746n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/a1c9d8cb-18bd-4189-a6a4-3c70372ee746n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u6c32846711f6e460 at groups.google.com  Fri Mar 29 13:14:09 2024
+From: u6c32846711f6e460 at groups.google.com (Jarrad Barnes)
+Date: Fri, 29 Mar 2024 13:14:09 +0000
+Subject: Re: spOccupancy tMsPGOcc() worked example?
+Message-ID: <mHf6GiHLxCI.0J3ZZSZtAAAJ@hmecology.groups.google.com>
+In-Reply-To: <mHf6GiHLxCI.pOuvUCVtAAAJ@hmecology.groups.google.com>
+References: <mHf6GiHLxCI.ftTdw0ObAAAJ@hmecology.groups.google.com> <mHf6GiHLxCI.pOuvUCVtAAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/mHf6GiHLxCI/m/0J3ZZSZtAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Jeff, appreciate you replying to this so quickly. I'll take a good look at everything you've sent/suggested. Jarrad
+
+On Tue, Mar 26, 2024 at 10:48 PM Jeff Doser <jdos...@gmail.com> wrote:
+> Hi Jarrad,
+>
+> I've attached a script that walks through an example using tMsPGOcc() with the Hubbard Brook bird data that is included as part of the package. I'm hoping at some point to put together a vignette on the package website that walks through the multi-species, multi-season models, but in the meantime, you might also take a look at this data formatting vignette <https://www.jeffdoser.com/files/spoccupancy-web/articles/dataformatting> (which is for single-season models but could be adapted accordingly) and this vignette on single-species multi-season models <https://www.jeffdoser.com/files/spoccupancy-web/articles/spacetimemodelshtml> (which are very similar in form to the multi-species functions).
+>
+> Hope that helps!
+>
+> Jeff
+>
+> On Mon, Mar 25, 2024 at 8:54 PM Jarrad Barnes <jarrad...@gmail.com> wrote:
+> > Hi all, I'm dipping my toe into the spOccupancy package as I'm interested in developing a multi-species multi-season occupancy model, but I'm swimming a bit. I'm familiar with occupancy models through other packages (notably unmarked and camtrapR), but spOccupancy is a bit of a different beast for me. I've played through the simulated data for tMsPGOcc() but I would really like to see a worked example with real data so I can see how I might shape my own dataset to this function. I haven't had any luck online finding one, but I'm hoping there might be someone or something that can provide a direction with this. Thanks for any help/insight. Jarrad
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked: for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/hmecology/a1c9d8cb-18bd-4189-a6a4-3c70372ee746n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/a1c9d8cb-18bd-4189-a6a4-3c70372ee746n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+LinkedIn  |  www.linkedin.com/in/jarradbarnes <http://www.linkedin.com/in/jarradbarnes>
+
+From ub7fb230fb4415432 at groups.google.com  Fri Mar 29 13:55:48 2024
+From: ub7fb230fb4415432 at groups.google.com (Denis Valle)
+Date: Fri, 29 Mar 2024 13:55:48 +0000
+Subject: 2024 Conference on Applied Statistics in Agriculture and Natural Resources
+Message-ID: <gJsZpg1ISFE.c9xANGxvAAAJ@hmecology.groups.google.com>
+In-Reply-To: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+References: <gJsZpg1ISFE.zw0oF07EAwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/gJsZpg1ISFE/m/c9xANGxvAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Just an FYI… exciting conference on applied statistics for agriculture and natural resources, with workshop on lmm and glmm by Ben Bolker!
+
+What: 2024 Conference on Applied Statistics in Agriculture and Natural Resources
+
+Where: Ames/Iowa
+
+When: May 13 - May 16
+
+Website:  https://www.regcytes.extension.iastate.edu/appliedstatistics/
+
+Abstracts can be submitted here (due on Apr 5): https://iastate.qualtrics.com/jfe/form/SV_7NzS17vTL4Clumi
+
+From: hmec...@googlegroups.com <hmec...@googlegroups.com> on behalf of Michael Schaub <michael...@vogelwarte.ch>
+Date: Wednesday, March 6, 2024 at 2:44 AM
+To: Jose Jimenez Garcia-Herrera <Jose.J...@uclm.es>, hmec...@googlegroups.com <hmec...@googlegroups.com>
+Subject: AW: Informative priors for Productivity model in an IPM
+
+Good morning,
+
+It is certainly a good suggestion to use the binomial instead of the Poisson, perhaps this helps already. However, there may be too little information in the data because it seems that in some years where there is no productivity data, there is no count data. If this is the case (too little information), you may want to make your model more robust by introducing additional assumptions. For example, you could assume that productivity in the years with missing (productivity) data is the same as the long-term average that you estimate from the years with data.
+
+Best
+
+Michael
+
+Von: 'Jose Jimenez Garcia-Herrera' via hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+Gesendet: Mittwoch, 6. März 2024 08:32
+An: Diego Arévalo <dareva...@gmail.com>; hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+Betreff: RE: Informative priors for Productivity model in an IPM
+
+Dear Diego,
+
+I'm sure Michael Schaub can give you some additional advice, but you can use a binomial instead of a Poisson if the productivity (as is your case with the griffon vulture) is going to be between 0-1.
+
+Regards,
+
+José
+
+De: hmec...@googlegroups.com <hmec...@googlegroups.com> En nombre de Diego Arévalo
+Enviado el: martes, 5 de marzo de 2024 22:13
+Para: hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+Asunto: Informative priors for Productivity model in an IPM
+
+No suele recibir correos electrónicos de dareva...@gmail.com.  Por qué esto es importante <https://aka.ms/LearnAboutSenderIdentification>
+
+Dear all,
+
+I'm fitting an Integrated Population Model for a long-lived species, the Griffon Vulture, using capture-recapture and recovery data, productivity, and counts of breeding pairs in three sites (sites A, B and C). The study period spans 13 years, but for some years I lack of productivity and count data in sites A and B. Specifically, 4 years of productivity information (years 2, 9, 10 and 11) and 10 years of counts at site A (years 2 to 5, 7 to 10, 12 and 13), and 11 years of counts at site B (years 2 to 9, and 11 to 13).
+
+Since I'm fitting a multi-state model and estimating the movement probability between sites, the information on breeding individuals is 'shared' when we allow that individuals move from a site to another, thus, making population size estimates identifiable (albeit with lower precision) for sites A and B in the years without data. However, for the years lacking productivity information at site A, the values are quite unrealistic. Given that the Griffon Vulture is a long-lived species and typically produces a single  egg per breeding season (if we ignore replacement clutches), productivity should range between 0 and <1, commonly around 0.5. In the missing years of productivity information at site A, the estimates reach values >1, which is entirely unrealistic.
+
+Since I'm modeling the log of productivity as a GLMM with a random time effect, I've tried using informative priors for the hypermean (dunif(0,1)), but mean estimates of years without data were >1. I've even tried truncating the temporal residual term using a reasonable range of values to reduce the deviation from the overall mean, but I've observed that this negatively bias the hypermean and positively bias annual productivity  in the years without information (>1.5).
+
+Can anyone help me find a solution to 'correct' these productivity estimates? or is it statistically incorrect to force values in the absence of information into a preferred range?
+
+ Thank you in advance!
+
+Diego Arévalo
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/5d5cbda5-4b4f-49f6-ba09-f51e25475862n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/5d5cbda5-4b4f-49f6-ba09-f51e25475862n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/DB7PR01MB42669EE9C45339CC8BE87A1C92212%40DB7PR01MB4266.eurprd01.prod.exchangelabs.com <https://groups.google.com/d/msgid/hmecology/DB7PR01MB42669EE9C45339CC8BE87A1C92212%40DB7PR01MB4266.eurprd01.prod.exchangelabs.com?utm_medium=email&utm_source=footer>.
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/ZR0P278MB07903CA8E4C486B0C430DD589A212%40ZR0P278MB0790.CHEP278.PROD.OUTLOOK.COM <https://groups.google.com/d/msgid/hmecology/ZR0P278MB07903CA8E4C486B0C430DD589A212%40ZR0P278MB0790.CHEP278.PROD.OUTLOOK.COM?utm_medium=email&utm_source=footer>.
+
