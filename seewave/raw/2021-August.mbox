@@ -1,0 +1,551 @@
+From uc5de8c8c086d2efe at groups.google.com  Fri Aug  6 10:04:08 2021
+From: uc5de8c8c086d2efe at groups.google.com (ava...@gmail.com)
+Date: Fri, 06 Aug 2021 10:04:08 +0000
+Subject: Re: Optimizing timer() and ggspectro() parameters - odd behavior
+Message-ID: <cyxFV2p9sKw.uOd6LJF7BAAJ@seewave.groups.google.com>
+In-Reply-To: <cyxFV2p9sKw.tnAeLHt7CgAJ@seewave.groups.google.com>
+References: <cyxFV2p9sKw.tnAeLHt7CgAJ@seewave.groups.google.com>
+Archived-At: <https://groups.google.com/g/seewave/c/cyxFV2p9sKw/m/uOd6LJF7BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Jerome & others,
+
+I've implemented a version of the timer() function that operates directly on the envelope. I think this may be helpful for some if, as in my case, one has to first manipulate the envelope outside of the timer() function.
+
+My amendment also allows you to supply an exact value for the threshold. (In timer(), the threshold argument can either be a function or a percentage of the max amplitude. However, if the threshold that you want to use is known, this can be supplied.)
+
+```
+# Fixes by Yannick Jadoul implemented here
+# https://groups.google.com/g/seewave/c/UkEeyixxjV4
+
+env_timer <- function(file.env,
+                      f,
+                      threshold = 1,
+                      thresholding = "percent", # "percent" - % amplitude (if max amplitude == 1),
+                                                # "apply" - use the exact value given,
+                      dmin = 0.001,
+                      power = 1,
+                      tlim = NULL,
+                      plot = FALSE,
+                      tplot = NULL) # provide the section you want to view
+
+{
+
+# Checks -------------------------------
+  if (is.null(file.env))
+    stop("envelope missing")
+  env <- file.env
+  n <- length(env)
+  if (is.null(f))
+    stop("sampling rate missing")
+  f <- f
+  t <- seq(0,n/f,length.out=n)
+  if (!is.null(dmin)) {
+    if (length(dmin) != 1)
+      stop("'dmin' should be a numeric vector of length 1")
+    if (dmin <= 0)
+      stop("'dmin' cannot be negative or equal to 0")
+    if (dmin >= n/f)
+      stop("'dmin' cannot equal or be higher than the wave duration")
+  }
+  if (power == 0)
+    stop("'power' cannot equal to 0")
+
+# Segment in time? -------------------------------
+  if (!is.null(tlim)) {
+    env <- env[seq(tlim[1]*f,tlim[2]*f)]
+    t <- t[seq(tlim[1]*f,tlim[2]*f)]
+    n <- length(env)
+  } else if (!is.null(tlim) & !length(tlim)==2) {
+    stop("incorrect number of arguments to 'tlim'")
+  }
+
+# Thresholding -------------------------------
+  if (thresholding == "apply") {
+    thres <- threshold
+  } else if (thresholding == "percent" && is.numeric(threshold)) {
+    thres <- threshold/100
+  } else if (is.function(threshold)) {
+    thres <- apply(wave1, MARGIN = 2, FUN = threshold)
+  }
+
+# Power -------------------------------
+  if (power != 1) {
+    env[which(env<0)] <- 0
+    env1 <- env^power
+  } else {
+    env1 <- env}
+
+# Plot --------------------------------
+  if (plot) {
+    if (!is.null(tlim)) {
+      p <- plot(t,env1,type = "l",xlab = "seconds", ylab = "Amplitude (a.u.)")
+        abline(h = thres, col = "red", lty = 2)
+        mtext(paste(as.character(round(thres,digits = 3)), "%"), side = 2, line = 0.5, at = thres,
+              las = 1, col = "red", cex = 0.8)
+    } else if (!is.null(tplot)) {
+      p <- plot(t[seq(tplot[1]*f,tplot[2]*f)],env1[seq(tplot[1]*f,tplot[2]*f)],type = "l", xlab = "seconds",
+                ylab = "Amplitude (a.u.)")
+      abline(h = thres, col = "red", lty = 2)
+      mtext(paste(as.character(round(thres,digits = 3)), "%"), side = 2, line = 0.5, at = thres,
+          las = 1, col = "red", cex = 0.8)
+    } else {
+      p <- plot(t,env1,type = "l", xlab = "seconds",
+                ylab = "Amplitude (a.u.)")
+      abline(h = thres, col = "red", lty = 2)
+      mtext(paste(as.character(round(thres,digits = 3)), "%"), side = 2, line = 0.5, at = thres,
+            las = 1, col = "red", cex = 0.8)
+    }
+    print(p)
+  }
+  # Filtering for values above threshold  -------------------------------
+  env2 <- ifelse(env1 <= thres, yes = 1, no = 2) # 1 = below thresh, 2 = above thresh
+  env3 <- (env2+dplyr::lead(env2))[-length(env2)] # 2 = silent, 3 = transitions, 4 = signal
+  n3 <- length(env3) # because the lead addition removes the final sample
+  env3[c(1, n3)] <- 3
+  env4 <- which(env3 == 3)
+
+# Filtering for values above dmin  -------------------------------
+  if (!is.null(dmin)) {
+    event.dur <- diff(env4)
+    event.idx <- which(event.dur < dmin * f)
+    if (length(event.idx) != 0) {
+      for (i in event.idx) {
+        env3[(env4[i]):(env4[i] + event.dur[i])] <- 2
+      }
+      env3[which(abs(diff(env3)) == 2)] <- 3 # if a transition has been removed, reinsert
+      env3[c(1, n3)] <- 3
+    }
+    env4 <- which(env3 == 3)
+    if (length(env4) == 2) {
+      stop("No calls detected. Was 'dmin' or 'threshold' set to too high a value?")
+    }
+  }
+  env4[-1] <- env4[-1] + 1 # removes the first index and shifts all by 1 sample
+  env3 <- ts(env3, start = 0, end = n3/f, frequency = f)
+  positions <- time(env3)[env4]
+  durations <- diff(positions)
+  npos <- length(positions)
+  if (npos <= 2)
+    stop("It seems that the sound is continuous, there are no signal/pause events.")
+
+ if (env2[1] == 1) {
+#  if (env3[2] == 1) { # Edit by Yannick Jadoul
+    first <- "pause"
+    pause <- durations[seq(1, npos - 1, by = 2)]
+    signal <- durations[seq(2, npos - 1, by = 2)]
+    start.signal <- positions[seq(2, npos - 1, by = 2)]
+    end.signal <- positions[seq(3, npos - 1, by = 2)]
+#    end.signal <- positions[seq(3, npos, by = 2)] # Edit by Yannick Jadoul
+    } else {
+    first <- "signal"
+    pause <- durations[seq(2, npos - 1, by = 2)]
+    signal <- durations[seq(1, npos - 1, by = 2)]
+    start.signal <- positions[seq(1, npos - 1, by = 2)]
+    end.signal <- positions[seq(2, npos - 1, by = 2)]
+#    end.signal <- positions[seq(2, npos, by = 2)] # Edit by Yannick Jadoul
+}
+
+  # --
+  if (length(start.signal) > length(end.signal)) {
+    end.signal <- c(end.signal,n3/f)
+    print("Added end signal.")
+    flush.console()
+  } else if (length(start.signal) < length(end.signal)) {
+    stop("There's an extra end signal - investigate.")
+  }
+
+  ratio <- sum(signal)/sum(pause)
+  timer <- list(s = signal, p = pause, r = ratio, s.start = start.signal,
+                s.end = end.signal, first = first)
+  return(timer)
+}
+
+```
+
+Thanks!
+Ava
+
+On Wednesday, April 7, 2021 at 5:33:58 PM UTC+2 ava...@gmail.com wrote:
+> Dear all,
+>
+> I'm using the timer() function to detect bat calls in my recordings. I'm having an issue with the parameter settings and wanted to ask for some advice regarding both the optimization of timer() and plotting parameters for ggspectro().
+>
+> Problem:
+> My recordings were made in a sound-isolated chamber - so there's relatively little noise. For a given file, I will get pretty good identification of most calls, but then for some sections of the very same file there are tons of detections of simple noise and they are plotted as though noise is exceptionally high. Since the noise level is pretty uniform within each recording (~1 minute each), I don't quite understand this behavior.
+>
+> My questions are:
+> 1. Is the amplitude threshold in timer() relative to the whole file, or just the current sliding window?
+> 2. Why would timer() identify calls from noise correctly in one section of the file and catch many false positives in another, if the energy levels are about the same?
+> 3. Theoretically, what's the best strategy to detect calls using timer() if noise levels do vary within a single file?
+> 4. Are the limits/colevels parameters in the ggspectro/spectro functions scaled to the rms or energy of the selected sample?
+>
+> Sample Data & Output:
+> Below you will find my pipeline. Here you will also find an example sound file and the plotted spectrograms and detected calls output by the program below: https://drive.google.com/drive/folders/1XMWspiV10mWUT4WrmXBAqq527N3Sr__e?usp=sharing
+> As you can see, some sections of the sound file are plotted by ggspectro as though background noise is very high, while other sections seem 'cleaner'. But if you open the sound file in a software like Audacity or Avisoft, there's not much difference. (E.g. minute 8.2-8.4 has an rms of -65.16 while the section 9-9.2 min has an rms of -65.19. But looking at the spectrograms plotted (file02_8 and file02_9, respectively), it appears as though the latter has much more noise and there are a ton of false positives.)
+>
+> Pipeline:
+> # filter each sound file to desired freq range
+> wav.filt <- seewave::ffilter(wav@left, f = w...@samp.rate, from = 10000, to = 120000)
+>
+> # get call data
+> call_data <- seewave::timer(wav.filt, f=w...@samp.rate,
+>                 threshold = 1,
+>                 dmin = 0.001,
+>                 envt = 'abs',
+>                 power = 1,
+>                 msmooth = c(512,50), # window, overlap
+>                 plot = FALSE)
+>
+> # in case a call starts right at the end of the file but an end is not recorded, assume it ends at the end of the file and set the offset value
+>
+>     if (length(call_data$s.start) > length(call_data$s.end) &
+>         dplyr::last(call_data$s.end)<dplyr::last(call_data$s.start)) {
+>         call_data$s.end <- c(call_data$s.end,length(wav@left)/w...@samp.rate)
+>         }
+>
+> # weld into df and quantify onset intervals between calls
+>
+>     calls <- data.frame(sig.start = call_data$s.start, sig.end = call_data$s.end) %>%
+>                         dplyr::rename(starts = sig.start,
+>                                       ends = sig.end) %>%
+>                         mutate(duration = call_data$s,
+>                                onset.interval = starts-dplyr::lag(starts)) %>%
+>                         mutate(min = filenum, .before = 1)
+>
+> # plot the spectrogram of the file along with detected calls to ensure correct detections:
+>
+>  checker <- calls[order(calls$starts),] %>% add_column(y.val = 95)
+>       graph.path <- file.path(results_path,'graphical_check')
+>         dir.create(graph.path,recursive = TRUE)
+>
+> # plot in segments because 1 minute is way too long to see the details:
+>       segments <- seq(from = 0, to = length(wav@left)/w...@samp.rate, length.out = 50)
+>
+>       for (i in 2:length(segments)) {
+>         curr_seg <- checker %>% dplyr::filter(min==as.character(filenum))
+>         curr_seg <-  curr_seg[which(curr_seg$starts<=segments[i] & curr_seg$starts>segments[i-1]), ]
+>         if (!nrow(curr_seg)==0) {
+>         seewave::ggspectro(wav.filt,
+>              tlim = c(segments[i-1],segments[i]),
+>              f = w...@samp.rate,
+>              wl = 512, ovlp = 50,
+> fastdisp = TRUE, palette = temp.colors,
+>                     noisereduction = TRUE)  +
+>                     geom_tile(mapping = aes(fill = amplitude)) +
+>                     geom_segment(data = curr_seg,
+>  mapping = aes(x = starts, y = y.val,                                                 xend = ends, yend = y.val,
+>                      color = "red"),                            inherit.aes = FALSE, size = 2) +
+>                   scale_fill_continuous(name="Amplitude\n(dB)\n", limits=c(-70,0),
+>                     na.value="transparent", low="white", high="black") +
+>                     theme_bw() +
+>                     ggsave(file.path(graph.path,paste0('file',filenum,'_',i,'.png'))) }
+>
+>
+> Thank you so much in advance!
+> Ava
+>
+>
+>
+>
+>
+>
+>
+
+From uc5de8c8c086d2efe at groups.google.com  Fri Aug  6 10:08:37 2021
+From: uc5de8c8c086d2efe at groups.google.com (ava...@gmail.com)
+Date: Fri, 06 Aug 2021 10:08:37 +0000
+Subject: Re: Optimizing timer() and ggspectro() parameters - odd behavior
+Message-ID: <cyxFV2p9sKw.G3Cvwc97BAAJ@seewave.groups.google.com>
+In-Reply-To: <cyxFV2p9sKw.uOd6LJF7BAAJ@seewave.groups.google.com>
+References: <cyxFV2p9sKw.tnAeLHt7CgAJ@seewave.groups.google.com> <cyxFV2p9sKw.uOd6LJF7BAAJ@seewave.groups.google.com>
+Archived-At: <https://groups.google.com/g/seewave/c/cyxFV2p9sKw/m/G3Cvwc97BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+... sorry, one amendment I left out is now below.
+
+Thanks,
+
+On Friday, August 6, 2021 at 12:04:08 PM UTC+2 ava...@gmail.com wrote:
+> Dear Jerome & others,
+>
+> I've implemented a version of the timer() function that operates directly on the envelope. I think this may be helpful for some if, as in my case, one has to first manipulate the envelope outside of the timer() function.
+>
+> My amendment also allows you to supply an exact value for the threshold. (In timer(), the threshold argument can either be a function or a percentage of the max amplitude. However, if the threshold that you want to use is known, this can be supplied.)
+>
+> ```
+> # Fixes by Yannick Jadoul implemented here
+> # https://groups.google.com/g/seewave/c/UkEeyixxjV4
+>
+> env_timer <- function(file.env,
+>                       f,
+>                       threshold = 1,
+>                       thresholding = "percent", # "percent" - % amplitude (if max amplitude == 1),
+>                                                 # "apply" - use the exact value given,
+
+                                                    # "fun" - apply function,
+
+>                       dmin = 0.001,
+>                       power = 1,
+>                       tlim = NULL,
+>                       plot = FALSE,
+>                       tplot = NULL) # provide the section you want to view
+>
+> {
+>
+> # Checks -------------------------------
+>   if (is.null(file.env))
+>     stop("envelope missing")
+>   env <- file.env
+>   n <- length(env)
+>   if (is.null(f))
+>     stop("sampling rate missing")
+>   f <- f
+>   t <- seq(0,n/f,length.out=n)
+>   if (!is.null(dmin)) {
+>     if (length(dmin) != 1)
+>       stop("'dmin' should be a numeric vector of length 1")
+>     if (dmin <= 0)
+>       stop("'dmin' cannot be negative or equal to 0")
+>     if (dmin >= n/f)
+>       stop("'dmin' cannot equal or be higher than the wave duration")
+>   }
+>   if (power == 0)
+>     stop("'power' cannot equal to 0")
+>
+>
+> # Segment in time? -------------------------------
+>   if (!is.null(tlim)) {
+>     env <- env[seq(tlim[1]*f,tlim[2]*f)]
+>     t <- t[seq(tlim[1]*f,tlim[2]*f)]
+>     n <- length(env)
+>   } else if (!is.null(tlim) & !length(tlim)==2) {
+>     stop("incorrect number of arguments to 'tlim'")
+>   }
+>
+> # Thresholding -------------------------------
+>   if (thresholding == "apply") {
+>     thres <- threshold
+>   } else if (thresholding == "percent" && is.numeric(threshold)) {
+>     thres <- threshold/100
+
+>   } else if (thresholding == "fun" && is.function(threshold)) {
+
+>     thres <- apply(wave1, MARGIN = 2, FUN = threshold)
+>   }
+>
+> # Power -------------------------------
+>   if (power != 1) {
+>     env[which(env<0)] <- 0
+>     env1 <- env^power
+>   } else {
+>     env1 <- env}
+>
+> # Plot --------------------------------
+>   if (plot) {
+>     if (!is.null(tlim)) {
+>       p <- plot(t,env1,type = "l",xlab = "seconds", ylab = "Amplitude (a.u.)")
+>         abline(h = thres, col = "red", lty = 2)
+>         mtext(paste(as.character(round(thres,digits = 3)), "%"), side = 2, line = 0.5, at = thres,
+>               las = 1, col = "red", cex = 0.8)
+>     } else if (!is.null(tplot)) {
+>       p <- plot(t[seq(tplot[1]*f,tplot[2]*f)],env1[seq(tplot[1]*f,tplot[2]*f)],type = "l", xlab = "seconds",
+>                 ylab = "Amplitude (a.u.)")
+>       abline(h = thres, col = "red", lty = 2)
+>       mtext(paste(as.character(round(thres,digits = 3)), "%"), side = 2, line = 0.5, at = thres,
+>           las = 1, col = "red", cex = 0.8)
+>     } else {
+>       p <- plot(t,env1,type = "l", xlab = "seconds",
+>                 ylab = "Amplitude (a.u.)")
+>       abline(h = thres, col = "red", lty = 2)
+>       mtext(paste(as.character(round(thres,digits = 3)), "%"), side = 2, line = 0.5, at = thres,
+>             las = 1, col = "red", cex = 0.8)
+>     }
+>     print(p)
+>   }
+>   # Filtering for values above threshold  -------------------------------
+>   env2 <- ifelse(env1 <= thres, yes = 1, no = 2) # 1 = below thresh, 2 = above thresh
+>   env3 <- (env2+dplyr::lead(env2))[-length(env2)] # 2 = silent, 3 = transitions, 4 = signal
+>   n3 <- length(env3) # because the lead addition removes the final sample
+>   env3[c(1, n3)] <- 3
+>   env4 <- which(env3 == 3)
+>
+> # Filtering for values above dmin  -------------------------------
+>   if (!is.null(dmin)) {
+>     event.dur <- diff(env4)
+>     event.idx <- which(event.dur < dmin * f)
+>     if (length(event.idx) != 0) {
+>       for (i in event.idx) {
+>         env3[(env4[i]):(env4[i] + event.dur[i])] <- 2
+>       }
+>       env3[which(abs(diff(env3)) == 2)] <- 3 # if a transition has been removed, reinsert
+>       env3[c(1, n3)] <- 3
+>     }
+>     env4 <- which(env3 == 3)
+>     if (length(env4) == 2) {
+>       stop("No calls detected. Was 'dmin' or 'threshold' set to too high a value?")
+>     }
+>   }
+>   env4[-1] <- env4[-1] + 1 # removes the first index and shifts all by 1 sample
+>   env3 <- ts(env3, start = 0, end = n3/f, frequency = f)
+>   positions <- time(env3)[env4]
+>   durations <- diff(positions)
+>   npos <- length(positions)
+>   if (npos <= 2)
+>     stop("It seems that the sound is continuous, there are no signal/pause events.")
+>
+>  if (env2[1] == 1) {
+> #  if (env3[2] == 1) { # Edit by Yannick Jadoul
+>     first <- "pause"
+>     pause <- durations[seq(1, npos - 1, by = 2)]
+>     signal <- durations[seq(2, npos - 1, by = 2)]
+>     start.signal <- positions[seq(2, npos - 1, by = 2)]
+>     end.signal <- positions[seq(3, npos - 1, by = 2)]
+> #    end.signal <- positions[seq(3, npos, by = 2)] # Edit by Yannick Jadoul
+>     } else {
+>     first <- "signal"
+>     pause <- durations[seq(2, npos - 1, by = 2)]
+>     signal <- durations[seq(1, npos - 1, by = 2)]
+>     start.signal <- positions[seq(1, npos - 1, by = 2)]
+>     end.signal <- positions[seq(2, npos - 1, by = 2)]
+> #    end.signal <- positions[seq(2, npos, by = 2)] # Edit by Yannick Jadoul
+> }
+>
+>   # --
+>   if (length(start.signal) > length(end.signal)) {
+>     end.signal <- c(end.signal,n3/f)
+>     print("Added end signal.")
+>     flush.console()
+>   } else if (length(start.signal) < length(end.signal)) {
+>     stop("There's an extra end signal - investigate.")
+>   }
+>
+>
+>   ratio <- sum(signal)/sum(pause)
+>   timer <- list(s = signal, p = pause, r = ratio, s.start = start.signal,
+>                 s.end = end.signal, first = first)
+>   return(timer)
+> }
+>
+
+> ```
+>
+>
+> Thanks!
+> Ava
+>
+> On Wednesday, April 7, 2021 at 5:33:58 PM UTC+2 ava...@gmail.com wrote:
+> > Dear all,
+> >
+> > I'm using the timer() function to detect bat calls in my recordings. I'm having an issue with the parameter settings and wanted to ask for some advice regarding both the optimization of timer() and plotting parameters for ggspectro().
+> >
+> > Problem:
+> > My recordings were made in a sound-isolated chamber - so there's relatively little noise. For a given file, I will get pretty good identification of most calls, but then for some sections of the very same file there are tons of detections of simple noise and they are plotted as though noise is exceptionally high. Since the noise level is pretty uniform within each recording (~1 minute each), I don't quite understand this behavior.
+> >
+> > My questions are:
+> > 1. Is the amplitude threshold in timer() relative to the whole file, or just the current sliding window?
+> > 2. Why would timer() identify calls from noise correctly in one section of the file and catch many false positives in another, if the energy levels are about the same?
+> > 3. Theoretically, what's the best strategy to detect calls using timer() if noise levels do vary within a single file?
+> > 4. Are the limits/colevels parameters in the ggspectro/spectro functions scaled to the rms or energy of the selected sample?
+> >
+> > Sample Data & Output:
+> > Below you will find my pipeline. Here you will also find an example sound file and the plotted spectrograms and detected calls output by the program below: https://drive.google.com/drive/folders/1XMWspiV10mWUT4WrmXBAqq527N3Sr__e?usp=sharing
+> > As you can see, some sections of the sound file are plotted by ggspectro as though background noise is very high, while other sections seem 'cleaner'. But if you open the sound file in a software like Audacity or Avisoft, there's not much difference. (E.g. minute 8.2-8.4 has an rms of -65.16 while the section 9-9.2 min has an rms of -65.19. But looking at the spectrograms plotted (file02_8 and file02_9, respectively), it appears as though the latter has much more noise and there are a ton of false positives.)
+> >
+> > Pipeline:
+> > # filter each sound file to desired freq range
+> > wav.filt <- seewave::ffilter(wav@left, f = w...@samp.rate, from = 10000, to = 120000)
+> >
+> > # get call data
+> > call_data <- seewave::timer(wav.filt, f=w...@samp.rate,
+> >                 threshold = 1,
+> >                 dmin = 0.001,
+> >                 envt = 'abs',
+> >                 power = 1,
+> >                 msmooth = c(512,50), # window, overlap
+> >                 plot = FALSE)
+> >
+> > # in case a call starts right at the end of the file but an end is not recorded, assume it ends at the end of the file and set the offset value
+> >
+> >     if (length(call_data$s.start) > length(call_data$s.end) &
+> >         dplyr::last(call_data$s.end)<dplyr::last(call_data$s.start)) {
+> >         call_data$s.end <- c(call_data$s.end,length(wav@left)/w...@samp.rate)
+> >         }
+> >
+> > # weld into df and quantify onset intervals between calls
+> >
+> >     calls <- data.frame(sig.start = call_data$s.start, sig.end = call_data$s.end) %>%
+> >                         dplyr::rename(starts = sig.start,
+> >                                       ends = sig.end) %>%
+> >                         mutate(duration = call_data$s,
+> >                                onset.interval = starts-dplyr::lag(starts)) %>%
+> >                         mutate(min = filenum, .before = 1)
+> >
+> > # plot the spectrogram of the file along with detected calls to ensure correct detections:
+> >
+> >  checker <- calls[order(calls$starts),] %>% add_column(y.val = 95)
+> >       graph.path <- file.path(results_path,'graphical_check')
+> >         dir.create(graph.path,recursive = TRUE)
+> >
+> > # plot in segments because 1 minute is way too long to see the details:
+> >       segments <- seq(from = 0, to = length(wav@left)/w...@samp.rate, length.out = 50)
+> >
+> >       for (i in 2:length(segments)) {
+> >         curr_seg <- checker %>% dplyr::filter(min==as.character(filenum))
+> >         curr_seg <-  curr_seg[which(curr_seg$starts<=segments[i] & curr_seg$starts>segments[i-1]), ]
+> >         if (!nrow(curr_seg)==0) {
+> >         seewave::ggspectro(wav.filt,
+> >              tlim = c(segments[i-1],segments[i]),
+> >              f = w...@samp.rate,
+> >              wl = 512, ovlp = 50,
+> > fastdisp = TRUE, palette = temp.colors,
+> >                     noisereduction = TRUE)  +
+> >                     geom_tile(mapping = aes(fill = amplitude)) +
+> >                     geom_segment(data = curr_seg,
+> >  mapping = aes(x = starts, y = y.val,                                                 xend = ends, yend = y.val,
+> >                      color = "red"),                            inherit.aes = FALSE, size = 2) +
+> >                   scale_fill_continuous(name="Amplitude\n(dB)\n", limits=c(-70,0),
+> >                     na.value="transparent", low="white", high="black") +
+> >                     theme_bw() +
+> >                     ggsave(file.path(graph.path,paste0('file',filenum,'_',i,'.png'))) }
+> >
+> >
+> > Thank you so much in advance!
+> > Ava
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+
+From u90256e3bf79daea5 at groups.google.com  Fri Aug 20 20:42:09 2021
+From: u90256e3bf79daea5 at groups.google.com (L.ARb)
+Date: Fri, 20 Aug 2021 20:42:09 +0000
+Subject: Re: Optimizing timer() and ggspectro() parameters - odd behavior
+Message-ID: <cyxFV2p9sKw.LY40LqU9BwAJ@seewave.groups.google.com>
+In-Reply-To: <cyxFV2p9sKw.tnAeLHt7CgAJ@seewave.groups.google.com>
+References: <cyxFV2p9sKw.tnAeLHt7CgAJ@seewave.groups.google.com>
+Archived-At: <https://groups.google.com/g/seewave/c/cyxFV2p9sKw/m/LY40LqU9BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ava,
+Thanks for your timer() version, it's super helpful as I would also like to set the threshold at a particular value across all files.
+
+ I've run the new function and it runs perfectly, but I'm struggling with the higher computation times compared to the normal timer function; did you experience this? I tested it on 30 - 60 second files, (with high threshold so it's not finding a million pulses or anything).  I just thought I'd ask you in case I've missed something as a newbie here! Any tips would be appreciated.
+
+Thanks again,
+
+Louise
+> >
+> >
+> >
+> >
+
