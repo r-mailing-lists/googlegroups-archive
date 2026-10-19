@@ -1,0 +1,1651 @@
+From u258b98968d0ad8b9 at groups.google.com  Sat Aug  3 11:18:15 2024
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Sat, 03 Aug 2024 11:18:15 +0000
+Subject: Re: Error when extracting matrix as array slice
+Message-ID: <HlPqkfcCa1g.fLlKWOxqBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com>
+References: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HlPqkfcCa1g/m/fLlKWOxqBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+A remaining challenge with RTMB is the inplace sub-assignment operator ("[<-"). R doesn't support the case when assigning to a numeric LHS from AD RHS.
+Your example uses the problematic assignment here:
+
+G = diag(2) ## numeric
+G[!G] = expEta[t,] ## sub-assign from AD
+
+and here:
+
+Gamma = array(NA, dim = c(2, 2, nrow(expEta))) ## numeric
+Gamma[,,t] = G / rowSums(G)  ## sub-assign from AD
+
+You'll currently need the following minimal changes for the code to work:
+
+1. Add an explicit overload at the beginning of your function:
+
+   nllk <- function(par) {
+      "[<-" <- ADoverload("[<-")
+      ...
+   }
+
+2. Replace NA by e.g. NaN in the line:
+
+   Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+
+   Reason: RTMB uses 'is.numeric' internally to decide if a cast is needed but surprisingly (to me) is.numeric(NA) returns FALSE...
+
+Hopefully, in the future these rough edges can be ironed out in RTMB.
+
+On Wednesday, July 31, 2024 at 10:45:34 AM UTC+2 janole...@gmail.com wrote:
+> Hello all,
+>
+> I recently started using RTMB and encountered an error where I need some help.
+>
+> My minimal example is not so minimal, but the specific model details do not matter and the bottom line is: I build a 3D array from some parameters, and at the bottom of my likelihood function I extract a slice from it for each observation, which works just fine R.
+>
+> But when I want to build the AD function, I get the error:
+>
+> Error in advector(y) :
+>   Invalid argument to 'advector' (lost class attribute?)
+>
+> Minimal example:
+>
+> library(RTMB)
+>
+> # generating some data from Poisson HMM with covariate effect on transition probabilities
+> set.seed(123)
+> n = 100 # number of data points
+> lambda = c(1, 5) # state-dependent Poisson means
+> z = rnorm(n) # white noise covariate
+> beta = matrix(c(-2, -2, 1, -1), nrow = 2) # parameter matrix for t.p.m.
+> s = rep(NA, n) # simulating Markov chain of hidden states
+> s[1] = sample(1:2, 1) # initial state
+> expEta = exp(cbind(1, z) %*% t(beta))
+> for(t in 2:n){
+>   # computing t.p.m. from linear predictors via inverse multinomial logit link
+>   G = diag(2)
+>   G[!G] = expEta[t,] # covariate dependent transition probability matrix
+>   G = G / rowSums(G)
+>   s[t] = sample(1:2, 1, prob = G[s[t-1],])
+> }
+> x = rpois(n, lambda[s]) # simulating observations based on hidden states
+>
+> # negative log-likelihood function for Poisson HMM with covariate effect on transition probabilities
+> nllk = function(par) {
+>   getAll(par, dat)
+>   lambda = exp(loglambda) # state-dependent Poisson mean
+>   beta = matrix(betavec, nrow = 2, ncol = 2) # parameter matrix for t.p.m.
+>   expEta = exp(cbind(1, z) %*% t(beta)) # exp linear predictors for t.p.m.
+>   Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+>   for(t in 1:nrow(expEta)) {
+>     # each tpm slice is computed via inverse multinomial logit link
+>     G = diag(2)
+>     G[!G] = expEta[t,]
+>     Gamma[,,t] = G / rowSums(G)
+>   }
+>   delta = c(0.5, 0.5) # initial state probabilities fixed
+>   allprobs = cbind(dpois(x, lambda[1]), dpois(x, lambda[2])) # state-dependent probabilities
+>   # forward algorithm
+>   foo = t(delta) * allprobs[1,]
+>   phi = foo / sum(foo)
+>   l = log(sum(foo))
+>   for(t in 2:nrow(allprobs)) {
+>     # I get an AD error here when extracting the matrix from the array
+>     foo = phi %*% Gamma[,,t] * allprobs[t,]
+>     phi = foo / sum(foo)
+>     l = l + log(sum(foo))
+>   }
+>   -l
+> }
+>
+> par = list(loglambda = log(c(1,5)), betavec = c(-2, -2, 1, -1))
+> dat = list(x = x, z = z)
+>
+> nllk(par) # works
+>
+> obj = MakeADFun(nllk, par) # does not work
+> # Error in advector(y) :
+> #  Invalid argument to 'advector' (lost class attribute?)
+>
+> Best regards and thanks in advance,
+> Ole
+
+From u258b98968d0ad8b9 at groups.google.com  Sat Aug  3 11:24:50 2024
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Sat, 03 Aug 2024 11:24:50 +0000
+Subject: Re: "NOTSIMULATE" macro?
+Message-ID: <vkuI-u2Y8k4.MdRdY0hrBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <vkuI-u2Y8k4.VZZoi85hAQAJ@tmb-users.groups.google.com>
+References: <vkuI-u2Y8k4.VZZoi85hAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/vkuI-u2Y8k4/m/MdRdY0hrBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The SIMULATE macro is defined by:
+
+#define SIMULATE if(isDouble<Type>::value && TMB_OBJECTIVE_PTR -> do_simulate)
+
+So you could define e.g.
+
+#define NOTSIMULATE if(isDouble<Type>::value && !TMB_OBJECTIVE_PTR -> do_simulate)
+
+On Tuesday, July 30, 2024 at 6:21:06 PM UTC+2 Ben Bolker wrote:
+>   For something I'm doing right now it would be convenient to have a block of C++ code that only ran when *not* in simulation mode. Is there an easy/obvious way to do this?
+
+From ufd4f3538f907404b at groups.google.com  Sat Aug  3 11:56:45 2024
+From: ufd4f3538f907404b at groups.google.com (Ben Bolker)
+Date: Sat, 03 Aug 2024 11:56:45 +0000
+Subject: Re: [TMB users] Re: Error when extracting matrix as array slice
+Message-ID: <HlPqkfcCa1g.WAChaAZtBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <HlPqkfcCa1g.fLlKWOxqBAAJ@tmb-users.groups.google.com>
+References: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com> <HlPqkfcCa1g.fLlKWOxqBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HlPqkfcCa1g/m/WAChaAZtBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+  For what it's worth I think you should be able to use NA_real_ instead of NaN if you prefer for the second part (class(NA) is 'logical', class(NA_real_) is 'numeric')
+
+On 8/3/24 07:18, Kasper Kristensen wrote:
+
+> A remaining challenge with RTMB is the inplace sub-assignment operator ("[<-"). R doesn't support the case when assigning to a numeric LHS from AD RHS.
+> Your example uses the problematic assignment here:
+>
+> G = diag(2) ## numeric
+> G[!G] = expEta[t,] ## sub-assign from AD
+>
+> and here:
+>
+> Gamma = array(NA, dim = c(2, 2, nrow(expEta))) ## numeric
+> Gamma[,,t] = G / rowSums(G)  ## sub-assign from AD
+>
+> You'll currently need the following minimal changes for the code to work:
+>
+> 1. Add an explicit overload at the beginning of your function:
+>
+>    nllk <- function(par) {
+>       "[<-" <- ADoverload("[<-")
+>       ...
+>    }
+>
+>
+> 2. Replace NA by e.g. NaN in the line:
+>    Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+>    Reason: RTMB uses 'is.numeric' internally to decide if a cast is needed but surprisingly (to me) is.numeric(NA) returns FALSE...
+>
+> Hopefully, in the future these rough edges can be ironed out in RTMB.
+>
+> On Wednesday, July 31, 2024 at 10:45:34 AM UTC+2 janole...@gmail.com wrote:
+> > Hello all,
+> >
+> > I recently started using RTMB and encountered an error where I need some help.
+> >
+> > My minimal example is not so minimal, but the specific model details do not matter and the bottom line is: I build a 3D array from some parameters, and at the bottom of my likelihood function I extract a slice from it for each observation, which works just fine R.
+> >
+> > But when I want to build the AD function, I get the error:
+> >
+> > Error in advector(y) :
+> >   Invalid argument to 'advector' (lost class attribute?)
+> >
+> > Minimal example:
+> >
+> > library(RTMB)
+> >
+> > # generating some data from Poisson HMM with covariate effect on transition probabilities
+> > set.seed(123)
+> > n = 100 # number of data points
+> > lambda = c(1, 5) # state-dependent Poisson means
+> > z = rnorm(n) # white noise covariate
+> > beta = matrix(c(-2, -2, 1, -1), nrow = 2) # parameter matrix for t.p.m.
+> > s = rep(NA, n) # simulating Markov chain of hidden states
+> > s[1] = sample(1:2, 1) # initial state
+> > expEta = exp(cbind(1, z) %*% t(beta))
+> > for(t in 2:n){
+> >   # computing t.p.m. from linear predictors via inverse multinomial logit link
+> >   G = diag(2)
+> >   G[!G] = expEta[t,] # covariate dependent transition probability matrix
+> >   G = G / rowSums(G)
+> >   s[t] = sample(1:2, 1, prob = G[s[t-1],])
+> > }
+> > x = rpois(n, lambda[s]) # simulating observations based on hidden states
+> >
+> > # negative log-likelihood function for Poisson HMM with covariate effect on transition probabilities
+> > nllk = function(par) {
+> >   getAll(par, dat)
+> >   lambda = exp(loglambda) # state-dependent Poisson mean
+> >   beta = matrix(betavec, nrow = 2, ncol = 2) # parameter matrix for t.p.m.
+> >   expEta = exp(cbind(1, z) %*% t(beta)) # exp linear predictors for t.p.m.
+> >   Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> >   for(t in 1:nrow(expEta)) {
+> >     # each tpm slice is computed via inverse multinomial logit link
+> >     G = diag(2)
+> >     G[!G] = expEta[t,]
+> >     Gamma[,,t] = G / rowSums(G)
+> >   }
+> >   delta = c(0.5, 0.5) # initial state probabilities fixed
+> >   allprobs = cbind(dpois(x, lambda[1]), dpois(x, lambda[2])) # state-dependent probabilities
+> >   # forward algorithm
+> >   foo = t(delta) * allprobs[1,]
+> >   phi = foo / sum(foo)
+> >   l = log(sum(foo))
+> >   for(t in 2:nrow(allprobs)) {
+> >     # I get an AD error here when extracting the matrix from the array
+> >     foo = phi %*% Gamma[,,t] * allprobs[t,]
+> >     phi = foo / sum(foo)
+> >     l = l + log(sum(foo))
+> >   }
+> >   -l
+> > }
+> >
+> > par = list(loglambda = log(c(1,5)), betavec = c(-2, -2, 1, -1))
+> > dat = list(x = x, z = z)
+> >
+> > nllk(par) # works
+> >
+> > obj = MakeADFun(nllk, par) # does not work
+> > # Error in advector(y) :
+> > #  Invalid argument to 'advector' (lost class attribute?)
+> >
+> > Best regards and thanks in advance,
+> > Ole
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/5a0720f4-aead-470c-a34f-2d274de9b642n%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/5a0720f4-aead-470c-a34f-2d274de9b642n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uc3e53d7d5317214f at groups.google.com  Sat Aug  3 15:18:57 2024
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Sat, 03 Aug 2024 15:18:57 +0000
+Subject: Re: Error when extracting matrix as array slice
+Message-ID: <HlPqkfcCa1g.f28I-A54BAAJ@tmb-users.groups.google.com>
+In-Reply-To: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com>
+References: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HlPqkfcCa1g/m/f28I-A54BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Kasper, that fixed it.
+
+However I'm confused that the same did not happen when I only built one matrix, but in the same way using NA.
+
+But maybe I just don't get it :D
+
+Anyway, thanks again!
+
+kasper.k...@gmail.com schrieb am Samstag, 3. August 2024 um 13:18:15 UTC+2:
+> A remaining challenge with RTMB is the inplace sub-assignment operator ("[<-"). R doesn't support the case when assigning to a numeric LHS from AD RHS.
+> Your example uses the problematic assignment here:
+>
+> G = diag(2) ## numeric
+> G[!G] = expEta[t,] ## sub-assign from AD
+>
+> and here:
+>
+> Gamma = array(NA, dim = c(2, 2, nrow(expEta))) ## numeric
+> Gamma[,,t] = G / rowSums(G)  ## sub-assign from AD
+>
+> You'll currently need the following minimal changes for the code to work:
+>
+> 1. Add an explicit overload at the beginning of your function:
+>
+>    nllk <- function(par) {
+>       "[<-" <- ADoverload("[<-")
+>       ...
+>    }
+>
+>
+> 2. Replace NA by e.g. NaN in the line:
+>    Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+>    Reason: RTMB uses 'is.numeric' internally to decide if a cast is needed but surprisingly (to me) is.numeric(NA) returns FALSE...
+>
+> Hopefully, in the future these rough edges can be ironed out in RTMB.
+>
+> On Wednesday, July 31, 2024 at 10:45:34 AM UTC+2 janole...@gmail.com wrote:
+> > Hello all,
+> >
+> > I recently started using RTMB and encountered an error where I need some help.
+> >
+> > My minimal example is not so minimal, but the specific model details do not matter and the bottom line is: I build a 3D array from some parameters, and at the bottom of my likelihood function I extract a slice from it for each observation, which works just fine R.
+> >
+> > But when I want to build the AD function, I get the error:
+> >
+> > Error in advector(y) :
+> >   Invalid argument to 'advector' (lost class attribute?)
+> >
+> > Minimal example:
+> >
+> > library(RTMB)
+> >
+> > # generating some data from Poisson HMM with covariate effect on transition probabilities
+> > set.seed(123)
+> > n = 100 # number of data points
+> > lambda = c(1, 5) # state-dependent Poisson means
+> > z = rnorm(n) # white noise covariate
+> > beta = matrix(c(-2, -2, 1, -1), nrow = 2) # parameter matrix for t.p.m.
+> > s = rep(NA, n) # simulating Markov chain of hidden states
+> > s[1] = sample(1:2, 1) # initial state
+> > expEta = exp(cbind(1, z) %*% t(beta))
+> > for(t in 2:n){
+> >   # computing t.p.m. from linear predictors via inverse multinomial logit link
+> >   G = diag(2)
+> >   G[!G] = expEta[t,] # covariate dependent transition probability matrix
+> >   G = G / rowSums(G)
+> >   s[t] = sample(1:2, 1, prob = G[s[t-1],])
+> > }
+> > x = rpois(n, lambda[s]) # simulating observations based on hidden states
+> >
+> > # negative log-likelihood function for Poisson HMM with covariate effect on transition probabilities
+> > nllk = function(par) {
+> >   getAll(par, dat)
+> >   lambda = exp(loglambda) # state-dependent Poisson mean
+> >   beta = matrix(betavec, nrow = 2, ncol = 2) # parameter matrix for t.p.m.
+> >   expEta = exp(cbind(1, z) %*% t(beta)) # exp linear predictors for t.p.m.
+> >   Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> >   for(t in 1:nrow(expEta)) {
+> >     # each tpm slice is computed via inverse multinomial logit link
+> >     G = diag(2)
+> >     G[!G] = expEta[t,]
+> >     Gamma[,,t] = G / rowSums(G)
+> >   }
+> >   delta = c(0.5, 0.5) # initial state probabilities fixed
+> >   allprobs = cbind(dpois(x, lambda[1]), dpois(x, lambda[2])) # state-dependent probabilities
+> >   # forward algorithm
+> >   foo = t(delta) * allprobs[1,]
+> >   phi = foo / sum(foo)
+> >   l = log(sum(foo))
+> >   for(t in 2:nrow(allprobs)) {
+> >     # I get an AD error here when extracting the matrix from the array
+> >     foo = phi %*% Gamma[,,t] * allprobs[t,]
+> >     phi = foo / sum(foo)
+> >     l = l + log(sum(foo))
+> >   }
+> >   -l
+> > }
+> >
+> > par = list(loglambda = log(c(1,5)), betavec = c(-2, -2, 1, -1))
+> > dat = list(x = x, z = z)
+> >
+> > nllk(par) # works
+> >
+> > obj = MakeADFun(nllk, par) # does not work
+> > # Error in advector(y) :
+> > #  Invalid argument to 'advector' (lost class attribute?)
+> >
+> > Best regards and thanks in advance,
+> > Ole
+
+From uc3e53d7d5317214f at groups.google.com  Sat Aug  3 15:22:48 2024
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Sat, 03 Aug 2024 15:22:48 +0000
+Subject: von Mises pdf
+Message-ID: <4BbYETjayFo.w-wBw0R4BAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4BbYETjayFo/m/w-wBw0R4BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Kasper,
+
+just wondering if it would be possible that you add the von Mises distribution with dvm() at some point. Implementation should be super easy as you already have the modified Bessel function in RTMB. Perhaps it's too niche of a distribution for RTMB, but would probably make some ecology people happy that work with steps and turns. :)
+
+Best regards,
+Ole
+
+From u258b98968d0ad8b9 at groups.google.com  Mon Aug  5 13:58:03 2024
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Mon, 05 Aug 2024 13:58:03 +0000
+Subject: Re: [TMB users] Matrix exponential
+Message-ID: <PAODZkgJofY.NCKLYuXwAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/PAODZkgJofY/m/NCKLYuXwAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+RTMB imports the expm generic from the Matrix package, and then adds an AD method. Example here:
+
+example(ADmatrix)
+
+On Mon, Aug 5, 2024 at 3:51 PM Jan-Ole Koslik <janole...@gmail.com> wrote:
+> Hi Kasper,
+>
+> looking at the AD matrix methods, there it shows expm(x) which is however not exported from RTMB (as compared to e.g. RTMB::diag()).
+>
+> Is there a way to just compute expm(A) if A is a dense matrix that allows for AD?
+>
+> I found expAv(), but I'm not sure I understand how it works.
+>
+> Thanks in advance,
+> Ole
+>
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/db0d2990-74a8-453c-a4e7-c6ae33d5944en%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/db0d2990-74a8-453c-a4e7-c6ae33d5944en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uc3e53d7d5317214f at groups.google.com  Mon Aug  5 14:10:38 2024
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Mon, 05 Aug 2024 14:10:38 +0000
+Subject: Re: [TMB users] Matrix exponential
+Message-ID: <PAODZkgJofY.GDbEEpXxAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <PAODZkgJofY.NCKLYuXwAgAJ@tmb-users.groups.google.com>
+References: <PAODZkgJofY.NCKLYuXwAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/PAODZkgJofY/m/GDbEEpXxAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, also figured that out now.
+
+Sorry for the inconvenience :)
+
+kasper.k...@gmail.com schrieb am Montag, 5. August 2024 um 15:58:03 UTC+2:
+> RTMB imports the expm generic from the Matrix package, and then adds an AD method. Example here:
+>
+> example(ADmatrix)
+>
+>
+> On Mon, Aug 5, 2024 at 3:51 PM Jan-Ole Koslik <janole...@gmail.com> wrote:
+> > Hi Kasper,
+> >
+> > looking at the AD matrix methods, there it shows expm(x) which is however not exported from RTMB (as compared to e.g. RTMB::diag()).
+> >
+> > Is there a way to just compute expm(A) if A is a dense matrix that allows for AD?
+> >
+> > I found expAv(), but I'm not sure I understand how it works.
+> >
+> > Thanks in advance,
+> > Ole
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/db0d2990-74a8-453c-a4e7-c6ae33d5944en%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/db0d2990-74a8-453c-a4e7-c6ae33d5944en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ufd4f3538f907404b at groups.google.com  Tue Aug  6 06:25:48 2024
+From: ufd4f3538f907404b at groups.google.com (Ben Bolker)
+Date: Tue, 06 Aug 2024 06:25:48 +0000
+Subject: Re: [TMB users] Re: "NOTSIMULATE" macro?
+Message-ID: <vkuI-u2Y8k4.E4vhBc6WAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <vkuI-u2Y8k4.MdRdY0hrBAAJ@tmb-users.groups.google.com>
+References: <vkuI-u2Y8k4.VZZoi85hAQAJ@tmb-users.groups.google.com> <vkuI-u2Y8k4.MdRdY0hrBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/vkuI-u2Y8k4/m/E4vhBc6WAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+  Thanks. (As it turns out I have the information in the code to do what I want without this, but saving for future reference.)
+
+On 8/3/24 07:24, Kasper Kristensen wrote:
+
+> The SIMULATE macro is defined by:
+>
+> #define SIMULATE if(isDouble<Type>::value && TMB_OBJECTIVE_PTR -> do_simulate)
+>
+> So you could define e.g.
+>
+> #define NOTSIMULATE if(isDouble<Type>::value && !TMB_OBJECTIVE_PTR -> do_simulate)
+>
+>
+>
+> On Tuesday, July 30, 2024 at 6:21:06 PM UTC+2 Ben Bolker wrote:
+> >   For something I'm doing right now it would be convenient to have a block of C++ code that only ran when *not* in simulation mode. Is there an easy/obvious way to do this?
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/d3a456fa-43d6-4eb0-b04f-7e837a53ce8bn%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/d3a456fa-43d6-4eb0-b04f-7e837a53ce8bn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u55d0e2f87b0f795e at groups.google.com  Tue Aug  6 15:47:48 2024
+From: u55d0e2f87b0f795e at groups.google.com (Mollie Brooks)
+Date: Tue, 06 Aug 2024 15:47:48 +0000
+Subject: Re: [TMB users] data in the objective function
+Message-ID: <sq3y5aTwvjo.-jVLJXm1AwAJ@tmb-users.groups.google.com>
+In-Reply-To: <sq3y5aTwvjo.YgyN8kGEBAAJ@tmb-users.groups.google.com>
+References: <sq3y5aTwvjo.YgyN8kGEBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/sq3y5aTwvjo/m/-jVLJXm1AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is sort of a followup about RTMB and the data, but using that for predicting with new data. I'm basing my attempt partly on Kasper's suggestion above, but also on the function glmmTMB::glmmTMB.predict which I don't fully understand. I'm doing something wrong and wondered if anyone can help me figure it out.  I'm using the example from the RTMB documentation, but changing it to have a data argument so that I can make predictions for my "newdata" object. The predited values I get (in black in attached graph) are completely unrealistic.
+
+library(RTMB)
+library(ggplot2)
+data(ChickWeight)
+
+parameters <- list(
+  mua=0,          ## Mean slope
+  sda=1,          ## Std of slopes
+  mub=0,          ## Mean intercept
+  sdb=1,          ## Std of intercepts
+  sdeps=1,        ## Residual Std
+  a=rep(0, 50),   ## Random slope by chick
+  b=rep(0, 50)    ## Random intercept by chick
+)
+
+nll <- function(parms, data) {
+  getAll(data, parms, warn=FALSE)
+  ## Optional (enables extra RTMB features)
+  weight <- OBS(weight)
+  ## Initialize joint negative log likelihood
+  nll <- 0
+  ## Random slopes
+  nll <- nll - sum(dnorm(a, mean=mua, sd=sda, log=TRUE))
+  ## Random intercepts
+  nll <- nll - sum(dnorm(b, mean=mub, sd=sdb, log=TRUE))
+  ## Data
+  predWeight <- a[Chick] * Time + b[Chick]
+  nll <- nll - sum(dnorm(weight, predWeight, sd=sdeps, log=TRUE))
+  ## Get predicted weight uncertainties
+  ADREPORT(predWeight)
+  ## Return
+  nll
+
+}
+cmb <- function(f, d) function(p) f(p, d)
+
+obj <- RTMB::MakeADFun(cmb(nll, ChickWeight), parameters, random=c("a", "b"))
+
+opt <- nlminb(obj$par, obj$fn, obj$gr)
+
+newdata <- data.frame(Time=20:30, Diet=3, Chick=10, weight=0)
+
+oldPar <- opt$par
+
+H <- optimHess(oldPar,obj$fn,obj$gr)
+
+newObj <- RTMB::MakeADFun(cmb(nll, newdata), parameters, random=c("a", "b"))
+
+newObj$fn(oldPar)  ## call once to update internal structures
+
+sdr <- sdreport(newObj, oldPar, hessian.fixed=H, getReportCovariance=TRUE)
+newdata$predWeight <- as.list(sdr, "Est", report=TRUE)$predWeight
+
+ggplot(ChickWeight, aes(Time, weight, colour=Diet))+
+  geom_point()+geom_smooth()+
+  geom_line(data=newdata, aes(x=Time, y=predWeight), colour="black")
+
+ggsave("extrapolate weights.png", height=3, width=5)
+
+On Saturday, June 22, 2024 at 4:56:34 PM UTC+2 andrea...@gmail.com wrote:
+> Hi Kasper,
+>
+> I have a somewhat related question. I am working on adding one-step-ahead residual calculations into our modeling project, FIMS. Currently, we have a stripped down .cpp file (see here <https://github.com/NOAA-FIMS/FIMS/blob/main/src/FIMS.cpp>) and data are passed into the model through the Rcpp interface. I was thinking I had to pass in a data list to the cpp file in order to declare the data indicator vector, 'keep', which requires the arguments 'keep' and 'y', with 'y' being the data vector. See here <https://github.com/NOAA-FIMS/ModularTMBExample/blob/FIMS-v0100-nll-refactor/src/ModularTMBExample.cpp> for our prototype example.
+>
+> Outside of RTMB, is there a way to implement one-step-residuals through Rcpp that would circumvent the need to pass in the data list to the cpp file? Is there an example in RTMB I could look at to work this out? Or is this not possible with standalone TMB models?
+>
+> Thanks,
+> Andrea
+>
+> On Sat, Jun 22, 2024 at 4:10 AM Kasper Kristensen <kasper.k...@gmail.com> wrote:
+> > The reason for not adding a data argument to RTMB::MakeADFun is that it's not needed. R closures conveniently combine function and data as a self-contained object.
+> > An explicit data argument to MakeADFun would require extra assumptions on how to pass data to the user function. That would be more restrictive than the current design.
+> > If you want an explicit data argument to your objective function you can do:
+> >
+> > ## Data as explicit argument
+> > nll <- function(parms, data) { ... }
+> > cmb <- function(f, d) function(p) f(p, d)
+> > RTMB::MakeADFun(cmb(nll, data), parms)
+> >
+> > Sure, RTMB could be made to do this behind the scenes, and allow 'MakeADFun(nll, parms, data=data)', but I consider this a small gain at the cost of being more restrictive.
+> >
+> >
+> > On Saturday, June 22, 2024 at 2:27:30 AM UTC+2 jane.s...@noaa.gov wrote:
+> > > I really appreciate the response Jim, and for pointing to your previous example.
+> > >
+> > > I implemented the environment() solution on a separate branch <https://github.com/JaneSullivan-NOAA/saa/commit/4acaf10b29be1eff484c91b8c9f2e39c8798ddc6> and everything looks good. I only used the environment() portion because I couldn't get local() from rtmbTest <https://github.com/kaskr/RTMB/blob/master/rtmbTest/R/sdv_multi_compact.R#L45> to work for our example. I either got NaNs or an error about unnamed lists, probably because rtmbTest doesn't use getAll(). Maybe it doesn't matter?
+> > >
+> > > More generally, I'm curious from a design perspective why the data object is not an optional input to the objective function. It seems like a very intentional design choice, and I'd really appreciate understanding the rationale behind it.
+> > >
+> > > Thank you for your amazing work!
+> > >
+> > > Jane
+> > >
+> > >
+> > >
+> > > On Fri, Jun 21, 2024 at 2:34 PM James Thorson <James....@noaa.gov> wrote:
+> > > > I've found Kasper's solution here <https://github.com/kaskr/RTMB/issues/26> to be sufficient for developing packages, and it avoids assigning to the general environment.  However, I'm still concerned about unexpected precedence and conflicts, where having something in the global environment might affect a function in ways that aren't intended.
+> > > >
+> > > > Definitely an interesting design topic
+> > > >
+> > > > On Fri, Jun 21, 2024 at 3:06 PM 'Jane Sullivan - NOAA Federal' via TMB Users <tmb-...@googlegroups.com> wrote:
+> > > > > RTMB users,
+> > > > >
+> > > > > One interesting feature of RTMB is that only the parameter list is passed to the objective function and MakeADFun. When building an R library with RTMB, if the data list and objective function are built in separate R functions, the data list is no longer available to the proper RTMB environment and the package fails (data not found).
+> > > > >
+> > > > > We were able to find a workaround for this issue by first assigning the data within the data function to the global environment `dat <<- data` then removing it after MakeADFun using `rm(dat,envir=globalenv())`.
+> > > > >
+> > > > > This seems questionable. Has anyone else encountered this problem? Do you have a better solution?
+> > > > >
+> > > > > Here is the original code where the data and objective function are in the same R function:
+> > > > > https://github.com/BenWilliams-NOAA/saa
+> > > > > Here is the modified code where they are split into separate functions using the changes described above:
+> > > > > https://github.com/JaneSullivan-NOAA/saa/tree/main
+> > > > >
+> > > > > Sincerely,
+> > > > > Jane Sullivan and Nathan Vaughan
+> > > > >
+> > > > > --
+> > > > > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/CAD9860JgskUHjGwPmr6_06FFVm2QujYD%3DUgH17BbU%2BT0hCME1w%40mail.gmail.com <https://groups.google.com/d/msgid/tmb-users/CAD9860JgskUHjGwPmr6_06FFVm2QujYD%3DUgH17BbU%2BT0hCME1w%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/d1dd00f8-e17b-49bf-a36a-28f5e481d8f0n%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/d1dd00f8-e17b-49bf-a36a-28f5e481d8f0n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u258b98968d0ad8b9 at groups.google.com  Tue Aug  6 16:18:03 2024
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Tue, 06 Aug 2024 16:18:03 +0000
+Subject: Re: [TMB users] data in the objective function
+Message-ID: <sq3y5aTwvjo.K8_6lx-3AwAJ@tmb-users.groups.google.com>
+In-Reply-To: <sq3y5aTwvjo.-jVLJXm1AwAJ@tmb-users.groups.google.com>
+References: <sq3y5aTwvjo.YgyN8kGEBAAJ@tmb-users.groups.google.com> <sq3y5aTwvjo.-jVLJXm1AwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/sq3y5aTwvjo/m/K8_6lx-3AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The glmmTMB::predict function actually augments the old data with the new data to make predictions. The newdata should have an empty response, so something like:
+
+newdata <- data.frame(Time=20:30, Diet=3, Chick=10, weight=NA)
+augdata <- rbind(ChickWeight, newdata)
+
+The NA response can be handled in RTMB using the modified data likelihood:
+
+ nll <- nll - sum(dnorm(weight, predWeight, sd=sdeps, log=TRUE), na.rm=TRUE)
+
+You can then build the likelihood with the augmented dataset:
+
+newObj <- RTMB::MakeADFun(cmb(nll, augdata), parameters, random=c("a", "b"))
+
+With these minor changes I think your script should give reasonable predictions?
+
+On Tuesday, August 6, 2024 at 5:47:48 PM UTC+2 Mollie Brooks wrote:
+> This is sort of a followup about RTMB and the data, but using that for predicting with new data. I'm basing my attempt partly on Kasper's suggestion above, but also on the function glmmTMB::glmmTMB.predict which I don't fully understand. I'm doing something wrong and wondered if anyone can help me figure it out.  I'm using the example from the RTMB documentation, but changing it to have a data argument so that I can make predictions for my "newdata" object. The predited values I get (in black in attached graph) are completely unrealistic.
+>
+> library(RTMB)
+> library(ggplot2)
+> data(ChickWeight)
+>
+> parameters <- list(
+>   mua=0,          ## Mean slope
+>   sda=1,          ## Std of slopes
+>   mub=0,          ## Mean intercept
+>   sdb=1,          ## Std of intercepts
+>   sdeps=1,        ## Residual Std
+>   a=rep(0, 50),   ## Random slope by chick
+>   b=rep(0, 50)    ## Random intercept by chick
+> )
+>
+> nll <- function(parms, data) {
+>   getAll(data, parms, warn=FALSE)
+>   ## Optional (enables extra RTMB features)
+>   weight <- OBS(weight)
+>   ## Initialize joint negative log likelihood
+>   nll <- 0
+>   ## Random slopes
+>   nll <- nll - sum(dnorm(a, mean=mua, sd=sda, log=TRUE))
+>   ## Random intercepts
+>   nll <- nll - sum(dnorm(b, mean=mub, sd=sdb, log=TRUE))
+>   ## Data
+>   predWeight <- a[Chick] * Time + b[Chick]
+>   nll <- nll - sum(dnorm(weight, predWeight, sd=sdeps, log=TRUE))
+>   ## Get predicted weight uncertainties
+>   ADREPORT(predWeight)
+>   ## Return
+>   nll
+>
+> }
+> cmb <- function(f, d) function(p) f(p, d)
+>
+> obj <- RTMB::MakeADFun(cmb(nll, ChickWeight), parameters, random=c("a", "b"))
+>
+> opt <- nlminb(obj$par, obj$fn, obj$gr)
+>
+> newdata <- data.frame(Time=20:30, Diet=3, Chick=10, weight=0)
+>
+> oldPar <- opt$par
+>
+> H <- optimHess(oldPar,obj$fn,obj$gr)
+>
+> newObj <- RTMB::MakeADFun(cmb(nll, newdata), parameters, random=c("a", "b"))
+>
+> newObj$fn(oldPar)  ## call once to update internal structures
+>
+> sdr <- sdreport(newObj, oldPar, hessian.fixed=H, getReportCovariance=TRUE)
+> newdata$predWeight <- as.list(sdr, "Est", report=TRUE)$predWeight
+>
+>
+> ggplot(ChickWeight, aes(Time, weight, colour=Diet))+
+>   geom_point()+geom_smooth()+
+>   geom_line(data=newdata, aes(x=Time, y=predWeight), colour="black")
+>
+> ggsave("extrapolate weights.png", height=3, width=5)
+> On Saturday, June 22, 2024 at 4:56:34 PM UTC+2 andrea...@gmail.com wrote:
+> > Hi Kasper,
+> >
+> > I have a somewhat related question. I am working on adding one-step-ahead residual calculations into our modeling project, FIMS. Currently, we have a stripped down .cpp file (see here <https://github.com/NOAA-FIMS/FIMS/blob/main/src/FIMS.cpp>) and data are passed into the model through the Rcpp interface. I was thinking I had to pass in a data list to the cpp file in order to declare the data indicator vector, 'keep', which requires the arguments 'keep' and 'y', with 'y' being the data vector. See here <https://github.com/NOAA-FIMS/ModularTMBExample/blob/FIMS-v0100-nll-refactor/src/ModularTMBExample.cpp> for our prototype example.
+> >
+> > Outside of RTMB, is there a way to implement one-step-residuals through Rcpp that would circumvent the need to pass in the data list to the cpp file? Is there an example in RTMB I could look at to work this out? Or is this not possible with standalone TMB models?
+> >
+> > Thanks,
+> > Andrea
+> >
+> > On Sat, Jun 22, 2024 at 4:10 AM Kasper Kristensen <kasper.k...@gmail.com> wrote:
+> > > The reason for not adding a data argument to RTMB::MakeADFun is that it's not needed. R closures conveniently combine function and data as a self-contained object.
+> > > An explicit data argument to MakeADFun would require extra assumptions on how to pass data to the user function. That would be more restrictive than the current design.
+> > > If you want an explicit data argument to your objective function you can do:
+> > >
+> > > ## Data as explicit argument
+> > > nll <- function(parms, data) { ... }
+> > > cmb <- function(f, d) function(p) f(p, d)
+> > > RTMB::MakeADFun(cmb(nll, data), parms)
+> > >
+> > > Sure, RTMB could be made to do this behind the scenes, and allow 'MakeADFun(nll, parms, data=data)', but I consider this a small gain at the cost of being more restrictive.
+> > >
+> > >
+> > > On Saturday, June 22, 2024 at 2:27:30 AM UTC+2 jane.s...@noaa.gov wrote:
+> > > > I really appreciate the response Jim, and for pointing to your previous example.
+> > > >
+> > > > I implemented the environment() solution on a separate branch <https://github.com/JaneSullivan-NOAA/saa/commit/4acaf10b29be1eff484c91b8c9f2e39c8798ddc6> and everything looks good. I only used the environment() portion because I couldn't get local() from rtmbTest <https://github.com/kaskr/RTMB/blob/master/rtmbTest/R/sdv_multi_compact.R#L45> to work for our example. I either got NaNs or an error about unnamed lists, probably because rtmbTest doesn't use getAll(). Maybe it doesn't matter?
+> > > >
+> > > > More generally, I'm curious from a design perspective why the data object is not an optional input to the objective function. It seems like a very intentional design choice, and I'd really appreciate understanding the rationale behind it.
+> > > >
+> > > > Thank you for your amazing work!
+> > > >
+> > > > Jane
+> > > >
+> > > >
+> > > >
+> > > > On Fri, Jun 21, 2024 at 2:34 PM James Thorson <James....@noaa.gov> wrote:
+> > > > > I've found Kasper's solution here <https://github.com/kaskr/RTMB/issues/26> to be sufficient for developing packages, and it avoids assigning to the general environment.  However, I'm still concerned about unexpected precedence and conflicts, where having something in the global environment might affect a function in ways that aren't intended.
+> > > > >
+> > > > > Definitely an interesting design topic
+> > > > >
+> > > > > On Fri, Jun 21, 2024 at 3:06 PM 'Jane Sullivan - NOAA Federal' via TMB Users <tmb-...@googlegroups.com> wrote:
+> > > > > > RTMB users,
+> > > > > >
+> > > > > > One interesting feature of RTMB is that only the parameter list is passed to the objective function and MakeADFun. When building an R library with RTMB, if the data list and objective function are built in separate R functions, the data list is no longer available to the proper RTMB environment and the package fails (data not found).
+> > > > > >
+> > > > > > We were able to find a workaround for this issue by first assigning the data within the data function to the global environment `dat <<- data` then removing it after MakeADFun using `rm(dat,envir=globalenv())`.
+> > > > > >
+> > > > > > This seems questionable. Has anyone else encountered this problem? Do you have a better solution?
+> > > > > >
+> > > > > > Here is the original code where the data and objective function are in the same R function:
+> > > > > > https://github.com/BenWilliams-NOAA/saa
+> > > > > > Here is the modified code where they are split into separate functions using the changes described above:
+> > > > > > https://github.com/JaneSullivan-NOAA/saa/tree/main
+> > > > > >
+> > > > > > Sincerely,
+> > > > > > Jane Sullivan and Nathan Vaughan
+> > > > > >
+> > > > > > --
+> > > > > > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > > > > ---
+> > > > > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/CAD9860JgskUHjGwPmr6_06FFVm2QujYD%3DUgH17BbU%2BT0hCME1w%40mail.gmail.com <https://groups.google.com/d/msgid/tmb-users/CAD9860JgskUHjGwPmr6_06FFVm2QujYD%3DUgH17BbU%2BT0hCME1w%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > >
+> > > --
+> > > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/d1dd00f8-e17b-49bf-a36a-28f5e481d8f0n%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/d1dd00f8-e17b-49bf-a36a-28f5e481d8f0n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u55d0e2f87b0f795e at groups.google.com  Tue Aug  6 17:16:05 2024
+From: u55d0e2f87b0f795e at groups.google.com (Mollie Brooks)
+Date: Tue, 06 Aug 2024 17:16:05 +0000
+Subject: Re: [TMB users] data in the objective function
+Message-ID: <sq3y5aTwvjo.Jz9hkUq6AwAJ@tmb-users.groups.google.com>
+In-Reply-To: <sq3y5aTwvjo.YgyN8kGEBAAJ@tmb-users.groups.google.com>
+References: <sq3y5aTwvjo.YgyN8kGEBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/sq3y5aTwvjo/m/Jz9hkUq6AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Kasper! That seems to have worked. I knew about the data augmentation in glmmTMB::predict, but thought there might be a simpler way. Oh well.  Details are attached in case someone needs it in the future.
+
+cheers,
+Mollie
+
+From ue7a8779ef7a944e5 at groups.google.com  Mon Aug 12 17:29:46 2024
+From: ue7a8779ef7a944e5 at groups.google.com (james...@gmail.com)
+Date: Mon, 12 Aug 2024 17:29:46 +0000
+Subject: Re: Error when extracting matrix as array slice
+Message-ID: <HlPqkfcCa1g.2vS6f5-iCQAJ@tmb-users.groups.google.com>
+In-Reply-To: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com>
+References: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HlPqkfcCa1g/m/2vS6f5-iCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+So as I understand it, there's three primitives that benefit from explicit overloading within functions:
+```R
+  "c" <- ADoverload("c")
+
+  "[<-" <- ADoverload("[<-")
+
+  "diag<-" <- ADoverload("diag<-")
+```
+
+Having tripped over the first two ... is there any reason not to just define these at the beginning of each function that we define (i.e., computational cost)?
+
+On Saturday, August 3, 2024 at 8:18:57 AM UTC-7 janole...@gmail.com wrote:
+> Thanks Kasper, that fixed it.
+>
+> However I'm confused that the same did not happen when I only built one matrix, but in the same way using NA.
+>
+> But maybe I just don't get it :D
+>
+> Anyway, thanks again!
+>
+> kasper.k...@gmail.com schrieb am Samstag, 3. August 2024 um 13:18:15 UTC+2:
+> > A remaining challenge with RTMB is the inplace sub-assignment operator ("[<-"). R doesn't support the case when assigning to a numeric LHS from AD RHS.
+> > Your example uses the problematic assignment here:
+> >
+> > G = diag(2) ## numeric
+> > G[!G] = expEta[t,] ## sub-assign from AD
+> >
+> > and here:
+> >
+> > Gamma = array(NA, dim = c(2, 2, nrow(expEta))) ## numeric
+> > Gamma[,,t] = G / rowSums(G)  ## sub-assign from AD
+> >
+> > You'll currently need the following minimal changes for the code to work:
+> >
+> > 1. Add an explicit overload at the beginning of your function:
+> >
+> >    nllk <- function(par) {
+> >       "[<-" <- ADoverload("[<-")
+> >       ...
+> >    }
+> >
+> >
+> > 2. Replace NA by e.g. NaN in the line:
+> >    Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> >    Reason: RTMB uses 'is.numeric' internally to decide if a cast is needed but surprisingly (to me) is.numeric(NA) returns FALSE...
+> >
+> > Hopefully, in the future these rough edges can be ironed out in RTMB.
+> >
+> > On Wednesday, July 31, 2024 at 10:45:34 AM UTC+2 janole...@gmail.com wrote:
+> > > Hello all,
+> > >
+> > > I recently started using RTMB and encountered an error where I need some help.
+> > >
+> > > My minimal example is not so minimal, but the specific model details do not matter and the bottom line is: I build a 3D array from some parameters, and at the bottom of my likelihood function I extract a slice from it for each observation, which works just fine R.
+> > >
+> > > But when I want to build the AD function, I get the error:
+> > >
+> > > Error in advector(y) :
+> > >   Invalid argument to 'advector' (lost class attribute?)
+> > >
+> > > Minimal example:
+> > >
+> > > library(RTMB)
+> > >
+> > > # generating some data from Poisson HMM with covariate effect on transition probabilities
+> > > set.seed(123)
+> > > n = 100 # number of data points
+> > > lambda = c(1, 5) # state-dependent Poisson means
+> > > z = rnorm(n) # white noise covariate
+> > > beta = matrix(c(-2, -2, 1, -1), nrow = 2) # parameter matrix for t.p.m.
+> > > s = rep(NA, n) # simulating Markov chain of hidden states
+> > > s[1] = sample(1:2, 1) # initial state
+> > > expEta = exp(cbind(1, z) %*% t(beta))
+> > > for(t in 2:n){
+> > >   # computing t.p.m. from linear predictors via inverse multinomial logit link
+> > >   G = diag(2)
+> > >   G[!G] = expEta[t,] # covariate dependent transition probability matrix
+> > >   G = G / rowSums(G)
+> > >   s[t] = sample(1:2, 1, prob = G[s[t-1],])
+> > > }
+> > > x = rpois(n, lambda[s]) # simulating observations based on hidden states
+> > >
+> > > # negative log-likelihood function for Poisson HMM with covariate effect on transition probabilities
+> > > nllk = function(par) {
+> > >   getAll(par, dat)
+> > >   lambda = exp(loglambda) # state-dependent Poisson mean
+> > >   beta = matrix(betavec, nrow = 2, ncol = 2) # parameter matrix for t.p.m.
+> > >   expEta = exp(cbind(1, z) %*% t(beta)) # exp linear predictors for t.p.m.
+> > >   Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> > >   for(t in 1:nrow(expEta)) {
+> > >     # each tpm slice is computed via inverse multinomial logit link
+> > >     G = diag(2)
+> > >     G[!G] = expEta[t,]
+> > >     Gamma[,,t] = G / rowSums(G)
+> > >   }
+> > >   delta = c(0.5, 0.5) # initial state probabilities fixed
+> > >   allprobs = cbind(dpois(x, lambda[1]), dpois(x, lambda[2])) # state-dependent probabilities
+> > >   # forward algorithm
+> > >   foo = t(delta) * allprobs[1,]
+> > >   phi = foo / sum(foo)
+> > >   l = log(sum(foo))
+> > >   for(t in 2:nrow(allprobs)) {
+> > >     # I get an AD error here when extracting the matrix from the array
+> > >     foo = phi %*% Gamma[,,t] * allprobs[t,]
+> > >     phi = foo / sum(foo)
+> > >     l = l + log(sum(foo))
+> > >   }
+> > >   -l
+> > > }
+> > >
+> > > par = list(loglambda = log(c(1,5)), betavec = c(-2, -2, 1, -1))
+> > > dat = list(x = x, z = z)
+> > >
+> > > nllk(par) # works
+> > >
+> > > obj = MakeADFun(nllk, par) # does not work
+> > > # Error in advector(y) :
+> > > #  Invalid argument to 'advector' (lost class attribute?)
+> > >
+> > > Best regards and thanks in advance,
+> > > Ole
+
+From uc3e53d7d5317214f at groups.google.com  Tue Aug 13 09:48:22 2024
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Tue, 13 Aug 2024 09:48:22 +0000
+Subject: updating data
+Message-ID: <YzSjsHyFYJ8.wbuBXDaPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/YzSjsHyFYJ8/m/wbuBXDaPBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+is there a simple way to update the data when using RTMB without remaking the AD function/ Tape every time?
+
+So if I have
+
+par = list(...)
+data = list(...)
+
+f = function(par){
+   getAll(par, data)
+   ...
+}
+
+can I use MakeTape() in combination with DataEval() to only replace the data in the objective?
+
+Cheers,
+Ole
+
+From u258b98968d0ad8b9 at groups.google.com  Wed Aug 14 09:17:17 2024
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Wed, 14 Aug 2024 09:17:17 +0000
+Subject: Re: updating data
+Message-ID: <YzSjsHyFYJ8.hb-F1jjxCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <YzSjsHyFYJ8.wbuBXDaPBQAJ@tmb-users.groups.google.com>
+References: <YzSjsHyFYJ8.wbuBXDaPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/YzSjsHyFYJ8/m/hb-F1jjxCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+RTMB has the capabilities to do this (example below) but there are some side effects to be aware of:
+* The tape optimizer can do a better job when knowing the data can't change. It's therefore often worth waiting for the tape to be rebuilt with the new data rather than implementing data updates.
+* The tape forward loop is only triggered when parameters change compared to previous evaluation. That is, if you change the data, and re-evaluate the likelihood for the same parameters as previous, nothing will happen (see example)!
+* DataEval evaluates an R function and is therefore not thread safe. It therefore won't play well with a parallel version of RTMB.
+
+library(RTMB)
+mydat <- rivers
+f <- function(p) {
+    getDat <- function(x) {
+        print("Get data")
+        .GlobalEnv$mydat
+    }
+    ## dummy parameter (DataEval expects an argument)
+    empty <- rep(p$mu, 0)
+    ## Add R function to the AD tape
+    y <- DataEval(getDat, empty)
+    -sum(dnorm(y, p$mu, p$sd, log=TRUE))
+}
+obj <- MakeADFun(f, list(mu=0, sd=1))
+obj$fn(obj$par)
+obj$fn(obj$par) ## Same parameter as previous - nothing happens!
+## Fit with mydat
+opt <- nlminb(obj$par, obj$fn, obj$gr)
+opt$par
+## Refit with new data
+mydat <- mydat * .1
+opt <- nlminb(obj$par, obj$fn, obj$gr)
+opt$par
+
+On Tuesday, August 13, 2024 at 11:48:22 AM UTC+2 janole...@gmail.com wrote:
+> Hi all,
+>
+> is there a simple way to update the data when using RTMB without remaking the AD function/ Tape every time?
+>
+> So if I have
+>
+> par = list(...)
+> data = list(...)
+>
+> f = function(par){
+>    getAll(par, data)
+>    ...
+> }
+>
+> can I use MakeTape() in combination with DataEval() to only replace the data in the objective?
+>
+> Cheers,
+> Ole
+
+From u258b98968d0ad8b9 at groups.google.com  Wed Aug 14 09:23:56 2024
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Wed, 14 Aug 2024 09:23:56 +0000
+Subject: Re: Error when extracting matrix as array slice
+Message-ID: <HlPqkfcCa1g.C78Z5ZXxCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <HlPqkfcCa1g.2vS6f5-iCQAJ@tmb-users.groups.google.com>
+References: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com> <HlPqkfcCa1g.2vS6f5-iCQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HlPqkfcCa1g/m/C78Z5ZXxCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> any reason not to just define these at the beginning of each function ?
+
+The main reason for not defining them is that it's ugly. If a better solution comes up in the future these ADoverloads will likely become deprecated.
+
+On Monday, August 12, 2024 at 7:29:46 PM UTC+2 james...@gmail.com wrote:
+> So as I understand it, there's three primitives that benefit from explicit overloading within functions:
+> ```R
+>   "c" <- ADoverload("c")
+>
+>   "[<-" <- ADoverload("[<-")
+>   "diag<-" <- ADoverload("diag<-")
+> ```
+>
+> Having tripped over the first two ... is there any reason not to just define these at the beginning of each function that we define (i.e., computational cost)?
+>
+> On Saturday, August 3, 2024 at 8:18:57 AM UTC-7 janole...@gmail.com wrote:
+> > Thanks Kasper, that fixed it.
+> >
+> > However I'm confused that the same did not happen when I only built one matrix, but in the same way using NA.
+> >
+> > But maybe I just don't get it :D
+> >
+> > Anyway, thanks again!
+> >
+> > kasper.k...@gmail.com schrieb am Samstag, 3. August 2024 um 13:18:15 UTC+2:
+> > > A remaining challenge with RTMB is the inplace sub-assignment operator ("[<-"). R doesn't support the case when assigning to a numeric LHS from AD RHS.
+> > > Your example uses the problematic assignment here:
+> > >
+> > > G = diag(2) ## numeric
+> > > G[!G] = expEta[t,] ## sub-assign from AD
+> > >
+> > > and here:
+> > >
+> > > Gamma = array(NA, dim = c(2, 2, nrow(expEta))) ## numeric
+> > > Gamma[,,t] = G / rowSums(G)  ## sub-assign from AD
+> > >
+> > > You'll currently need the following minimal changes for the code to work:
+> > >
+> > > 1. Add an explicit overload at the beginning of your function:
+> > >
+> > >    nllk <- function(par) {
+> > >       "[<-" <- ADoverload("[<-")
+> > >       ...
+> > >    }
+> > >
+> > >
+> > > 2. Replace NA by e.g. NaN in the line:
+> > >    Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> > >    Reason: RTMB uses 'is.numeric' internally to decide if a cast is needed but surprisingly (to me) is.numeric(NA) returns FALSE...
+> > >
+> > > Hopefully, in the future these rough edges can be ironed out in RTMB.
+> > >
+> > > On Wednesday, July 31, 2024 at 10:45:34 AM UTC+2 janole...@gmail.com wrote:
+> > > > Hello all,
+> > > >
+> > > > I recently started using RTMB and encountered an error where I need some help.
+> > > >
+> > > > My minimal example is not so minimal, but the specific model details do not matter and the bottom line is: I build a 3D array from some parameters, and at the bottom of my likelihood function I extract a slice from it for each observation, which works just fine R.
+> > > >
+> > > > But when I want to build the AD function, I get the error:
+> > > >
+> > > > Error in advector(y) :
+> > > >   Invalid argument to 'advector' (lost class attribute?)
+> > > >
+> > > > Minimal example:
+> > > >
+> > > > library(RTMB)
+> > > >
+> > > > # generating some data from Poisson HMM with covariate effect on transition probabilities
+> > > > set.seed(123)
+> > > > n = 100 # number of data points
+> > > > lambda = c(1, 5) # state-dependent Poisson means
+> > > > z = rnorm(n) # white noise covariate
+> > > > beta = matrix(c(-2, -2, 1, -1), nrow = 2) # parameter matrix for t.p.m.
+> > > > s = rep(NA, n) # simulating Markov chain of hidden states
+> > > > s[1] = sample(1:2, 1) # initial state
+> > > > expEta = exp(cbind(1, z) %*% t(beta))
+> > > > for(t in 2:n){
+> > > >   # computing t.p.m. from linear predictors via inverse multinomial logit link
+> > > >   G = diag(2)
+> > > >   G[!G] = expEta[t,] # covariate dependent transition probability matrix
+> > > >   G = G / rowSums(G)
+> > > >   s[t] = sample(1:2, 1, prob = G[s[t-1],])
+> > > > }
+> > > > x = rpois(n, lambda[s]) # simulating observations based on hidden states
+> > > >
+> > > > # negative log-likelihood function for Poisson HMM with covariate effect on transition probabilities
+> > > > nllk = function(par) {
+> > > >   getAll(par, dat)
+> > > >   lambda = exp(loglambda) # state-dependent Poisson mean
+> > > >   beta = matrix(betavec, nrow = 2, ncol = 2) # parameter matrix for t.p.m.
+> > > >   expEta = exp(cbind(1, z) %*% t(beta)) # exp linear predictors for t.p.m.
+> > > >   Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> > > >   for(t in 1:nrow(expEta)) {
+> > > >     # each tpm slice is computed via inverse multinomial logit link
+> > > >     G = diag(2)
+> > > >     G[!G] = expEta[t,]
+> > > >     Gamma[,,t] = G / rowSums(G)
+> > > >   }
+> > > >   delta = c(0.5, 0.5) # initial state probabilities fixed
+> > > >   allprobs = cbind(dpois(x, lambda[1]), dpois(x, lambda[2])) # state-dependent probabilities
+> > > >   # forward algorithm
+> > > >   foo = t(delta) * allprobs[1,]
+> > > >   phi = foo / sum(foo)
+> > > >   l = log(sum(foo))
+> > > >   for(t in 2:nrow(allprobs)) {
+> > > >     # I get an AD error here when extracting the matrix from the array
+> > > >     foo = phi %*% Gamma[,,t] * allprobs[t,]
+> > > >     phi = foo / sum(foo)
+> > > >     l = l + log(sum(foo))
+> > > >   }
+> > > >   -l
+> > > > }
+> > > >
+> > > > par = list(loglambda = log(c(1,5)), betavec = c(-2, -2, 1, -1))
+> > > > dat = list(x = x, z = z)
+> > > >
+> > > > nllk(par) # works
+> > > >
+> > > > obj = MakeADFun(nllk, par) # does not work
+> > > > # Error in advector(y) :
+> > > > #  Invalid argument to 'advector' (lost class attribute?)
+> > > >
+> > > > Best regards and thanks in advance,
+> > > > Ole
+
+From uc3e53d7d5317214f at groups.google.com  Wed Aug 14 09:37:30 2024
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Wed, 14 Aug 2024 09:37:30 +0000
+Subject: Re: updating data
+Message-ID: <YzSjsHyFYJ8.EEoRa1PyCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <YzSjsHyFYJ8.wbuBXDaPBQAJ@tmb-users.groups.google.com>
+References: <YzSjsHyFYJ8.wbuBXDaPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/YzSjsHyFYJ8/m/EEoRa1PyCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Kasper,
+
+can DataEval() only get numeric vectors or also lists?
+When trying on my real example I get
+
+Error: Not compatible with requested type: [type=list; target=double].
+
+kasper.k...@gmail.com schrieb am Mittwoch, 14. August 2024 um 11:17:17 UTC+2:
+> RTMB has the capabilities to do this (example below) but there are some side effects to be aware of:
+> * The tape optimizer can do a better job when knowing the data can't change. It's therefore often worth waiting for the tape to be rebuilt with the new data rather than implementing data updates.
+> * The tape forward loop is only triggered when parameters change compared to previous evaluation. That is, if you change the data, and re-evaluate the likelihood for the same parameters as previous, nothing will happen (see example)!
+> * DataEval evaluates an R function and is therefore not thread safe. It therefore won't play well with a parallel version of RTMB.
+>
+> library(RTMB)
+> mydat <- rivers
+> f <- function(p) {
+>     getDat <- function(x) {
+>         print("Get data")
+>         .GlobalEnv$mydat
+>     }
+>     ## dummy parameter (DataEval expects an argument)
+>     empty <- rep(p$mu, 0)
+>     ## Add R function to the AD tape
+>     y <- DataEval(getDat, empty)
+>     -sum(dnorm(y, p$mu, p$sd, log=TRUE))
+> }
+> obj <- MakeADFun(f, list(mu=0, sd=1))
+> obj$fn(obj$par)
+> obj$fn(obj$par) ## Same parameter as previous - nothing happens!
+> ## Fit with mydat
+> opt <- nlminb(obj$par, obj$fn, obj$gr)
+> opt$par
+> ## Refit with new data
+> mydat <- mydat * .1
+> opt <- nlminb(obj$par, obj$fn, obj$gr)
+> opt$par
+>
+>
+> On Tuesday, August 13, 2024 at 11:48:22 AM UTC+2 janole...@gmail.com wrote:
+> > Hi all,
+> >
+> > is there a simple way to update the data when using RTMB without remaking the AD function/ Tape every time?
+> >
+> > So if I have
+> >
+> > par = list(...)
+> > data = list(...)
+> >
+> > f = function(par){
+> >    getAll(par, data)
+> >    ...
+> > }
+> >
+> > can I use MakeTape() in combination with DataEval() to only replace the data in the objective?
+> >
+> > Cheers,
+> > Ole
+
+From u258b98968d0ad8b9 at groups.google.com  Wed Aug 14 09:43:15 2024
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Wed, 14 Aug 2024 09:43:15 +0000
+Subject: Re: updating data
+Message-ID: <YzSjsHyFYJ8.r12SqqPyCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <YzSjsHyFYJ8.wbuBXDaPBQAJ@tmb-users.groups.google.com>
+References: <YzSjsHyFYJ8.wbuBXDaPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/YzSjsHyFYJ8/m/r12SqqPyCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes, it's limited to numeric vectors of fixed length. The first evaluation of DataEval() stores the length and checks that subsequent data lengths are the same.
+
+On Wednesday, August 14, 2024 at 11:37:30 AM UTC+2 janole...@gmail.com wrote:
+> Thanks Kasper,
+>
+> can DataEval() only get numeric vectors or also lists?
+> When trying on my real example I get
+>
+> Error: Not compatible with requested type: [type=list; target=double].
+>
+> kasper.k...@gmail.com schrieb am Mittwoch, 14. August 2024 um 11:17:17 UTC+2:
+> > RTMB has the capabilities to do this (example below) but there are some side effects to be aware of:
+> > * The tape optimizer can do a better job when knowing the data can't change. It's therefore often worth waiting for the tape to be rebuilt with the new data rather than implementing data updates.
+> > * The tape forward loop is only triggered when parameters change compared to previous evaluation. That is, if you change the data, and re-evaluate the likelihood for the same parameters as previous, nothing will happen (see example)!
+> > * DataEval evaluates an R function and is therefore not thread safe. It therefore won't play well with a parallel version of RTMB.
+> >
+> > library(RTMB)
+> > mydat <- rivers
+> > f <- function(p) {
+> >     getDat <- function(x) {
+> >         print("Get data")
+> >         .GlobalEnv$mydat
+> >     }
+> >     ## dummy parameter (DataEval expects an argument)
+> >     empty <- rep(p$mu, 0)
+> >     ## Add R function to the AD tape
+> >     y <- DataEval(getDat, empty)
+> >     -sum(dnorm(y, p$mu, p$sd, log=TRUE))
+> > }
+> > obj <- MakeADFun(f, list(mu=0, sd=1))
+> > obj$fn(obj$par)
+> > obj$fn(obj$par) ## Same parameter as previous - nothing happens!
+> > ## Fit with mydat
+> > opt <- nlminb(obj$par, obj$fn, obj$gr)
+> > opt$par
+> > ## Refit with new data
+> > mydat <- mydat * .1
+> > opt <- nlminb(obj$par, obj$fn, obj$gr)
+> > opt$par
+> >
+> >
+> > On Tuesday, August 13, 2024 at 11:48:22 AM UTC+2 janole...@gmail.com wrote:
+> > > Hi all,
+> > >
+> > > is there a simple way to update the data when using RTMB without remaking the AD function/ Tape every time?
+> > >
+> > > So if I have
+> > >
+> > > par = list(...)
+> > > data = list(...)
+> > >
+> > > f = function(par){
+> > >    getAll(par, data)
+> > >    ...
+> > > }
+> > >
+> > > can I use MakeTape() in combination with DataEval() to only replace the data in the objective?
+> > >
+> > > Cheers,
+> > > Ole
+
+From uc3e53d7d5317214f at groups.google.com  Sat Aug 17 14:37:45 2024
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Sat, 17 Aug 2024 14:37:45 +0000
+Subject: Re: Error when extracting matrix as array slice
+Message-ID: <HlPqkfcCa1g.JJvwTymKBgAJ@tmb-users.groups.google.com>
+In-Reply-To: <HlPqkfcCa1g.2vS6f5-iCQAJ@tmb-users.groups.google.com>
+References: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com> <HlPqkfcCa1g.2vS6f5-iCQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HlPqkfcCa1g/m/JJvwTymKBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I mean this is probably naive, but can't you just let MakeADFun() create a wrapper first, so if f is the user-defined function do
+g = function(par){
+environment(f) = environment()
+
+"c" <- ADoverload("c")
+"[<-" <- ADoverload("[<-")
+ "diag<-" <- ADoverload("diag<-")
+
+f(par)
+}
+and then actually create the AD function from g?
+Still kinda ugly, but not for the user :D
+
+kasper.k...@gmail.com schrieb am Mittwoch, 14. August 2024 um 11:23:56 UTC+2:
+> > any reason not to just define these at the beginning of each function ?
+>
+> The main reason for not defining them is that it's ugly. If a better solution comes up in the future these ADoverloads will likely become deprecated.
+>
+>
+> On Monday, August 12, 2024 at 7:29:46 PM UTC+2 james...@gmail.com wrote:
+> > So as I understand it, there's three primitives that benefit from explicit overloading within functions:
+> > ```R
+> >   "c" <- ADoverload("c")
+> >
+> >   "[<-" <- ADoverload("[<-")
+> >   "diag<-" <- ADoverload("diag<-")
+> > ```
+> >
+> > Having tripped over the first two ... is there any reason not to just define these at the beginning of each function that we define (i.e., computational cost)?
+> >
+> > On Saturday, August 3, 2024 at 8:18:57 AM UTC-7 janole...@gmail.com wrote:
+> > > Thanks Kasper, that fixed it.
+> > >
+> > > However I'm confused that the same did not happen when I only built one matrix, but in the same way using NA.
+> > >
+> > > But maybe I just don't get it :D
+> > >
+> > > Anyway, thanks again!
+> > >
+> > > kasper.k...@gmail.com schrieb am Samstag, 3. August 2024 um 13:18:15 UTC+2:
+> > > > A remaining challenge with RTMB is the inplace sub-assignment operator ("[<-"). R doesn't support the case when assigning to a numeric LHS from AD RHS.
+> > > > Your example uses the problematic assignment here:
+> > > >
+> > > > G = diag(2) ## numeric
+> > > > G[!G] = expEta[t,] ## sub-assign from AD
+> > > >
+> > > > and here:
+> > > >
+> > > > Gamma = array(NA, dim = c(2, 2, nrow(expEta))) ## numeric
+> > > > Gamma[,,t] = G / rowSums(G)  ## sub-assign from AD
+> > > >
+> > > > You'll currently need the following minimal changes for the code to work:
+> > > >
+> > > > 1. Add an explicit overload at the beginning of your function:
+> > > >
+> > > >    nllk <- function(par) {
+> > > >       "[<-" <- ADoverload("[<-")
+> > > >       ...
+> > > >    }
+> > > >
+> > > >
+> > > > 2. Replace NA by e.g. NaN in the line:
+> > > >    Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> > > >    Reason: RTMB uses 'is.numeric' internally to decide if a cast is needed but surprisingly (to me) is.numeric(NA) returns FALSE...
+> > > >
+> > > > Hopefully, in the future these rough edges can be ironed out in RTMB.
+> > > >
+> > > > On Wednesday, July 31, 2024 at 10:45:34 AM UTC+2 janole...@gmail.com wrote:
+> > > > > Hello all,
+> > > > >
+> > > > > I recently started using RTMB and encountered an error where I need some help.
+> > > > >
+> > > > > My minimal example is not so minimal, but the specific model details do not matter and the bottom line is: I build a 3D array from some parameters, and at the bottom of my likelihood function I extract a slice from it for each observation, which works just fine R.
+> > > > >
+> > > > > But when I want to build the AD function, I get the error:
+> > > > >
+> > > > > Error in advector(y) :
+> > > > >   Invalid argument to 'advector' (lost class attribute?)
+> > > > >
+> > > > > Minimal example:
+> > > > >
+> > > > > library(RTMB)
+> > > > >
+> > > > > # generating some data from Poisson HMM with covariate effect on transition probabilities
+> > > > > set.seed(123)
+> > > > > n = 100 # number of data points
+> > > > > lambda = c(1, 5) # state-dependent Poisson means
+> > > > > z = rnorm(n) # white noise covariate
+> > > > > beta = matrix(c(-2, -2, 1, -1), nrow = 2) # parameter matrix for t.p.m.
+> > > > > s = rep(NA, n) # simulating Markov chain of hidden states
+> > > > > s[1] = sample(1:2, 1) # initial state
+> > > > > expEta = exp(cbind(1, z) %*% t(beta))
+> > > > > for(t in 2:n){
+> > > > >   # computing t.p.m. from linear predictors via inverse multinomial logit link
+> > > > >   G = diag(2)
+> > > > >   G[!G] = expEta[t,] # covariate dependent transition probability matrix
+> > > > >   G = G / rowSums(G)
+> > > > >   s[t] = sample(1:2, 1, prob = G[s[t-1],])
+> > > > > }
+> > > > > x = rpois(n, lambda[s]) # simulating observations based on hidden states
+> > > > >
+> > > > > # negative log-likelihood function for Poisson HMM with covariate effect on transition probabilities
+> > > > > nllk = function(par) {
+> > > > >   getAll(par, dat)
+> > > > >   lambda = exp(loglambda) # state-dependent Poisson mean
+> > > > >   beta = matrix(betavec, nrow = 2, ncol = 2) # parameter matrix for t.p.m.
+> > > > >   expEta = exp(cbind(1, z) %*% t(beta)) # exp linear predictors for t.p.m.
+> > > > >   Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> > > > >   for(t in 1:nrow(expEta)) {
+> > > > >     # each tpm slice is computed via inverse multinomial logit link
+> > > > >     G = diag(2)
+> > > > >     G[!G] = expEta[t,]
+> > > > >     Gamma[,,t] = G / rowSums(G)
+> > > > >   }
+> > > > >   delta = c(0.5, 0.5) # initial state probabilities fixed
+> > > > >   allprobs = cbind(dpois(x, lambda[1]), dpois(x, lambda[2])) # state-dependent probabilities
+> > > > >   # forward algorithm
+> > > > >   foo = t(delta) * allprobs[1,]
+> > > > >   phi = foo / sum(foo)
+> > > > >   l = log(sum(foo))
+> > > > >   for(t in 2:nrow(allprobs)) {
+> > > > >     # I get an AD error here when extracting the matrix from the array
+> > > > >     foo = phi %*% Gamma[,,t] * allprobs[t,]
+> > > > >     phi = foo / sum(foo)
+> > > > >     l = l + log(sum(foo))
+> > > > >   }
+> > > > >   -l
+> > > > > }
+> > > > >
+> > > > > par = list(loglambda = log(c(1,5)), betavec = c(-2, -2, 1, -1))
+> > > > > dat = list(x = x, z = z)
+> > > > >
+> > > > > nllk(par) # works
+> > > > >
+> > > > > obj = MakeADFun(nllk, par) # does not work
+> > > > > # Error in advector(y) :
+> > > > > #  Invalid argument to 'advector' (lost class attribute?)
+> > > > >
+> > > > > Best regards and thanks in advance,
+> > > > > Ole
+
+From u258b98968d0ad8b9 at groups.google.com  Mon Aug 19 09:40:35 2024
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Mon, 19 Aug 2024 09:40:35 +0000
+Subject: Re: Error when extracting matrix as array slice
+Message-ID: <HlPqkfcCa1g.PSeaExsXBwAJ@tmb-users.groups.google.com>
+In-Reply-To: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com>
+References: <HlPqkfcCa1g.CIbr9UFIAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HlPqkfcCa1g/m/PSeaExsXBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+janole,
+
+It's a reasonable suggestion but there are some issues with this construct:
+
+1. While the function 'f' will see the ADoverloads, what about functions called by f?
+2. If 'f' is created as part of a package it will no longer see the package namespace if we modify the environment.
+3. In my experience, the R byte compiler might optimize away the ADoverloads if not visible from the function body of 'f'.
+4. If the debugging flag is set on 'f', changing its environment will unset the debugging flag.
+
+FWIW, RTMB already attempts a similar solution by attaching the methods temporarily at the beginning of the search path (see ?ADoverload). I made that choice mainly to address 1 and 4, but have later been tricked by 2 and 3.
+
+On Saturday, August 17, 2024 at 4:37:45 PM UTC+2 janole...@gmail.com wrote:
+> I mean this is probably naive, but can't you just let MakeADFun() create a wrapper first, so if f is the user-defined function do
+> g = function(par){
+> environment(f) = environment()
+> "c" <- ADoverload("c")
+> "[<-" <- ADoverload("[<-")
+>  "diag<-" <- ADoverload("diag<-")
+> f(par)
+> }
+> and then actually create the AD function from g?
+> Still kinda ugly, but not for the user :D
+> kasper.k...@gmail.com schrieb am Mittwoch, 14. August 2024 um 11:23:56 UTC+2:
+> > > any reason not to just define these at the beginning of each function ?
+> >
+> > The main reason for not defining them is that it's ugly. If a better solution comes up in the future these ADoverloads will likely become deprecated.
+> >
+> >
+> > On Monday, August 12, 2024 at 7:29:46 PM UTC+2 james...@gmail.com wrote:
+> > > So as I understand it, there's three primitives that benefit from explicit overloading within functions:
+> > > ```R
+> > >   "c" <- ADoverload("c")
+> > >
+> > >   "[<-" <- ADoverload("[<-")
+> > >   "diag<-" <- ADoverload("diag<-")
+> > > ```
+> > >
+> > > Having tripped over the first two ... is there any reason not to just define these at the beginning of each function that we define (i.e., computational cost)?
+> > >
+> > > On Saturday, August 3, 2024 at 8:18:57 AM UTC-7 janole...@gmail.com wrote:
+> > > > Thanks Kasper, that fixed it.
+> > > >
+> > > > However I'm confused that the same did not happen when I only built one matrix, but in the same way using NA.
+> > > >
+> > > > But maybe I just don't get it :D
+> > > >
+> > > > Anyway, thanks again!
+> > > >
+> > > > kasper.k...@gmail.com schrieb am Samstag, 3. August 2024 um 13:18:15 UTC+2:
+> > > > > A remaining challenge with RTMB is the inplace sub-assignment operator ("[<-"). R doesn't support the case when assigning to a numeric LHS from AD RHS.
+> > > > > Your example uses the problematic assignment here:
+> > > > >
+> > > > > G = diag(2) ## numeric
+> > > > > G[!G] = expEta[t,] ## sub-assign from AD
+> > > > >
+> > > > > and here:
+> > > > >
+> > > > > Gamma = array(NA, dim = c(2, 2, nrow(expEta))) ## numeric
+> > > > > Gamma[,,t] = G / rowSums(G)  ## sub-assign from AD
+> > > > >
+> > > > > You'll currently need the following minimal changes for the code to work:
+> > > > >
+> > > > > 1. Add an explicit overload at the beginning of your function:
+> > > > >
+> > > > >    nllk <- function(par) {
+> > > > >       "[<-" <- ADoverload("[<-")
+> > > > >       ...
+> > > > >    }
+> > > > >
+> > > > >
+> > > > > 2. Replace NA by e.g. NaN in the line:
+> > > > >    Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> > > > >    Reason: RTMB uses 'is.numeric' internally to decide if a cast is needed but surprisingly (to me) is.numeric(NA) returns FALSE...
+> > > > >
+> > > > > Hopefully, in the future these rough edges can be ironed out in RTMB.
+> > > > >
+> > > > > On Wednesday, July 31, 2024 at 10:45:34 AM UTC+2 janole...@gmail.com wrote:
+> > > > > > Hello all,
+> > > > > >
+> > > > > > I recently started using RTMB and encountered an error where I need some help.
+> > > > > >
+> > > > > > My minimal example is not so minimal, but the specific model details do not matter and the bottom line is: I build a 3D array from some parameters, and at the bottom of my likelihood function I extract a slice from it for each observation, which works just fine R.
+> > > > > >
+> > > > > > But when I want to build the AD function, I get the error:
+> > > > > >
+> > > > > > Error in advector(y) :
+> > > > > >   Invalid argument to 'advector' (lost class attribute?)
+> > > > > >
+> > > > > > Minimal example:
+> > > > > >
+> > > > > > library(RTMB)
+> > > > > >
+> > > > > > # generating some data from Poisson HMM with covariate effect on transition probabilities
+> > > > > > set.seed(123)
+> > > > > > n = 100 # number of data points
+> > > > > > lambda = c(1, 5) # state-dependent Poisson means
+> > > > > > z = rnorm(n) # white noise covariate
+> > > > > > beta = matrix(c(-2, -2, 1, -1), nrow = 2) # parameter matrix for t.p.m.
+> > > > > > s = rep(NA, n) # simulating Markov chain of hidden states
+> > > > > > s[1] = sample(1:2, 1) # initial state
+> > > > > > expEta = exp(cbind(1, z) %*% t(beta))
+> > > > > > for(t in 2:n){
+> > > > > >   # computing t.p.m. from linear predictors via inverse multinomial logit link
+> > > > > >   G = diag(2)
+> > > > > >   G[!G] = expEta[t,] # covariate dependent transition probability matrix
+> > > > > >   G = G / rowSums(G)
+> > > > > >   s[t] = sample(1:2, 1, prob = G[s[t-1],])
+> > > > > > }
+> > > > > > x = rpois(n, lambda[s]) # simulating observations based on hidden states
+> > > > > >
+> > > > > > # negative log-likelihood function for Poisson HMM with covariate effect on transition probabilities
+> > > > > > nllk = function(par) {
+> > > > > >   getAll(par, dat)
+> > > > > >   lambda = exp(loglambda) # state-dependent Poisson mean
+> > > > > >   beta = matrix(betavec, nrow = 2, ncol = 2) # parameter matrix for t.p.m.
+> > > > > >   expEta = exp(cbind(1, z) %*% t(beta)) # exp linear predictors for t.p.m.
+> > > > > >   Gamma = array(NA, dim = c(2, 2, nrow(expEta)))
+> > > > > >   for(t in 1:nrow(expEta)) {
+> > > > > >     # each tpm slice is computed via inverse multinomial logit link
+> > > > > >     G = diag(2)
+> > > > > >     G[!G] = expEta[t,]
+> > > > > >     Gamma[,,t] = G / rowSums(G)
+> > > > > >   }
+> > > > > >   delta = c(0.5, 0.5) # initial state probabilities fixed
+> > > > > >   allprobs = cbind(dpois(x, lambda[1]), dpois(x, lambda[2])) # state-dependent probabilities
+> > > > > >   # forward algorithm
+> > > > > >   foo = t(delta) * allprobs[1,]
+> > > > > >   phi = foo / sum(foo)
+> > > > > >   l = log(sum(foo))
+> > > > > >   for(t in 2:nrow(allprobs)) {
+> > > > > >     # I get an AD error here when extracting the matrix from the array
+> > > > > >     foo = phi %*% Gamma[,,t] * allprobs[t,]
+> > > > > >     phi = foo / sum(foo)
+> > > > > >     l = l + log(sum(foo))
+> > > > > >   }
+> > > > > >   -l
+> > > > > > }
+> > > > > >
+> > > > > > par = list(loglambda = log(c(1,5)), betavec = c(-2, -2, 1, -1))
+> > > > > > dat = list(x = x, z = z)
+> > > > > >
+> > > > > > nllk(par) # works
+> > > > > >
+> > > > > > obj = MakeADFun(nllk, par) # does not work
+> > > > > > # Error in advector(y) :
+> > > > > > #  Invalid argument to 'advector' (lost class attribute?)
+> > > > > >
+> > > > > > Best regards and thanks in advance,
+> > > > > > Ole
+

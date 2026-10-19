@@ -1,0 +1,225 @@
+{
+ "thread": "AxtTSyONA7g",
+ "subject": "B-splines / QR decomposition",
+ "messages_listed": 9,
+ "last_activity": "2017-07-26T12:26:01Z",
+ "messages": [
+  {
+   "id": "9Eh4uPcLBQAJ",
+   "from": "Mark Clements",
+   "author": "472eb53ede066ba3",
+   "date": "2017-06-27T15:53:42Z",
+   "subject": "B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">I have an initial implementation of B-splines for TMB based on the splines package (see below). Would this be useful to add to TMB?<br><br>I would also like to implement natural splines for TMB using B-splines and a QR decomposition of the second derivatives at the boundary knots (as per the ns() function). However, I could not find a TMB implementation of the QR decomposition. Can anyone suggest how to go about the QR decomposition, please?<br><br>Kindly, Mark.<br><br><br>library(TMB)<br>src &lt;- &quot;#include &lt;TMB.hpp&gt;      // Links in the TMB libraries<br>template&lt;class Type&gt;<br>struct spl_struct {<br>    int order,            /* order of the spline */<br>    ordm1,            /* order - 1 (3 for cubic splines) */<br>    nknots,            /* number of knots */<br>    curs,            /* current position in knots vector */<br>    boundary;        /* must have knots[curs] &lt;= x &lt; knots[curs+1] */<br>                /* except for the boundary case */<br>  vector&lt;Type&gt; ldel;          /* differences from knots on the left */<br>  vector&lt;Type&gt; rdel;            /* differences from knots on the right */<br>  vector&lt;Type&gt; knots;            /* knot vector */<br>  vector&lt;Type&gt; coeff;            /* coefficients */<br>  vector&lt;Type&gt; a;            /* scratch array */<br>};<br>template&lt;class Type&gt;<br>int<br>set_cursor(spl_struct&lt;Type&gt; *sp, Type x)<br>{<br>    int i;<br>    /* don&#39;t assume x&#39;s are sorted */<br>    sp-&gt;curs = -1; /* Wall */<br>    sp-&gt;boundary = 0;<br>    for (i = 0; i &lt; sp-&gt;nknots; i++) {<br>    if (sp-&gt;knots[i] &gt;= x) sp-&gt;curs = i;<br>    if (sp-&gt;knots[i] &gt; x) break;<br>    }<br>    if (sp-&gt;curs &gt; sp-&gt;nknots - sp-&gt;order) {<br>    int lastLegit = sp-&gt;nknots - sp-&gt;order;<br>    if (x == sp-&gt;knots[lastLegit]) {<br>        sp-&gt;boundary = 1; sp-&gt;curs = lastLegit;<br>    }<br>    }<br>    return sp-&gt;curs;<br>}<br>template&lt;class Type&gt;<br>void<br>diff_table(spl_struct&lt;Type&gt; *sp, Type x, int ndiff)<br>{<br>  int i;<br>  for (i = 0; i &lt; ndiff; i++) {<br>      sp-&gt;rdel[i] = sp-&gt;knots[sp-&gt;curs + i] - x;<br>      sp-&gt;ldel[i] = x - sp-&gt;knots[sp-&gt;curs - (i + 1)];<br>  }<br>}<br>/* fast evaluation of basis functions */<br>template&lt;class Type&gt;<br>void<br>basis_funcs(spl_struct&lt;Type&gt; *sp, Type x, matrix&lt;Type&gt; &amp; b, int offset)<br>{<br>  diff_table(sp, x, sp-&gt;ordm1);<br>  b(0,offset) = Type(1);<br>  for (int j = 1; j &lt;= sp-&gt;ordm1; j++) {<br>    Type saved = Type(0);<br>    for (int r = 0; r &lt; j; r++) { // do not divide by zero<br>      Type den = sp-&gt;rdel[r] + sp-&gt;ldel[j - 1 - r];<br>      if(den != Type(0)) {<br>    Type term = b(r,offset)/den;<br>    b(r,offset) = saved + sp-&gt;rdel[r] * term;<br>    saved = sp-&gt;ldel[j - 1 - r] * term;<br>      } else {<br>    if(r != 0 || sp-&gt;rdel[r] != Type(0))<br>      b(r,offset) = saved;<br>    saved = Type(0);<br>      }<br>    }<br>    b(j,offset) = saved;<br>  }<br>}<br>template&lt;class Type&gt;<br>Type<br>evaluate(spl_struct&lt;Type&gt; *sp, Type x, int nder)<br>{<br>  // Type *lpt, *rpt, *apt, *ti = sp-&gt;knots + sp-&gt;curs;<br>  int ti = sp-&gt;curs, <br>    lpt, apt, rpt, inner,<br>    outer = sp-&gt;ordm1;<br>  if (sp-&gt;boundary &amp;&amp; nder == sp-&gt;ordm1) { /* value is arbitrary */<br>    return Type(0);<br>  }<br>  while(nder--) {  // FIXME: divides by zero<br>    // for(inner = outer, apt = sp-&gt;a, lpt = ti - outer; inner--; apt++, lpt++)<br>    for(inner = outer, apt = 0, lpt = ti - outer; inner--; apt++, lpt++)<br>      //*apt = outer * (*(apt + 1) - *apt)/(*(lpt + outer) - *lpt);<br>      sp-&gt;a[apt] = Type(outer) * (sp-&gt;a[apt + 1] - sp-&gt;a[apt])/(sp-&gt;knots[lpt + outer] - sp-&gt;knots[lpt]);<br>    outer--;<br>  }<br>  diff_table(sp, x, outer);<br>  while(outer--)<br>    //for(apt = sp-&gt;a, lpt = sp-&gt;ldel + outer, rpt = sp-&gt;rdel, inner = outer + 1;<br>    for(apt = 0, lpt = outer, rpt = 0, inner = outer + 1;<br>        inner--; lpt--, rpt++, apt++)<br>        // FIXME: divides by zero<br>        sp-&gt;a[apt] = (sp-&gt;a[apt + 1] * sp-&gt;ldel[lpt] + sp-&gt;a[apt] * sp-&gt;rdel[rpt])/(sp-&gt;rdel[rpt] + sp-&gt;ldel[lpt]);<br>    return sp-&gt;a[0];<br>}<br>/* called from    splineDesign() : */<br>template&lt;class Type&gt;<br>matrix&lt;Type&gt;<br>spline_basis(vector&lt;Type&gt; kk,<br>         int ord,<br>         vector&lt;Type&gt; xx,<br>         vector&lt;int&gt; ders)<br>{<br>/* evaluate the non-zero B-spline basis functions (or their derivatives)<br> * at xvals.  */<br>  int nk = kk.size();<br>  int nx = xx.size();<br>  int nd = ders.size();<br>  spl_struct&lt;Type&gt; * sp = new spl_struct&lt;Type&gt;();<br>  /* fill sp : */<br>  sp-&gt;order = ord;<br>  sp-&gt;ordm1 = ord - 1;<br>  sp-&gt;rdel = vector&lt;Type&gt;(sp-&gt;ordm1);<br>  sp-&gt;ldel = vector&lt;Type&gt;(sp-&gt;ordm1);<br>  sp-&gt;knots = kk; sp-&gt;nknots = nk;<br>  sp-&gt;a = vector&lt;Type&gt;(sp-&gt;order);<br>  matrix&lt;Type&gt; valM(sp-&gt;order, nx);<br>  vector&lt;int&gt; ioff(nx);<br>  for(int i = 0; i &lt; nx; i++) {<br>    set_cursor(sp, xx[i]);<br>    int io = ioff[i] = sp-&gt;curs - sp-&gt;order;<br>    if (io &lt; 0 || io &gt; nk) {<br>      for (int j = 0; j &lt; sp-&gt;order; j++) {<br>    valM(j,i) = Type(0); // R_NaN;<br>      }<br>    } else if (ders[i % nd] &gt; 0) { /* slow method for derivatives */<br>      for(int ii = 0; ii &lt; sp-&gt;order; ii++) {<br>    for(int j = 0; j &lt; sp-&gt;order; j++) sp-&gt;a[j] = Type(0);<br>    sp-&gt;a[ii] = Type(1);<br>    valM(ii,i) =<br>      evaluate(sp, xx[i], ders[i % nd]);<br>      }<br>    } else {        /* fast method for value */<br>      basis_funcs(sp, xx[i], valM, i);<br>    }<br>  }<br>  delete sp;<br>  return valM.transpose();<br>}<br>template&lt;class Type&gt;<br>Type objective_function&lt;Type&gt;::operator() ()<br>{<br>  PARAMETER_VECTOR(beta);<br>  DATA_VECTOR(kk);<br>  DATA_INTEGER(ord);<br>  DATA_IVECTOR(ders);<br>  DATA_VECTOR(xx);<br>  matrix&lt;Type&gt; X = spline_basis(kk, ord, xx, ders);<br>  REPORT(X);<br>  return sum(X*beta);<br>}<br>&quot;<br>write(src, file=&quot;splines.cpp&quot;)<br>compile(&quot;splines.cpp&quot;)<br>p &lt;- list(beta=c(0,1,2,3))<br>dyn.load(dynlib(&quot;splines&quot;))<br>f = MakeADFun(data=list(xx=c(1.1,1.2),kk=c(1,1,1,1,2,2,2,2),ord=4L, ders=0L), parameters=p,DLL=&quot;splines&quot;)<br>f$report(f$par)$X<br>## comparison <br>require(splines)<br>bs(c(1.1,1.2),Boundary.knots=c(1,2),df=4,intercept=TRUE)<br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "MIFqL_8iAgAJ",
+   "from": "Hans Skaug",
+   "author": "02e03030784aa6a7",
+   "date": "2017-06-28T05:18:15Z",
+   "subject": "Re: B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\"><div>There is some spline functionality in the file ./TMB/inst/include/tmbutils/splines.hpp on github,</div><div>but apparently not for B-splines. When I have used B-splines myself in the past,</div><div>I have set them up in R, and read in the coefficient matrix into TMB/ADMB and estimated</div><div>spline coefficients as parameters.</div><div><br></div><div>Regarding QR decomposition, it may be possible to access it through Eigen:</div><div><br></div><div><a href=\"https://eigen.tuxfamily.org/dox/group__QR__Module.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://eigen.tuxfamily.org/dox/group__QR__Module.html&amp;source=gmail&amp;ust=1792462568817000&amp;usg=AOvVaw3D4_QS6GfB9Xlfn0mmxzPe\">https://eigen.tuxfamily.org/dox/group__QR__Module.html</a><br></div><div><br></div><div>in the same way as you can access eigen decomposition:</div><div><br></div><div><a href=\"https://github.com/kaskr/adcomp/issues/144\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/kaskr/adcomp/issues/144&amp;source=gmail&amp;ust=1792462568817000&amp;usg=AOvVaw0j1ooltJt6rx-u1L-ICzgU\">https://github.com/kaskr/adcomp/issues/144</a><br></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><br><br>On Tuesday, June 27, 2017 at 5:53:42 PM UTC+2, Mark Clements wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">I have an initial implementation of B-splines for TMB based on the splines package (see below). Would this be useful to add to TMB?<br><br>I would also like to implement natural splines for TMB using B-splines and a QR decomposition of the second derivatives at the boundary knots (as per the ns() function). However, I could not find a TMB implementation of the QR decomposition. Can anyone suggest how to go about the QR decomposition, please?<br><br>Kindly, Mark.<br><br><br></div></blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "20l-F1w3AgAJ",
+   "from": "Kasper Kristensen",
+   "author": "258b98968d0ad8b9",
+   "date": "2017-06-28T11:31:25Z",
+   "subject": "Re: B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Hi Mark,<br><br>I&#39;d suggest you share your code using the TMB:::install.contrib, see<br><br><a href=\"https://github.com/kaskr/adcomp/wiki/User-contributed-code\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/kaskr/adcomp/wiki/User-contributed-code&amp;source=gmail&amp;ust=1792462568819000&amp;usg=AOvVaw05r59MQ9rUKe6f9Yxpm1rl\">https://github.com/kaskr/adcomp/wiki/User-contributed-code</a></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br><br><br><br>On Tuesday, June 27, 2017 at 5:53:42 PM UTC+2, Mark Clements wrote:</div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">I have an initial implementation of B-splines for TMB based on the splines package (see below). Would this be useful to add to TMB?<br><br>I would also like to implement natural splines for TMB using B-splines and a QR decomposition of the second derivatives at the boundary knots (as per the ns() function). However, I could not find a TMB implementation of the QR decomposition. Can anyone suggest how to go about the QR decomposition, please?<br><br>Kindly, Mark.<br><br><br>library(TMB)<br>src &lt;- &quot;#include &lt;TMB.hpp&gt;      // Links in the TMB libraries<br>template&lt;class Type&gt;<br>struct spl_struct {<br>    int order,            /* order of the spline */<br>    ordm1,            /* order - 1 (3 for cubic splines) */<br>    nknots,            /* number of knots */<br>    curs,            /* current position in knots vector */<br>    boundary;        /* must have knots[curs] &lt;= x &lt; knots[curs+1] */<br>                /* except for the boundary case */<br>  vector&lt;Type&gt; ldel;          /* differences from knots on the left */<br>  vector&lt;Type&gt; rdel;            /* differences from knots on the right */<br>  vector&lt;Type&gt; knots;            /* knot vector */<br>  vector&lt;Type&gt; coeff;            /* coefficients */<br>  vector&lt;Type&gt; a;            /* scratch array */<br>};<br>template&lt;class Type&gt;<br>int<br>set_cursor(spl_struct&lt;Type&gt; *sp, Type x)<br>{<br>    int i;<br>    /* don&#39;t assume x&#39;s are sorted */<br>    sp-&gt;curs = -1; /* Wall */<br>    sp-&gt;boundary = 0;<br>    for (i = 0; i &lt; sp-&gt;nknots; i++) {<br>    if (sp-&gt;knots[i] &gt;= x) sp-&gt;curs = i;<br>    if (sp-&gt;knots[i] &gt; x) break;<br>    }<br>    if (sp-&gt;curs &gt; sp-&gt;nknots - sp-&gt;order) {<br>    int lastLegit = sp-&gt;nknots - sp-&gt;order;<br>    if (x == sp-&gt;knots[lastLegit]) {<br>        sp-&gt;boundary = 1; sp-&gt;curs = lastLegit;<br>    }<br>    }<br>    return sp-&gt;curs;<br>}<br>template&lt;class Type&gt;<br>void<br>diff_table(spl_struct&lt;Type&gt; *sp, Type x, int ndiff)<br>{<br>  int i;<br>  for (i = 0; i &lt; ndiff; i++) {<br>      sp-&gt;rdel[i] = sp-&gt;knots[sp-&gt;curs + i] - x;<br>      sp-&gt;ldel[i] = x - sp-&gt;knots[sp-&gt;curs - (i + 1)];<br>  }<br>}<br>/* fast evaluation of basis functions */<br>template&lt;class Type&gt;<br>void<br>basis_funcs(spl_struct&lt;Type&gt; *sp, Type x, matrix&lt;Type&gt; &amp; b, int offset)<br>{<br>  diff_table(sp, x, sp-&gt;ordm1);<br>  b(0,offset) = Type(1);<br>  for (int j = 1; j &lt;= sp-&gt;ordm1; j++) {<br>    Type saved = Type(0);<br>    for (int r = 0; r &lt; j; r++) { // do not divide by zero<br>      Type den = sp-&gt;rdel[r] + sp-&gt;ldel[j - 1 - r];<br>      if(den != Type(0)) {<br>    Type term = b(r,offset)/den;<br>    b(r,offset) = saved + sp-&gt;rdel[r] * term;<br>    saved = sp-&gt;ldel[j - 1 - r] * term;<br>      } else {<br>    if(r != 0 || sp-&gt;rdel[r] != Type(0))<br>      b(r,offset) = saved;<br>    saved = Type(0);<br>      }<br>    }<br>    b(j,offset) = saved;<br>  }<br>}<br>template&lt;class Type&gt;<br>Type<br>evaluate(spl_struct&lt;Type&gt; *sp, Type x, int nder)<br>{<br>  // Type *lpt, *rpt, *apt, *ti = sp-&gt;knots + sp-&gt;curs;<br>  int ti = sp-&gt;curs, <br>    lpt, apt, rpt, inner,<br>    outer = sp-&gt;ordm1;<br>  if (sp-&gt;boundary &amp;&amp; nder == sp-&gt;ordm1) { /* value is arbitrary */<br>    return Type(0);<br>  }<br>  while(nder--) {  // FIXME: divides by zero<br>    // for(inner = outer, apt = sp-&gt;a, lpt = ti - outer; inner--; apt++, lpt++)<br>    for(inner = outer, apt = 0, lpt = ti - outer; inner--; apt++, lpt++)<br>      //*apt = outer * (*(apt + 1) - *apt)/(*(lpt + outer) - *lpt);<br>      sp-&gt;a[apt] = Type(outer) * (sp-&gt;a[apt + 1] - sp-&gt;a[apt])/(sp-&gt;knots[lpt + outer] - sp-&gt;knots[lpt]);<br>    outer--;<br>  }<br>  diff_table(sp, x, outer);<br>  while(outer--)<br>    //for(apt = sp-&gt;a, lpt = sp-&gt;ldel + outer, rpt = sp-&gt;rdel, inner = outer + 1;<br>    for(apt = 0, lpt = outer, rpt = 0, inner = outer + 1;<br>        inner--; lpt--, rpt++, apt++)<br>        // FIXME: divides by zero<br>        sp-&gt;a[apt] = (sp-&gt;a[apt + 1] * sp-&gt;ldel[lpt] + sp-&gt;a[apt] * sp-&gt;rdel[rpt])/(sp-&gt;rdel[rpt] + sp-&gt;ldel[lpt]);<br>    return sp-&gt;a[0];<br>}<br>/* called from    splineDesign() : */<br>template&lt;class Type&gt;<br>matrix&lt;Type&gt;<br>spline_basis(vector&lt;Type&gt; kk,<br>         int ord,<br>         vector&lt;Type&gt; xx,<br>         vector&lt;int&gt; ders)<br>{<br>/* evaluate the non-zero B-spline basis functions (or their derivatives)<br> * at xvals.  */<br>  int nk = kk.size();<br>  int nx = xx.size();<br>  int nd = ders.size();<br>  spl_struct&lt;Type&gt; * sp = new spl_struct&lt;Type&gt;();<br>  /* fill sp : */<br>  sp-&gt;order = ord;<br>  sp-&gt;ordm1 = ord - 1;<br>  sp-&gt;rdel = vector&lt;Type&gt;(sp-&gt;ordm1);<br>  sp-&gt;ldel = vector&lt;Type&gt;(sp-&gt;ordm1);<br>  sp-&gt;knots = kk; sp-&gt;nknots = nk;<br>  sp-&gt;a = vector&lt;Type&gt;(sp-&gt;order);<br>  matrix&lt;Type&gt; valM(sp-&gt;order, nx);<br>  vector&lt;int&gt; ioff(nx);<br>  for(int i = 0; i &lt; nx; i++) {<br>    set_cursor(sp, xx[i]);<br>    int io = ioff[i] = sp-&gt;curs - sp-&gt;order;<br>    if (io &lt; 0 || io &gt; nk) {<br>      for (int j = 0; j &lt; sp-&gt;order; j++) {<br>    valM(j,i) = Type(0); // R_NaN;<br>      }<br>    } else if (ders[i % nd] &gt; 0) { /* slow method for derivatives */<br>      for(int ii = 0; ii &lt; sp-&gt;order; ii++) {<br>    for(int j = 0; j &lt; sp-&gt;order; j++) sp-&gt;a[j] = Type(0);<br>    sp-&gt;a[ii] = Type(1);<br>    valM(ii,i) =<br>      evaluate(sp, xx[i], ders[i % nd]);<br>      }<br>    } else {        /* fast method for value */<br>      basis_funcs(sp, xx[i], valM, i);<br>    }<br>  }<br>  delete sp;<br>  return valM.transpose();<br>}<br>template&lt;class Type&gt;<br>Type objective_function&lt;Type&gt;::operator() ()<br>{<br>  PARAMETER_VECTOR(beta);<br>  DATA_VECTOR(kk);<br>  DATA_INTEGER(ord);<br>  DATA_IVECTOR(ders);<br>  DATA_VECTOR(xx);<br>  matrix&lt;Type&gt; X = spline_basis(kk, ord, xx, ders);<br>  REPORT(X);<br>  return sum(X*beta);<br>}<br>&quot;<br>write(src, file=&quot;splines.cpp&quot;)<br>compile(&quot;splines.cpp&quot;)<br>p &lt;- list(beta=c(0,1,2,3))<br>dyn.load(dynlib(&quot;splines&quot;))<br>f = MakeADFun(data=list(xx=c(1.1,1.2),kk=c(1,1,1,1,2,2,2,2),ord=4L, ders=0L), parameters=p,DLL=&quot;splines&quot;)<br>f$report(f$par)$X<br>## comparison <br>require(splines)<br>bs(c(1.1,1.2),Boundary.knots=c(1,2),df=4,intercept=TRUE)<br></div></blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "gQL1qCtpBAAJ",
+   "from": "Jeff Laake",
+   "author": "b2568d0552c4f5e8",
+   "date": "2017-06-28T20:04:00Z",
+   "subject": "Re: [TMB users] Re: B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">I agree with Hans. What is useful about that approach is that lets you use any of the spline capabilities with other R formula terms.  Essentially you pass the design matrix to TMB containing the spline and other terms for the predictor variables. I&#39;ve done this in my marked package on CRAN (also github) for TMB and ADMB and also for mark-recapture analysis in MARK with my RMark package.  This approach also works with implementing random effects via formula. It simplifies end-user software because they only need to know the R formula notation and any additional components for splines.<div><br></div><div>--jeff</div></div><div class=\"gmail_extra\"><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\">On Tue, Jun 27, 2017 at 10:18 PM, Hans Skaug <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">hsk...@gmail.com</a>&gt;</span> wrote:<br></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\"><div>There is some spline functionality in the file ./TMB/inst/include/tmbutils/splines.hpp on github,</div><div>but apparently not for B-splines. When I have used B-splines myself in the past,</div><div>I have set them up in R, and read in the coefficient matrix into TMB/ADMB and estimated</div><div>spline coefficients as parameters.</div><div><br></div><div>Regarding QR decomposition, it may be possible to access it through Eigen:</div><div><br></div><div><a href=\"https://eigen.tuxfamily.org/dox/group__QR__Module.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://eigen.tuxfamily.org/dox/group__QR__Module.html&amp;source=gmail&amp;ust=1792462568822000&amp;usg=AOvVaw2_d3-FDgRC_mJZNYzqupTz\">https://eigen.tuxfamily.org/dox/group__QR__Module.html</a><br></div><div><br></div><div>in the same way as you can access eigen decomposition:</div><div><br></div><div><a href=\"https://github.com/kaskr/adcomp/issues/144\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/kaskr/adcomp/issues/144&amp;source=gmail&amp;ust=1792462568822000&amp;usg=AOvVaw3J3Uvky-Ngj3zlwkvwyPdH\">https://github.com/kaskr/adcomp/issues/144</a><br></div><span><br><br>On Tuesday, June 27, 2017 at 5:53:42 PM UTC+2, Mark Clements wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">I have an initial implementation of B-splines for TMB based on the splines package (see below). Would this be useful to add to TMB?<br><br>I would also like to implement natural splines for TMB using B-splines and a QR decomposition of the second derivatives at the boundary knots (as per the ns() function). However, I could not find a TMB implementation of the QR decomposition. Can anyone suggest how to go about the QR decomposition, please?<br><br>Kindly, Mark.<br><br><br></div></blockquote></span></div></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><span>\r\n\r\n<p></p>\r\n\r\n-- <br>\r\nTo post to this group, send email to <a href data-email-masked rel=\"nofollow\">us...@tmb-project.org</a>. Before posting, please check the wiki and issuetracker at <a href=\"https://github.com/kaskr/adcomp/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/kaskr/adcomp/&amp;source=gmail&amp;ust=1792462568822000&amp;usg=AOvVaw0E9fvTdTfsPgQtAM1AODUF\">https://github.com/kaskr/adcomp/</a>. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.<br>\r\n--- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;TMB Users&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">tmb-users+unsubscribe@googlegroups.com</a>.<br></span>\r\nTo view this discussion on the web visit <a href=\"https://groups.google.com/d/msgid/tmb-users/a74eac7f-b88d-4cc5-adaa-6ebbcd583c47%40googlegroups.com?utm_medium=email&amp;utm_source=footer\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msgid/tmb-users/a74eac7f-b88d-4cc5-adaa-6ebbcd583c47%2540googlegroups.com?utm_medium%3Demail%26utm_source%3Dfooter&amp;source=gmail&amp;ust=1792462568822000&amp;usg=AOvVaw29XwkW-lQoafqVC6P1AZBy\">https://groups.google.com/d/msgid/tmb-users/a74eac7f-b88d-4cc5-adaa-6ebbcd583c47%40googlegroups.com</a>.<div><div><br>\r\nFor more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792462568822000&amp;usg=AOvVaw2jxh8QzSQwxIiyt3dU4drc\">https://groups.google.com/d/optout</a>.<br>\r\n</div></div></blockquote></div><br></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "8J8ihCZ2AgAJ",
+   "from": "Hans Skaug",
+   "author": "02e03030784aa6a7",
+   "date": "2017-06-29T06:42:04Z",
+   "subject": "Re: [TMB users] Re: B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Yes, and you can easily do penalized splines:<div>1. Set up a B-spline basis in R and import the design matrix into TMB</div><div>2. Let spline coefficients be random effects. Their variance is the penalty parameter that gets estimated by maximum likelihood</div><div>3. You can let the spline coeffs follow 1st or 2nd order random walks to impose more smoothness.</div><div><br></div><div>When you do a ADREPORT() on the resulting spline function, the uncertainty in the penalty (variance) feeds into the uncertainty of the spline,</div><div>which I think it should.</div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div><br></div><div><br>On Wednesday, June 28, 2017 at 10:04:00 PM UTC+2, jefflaake wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">I agree with Hans. What is useful about that approach is that lets you use any of the spline capabilities with other R formula terms.  Essentially you pass the design matrix to TMB containing the spline and other terms for the predictor variables. I&#39;ve done this in my marked package on CRAN (also github) for TMB and ADMB and also for mark-recapture analysis in MARK with my RMark package.  This approach also works with implementing random effects via formula. It simplifies end-user software because they only need to know the R formula notation and any additional components for splines.<div><br></div><div><br></div></div>\r\n</blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "iQ3-BoadBAAJ",
+   "from": "Mark Clements",
+   "author": "472eb53ede066ba3",
+   "date": "2017-06-29T12:03:23Z",
+   "subject": "Re: [TMB users] Re: B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "\r\n\r\n\r\n\r\n<div text=\"#000000\" bgcolor=\"#FFFFFF\">\r\nWe have several examples where we need splines at the C++ level.<br>\r\n<br>\r\nFirst, the motivating example is for accelerated failure time models, where we model survival at time t given covariates x as S(t|x)=S_0(t exp(x&#39;beta)). Note that the evaluation points for S_0() will change with revised betas. We want to use a flexible parametric\r\n model for S_0() using a smooth function s_0() (e.g. natural splines), where S(t|x)=exp(-exp(s_0(log(t)+x&#39;beta))). As a consequence, the design matrix for s_0() is not constant.<br>\r\n<br>\r\nNote that the proportional hazards model S(t|x)=exp(-exp(s_0(log(t))+x&#39;beta)) would have a constant design matrix for s_0() - see our package rstpm2 on CRAN.<br>\r\n<br>\r\nSecond, we have used splines to define log-transition hazards for a smooth Markov model using ordinary differential equations (e.g.\r\n<a href=\"https://github.com/mclements/purged/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/mclements/purged/&amp;source=gmail&amp;ust=1792462568825000&amp;usg=AOvVaw228OagMrt_RyI68bbF-A09\">https://github.com/mclements/purged/</a>).<br>\r\n<br>\r\nNote that the B-splines are useful for natural splines, P-splines and M-splines/I-splines.<br>\r\n<br>\r\nI now realise that the QR matrix for the natural splines is being evaluated at the boundary knots and is hence constant, so I can calculate that Q matrix in R and pass it to TMB. I will try to package this up as per the suggested mechanism.<br>\r\n<br>\r\nFinally: great work on TMB. This is an amazingly useful package.<br>\r\n<br>\r\nKindly, Mark.</div>"
+    ],
+    [
+     3,
+     "<div text=\"#000000\" bgcolor=\"#FFFFFF\"><br>\r\n<br>\r\n<br>\r\n<div>On 06/29/2017 07:42 AM, Hans Skaug wrote:<br>\r\n</div>\r\n</div>"
+    ],
+    [
+     3,
+     "<div text=\"#000000\" bgcolor=\"#FFFFFF\"><blockquote type=\"cite\">\r\n<div dir=\"ltr\">Yes, and you can easily do penalized splines:\r\n<div>1. Set up a B-spline basis in R and import the design matrix into TMB</div>\r\n<div>2. Let spline coefficients be random effects. Their variance is the penalty parameter that gets estimated by maximum likelihood</div>\r\n<div>3. You can let the spline coeffs follow 1st or 2nd order random walks to impose more smoothness.</div>\r\n<div><br>\r\n</div>\r\n<div>When you do a ADREPORT() on the resulting spline function, the uncertainty in the penalty (variance) feeds into the uncertainty of the spline,</div>\r\n<div>which I think it should.</div>\r\n<div><br>\r\n</div>\r\n<div><br>\r\nOn Wednesday, June 28, 2017 at 10:04:00 PM UTC+2, jefflaake wrote:\r\n<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div dir=\"ltr\">I agree with Hans. What is useful about that approach is that lets you use any of the spline capabilities with other R formula terms.  Essentially you pass the design matrix to TMB containing the spline and other terms for the predictor variables.\r\n I&#39;ve done this in my marked package on CRAN (also github) for TMB and ADMB and also for mark-recapture analysis in MARK with my RMark package.  This approach also works with implementing random effects via formula. It simplifies end-user software because they\r\n only need to know the R formula notation and any additional components for splines.\r\n<div><br>\r\n</div>\r\n<div><br>\r\n</div>\r\n</div>\r\n</blockquote>\r\n</div>\r\n</div></blockquote></div>"
+    ],
+    [
+     2,
+     "<div text=\"#000000\" bgcolor=\"#FFFFFF\"><blockquote type=\"cite\">\r\n-- <br>\r\nTo post to this group, send email to <a href data-email-masked rel=\"nofollow\">\r\nus...@tmb-project.org</a>. Before posting, please check the wiki and issuetracker at\r\n<a href=\"https://github.com/kaskr/adcomp/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/kaskr/adcomp/&amp;source=gmail&amp;ust=1792462568825000&amp;usg=AOvVaw2PT6Wmy9UxSjzdMoo5g4Ll\">https://github.com/kaskr/adcomp/</a>. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.<br>\r\n--- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;TMB Users&quot; group.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div text=\"#000000\" bgcolor=\"#FFFFFF\"><blockquote type=\"cite\">\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to\r\n<a href data-email-masked rel=\"nofollow\">tmb-users+...@googlegroups.com</a>.<br>\r\nTo view this discussion on the web visit <a href=\"https://groups.google.com/d/msgid/tmb-users/1d08799c-fcdf-4989-8c23-e26f42a37ac5%40googlegroups.com?utm_medium=email&amp;utm_source=footer\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msgid/tmb-users/1d08799c-fcdf-4989-8c23-e26f42a37ac5%2540googlegroups.com?utm_medium%3Demail%26utm_source%3Dfooter&amp;source=gmail&amp;ust=1792462568825000&amp;usg=AOvVaw3eF5nwntNr6yywS576MnRB\">\r\nhttps://groups.google.com/d/msgid/tmb-users/1d08799c-fcdf-4989-8c23-e26f42a37ac5%40googlegroups.com</a>.</blockquote></div>"
+    ],
+    [
+     3,
+     "<div text=\"#000000\" bgcolor=\"#FFFFFF\"><blockquote type=\"cite\"><br>\r\nFor more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792462568825000&amp;usg=AOvVaw1BsYTdg6g9V9pPrWVw_lN0\">\r\nhttps://groups.google.com/d/optout</a>.<br>\r\n</blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "xTzqrfGcAwAJ",
+   "from": "Mark Clements",
+   "author": "472eb53ede066ba3",
+   "date": "2017-07-25T18:07:08Z",
+   "subject": "Re: [TMB users] Re: B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "In re-implementing the splines::bs() function in TMB, I have run into a<br>weird bug (reproducible example attached). When I use the objective<br>function motivated by an accelerated failure time model:<p></p>"
+    ],
+    [
+     2,
+     "<p>template&lt;class Type&gt;<br>Type objective_function&lt;Type&gt;::operator() ()<br>{<br></p>"
+    ],
+    [
+     1,
+     "<p>  PARAMETER(beta);<br>  PARAMETER_VECTOR(betas);<br>  DATA_VECTOR(x0);<br>  DATA_VECTOR(x1);<br>  DATA_VECTOR(boundaryKnots);<br>  DATA_VECTOR(interiorKnots);<br>  bs&lt;Type&gt; s1(boundaryKnots,interiorKnots,1);<br>  vector&lt;Type&gt; xs = x0 + x1 * beta;<br>  matrix&lt;Type&gt; Xs = s1.basis(xs);<br>  REPORT(Xs);<br>  Type f = (Xs*betas).sum();<br>  return f;<br>}<p>for some given inputs, I get the correct spline basis (Xs) and function<br>value at the initial values. When I evaluate at a different value, I<br>also get the correct spline basis (ok), however I get an incorrect<br>objective function. This is particularly strange, as the objective is<br>only the sum of the basis matrix (which is correct) times the betas<br>vector...<p>Re-coding this with RcppEigen gives the correct objective function with<br>no evidence of a memory leak from valgrind (code available).<p>Is my implementation compatible with TMB? Any help with this would be<br>appreciated - I have been struggling with this for a while.<p>Kindly, Mark.<br></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "SC1VqN2eAwAJ",
+   "from": "Mark Clements",
+   "author": "472eb53ede066ba3",
+   "date": "2017-07-25T18:42:21Z",
+   "subject": "Re: [TMB users] Re: B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "To possibly answer my own question:<br><a href=\"https://github.com/kaskr/adcomp/wiki/Things-you-should-NOT-do-in-TMB\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/kaskr/adcomp/wiki/Things-you-should-NOT-do-in-TMB&amp;source=gmail&amp;ust=1792462568827000&amp;usg=AOvVaw1LAx2tqKOikClI6dg2A3VB\">https://github.com/kaskr/adcomp/wiki/Things-you-should-NOT-do-in-TMB</a><p>The spline knots are external and do not depend on the parameters, while<br>the spline evaluation points and spline basis do depend on the<br>parameters. In summary, splines with accelerated failure time models<br>probably do not fit within the current TMB framework. Out of interest,<br>would this work in ADMB?<p>As an aside, extracting the Q matrix from a QR decomposition is possible<br>with TMB. The main trick was to #include &lt;R_ext/Applic.h&gt; before<br>#include &lt;TMB.hpp&gt;. The code is:<p>    MatrixXd qr_q(const MatrixXd&amp; X, double tol = 1E-12)<br>    {<br>      // Initialize member data and allocate heap memory<br>      int n=X.rows(), p=X.cols(), rank=0;<br>      MatrixXd qr = X, y(n,n), q(n,n);<br>      int* pivot=(int*)R_alloc(p,sizeof(int));<br>      double* tau=(double*)R_alloc(p,sizeof(double));<br>      double* work=(double*)R_alloc(p*2,sizeof(double));<br>      for(int i=0;i&lt;p;i++)<br>        pivot[i]=i+1;<br>      y.setIdentity();<br>      // LINPACK QR factorization via householder transformations<br>      F77_CALL(dqrdc2)(qr.data(), &amp;n, &amp;n, &amp;p, &amp;tol, &amp;rank, tau, pivot,<br>work);<br>      // Compute orthogonal factor Q<br>      F77_CALL(dqrqy)(qr.data(), &amp;n, &amp;rank, tau, y.data(), &amp;n, q.data());<br>      return q;<br>    }<p>Kindly, Mark.</p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p>On 07/25/2017 08:07 PM, Mark Clements wrote:<br>&gt; In re-implementing the splines::bs() function in TMB, I have run into a<br>&gt; weird bug (reproducible example attached). When I use the objective<br>&gt; function motivated by an accelerated failure time model:<br>&gt;<br>&gt; template&lt;class Type&gt;<br>&gt; Type objective_function&lt;Type&gt;::operator() ()<br>&gt; {<br>&gt;   PARAMETER(beta);<br>&gt;   PARAMETER_VECTOR(betas);<br>&gt;   DATA_VECTOR(x0);<br>&gt;   DATA_VECTOR(x1);<br>&gt;   DATA_VECTOR(boundaryKnots);<br>&gt;   DATA_VECTOR(interiorKnots);<br>&gt;   bs&lt;Type&gt; s1(boundaryKnots,interiorKnots,1);<br>&gt;   vector&lt;Type&gt; xs = x0 + x1 * beta;<br>&gt;   matrix&lt;Type&gt; Xs = s1.basis(xs);<br>&gt;   REPORT(Xs);<br>&gt;   Type f = (Xs*betas).sum();<br>&gt;   return f;<br>&gt; }<br>&gt;<br>&gt; for some given inputs, I get the correct spline basis (Xs) and function<br>&gt; value at the initial values. When I evaluate at a different value, I<br>&gt; also get the correct spline basis (ok), however I get an incorrect<br>&gt; objective function. This is particularly strange, as the objective is<br>&gt; only the sum of the basis matrix (which is correct) times the betas<br>&gt; vector...<br>&gt;<br>&gt; Re-coding this with RcppEigen gives the correct objective function with<br>&gt; no evidence of a memory leak from valgrind (code available).<br>&gt;<br>&gt; Is my implementation compatible with TMB? Any help with this would be<br>&gt; appreciated - I have been struggling with this for a while.<br>&gt;<br>&gt; Kindly, Mark.<br>&gt;<p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "Z0GR0JdXAAAJ",
+   "from": "Kasper Kristensen",
+   "author": "90b303eef43fd993",
+   "date": "2017-07-26T12:26:01Z",
+   "subject": "RE: [TMB users] Re: B-splines / QR decomposition",
+   "parts": [
+    [
+     1,
+     "You are right that the problem is caused by parameter dependent branching. ADMB does not have this issue because it re-builds the computational graph for each function evaluation. You can rebuild the computational graph in TMB as well using &#39;obj$retape()&#39; (after setting obj$env$parameters) within each evaluation, but it will get very slow so is not recommended.<p>Other options to deal with parameter dependent branching in TMB:<p>1. Use conditional expressions. E.g. CppAD::CondExpGt(x, y, expr_true, expr_false) returns &#39;expr_true&#39; if x&gt;y and &#39;expr_false&#39; otherwise. variants &#39;Gt&#39; (&gt;), &#39;Ge&#39; (&gt;=), &#39;Lt&#39; (&lt;), &#39;Le&#39; (&lt;=), &#39;Eq&#39; (==) exist. However, this approach would require major re-write of the spline code. Especially all parts depending on the &#39;cursor&#39;.<p>2. In principle one could implement an &#39;atomic function&#39; that automatically re-builds the computational graph of the spline for each function evaluation (which is much cheaper than rebuilding the entire graph). This is in principle possible but there is not yet an example that demonstrates it.<p><br>________________________________________<br>From: <a href data-email-masked rel=\"nofollow\">tmb-...@googlegroups.com</a> [<a href data-email-masked rel=\"nofollow\">tmb-...@googlegroups.com</a>] on behalf of Mark Clements [<a href data-email-masked rel=\"nofollow\">mark.c...@ki.se</a>]<br>Sent: Tuesday, July 25, 2017 8:42 PM<br>To: Hans Skaug; TMB Users<br>Subject: Re: [TMB users] Re: B-splines / QR decomposition<p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p>To possibly answer my own question:<br><a href=\"https://github.com/kaskr/adcomp/wiki/Things-you-should-NOT-do-in-TMB\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/kaskr/adcomp/wiki/Things-you-should-NOT-do-in-TMB&amp;source=gmail&amp;ust=1792462568829000&amp;usg=AOvVaw0lq6XXtdDcoO4RahL_MG7u\">https://github.com/kaskr/adcomp/wiki/Things-you-should-NOT-do-in-TMB</a></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p>The spline knots are external and do not depend on the parameters, while<br>the spline evaluation points and spline basis do depend on the<br>parameters. In summary, splines with accelerated failure time models<br>probably do not fit within the current TMB framework. Out of interest,<br>would this work in ADMB?</p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p>As an aside, extracting the Q matrix from a QR decomposition is possible<br>with TMB. The main trick was to #include &lt;R_ext/Applic.h&gt; before<br>#include &lt;TMB.hpp&gt;. The code is:</p></p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><p>    MatrixXd qr_q(const MatrixXd&amp; X, double tol = 1E-12)<br>    {<br>      // Initialize member data and allocate heap memory<br>      int n=X.rows(), p=X.cols(), rank=0;<br>      MatrixXd qr = X, y(n,n), q(n,n);<br>      int* pivot=(int*)R_alloc(p,sizeof(int));<br>      double* tau=(double*)R_alloc(p,sizeof(double));<br>      double* work=(double*)R_alloc(p*2,sizeof(double));<br>      for(int i=0;i&lt;p;i++)<br>        pivot[i]=i+1;<br>      y.setIdentity();<br>      // LINPACK QR factorization via householder transformations<br>      F77_CALL(dqrdc2)(qr.data(), &amp;n, &amp;n, &amp;p, &amp;tol, &amp;rank, tau, pivot,<br>work);<br>      // Compute orthogonal factor Q<br>      F77_CALL(dqrqy)(qr.data(), &amp;n, &amp;rank, tau, y.data(), &amp;n, q.data());<br>      return q;<br>    }</p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p>Kindly, Mark.<p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><p><p><p>On 07/25/2017 08:07 PM, Mark Clements wrote:<br>&gt; In re-implementing the splines::bs() function in TMB, I have run into a<br>&gt; weird bug (reproducible example attached). When I use the objective<br>&gt; function motivated by an accelerated failure time model:<br>&gt;<br>&gt; template&lt;class Type&gt;<br>&gt; Type objective_function&lt;Type&gt;::operator() ()<br>&gt; {<br>&gt;   PARAMETER(beta);<br>&gt;   PARAMETER_VECTOR(betas);<br>&gt;   DATA_VECTOR(x0);<br>&gt;   DATA_VECTOR(x1);<br>&gt;   DATA_VECTOR(boundaryKnots);<br>&gt;   DATA_VECTOR(interiorKnots);<br>&gt;   bs&lt;Type&gt; s1(boundaryKnots,interiorKnots,1);<br>&gt;   vector&lt;Type&gt; xs = x0 + x1 * beta;<br>&gt;   matrix&lt;Type&gt; Xs = s1.basis(xs);<br>&gt;   REPORT(Xs);<br>&gt;   Type f = (Xs*betas).sum();<br>&gt;   return f;<br>&gt; }<br>&gt;<br>&gt; for some given inputs, I get the correct spline basis (Xs) and function<br>&gt; value at the initial values. When I evaluate at a different value, I<br>&gt; also get the correct spline basis (ok), however I get an incorrect<br>&gt; objective function. This is particularly strange, as the objective is<br>&gt; only the sum of the basis matrix (which is correct) times the betas<br>&gt; vector...<br>&gt;<br>&gt; Re-coding this with RcppEigen gives the correct objective function with<br>&gt; no evidence of a memory leak from valgrind (code available).<br>&gt;<br>&gt; Is my implementation compatible with TMB? Any help with this would be<br>&gt; appreciated - I have been struggling with this for a while.<br>&gt;<br>&gt; Kindly, Mark.<br>&gt;</p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p>--</p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><br>To post to this group, send email to <a href data-email-masked rel=\"nofollow\">us...@tmb-project.org</a>. Before posting, please check the wiki and issuetracker at <a href=\"https://github.com/kaskr/adcomp/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/kaskr/adcomp/&amp;source=gmail&amp;ust=1792462568829000&amp;usg=AOvVaw2zxjSI1y2FPTL0Y4BT_MpV\">https://github.com/kaskr/adcomp/</a>. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.<br>---<br>You received this message because you are subscribed to the Google Groups &quot;TMB Users&quot; group.<br>To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">tmb-users+...@googlegroups.com</a>.<br></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p>To view this discussion on the web visit <a href=\"https://groups.google.com/d/msgid/tmb-users/6E62DCB74E59D246B410609BB7A9D723018F24EC53%40KIMSX02.user.ki.se\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msgid/tmb-users/6E62DCB74E59D246B410609BB7A9D723018F24EC53%2540KIMSX02.user.ki.se&amp;source=gmail&amp;ust=1792462568829000&amp;usg=AOvVaw1THw1GaD7UMMNMUgFXYO87\">https://groups.google.com/d/msgid/tmb-users/6E62DCB74E59D246B410609BB7A9D723018F24EC53%40KIMSX02.user.ki.se</a>.</p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><p><p><p><p><br>For more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792462568829000&amp;usg=AOvVaw3AecHaEtidszVZHC9fMrW-\">https://groups.google.com/d/optout</a>.<br></p></p></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  }
+ ]
+}

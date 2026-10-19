@@ -1,0 +1,1534 @@
+From u258b98968d0ad8b9 at groups.google.com  Mon Aug  1 08:51:02 2022
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Mon, 01 Aug 2022 08:51:02 +0000
+Subject: Re: [TMB users] Re: t distribution function (stats::pt)
+Message-ID: <wOR02nMigdg.Vh5FmFpVAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <wOR02nMigdg.LBynMaQPAwAJ@tmb-users.groups.google.com>
+References: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com> <wOR02nMigdg.LBynMaQPAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/wOR02nMigdg/m/Vh5FmFpVAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+To follow up on my own suggestion here's an R function that should be straight forward to translate to TMB (using CondExpGe for ifelse). You may want to verify against stats::pt for accuracy:
+
+pt <- function(x, df) {
+    nx <- 1 + (x/df)*x
+    val <- pbeta (1. / nx, df / 2., 0.5)
+    val <- val / 2
+    ifelse(x>0, 1-val, val)
+
+}
+
+On Sunday, July 31, 2022 at 1:33:32 PM UTC+2 Kasper Kristensen wrote:
+> I agree with the analysis of Hans.
+>
+> An alternative is to look at the R source https://github.com/wch/r-source/blob/trunk/src/nmath/pt.c#L24 which gives some hints on how to express pt in terms of pbeta (which is available in TMB).
+>
+>
+> On Sunday, July 31, 2022 at 8:09:41 AM UTC+2 Hans Skaug wrote:
+> > Ben is right about using atomic functions, but the problem is that
+> > we only have a formula for the derivative wrt "x", and not wrt to "df".
+> > This is what prevents a straight forward implementation of pt() in TMB (I think):
+> >
+> > Below I have written a code where "df" is hardcoded. Then there is no
+> > need for the derivative wrt df, but of course "df" cannot be estimated as a parameter.
+> >  I do not know if this is  acceptable for Jeremy's application.
+> > (I also skip the vectorization stuff, so the code only works for scalar "x".)
+> >
+> > My code seems to work, but I do not claim to have a full understanding of this,
+> > so my code should be verified numerically before being used.
+> >
+> > Hans
+> > ------------------------------------------
+> >
+> > // pt() with hardcoded df
+> > #include <TMB.hpp>
+> >
+> > extern "C" {
+> >    double Rf_pt(double q,double df,int,int);
+> >
+> > }
+> >
+> > TMB_ATOMIC_VECTOR_FUNCTION(
+> >      // ATOMIC_NAME
+> >      pt
+> >      ,
+> >      // OUTPUT_DIM
+> >      1,
+> >      // ATOMIC_DOUBLE
+> >      double df=2.0;  // First location of hardcoding
+> >      ty[0] = Rf_pt(tx[0],df,1,0); // Call the 'double' version
+> >      ,
+> >      // ATOMIC_REVERSE
+> >      Type df = 2.0;  // Second location of hardcoding
+> >      Type x  = tx[0];
+> >      px[0] = dt(x,df,false) * py[0];   // Reverse mode chain rule
+> >
+> >                            )
+> > template<class Type>
+> > Type pt(Type x){
+> >    CppAD::vector<Type> tx(1);
+> >    tx[0] = x;
+> >    return pt(tx)[0];
+> > }
+> >
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> >   DATA_VECTOR(z);
+> >   PARAMETER_VECTOR(x);                             // Underlying latent random
+> >   return pt(x(0));
+> > }
+> >
+> > On Friday, July 29, 2022 at 6:54:50 PM UTC+2 Jeremy D wrote:
+> > > Thank you both for your replies.
+> > > I'm looking into the reformulations of skewed-t that Hank's suggested, but I'm still hoping we could get Ben's code to work so we could use pt, and also understand more generally how the syntax error he mentioned can be fixed.
+> > >
+> > >
+> > >
+> > > On Wednesday, July 27, 2022 at 11:29:06 AM UTC-4 Ben Bolker wrote:
+> > > > Slightly naive Q: since (AFAIK) the R functions for pt() and dt()
+> > > > are available in TMB and since the derivative of pt() is dt() (by
+> > > > definition), it would seem not too hard (for some definition of "hard")
+> > > > to define a new atomic function following
+> > > >
+> > > > http://kaskr.github.io/adcomp/_book/AtomicFunctions.html
+> > > >
+> > > > The code below *almost* compiles, but gets an error
+> > > >
+> > > > error: expected constructor, destructor, or type conversion before ‘(’ token
+> > > > 34 | VECTORIZE_1t(pt)
+> > > >
+> > > > There's probably some tiny syntax error (see
+> > > > <https://stackoverflow.com/questions/8958044/expected-constructor-destructor-or-type-conversion-before-token>:
+> > > > "If the compiler can't match the definition's signature to the
+> > > > declaration's signature it thinks the definition is not a constructor
+> > > > and then doesn't know how to parse the code and displays this error")
+> > > >
+> > > > Maybe someone else can see what's wrong, or can tell me why this
+> > > > wouldn't work.
+> > > >
+> > > > ====
+> > > > #include <TMB.hpp>
+> > > >
+> > > > extern "C" {
+> > > > double Rf_pt(double q);
+> > > > double Rf_dt(double x);
+> > > > }
+> > > >
+> > > > TMB_ATOMIC_VECTOR_FUNCTION(
+> > > > // ATOMIC_NAME
+> > > > pt
+> > > > ,
+> > > > // OUTPUT_DIM
+> > > > 1,
+> > > > // ATOMIC_DOUBLE
+> > > > ty[0] = Rf_pt(tx[0]); // Call the 'double' version
+> > > > ,
+> > > > // ATOMIC_REVERSE
+> > > > Type x = ty[0]; // Function value from forward pass
+> > > > Type dp = Rf_dt(x); // Derivative (do we need a cast here??)
+> > > > px[0] = dp * py[0]; // Reverse mode chain rule
+> > > > )
+> > > >
+> > > > template<class Type>
+> > > > Type pt(Type x){
+> > > > CppAD::vector<Type> tx(1);
+> > > > tx[0] = x;
+> > > > return pt(tx)[0];
+> > > > }
+> > > >
+> > > > // Vectorized version
+> > > > VECTORIZE_1t(pt)
+> > > >
+> > > >
+> > > > On 2022-07-27 11:05 a.m., Hans Skaug wrote:
+> > > > > I guess that the reason pt() is not already in TMB is that its numerical
+> > > > > implementation is a bit tricky.
+> > > > > However, if seems that there are other ways of getting dst:
+> > > > >
+> > > > > https://en.wikipedia.org/wiki/Skewed_generalized_t_distribution#Skewed_t_distribution
+> > > > >
+> > > > > Hans
+> > > > >
+> > > > > On Wednesday, July 27, 2022 at 4:15:53 PM UTC+2 Jeremy D wrote:
+> > > > >
+> > > > > Hi,
+> > > > >
+> > > > > Can anyone suggest a way to implement the t-distribution function
+> > > > > (i.e., stats::pt) in a TMB model?
+> > > > > This function is needed for the skew t-distribution (sn::dst), which
+> > > > > is currently not available in TMB.
+> > > > >
+> > > > > Thank you!
+> > > > >
+> > > > > --
+> > > > > To post to this group, send email to us...@tmb-project.org. Before
+> > > > > posting, please check the wiki and issuetracker at
+> > > > > https://github.com/kaskr/adcomp/ <https://github.com/kaskr/adcomp/>.
+> > > > > Please try to create a simple repeatable example to go with your
+> > > > > question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google
+> > > > > Groups "TMB Users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send
+> > > > > an email to tmb-users+...@googlegroups.com
+> > > > > <mailto:tmb-users+...@googlegroups.com>.
+> > > > > To view this discussion on the web visit
+> > > > > https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com
+> > > > > <https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > >
+> > > > --
+> > > > Dr. Benjamin Bolker
+> > > > Professor, Mathematics & Statistics and Biology, McMaster University
+> > > > Director, School of Computational Science and Engineering
+> > > > (Acting) Graduate chair, Mathematics & Statistics
+
+From u0495130141859df9 at groups.google.com  Mon Aug  1 14:46:42 2022
+From: u0495130141859df9 at groups.google.com (Timothy Miller - NOAA Federal)
+Date: Mon, 01 Aug 2022 14:46:42 +0000
+Subject: Re: [TMB users] Re: OSA residuals using "cdf" vs. other methods with a linear gaussian state-space model
+Message-ID: <43h5FtTTywg.YLj7RMNoAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <43h5FtTTywg.moD3IusNAwAJ@tmb-users.groups.google.com>
+References: <43h5FtTTywg.0VKl5VscAQAJ@tmb-users.groups.google.com> <43h5FtTTywg.moD3IusNAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/43h5FtTTywg/m/YLj7RMNoAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks very much for looking into this, Kasper.
+
+On Sun, Jul 31, 2022 at 7:02 AM Kasper Kristensen <kasper.k...@gmail.com> wrote:
+
+> Your code is correct and points out some flaws with the CDF method.
+>
+> First problem, is that the method failed without giving an error or warning. Only NANs to indicate something went completely wrong. I tracked it down to be an issue with random effect initialization that wasn't stable. This is now fixed in the TMB master branch.
+>
+> The improved initialization gets the cdf method closer to the other two, but unfortunately it's still too inaccurate. This is a known (yet undocumented) issue with the cdf method, that happens exactly when the measurement error is small.
+>
+> I expect a corrected CDF method can be developed in the future, but for now one has to be very careful when using it for random effect models.
+>
+>
+> On Thursday, July 21, 2022 at 3:45:38 PM UTC+2 timothy....@noaa.gov wrote:
+> > Dear All,
+> >
+> > I have attached files for a simple linear Gaussian state-space model example with a stationary AR1 process on the latent variable and known observation error variances, which are relatively small.  The code does the AR1 process "by hand" rather than use the namespace density. The OSA residuals produced using the cdf method are very different  from (and much worse than) those using other methods which provide similar residuals. It is most likely an error in my code to use the cdf method.
+> >
+> > Also, I suspect there is a typo in the help file for TMB::oneStepPredict in the example code for implementing the cdf method (calling  dnorm and pnorm with sd=0).
+> >
+> > Thanks in advance for any help!
+> > Tim
+> >
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to a topic in the Google Groups "TMB Users" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/tmb-users/43h5FtTTywg/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/82b840c1-5673-4a4b-940d-9d2b7e3af6d8n%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/82b840c1-5673-4a4b-940d-9d2b7e3af6d8n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Timothy J. Miller, PhD  (he, him, his)
+Research Fishery Biologist
+NOAA, Northeast Fisheries Science Center
+Woods Hole, MA
+508-495-2365
+
+From ue486b5b76d623341 at groups.google.com  Mon Aug  1 15:14:51 2022
+From: ue486b5b76d623341 at groups.google.com (Jeremy D)
+Date: Mon, 01 Aug 2022 15:14:51 +0000
+Subject: Re: [TMB users] Re: t distribution function (stats::pt)
+Message-ID: <wOR02nMigdg.SlbsjkxqAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com>
+References: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/wOR02nMigdg/m/SlbsjkxqAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I can confirm that both Hans' and Kasper's functions seem to work well and, as far as I can tell, give identical result to stats::pt.
+
+Performance-wise, Kasper's version runs much slower in my tests, but if I fix df (to 3, as well as in Hans' pt version), then running time is similar.
+
+Here's Kasper's version that I used:
+template<class Type>
+Type pt_3(Type x) {
+    Type nx = Type(1) + (x / Type(3)) * x;
+    Type val = pbeta(Type(1) / nx, Type(3) / Type(2), Type(0.5)) / Type(2);
+    return CppAD::CondExpGt(x, Type(0), Type(1) - val, val);
+}
+
+Thanks again for all of your helpful replies!
+
+On Monday, August 1, 2022 at 4:51:02 AM UTC-4 kasper.k...@gmail.com wrote:
+> To follow up on my own suggestion here's an R function that should be straight forward to translate to TMB (using CondExpGe for ifelse). You may want to verify against stats::pt for accuracy:
+>
+> pt <- function(x, df) {
+>     nx <- 1 + (x/df)*x
+>     val <- pbeta (1. / nx, df / 2., 0.5)
+>     val <- val / 2
+>     ifelse(x>0, 1-val, val)
+> }
+>
+> On Sunday, July 31, 2022 at 1:33:32 PM UTC+2 Kasper Kristensen wrote:
+> > I agree with the analysis of Hans.
+> >
+> > An alternative is to look at the R source https://github.com/wch/r-source/blob/trunk/src/nmath/pt.c#L24 which gives some hints on how to express pt in terms of pbeta (which is available in TMB).
+> >
+> >
+> > On Sunday, July 31, 2022 at 8:09:41 AM UTC+2 Hans Skaug wrote:
+> > > Ben is right about using atomic functions, but the problem is that
+> > > we only have a formula for the derivative wrt "x", and not wrt to "df".
+> > > This is what prevents a straight forward implementation of pt() in TMB (I think):
+> > >
+> > > Below I have written a code where "df" is hardcoded. Then there is no
+> > > need for the derivative wrt df, but of course "df" cannot be estimated as a parameter.
+> > >  I do not know if this is  acceptable for Jeremy's application.
+> > > (I also skip the vectorization stuff, so the code only works for scalar "x".)
+> > >
+> > > My code seems to work, but I do not claim to have a full understanding of this,
+> > > so my code should be verified numerically before being used.
+> > >
+> > > Hans
+> > > ------------------------------------------
+> > >
+> > > // pt() with hardcoded df
+> > > #include <TMB.hpp>
+> > >
+> > > extern "C" {
+> > >    double Rf_pt(double q,double df,int,int);
+> > >
+> > > }
+> > >
+> > > TMB_ATOMIC_VECTOR_FUNCTION(
+> > >      // ATOMIC_NAME
+> > >      pt
+> > >      ,
+> > >      // OUTPUT_DIM
+> > >      1,
+> > >      // ATOMIC_DOUBLE
+> > >      double df=2.0;  // First location of hardcoding
+> > >      ty[0] = Rf_pt(tx[0],df,1,0); // Call the 'double' version
+> > >      ,
+> > >      // ATOMIC_REVERSE
+> > >      Type df = 2.0;  // Second location of hardcoding
+> > >      Type x  = tx[0];
+> > >      px[0] = dt(x,df,false) * py[0];   // Reverse mode chain rule
+> > >
+> > >                            )
+> > > template<class Type>
+> > > Type pt(Type x){
+> > >    CppAD::vector<Type> tx(1);
+> > >    tx[0] = x;
+> > >    return pt(tx)[0];
+> > > }
+> > >
+> > > template<class Type>
+> > > Type objective_function<Type>::operator() ()
+> > > {
+> > >   DATA_VECTOR(z);
+> > >   PARAMETER_VECTOR(x);                             // Underlying latent random
+> > >   return pt(x(0));
+> > > }
+> > >
+> > > On Friday, July 29, 2022 at 6:54:50 PM UTC+2 Jeremy D wrote:
+> > > > Thank you both for your replies.
+> > > > I'm looking into the reformulations of skewed-t that Hank's suggested, but I'm still hoping we could get Ben's code to work so we could use pt, and also understand more generally how the syntax error he mentioned can be fixed.
+> > > >
+> > > >
+> > > >
+> > > > On Wednesday, July 27, 2022 at 11:29:06 AM UTC-4 Ben Bolker wrote:
+> > > > > Slightly naive Q: since (AFAIK) the R functions for pt() and dt()
+> > > > > are available in TMB and since the derivative of pt() is dt() (by
+> > > > > definition), it would seem not too hard (for some definition of "hard")
+> > > > > to define a new atomic function following
+> > > > >
+> > > > > http://kaskr.github.io/adcomp/_book/AtomicFunctions.html
+> > > > >
+> > > > > The code below *almost* compiles, but gets an error
+> > > > >
+> > > > > error: expected constructor, destructor, or type conversion before ‘(’ token
+> > > > > 34 | VECTORIZE_1t(pt)
+> > > > >
+> > > > > There's probably some tiny syntax error (see
+> > > > > <https://stackoverflow.com/questions/8958044/expected-constructor-destructor-or-type-conversion-before-token>:
+> > > > > "If the compiler can't match the definition's signature to the
+> > > > > declaration's signature it thinks the definition is not a constructor
+> > > > > and then doesn't know how to parse the code and displays this error")
+> > > > >
+> > > > > Maybe someone else can see what's wrong, or can tell me why this
+> > > > > wouldn't work.
+> > > > >
+> > > > > ====
+> > > > > #include <TMB.hpp>
+> > > > >
+> > > > > extern "C" {
+> > > > > double Rf_pt(double q);
+> > > > > double Rf_dt(double x);
+> > > > > }
+> > > > >
+> > > > > TMB_ATOMIC_VECTOR_FUNCTION(
+> > > > > // ATOMIC_NAME
+> > > > > pt
+> > > > > ,
+> > > > > // OUTPUT_DIM
+> > > > > 1,
+> > > > > // ATOMIC_DOUBLE
+> > > > > ty[0] = Rf_pt(tx[0]); // Call the 'double' version
+> > > > > ,
+> > > > > // ATOMIC_REVERSE
+> > > > > Type x = ty[0]; // Function value from forward pass
+> > > > > Type dp = Rf_dt(x); // Derivative (do we need a cast here??)
+> > > > > px[0] = dp * py[0]; // Reverse mode chain rule
+> > > > > )
+> > > > >
+> > > > > template<class Type>
+> > > > > Type pt(Type x){
+> > > > > CppAD::vector<Type> tx(1);
+> > > > > tx[0] = x;
+> > > > > return pt(tx)[0];
+> > > > > }
+> > > > >
+> > > > > // Vectorized version
+> > > > > VECTORIZE_1t(pt)
+> > > > >
+> > > > >
+> > > > > On 2022-07-27 11:05 a.m., Hans Skaug wrote:
+> > > > > > I guess that the reason pt() is not already in TMB is that its numerical
+> > > > > > implementation is a bit tricky.
+> > > > > > However, if seems that there are other ways of getting dst:
+> > > > > >
+> > > > > > https://en.wikipedia.org/wiki/Skewed_generalized_t_distribution#Skewed_t_distribution
+> > > > > >
+> > > > > > Hans
+> > > > > >
+> > > > > > On Wednesday, July 27, 2022 at 4:15:53 PM UTC+2 Jeremy D wrote:
+> > > > > >
+> > > > > > Hi,
+> > > > > >
+> > > > > > Can anyone suggest a way to implement the t-distribution function
+> > > > > > (i.e., stats::pt) in a TMB model?
+> > > > > > This function is needed for the skew t-distribution (sn::dst), which
+> > > > > > is currently not available in TMB.
+> > > > > >
+> > > > > > Thank you!
+> > > > > >
+> > > > > > --
+> > > > > > To post to this group, send email to us...@tmb-project.org. Before
+> > > > > > posting, please check the wiki and issuetracker at
+> > > > > > https://github.com/kaskr/adcomp/ <https://github.com/kaskr/adcomp/>.
+> > > > > > Please try to create a simple repeatable example to go with your
+> > > > > > question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > > > > ---
+> > > > > > You received this message because you are subscribed to the Google
+> > > > > > Groups "TMB Users" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send
+> > > > > > an email to tmb-users+...@googlegroups.com
+> > > > > > <mailto:tmb-users+...@googlegroups.com>.
+> > > > > > To view this discussion on the web visit
+> > > > > > https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com
+> > > > > > <https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > >
+> > > > > --
+> > > > > Dr. Benjamin Bolker
+> > > > > Professor, Mathematics & Statistics and Biology, McMaster University
+> > > > > Director, School of Computational Science and Engineering
+> > > > > (Acting) Graduate chair, Mathematics & Statistics
+
+From ubb9654bcde6fdf5b at groups.google.com  Mon Aug  8 22:31:16 2022
+From: ubb9654bcde6fdf5b at groups.google.com (Seong Hoon Yoon)
+Date: Mon, 08 Aug 2022 22:31:16 +0000
+Subject: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/955IW0ykCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I am using TMB to implement optimization for my model which has random effects.
+
+I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+
+For example, I am currently using something like below to attach the weights
+
+for(int i=0; i<N; i++){
+jnll -=    weight(i) * loglik(i)
+
+But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+
+I highly appreciate any help.
+
+Thank you.
+
+From u02e03030784aa6a7 at groups.google.com  Tue Aug  9 15:49:27 2022
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Tue, 09 Aug 2022 15:49:27 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.uLUkqvPcCgAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/uLUkqvPcCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+
+On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+
+Hans
+
+On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> Hi,
+>
+> I am using TMB to implement optimization for my model which has random effects.
+>
+> I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+>
+> For example, I am currently using something like below to attach the weights
+>
+> for(int i=0; i<N; i++){
+> jnll -=    weight(i) * loglik(i)
+>
+>
+> But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+>
+> I highly appreciate any help.
+>
+> Thank you.
+>
+>
+
+From ubb9654bcde6fdf5b at groups.google.com  Fri Aug 12 01:40:13 2022
+From: ubb9654bcde6fdf5b at groups.google.com (Seong Hoon Yoon)
+Date: Fri, 12 Aug 2022 01:40:13 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.zg6LHvTuBwAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.uLUkqvPcCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com> <6-p_2VNGmyM.uLUkqvPcCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/zg6LHvTuBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Hans,
+
+Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+
+1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+
+2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+
+Best regards,
+Seong Hoon
+
+On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+>
+> On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+>
+> Hans
+>
+> On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > Hi,
+> >
+> > I am using TMB to implement optimization for my model which has random effects.
+> >
+> > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> >
+> > For example, I am currently using something like below to attach the weights
+> >
+> > for(int i=0; i<N; i++){
+> > jnll -=    weight(i) * loglik(i)
+> >
+> >
+> > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> >
+> > I highly appreciate any help.
+> >
+> > Thank you.
+> >
+> >
+
+From u02e03030784aa6a7 at groups.google.com  Fri Aug 12 09:49:43 2022
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Fri, 12 Aug 2022 09:49:43 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.c8MDaaoJCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/c8MDaaoJCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+In order to clarify my idea I have written an example (see attahced).
+nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+
+I have not done any serious testing of the code, so it should be taken as an "idea".
+
+Hans
+
+On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> Dear Hans,
+>
+> Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+>
+> 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+>
+> 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+>
+> Best regards,
+> Seong Hoon
+>
+> On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> >
+> > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> >
+> > Hans
+> >
+> > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > Hi,
+> > >
+> > > I am using TMB to implement optimization for my model which has random effects.
+> > >
+> > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > >
+> > > For example, I am currently using something like below to attach the weights
+> > >
+> > > for(int i=0; i<N; i++){
+> > > jnll -=    weight(i) * loglik(i)
+> > >
+> > >
+> > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > >
+> > > I highly appreciate any help.
+> > >
+> > > Thank you.
+> > >
+> > >
+
+From ubb9654bcde6fdf5b at groups.google.com  Mon Aug 15 22:17:48 2022
+From: ubb9654bcde6fdf5b at groups.google.com (S Yoon)
+Date: Mon, 15 Aug 2022 22:17:48 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.uWRjiVgcGQAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.c8MDaaoJCAAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com> <6-p_2VNGmyM.c8MDaaoJCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/uWRjiVgcGQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you very much,  that helped a lot. I now have a better understanding of how TMB works.
+
+On Friday, August 12, 2022 at 9:49:43 PM UTC+12 Hans Skaug wrote:
+> In order to clarify my idea I have written an example (see attahced).
+> nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+>
+> I have not done any serious testing of the code, so it should be taken as an "idea".
+>
+> Hans
+> On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> > Dear Hans,
+> >
+> > Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+> >
+> > 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> > However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> > So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+> >
+> > 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+> >
+> > Best regards,
+> > Seong Hoon
+> >
+> > On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> > >
+> > > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> > >
+> > > Hans
+> > >
+> > > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > Hi,
+> > > >
+> > > > I am using TMB to implement optimization for my model which has random effects.
+> > > >
+> > > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > > >
+> > > > For example, I am currently using something like below to attach the weights
+> > > >
+> > > > for(int i=0; i<N; i++){
+> > > > jnll -=    weight(i) * loglik(i)
+> > > >
+> > > >
+> > > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > > >
+> > > > I highly appreciate any help.
+> > > >
+> > > > Thank you.
+> > > >
+> > > >
+
+From u4453e5ef4c1cb06e at groups.google.com  Thu Aug 18 16:30:55 2022
+From: u4453e5ef4c1cb06e at groups.google.com (Cole Monnahan - NOAA Federal)
+Date: Thu, 18 Aug 2022 16:30:55 +0000
+Subject: Re: Generated quantities with tmbstan (from the TMB object)
+Message-ID: <d7WYOM6P3q8.8yOwHP05DQAJ@tmb-users.groups.google.com>
+In-Reply-To: <d7WYOM6P3q8.gsmuI8VyDAAJ@tmb-users.groups.google.com>
+References: <d7WYOM6P3q8.gsmuI8VyDAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/d7WYOM6P3q8/m/8yOwHP05DQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think what you want to do is simulate a random variable given the uncertainty in the parameter estimates, correct? So like posterior predictive data? In that case you can modify the example code you linked and do
+
+`r <- obj$simulate(post[i,-ncol(post)])`
+
+Then extract whatever you need from `r`. The posterior contains uncertainty in the parameters, and the simulator will add observation error. That's the equivalent of Stan's approach.
+
+-Cole
+
+On Wednesday, July 27, 2022 at 2:07:27 PM UTC-7 jcavieresg wrote:
+> Hi!
+>
+> I have a "tmbstan" model and I would like to obtain generated quantities but for a random variable and not for the parameters (https://github.com/kaskr/tmbstan/blob/master/README.md)
+>
+> I simulated a random variable with normal distribution using the TMB function "SIMULATE()" but I don't know if I could do something similar like the Stan expression: "generated quantities{}" in the template of TMB.
+>
+> I will be grateful if someone can help me.
+> Best wishes,
+>
+>
+>
+>
+
+From ubb9654bcde6fdf5b at groups.google.com  Fri Aug 19 09:42:37 2022
+From: ubb9654bcde6fdf5b at groups.google.com (S Yoon)
+Date: Fri, 19 Aug 2022 09:42:37 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.6cVacdjDFAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.uWRjiVgcGQAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com> <6-p_2VNGmyM.uWRjiVgcGQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/6cVacdjDFAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Hans,
+
+I have two more questions.  I have tried your method and it works it seems to  take a lot of time.
+
+1. I am wondering whether it makes sense to  implement Laplace approximation in C++ manually  and  attach the weights inside C++. I have two random effect vectors, so I will need to approximate two integrals per subject. (e.g  apply Laplace approximation twice per subject)  So for N=500,  I will need to apply Laplace approximation for 1000 integrals.
+
+ Could this be done using a manual Laplace approximation with a for loop inside C++,   using something like https://kaskr.github.io/adcomp/laplace_8cpp-example.html ?
+
+2. Most importantly,  I need to extract individual gradient functions and Hessians after Laplace approximation, for variance estimation.  Will there be a way to obtain these in C++ if the method above is successful?
+
+Best regards,
+Seong Hoon
+
+On Tuesday, August 16, 2022 at 10:17:48 AM UTC+12 S Yoon wrote:
+> Thank you very much,  that helped a lot. I now have a better understanding of how TMB works.
+>
+> On Friday, August 12, 2022 at 9:49:43 PM UTC+12 Hans Skaug wrote:
+> > In order to clarify my idea I have written an example (see attahced).
+> > nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+> >
+> > I have not done any serious testing of the code, so it should be taken as an "idea".
+> >
+> > Hans
+> > On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> > > Dear Hans,
+> > >
+> > > Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+> > >
+> > > 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> > > However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> > > So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+> > >
+> > > 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+> > >
+> > > Best regards,
+> > > Seong Hoon
+> > >
+> > > On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > > > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > > > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> > > >
+> > > > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > > > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > > > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> > > >
+> > > > Hans
+> > > >
+> > > > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > Hi,
+> > > > >
+> > > > > I am using TMB to implement optimization for my model which has random effects.
+> > > > >
+> > > > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > > > >
+> > > > > For example, I am currently using something like below to attach the weights
+> > > > >
+> > > > > for(int i=0; i<N; i++){
+> > > > > jnll -=    weight(i) * loglik(i)
+> > > > >
+> > > > >
+> > > > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > > > >
+> > > > > I highly appreciate any help.
+> > > > >
+> > > > > Thank you.
+> > > > >
+> > > > >
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Aug 19 10:30:36 2022
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 19 Aug 2022 10:30:36 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.GWNzlnbGFAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/GWNzlnbGFAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Running Laplace on the C++ side has become significantly simpler with recent versions of TMB. The example https://kaskr.github.io/adcomp/TMBad_2spa_gauss_8cpp-example.html is easily modified to do the same as Hans' example - see attached.
+
+On Friday, August 19, 2022 at 11:42:37 AM UTC+2 ysh19...@gmail.com wrote:
+> Dear Hans,
+>
+> I have two more questions.  I have tried your method and it works it seems to  take a lot of time.
+>
+> 1. I am wondering whether it makes sense to  implement Laplace approximation in C++ manually  and  attach the weights inside C++. I have two random effect vectors, so I will need to approximate two integrals per subject. (e.g  apply Laplace approximation twice per subject)  So for N=500,  I will need to apply Laplace approximation for 1000 integrals.
+>
+>  Could this be done using a manual Laplace approximation with a for loop inside C++,   using something like https://kaskr.github.io/adcomp/laplace_8cpp-example.html ?
+>
+>
+> 2. Most importantly,  I need to extract individual gradient functions and Hessians after Laplace approximation, for variance estimation.  Will there be a way to obtain these in C++ if the method above is successful?
+>
+> Best regards,
+> Seong Hoon
+>
+> On Tuesday, August 16, 2022 at 10:17:48 AM UTC+12 S Yoon wrote:
+> > Thank you very much,  that helped a lot. I now have a better understanding of how TMB works.
+> >
+> > On Friday, August 12, 2022 at 9:49:43 PM UTC+12 Hans Skaug wrote:
+> > > In order to clarify my idea I have written an example (see attahced).
+> > > nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+> > >
+> > > I have not done any serious testing of the code, so it should be taken as an "idea".
+> > >
+> > > Hans
+> > > On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > Dear Hans,
+> > > >
+> > > > Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+> > > >
+> > > > 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> > > > However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> > > > So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+> > > >
+> > > > 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+> > > >
+> > > > Best regards,
+> > > > Seong Hoon
+> > > >
+> > > > On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > > > > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > > > > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> > > > >
+> > > > > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > > > > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > > > > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> > > > >
+> > > > > Hans
+> > > > >
+> > > > > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > Hi,
+> > > > > >
+> > > > > > I am using TMB to implement optimization for my model which has random effects.
+> > > > > >
+> > > > > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > > > > >
+> > > > > > For example, I am currently using something like below to attach the weights
+> > > > > >
+> > > > > > for(int i=0; i<N; i++){
+> > > > > > jnll -=    weight(i) * loglik(i)
+> > > > > >
+> > > > > >
+> > > > > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > > > > >
+> > > > > > I highly appreciate any help.
+> > > > > >
+> > > > > > Thank you.
+> > > > > >
+> > > > > >
+
+From ubb9654bcde6fdf5b at groups.google.com  Fri Aug 19 10:43:54 2022
+From: ubb9654bcde6fdf5b at groups.google.com (S Yoon)
+Date: Fri, 19 Aug 2022 10:43:54 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.0tbNfTDHFAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/0tbNfTDHFAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Kasper,
+
+Thank you very much for your help. I see that Laplace implementation in C++ is simpler than expected. I am still wondering whether there is a way to extract individual gradient and Hessian functions (eg first and second derivatives of individual log-likelihoods) after manual Laplace approximation in C++, using the attached example.
+I very much appreciate your help.
+
+On Friday, August 19, 2022 at 10:30:36 PM UTC+12 kasper.k...@gmail.com wrote:
+> Running Laplace on the C++ side has become significantly simpler with recent versions of TMB. The example https://kaskr.github.io/adcomp/TMBad_2spa_gauss_8cpp-example.html is easily modified to do the same as Hans' example - see attached.
+>
+>
+> On Friday, August 19, 2022 at 11:42:37 AM UTC+2 ysh19...@gmail.com wrote:
+> > Dear Hans,
+> >
+> > I have two more questions.  I have tried your method and it works it seems to  take a lot of time.
+> >
+> > 1. I am wondering whether it makes sense to  implement Laplace approximation in C++ manually  and  attach the weights inside C++. I have two random effect vectors, so I will need to approximate two integrals per subject. (e.g  apply Laplace approximation twice per subject)  So for N=500,  I will need to apply Laplace approximation for 1000 integrals.
+> >
+> >  Could this be done using a manual Laplace approximation with a for loop inside C++,   using something like https://kaskr.github.io/adcomp/laplace_8cpp-example.html ?
+> >
+> >
+> > 2. Most importantly,  I need to extract individual gradient functions and Hessians after Laplace approximation, for variance estimation.  Will there be a way to obtain these in C++ if the method above is successful?
+> >
+> > Best regards,
+> > Seong Hoon
+> >
+> > On Tuesday, August 16, 2022 at 10:17:48 AM UTC+12 S Yoon wrote:
+> > > Thank you very much,  that helped a lot. I now have a better understanding of how TMB works.
+> > >
+> > > On Friday, August 12, 2022 at 9:49:43 PM UTC+12 Hans Skaug wrote:
+> > > > In order to clarify my idea I have written an example (see attahced).
+> > > > nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+> > > >
+> > > > I have not done any serious testing of the code, so it should be taken as an "idea".
+> > > >
+> > > > Hans
+> > > > On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > Dear Hans,
+> > > > >
+> > > > > Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+> > > > >
+> > > > > 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> > > > > However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> > > > > So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+> > > > >
+> > > > > 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+> > > > >
+> > > > > Best regards,
+> > > > > Seong Hoon
+> > > > >
+> > > > > On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > > > > > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > > > > > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> > > > > >
+> > > > > > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > > > > > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > > > > > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> > > > > >
+> > > > > > Hans
+> > > > > >
+> > > > > > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > > Hi,
+> > > > > > >
+> > > > > > > I am using TMB to implement optimization for my model which has random effects.
+> > > > > > >
+> > > > > > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > > > > > >
+> > > > > > > For example, I am currently using something like below to attach the weights
+> > > > > > >
+> > > > > > > for(int i=0; i<N; i++){
+> > > > > > > jnll -=    weight(i) * loglik(i)
+> > > > > > >
+> > > > > > >
+> > > > > > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > > > > > >
+> > > > > > > I highly appreciate any help.
+> > > > > > >
+> > > > > > > Thank you.
+> > > > > > >
+> > > > > > >
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Aug 19 11:31:41 2022
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 19 Aug 2022 11:31:41 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM._ljy9svJFAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/_ljy9svJFAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+As you know (from the example you linked to) there's a namespace 'autodiff' that can be used on C++ side?
+
+In short, you could modify my example by adding a struct like this:
+
+struct model_evaluator {
+  model obj;
+  ad operator()(vector<ad> sigma) {
+    obj.sigma = sigma;
+    return obj.eval_nldens<ad>();
+  }
+};
+
+And use the struct inside the objective function like this:
+
+    model_evaluator F = {obj};
+    vector<Type> g = autodiff::gradient(F, sigma);
+    matrix<Type> h = autodiff::hessian(F, sigma);
+
+Of course, this adds overhead, so one should probably do it conditionally on some flag... And perhaps use the fact that the AD grad and hessian tapes are almost identical (no need to repeat 1000 times)... - I'll leave that to you.
+
+On Friday, August 19, 2022 at 12:43:54 PM UTC+2 ysh19...@gmail.com wrote:
+> Dear Kasper,
+>
+> Thank you very much for your help. I see that Laplace implementation in C++ is simpler than expected. I am still wondering whether there is a way to extract individual gradient and Hessian functions (eg first and second derivatives of individual log-likelihoods) after manual Laplace approximation in C++, using the attached example.
+> I very much appreciate your help.
+>
+> On Friday, August 19, 2022 at 10:30:36 PM UTC+12 kasper.k...@gmail.com wrote:
+> > Running Laplace on the C++ side has become significantly simpler with recent versions of TMB. The example https://kaskr.github.io/adcomp/TMBad_2spa_gauss_8cpp-example.html is easily modified to do the same as Hans' example - see attached.
+> >
+> >
+> > On Friday, August 19, 2022 at 11:42:37 AM UTC+2 ysh19...@gmail.com wrote:
+> > > Dear Hans,
+> > >
+> > > I have two more questions.  I have tried your method and it works it seems to  take a lot of time.
+> > >
+> > > 1. I am wondering whether it makes sense to  implement Laplace approximation in C++ manually  and  attach the weights inside C++. I have two random effect vectors, so I will need to approximate two integrals per subject. (e.g  apply Laplace approximation twice per subject)  So for N=500,  I will need to apply Laplace approximation for 1000 integrals.
+> > >
+> > >  Could this be done using a manual Laplace approximation with a for loop inside C++,   using something like https://kaskr.github.io/adcomp/laplace_8cpp-example.html ?
+> > >
+> > >
+> > > 2. Most importantly,  I need to extract individual gradient functions and Hessians after Laplace approximation, for variance estimation.  Will there be a way to obtain these in C++ if the method above is successful?
+> > >
+> > > Best regards,
+> > > Seong Hoon
+> > >
+> > > On Tuesday, August 16, 2022 at 10:17:48 AM UTC+12 S Yoon wrote:
+> > > > Thank you very much,  that helped a lot. I now have a better understanding of how TMB works.
+> > > >
+> > > > On Friday, August 12, 2022 at 9:49:43 PM UTC+12 Hans Skaug wrote:
+> > > > > In order to clarify my idea I have written an example (see attahced).
+> > > > > nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+> > > > >
+> > > > > I have not done any serious testing of the code, so it should be taken as an "idea".
+> > > > >
+> > > > > Hans
+> > > > > On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > Dear Hans,
+> > > > > >
+> > > > > > Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+> > > > > >
+> > > > > > 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> > > > > > However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> > > > > > So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+> > > > > >
+> > > > > > 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+> > > > > >
+> > > > > > Best regards,
+> > > > > > Seong Hoon
+> > > > > >
+> > > > > > On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > > > > > > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > > > > > > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> > > > > > >
+> > > > > > > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > > > > > > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > > > > > > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> > > > > > >
+> > > > > > > Hans
+> > > > > > >
+> > > > > > > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > > > Hi,
+> > > > > > > >
+> > > > > > > > I am using TMB to implement optimization for my model which has random effects.
+> > > > > > > >
+> > > > > > > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > > > > > > >
+> > > > > > > > For example, I am currently using something like below to attach the weights
+> > > > > > > >
+> > > > > > > > for(int i=0; i<N; i++){
+> > > > > > > > jnll -=    weight(i) * loglik(i)
+> > > > > > > >
+> > > > > > > >
+> > > > > > > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > > > > > > >
+> > > > > > > > I highly appreciate any help.
+> > > > > > > >
+> > > > > > > > Thank you.
+> > > > > > > >
+> > > > > > > >
+
+From ubb9654bcde6fdf5b at groups.google.com  Fri Aug 19 11:45:35 2022
+From: ubb9654bcde6fdf5b at groups.google.com (S Yoon)
+Date: Fri, 19 Aug 2022 11:45:35 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.ItfVJ47KFAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/ItfVJ47KFAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Kasper,
+Thank you very much for your assistance.  May I ask one last question?
+I am dealing with two random effect vectors which means Laplace approximation should be done two times for each individual.
+In the example C++ code you attached,  I am wondering how the below part of the code should be changed to allow two random effect vectors.
+
+For example, if I want to add another random effect vector called "u2", would it be sufficient to just add another vector and state its distribution?  My change to the code is shown in bold.
+
+// See 'spa_gauss.cpp'
+typedef TMBad::ad_aug ad;
+struct model {
+ ad x; // Data
+ vector<ad> sigma; // Parameters
+ // joint nll as function of random effects
+ ad operator()(vector<ad> u) (vector<ad> u2) {
+ ad nll = -dnorm(u,ad(0),ad(1),true).sum();
+ ad nll = -dnorm(u2,ad(0),ad(1),true).sum();
+ nll -= dnorm(x,sum(u),sigma(0),true);
+ return nll;
+
+ }
+
+On Friday, August 19, 2022 at 11:31:41 PM UTC+12 kasper.k...@gmail.com wrote:
+> As you know (from the example you linked to) there's a namespace 'autodiff' that can be used on C++ side?
+>
+> In short, you could modify my example by adding a struct like this:
+>
+> struct model_evaluator {
+>   model obj;
+>   ad operator()(vector<ad> sigma) {
+>     obj.sigma = sigma;
+>     return obj.eval_nldens<ad>();
+>   }
+> };
+>
+> And use the struct inside the objective function like this:
+>
+>     model_evaluator F = {obj};
+>     vector<Type> g = autodiff::gradient(F, sigma);
+>     matrix<Type> h = autodiff::hessian(F, sigma);
+>
+> Of course, this adds overhead, so one should probably do it conditionally on some flag... And perhaps use the fact that the AD grad and hessian tapes are almost identical (no need to repeat 1000 times)... - I'll leave that to you.
+>
+>
+>
+> On Friday, August 19, 2022 at 12:43:54 PM UTC+2 ysh19...@gmail.com wrote:
+> > Dear Kasper,
+> >
+> > Thank you very much for your help. I see that Laplace implementation in C++ is simpler than expected. I am still wondering whether there is a way to extract individual gradient and Hessian functions (eg first and second derivatives of individual log-likelihoods) after manual Laplace approximation in C++, using the attached example.
+> > I very much appreciate your help.
+> >
+> > On Friday, August 19, 2022 at 10:30:36 PM UTC+12 kasper.k...@gmail.com wrote:
+> > > Running Laplace on the C++ side has become significantly simpler with recent versions of TMB. The example https://kaskr.github.io/adcomp/TMBad_2spa_gauss_8cpp-example.html is easily modified to do the same as Hans' example - see attached.
+> > >
+> > >
+> > > On Friday, August 19, 2022 at 11:42:37 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > Dear Hans,
+> > > >
+> > > > I have two more questions.  I have tried your method and it works it seems to  take a lot of time.
+> > > >
+> > > > 1. I am wondering whether it makes sense to  implement Laplace approximation in C++ manually  and  attach the weights inside C++. I have two random effect vectors, so I will need to approximate two integrals per subject. (e.g  apply Laplace approximation twice per subject)  So for N=500,  I will need to apply Laplace approximation for 1000 integrals.
+> > > >
+> > > >  Could this be done using a manual Laplace approximation with a for loop inside C++,   using something like https://kaskr.github.io/adcomp/laplace_8cpp-example.html ?
+> > > >
+> > > >
+> > > > 2. Most importantly,  I need to extract individual gradient functions and Hessians after Laplace approximation, for variance estimation.  Will there be a way to obtain these in C++ if the method above is successful?
+> > > >
+> > > > Best regards,
+> > > > Seong Hoon
+> > > >
+> > > > On Tuesday, August 16, 2022 at 10:17:48 AM UTC+12 S Yoon wrote:
+> > > > > Thank you very much,  that helped a lot. I now have a better understanding of how TMB works.
+> > > > >
+> > > > > On Friday, August 12, 2022 at 9:49:43 PM UTC+12 Hans Skaug wrote:
+> > > > > > In order to clarify my idea I have written an example (see attahced).
+> > > > > > nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+> > > > > >
+> > > > > > I have not done any serious testing of the code, so it should be taken as an "idea".
+> > > > > >
+> > > > > > Hans
+> > > > > > On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > > Dear Hans,
+> > > > > > >
+> > > > > > > Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+> > > > > > >
+> > > > > > > 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> > > > > > > However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> > > > > > > So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+> > > > > > >
+> > > > > > > 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+> > > > > > >
+> > > > > > > Best regards,
+> > > > > > > Seong Hoon
+> > > > > > >
+> > > > > > > On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > > > > > > > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > > > > > > > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> > > > > > > >
+> > > > > > > > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > > > > > > > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > > > > > > > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> > > > > > > >
+> > > > > > > > Hans
+> > > > > > > >
+> > > > > > > > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > > > > Hi,
+> > > > > > > > >
+> > > > > > > > > I am using TMB to implement optimization for my model which has random effects.
+> > > > > > > > >
+> > > > > > > > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > > > > > > > >
+> > > > > > > > > For example, I am currently using something like below to attach the weights
+> > > > > > > > >
+> > > > > > > > > for(int i=0; i<N; i++){
+> > > > > > > > > jnll -=    weight(i) * loglik(i)
+> > > > > > > > >
+> > > > > > > > >
+> > > > > > > > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > > > > > > > >
+> > > > > > > > > I highly appreciate any help.
+> > > > > > > > >
+> > > > > > > > > Thank you.
+> > > > > > > > >
+> > > > > > > > >
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Aug 19 11:52:35 2022
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 19 Aug 2022 11:52:35 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.KJ4GDfDKFAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/KJ4GDfDKFAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Unfortunately that wouldn't work. The Laplace interface expects a functor with a single vector input. So, you would have to pass one vector, then split it manually within the function.
+
+On Friday, August 19, 2022 at 1:45:35 PM UTC+2 ysh19...@gmail.com wrote:
+> Dear Kasper,
+> Thank you very much for your assistance.  May I ask one last question?
+> I am dealing with two random effect vectors which means Laplace approximation should be done two times for each individual.
+> In the example C++ code you attached,  I am wondering how the below part of the code should be changed to allow two random effect vectors.
+>
+> For example, if I want to add another random effect vector called "u2", would it be sufficient to just add another vector and state its distribution?  My change to the code is shown in bold.
+>
+>
+> // See 'spa_gauss.cpp'
+> typedef TMBad::ad_aug ad;
+> struct model {
+>  ad x; // Data
+>  vector<ad> sigma; // Parameters
+>  // joint nll as function of random effects
+>  ad operator()(vector<ad> u) (vector<ad> u2) {
+>  ad nll = -dnorm(u,ad(0),ad(1),true).sum();
+>  ad nll = -dnorm(u2,ad(0),ad(1),true).sum();
+>  nll -= dnorm(x,sum(u),sigma(0),true);
+>  return nll;
+>  }
+>
+> On Friday, August 19, 2022 at 11:31:41 PM UTC+12 kasper.k...@gmail.com wrote:
+> > As you know (from the example you linked to) there's a namespace 'autodiff' that can be used on C++ side?
+> >
+> > In short, you could modify my example by adding a struct like this:
+> >
+> > struct model_evaluator {
+> >   model obj;
+> >   ad operator()(vector<ad> sigma) {
+> >     obj.sigma = sigma;
+> >     return obj.eval_nldens<ad>();
+> >   }
+> > };
+> >
+> > And use the struct inside the objective function like this:
+> >
+> >     model_evaluator F = {obj};
+> >     vector<Type> g = autodiff::gradient(F, sigma);
+> >     matrix<Type> h = autodiff::hessian(F, sigma);
+> >
+> > Of course, this adds overhead, so one should probably do it conditionally on some flag... And perhaps use the fact that the AD grad and hessian tapes are almost identical (no need to repeat 1000 times)... - I'll leave that to you.
+> >
+> >
+> >
+> > On Friday, August 19, 2022 at 12:43:54 PM UTC+2 ysh19...@gmail.com wrote:
+> > > Dear Kasper,
+> > >
+> > > Thank you very much for your help. I see that Laplace implementation in C++ is simpler than expected. I am still wondering whether there is a way to extract individual gradient and Hessian functions (eg first and second derivatives of individual log-likelihoods) after manual Laplace approximation in C++, using the attached example.
+> > > I very much appreciate your help.
+> > >
+> > > On Friday, August 19, 2022 at 10:30:36 PM UTC+12 kasper.k...@gmail.com wrote:
+> > > > Running Laplace on the C++ side has become significantly simpler with recent versions of TMB. The example https://kaskr.github.io/adcomp/TMBad_2spa_gauss_8cpp-example.html is easily modified to do the same as Hans' example - see attached.
+> > > >
+> > > >
+> > > > On Friday, August 19, 2022 at 11:42:37 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > Dear Hans,
+> > > > >
+> > > > > I have two more questions.  I have tried your method and it works it seems to  take a lot of time.
+> > > > >
+> > > > > 1. I am wondering whether it makes sense to  implement Laplace approximation in C++ manually  and  attach the weights inside C++. I have two random effect vectors, so I will need to approximate two integrals per subject. (e.g  apply Laplace approximation twice per subject)  So for N=500,  I will need to apply Laplace approximation for 1000 integrals.
+> > > > >
+> > > > >  Could this be done using a manual Laplace approximation with a for loop inside C++,   using something like https://kaskr.github.io/adcomp/laplace_8cpp-example.html ?
+> > > > >
+> > > > >
+> > > > > 2. Most importantly,  I need to extract individual gradient functions and Hessians after Laplace approximation, for variance estimation.  Will there be a way to obtain these in C++ if the method above is successful?
+> > > > >
+> > > > > Best regards,
+> > > > > Seong Hoon
+> > > > >
+> > > > > On Tuesday, August 16, 2022 at 10:17:48 AM UTC+12 S Yoon wrote:
+> > > > > > Thank you very much,  that helped a lot. I now have a better understanding of how TMB works.
+> > > > > >
+> > > > > > On Friday, August 12, 2022 at 9:49:43 PM UTC+12 Hans Skaug wrote:
+> > > > > > > In order to clarify my idea I have written an example (see attahced).
+> > > > > > > nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+> > > > > > >
+> > > > > > > I have not done any serious testing of the code, so it should be taken as an "idea".
+> > > > > > >
+> > > > > > > Hans
+> > > > > > > On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > > > Dear Hans,
+> > > > > > > >
+> > > > > > > > Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+> > > > > > > >
+> > > > > > > > 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> > > > > > > > However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> > > > > > > > So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+> > > > > > > >
+> > > > > > > > 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+> > > > > > > >
+> > > > > > > > Best regards,
+> > > > > > > > Seong Hoon
+> > > > > > > >
+> > > > > > > > On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > > > > > > > > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > > > > > > > > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> > > > > > > > >
+> > > > > > > > > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > > > > > > > > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > > > > > > > > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> > > > > > > > >
+> > > > > > > > > Hans
+> > > > > > > > >
+> > > > > > > > > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > > > > > Hi,
+> > > > > > > > > >
+> > > > > > > > > > I am using TMB to implement optimization for my model which has random effects.
+> > > > > > > > > >
+> > > > > > > > > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > > > > > > > > >
+> > > > > > > > > > For example, I am currently using something like below to attach the weights
+> > > > > > > > > >
+> > > > > > > > > > for(int i=0; i<N; i++){
+> > > > > > > > > > jnll -=    weight(i) * loglik(i)
+> > > > > > > > > >
+> > > > > > > > > >
+> > > > > > > > > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > > > > > > > > >
+> > > > > > > > > > I highly appreciate any help.
+> > > > > > > > > >
+> > > > > > > > > > Thank you.
+> > > > > > > > > >
+> > > > > > > > > >
+
+From ubb9654bcde6fdf5b at groups.google.com  Fri Aug 19 12:09:44 2022
+From: ubb9654bcde6fdf5b at groups.google.com (S Yoon)
+Date: Fri, 19 Aug 2022 12:09:44 +0000
+Subject: Re: Implementing weighted log-likelihoods
+Message-ID: <6-p_2VNGmyM.WU5Dl9_LFAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+References: <6-p_2VNGmyM.955IW0ykCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6-p_2VNGmyM/m/WU5Dl9_LFAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you very much. I appreciate it. I think I now have much better understanding how it works.
+
+To clarify my understanding, so If I pass a single vector of say, length 100, where the 1st to 50th element is the first random effect vector and 51st to 100th is the second one,
+would something like following work?
+
+// See 'spa_gauss.cpp'
+typedef TMBad::ad_aug ad;
+struct model {
+ ad x; // Data
+ vector<ad> sigma; // Parameters
+ // joint nll as function of random effects
+
+ ad operator()(vector<ad> u) {
+
+vector<ad> u1 = u(0:49)
+vector<ad> u2 = u(50:99)
+
+ ad nll = -dnorm(u1,ad(0),ad(1),true).sum();
+
+ ad nll = -dnorm(u2,ad(0),ad(1),true).sum();
+ nll -= dnorm(x,sum(u),sigma(0),true);
+ return nll;
+
+On Friday, August 19, 2022 at 11:52:35 PM UTC+12 kasper.k...@gmail.com wrote:
+> Unfortunately that wouldn't work. The Laplace interface expects a functor with a single vector input. So, you would have to pass one vector, then split it manually within the function.
+>
+>
+> On Friday, August 19, 2022 at 1:45:35 PM UTC+2 ysh19...@gmail.com wrote:
+> > Dear Kasper,
+> > Thank you very much for your assistance.  May I ask one last question?
+> > I am dealing with two random effect vectors which means Laplace approximation should be done two times for each individual.
+> > In the example C++ code you attached,  I am wondering how the below part of the code should be changed to allow two random effect vectors.
+> >
+> > For example, if I want to add another random effect vector called "u2", would it be sufficient to just add another vector and state its distribution?  My change to the code is shown in bold.
+> >
+> >
+> > // See 'spa_gauss.cpp'
+> > typedef TMBad::ad_aug ad;
+> > struct model {
+> >  ad x; // Data
+> >  vector<ad> sigma; // Parameters
+> >  // joint nll as function of random effects
+> >  ad operator()(vector<ad> u) (vector<ad> u2) {
+> >  ad nll = -dnorm(u,ad(0),ad(1),true).sum();
+> >  ad nll = -dnorm(u2,ad(0),ad(1),true).sum();
+> >  nll -= dnorm(x,sum(u),sigma(0),true);
+> >  return nll;
+> >  }
+> >
+> > On Friday, August 19, 2022 at 11:31:41 PM UTC+12 kasper.k...@gmail.com wrote:
+> > > As you know (from the example you linked to) there's a namespace 'autodiff' that can be used on C++ side?
+> > >
+> > > In short, you could modify my example by adding a struct like this:
+> > >
+> > > struct model_evaluator {
+> > >   model obj;
+> > >   ad operator()(vector<ad> sigma) {
+> > >     obj.sigma = sigma;
+> > >     return obj.eval_nldens<ad>();
+> > >   }
+> > > };
+> > >
+> > > And use the struct inside the objective function like this:
+> > >
+> > >     model_evaluator F = {obj};
+> > >     vector<Type> g = autodiff::gradient(F, sigma);
+> > >     matrix<Type> h = autodiff::hessian(F, sigma);
+> > >
+> > > Of course, this adds overhead, so one should probably do it conditionally on some flag... And perhaps use the fact that the AD grad and hessian tapes are almost identical (no need to repeat 1000 times)... - I'll leave that to you.
+> > >
+> > >
+> > >
+> > > On Friday, August 19, 2022 at 12:43:54 PM UTC+2 ysh19...@gmail.com wrote:
+> > > > Dear Kasper,
+> > > >
+> > > > Thank you very much for your help. I see that Laplace implementation in C++ is simpler than expected. I am still wondering whether there is a way to extract individual gradient and Hessian functions (eg first and second derivatives of individual log-likelihoods) after manual Laplace approximation in C++, using the attached example.
+> > > > I very much appreciate your help.
+> > > >
+> > > > On Friday, August 19, 2022 at 10:30:36 PM UTC+12 kasper.k...@gmail.com wrote:
+> > > > > Running Laplace on the C++ side has become significantly simpler with recent versions of TMB. The example https://kaskr.github.io/adcomp/TMBad_2spa_gauss_8cpp-example.html is easily modified to do the same as Hans' example - see attached.
+> > > > >
+> > > > >
+> > > > > On Friday, August 19, 2022 at 11:42:37 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > Dear Hans,
+> > > > > >
+> > > > > > I have two more questions.  I have tried your method and it works it seems to  take a lot of time.
+> > > > > >
+> > > > > > 1. I am wondering whether it makes sense to  implement Laplace approximation in C++ manually  and  attach the weights inside C++. I have two random effect vectors, so I will need to approximate two integrals per subject. (e.g  apply Laplace approximation twice per subject)  So for N=500,  I will need to apply Laplace approximation for 1000 integrals.
+> > > > > >
+> > > > > >  Could this be done using a manual Laplace approximation with a for loop inside C++,   using something like https://kaskr.github.io/adcomp/laplace_8cpp-example.html ?
+> > > > > >
+> > > > > >
+> > > > > > 2. Most importantly,  I need to extract individual gradient functions and Hessians after Laplace approximation, for variance estimation.  Will there be a way to obtain these in C++ if the method above is successful?
+> > > > > >
+> > > > > > Best regards,
+> > > > > > Seong Hoon
+> > > > > >
+> > > > > > On Tuesday, August 16, 2022 at 10:17:48 AM UTC+12 S Yoon wrote:
+> > > > > > > Thank you very much,  that helped a lot. I now have a better understanding of how TMB works.
+> > > > > > >
+> > > > > > > On Friday, August 12, 2022 at 9:49:43 PM UTC+12 Hans Skaug wrote:
+> > > > > > > > In order to clarify my idea I have written an example (see attahced).
+> > > > > > > > nll_weighted() is now a weighted nll that can be fed to an R function minimizer.
+> > > > > > > >
+> > > > > > > > I have not done any serious testing of the code, so it should be taken as an "idea".
+> > > > > > > >
+> > > > > > > > Hans
+> > > > > > > > On Friday, August 12, 2022 at 3:40:13 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > > > > Dear Hans,
+> > > > > > > > >
+> > > > > > > > > Thanks for your reply.  I have some additional questions regarding the using TMB for my model.
+> > > > > > > > >
+> > > > > > > > > 1) I  have two random effects and thus in my model, there are two integrals to approximate for 'each' observation.
+> > > > > > > > > However, when I specify the joint likelihood and the distributions of random effect vectors in C++ it looks like the integral approximation is done for the joint likelihood rather than individual likelihood.
+> > > > > > > > > So in order to implement integral approximation per observation,  I need to call C++ per observation. Is this correct?
+> > > > > > > > >
+> > > > > > > > > 2) Is it possible in R to collect log-likelihoods separately by calling C++ per observation (Using multiple MakADFun function or using DATA_UPDATE),  sum them, and optimize it using optim function?
+> > > > > > > > >
+> > > > > > > > > Best regards,
+> > > > > > > > > Seong Hoon
+> > > > > > > > >
+> > > > > > > > > On Wednesday, August 10, 2022 at 3:49:27 AM UTC+12 Hans Skaug wrote:
+> > > > > > > > > > Your code, if put in the .cpp file, will apply the weights "before" the Laplace approximation.
+> > > > > > > > > > I do not think it is easy to apply the weights "after" the Laplace approximation in TMB.
+> > > > > > > > > >
+> > > > > > > > > > On ad-hoc, and computationally inefficient, way is to call C++ once for each unique data value,
+> > > > > > > > > > and the collect weight(i) * loglik(i) in R. To avoid overhead related to calling MakeADFun multiple times
+> > > > > > > > > > I imagine you need to use DATA_UPDATE. This approach may not be applicable to any situation.
+> > > > > > > > > >
+> > > > > > > > > > Hans
+> > > > > > > > > >
+> > > > > > > > > > On Tuesday, August 9, 2022 at 12:31:16 AM UTC+2 ysh19...@gmail.com wrote:
+> > > > > > > > > > > Hi,
+> > > > > > > > > > >
+> > > > > > > > > > > I am using TMB to implement optimization for my model which has random effects.
+> > > > > > > > > > >
+> > > > > > > > > > > I need to attach the sampling weights to the individual log-likelihood after the log-likelihood has integrated out the random effects.
+> > > > > > > > > > >
+> > > > > > > > > > > For example, I am currently using something like below to attach the weights
+> > > > > > > > > > >
+> > > > > > > > > > > for(int i=0; i<N; i++){
+> > > > > > > > > > > jnll -=    weight(i) * loglik(i)
+> > > > > > > > > > >
+> > > > > > > > > > >
+> > > > > > > > > > > But I am wondering whether that is attaching the weights after integral approximation or before integral approximation. Random effects are specified in MakeADFun function in R.  If latter is the case,  how should I change my code so that it is attached after solving the integrals?
+> > > > > > > > > > >
+> > > > > > > > > > > I highly appreciate any help.
+> > > > > > > > > > >
+> > > > > > > > > > > Thank you.
+> > > > > > > > > > >
+> > > > > > > > > > >
+

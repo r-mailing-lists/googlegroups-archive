@@ -1,0 +1,466 @@
+From uc3e53d7d5317214f at groups.google.com  Thu Jul 10 09:34:37 2025
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Thu, 10 Jul 2025 09:34:37 +0000
+Subject: Sparsity loss with matrix-vector multiplication
+Message-ID: <EOu9CG1AdjI.ZcImKsS3BQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/EOu9CG1AdjI/m/ZcImKsS3BQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I encountered something that puzzled me. In a situation where the Hessian of the log likelihood is indeed sparse in a random effect, this sparsity is lost when I  calculate linear predictors via matrix-vector multiplication instead of element wise. I attach a silly minimal example below.
+
+Now obviously I know how to avoid the sparsity loss, but I would be interested in what's going on here and if there is a way to keep sparsity even using matrix-vector multiplication (because allows more general coding).
+
+Minimal example:
+
+library(RTMB)
+
+nll1 <- function(par) {
+  getAll(par)
+  mu <- beta[1] + beta[2] * x # keeps sparsity
+  -sum(dnorm(y, mu, 1, log = TRUE)) - sum(dnorm(x, log = TRUE))
+}
+nll2 <- function(par){
+  getAll(par)
+  X <- cbind(1, x)
+  mu <- X %*% beta # destroys sparsity
+  -sum(dnorm(y, mu, 1, log = TRUE)) - sum(dnorm(x, log = TRUE))
+}
+
+beta <- c(2, 1)
+x <- rnorm(10)
+y <- beta[1] + beta[2] * x + rnorm(10)
+
+par <- list(beta = beta, x = x)
+
+obj1 <- MakeADFun(nll1, par, random = "x")
+obj1$env$spHess(random = TRUE) # sparse
+
+obj2 <- MakeADFun(nll2, par, random = "x")
+obj2$env$spHess(random = TRUE) # dense
+
+Cheers
+
+From uea02ffe01c88c345 at groups.google.com  Thu Jul 10 16:52:57 2025
+From: uea02ffe01c88c345 at groups.google.com (KUNASEKARAN NIRMALKANNA)
+Date: Thu, 10 Jul 2025 16:52:57 +0000
+Subject: AD to numeric in RTMB
+Message-ID: <piElsasUGak.vT9wfq_PBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/piElsasUGak/m/vT9wfq_PBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Dr. Kasper Kristensen,
+
+I am trying to convert my TMB codes to RTMB nowadays. I find RTMB is really helpful, especially for beginners. I tried to extract reports from the RTMB object (from MakeADFun), but those are in AD objects, and they cause errors because they are not numeric objects.
+
+For example, I had the following issue:
+> library(RTMB)
+> x <- advector(c(1:5))
+> data.frame(x)
+       x
+1 NaN+1i
+2 NaN+2i
+3 NaN+3i
+4 NaN+4i
+5 NaN+5i
+
+As a solution, I tried:
+> class(x) <- NULL
+> data.frame(Im(x))
+  Im.x.
+1     1
+2     2
+3     3
+4     4
+5     5
+
+Following that, I wrote the following code to convert ad objects to numeric objects.
+
+rep.nowt <- obj$report()
+INV_AD <- function(x){
+  if("advector"%in%class(x)){
+    dim_arr <- dim(x)
+    if(!is.null(dim_arr)){
+      class(x) <- NULL
+      OUT <- array(Im(x), dim = dim_arr)
+    }else{
+      class(x) <- NULL
+      OUT <- Im(x)
+    }
+  }else{
+    OUT <- x
+  }
+  return(OUT)
+}
+rep.nowt_new <- list()
+for(list_i in 1:length(rep.nowt)){
+  rep.nowt_new[[list_i]] <- INV_AD(rep.nowt[[list_i]])
+}
+names(rep.nowt_new) <- names(rep.nowt)
+rep.nowt <- rep.nowt_new
+
+I am not sure whether I am missing anything here. Could you please guide me on this issue?
+
+Thank you.
+Regards,
+Kanna.
+
+From uc3e53d7d5317214f at groups.google.com  Wed Jul 16 10:12:27 2025
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Wed, 16 Jul 2025 10:12:27 +0000
+Subject: Re: Sparsity loss with matrix-vector multiplication
+Message-ID: <EOu9CG1AdjI.D1Z4QvQTAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <EOu9CG1AdjI.ZcImKsS3BQAJ@tmb-users.groups.google.com>
+References: <EOu9CG1AdjI.ZcImKsS3BQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/EOu9CG1AdjI/m/D1Z4QvQTAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+In the meantime, if anyone encounters the same problem, this seems to do the job:
+
+`%sp%` <- function(A, B) {
+  A <- as.matrix(A)
+  B <- as.matrix(B)
+
+  n <- nrow(A)
+  p <- ncol(A)
+  q <- nrow(B)
+  m <- ncol(B)
+
+  if (p != q) {
+    stop("Non-conformable matrices: ncol(A) must equal nrow(B)")
+  }
+
+  At <- t(A)  # p x n
+  sapply(1:m, function(j) colSums(At * B[, j])) # sums of element-wise multiplication retain sparsity
+}
+
+while probably not super safe :D
+
+Jan-Ole Koslik schrieb am Donnerstag, 10. Juli 2025 um 11:34:37 UTC+2:
+> Hi,
+>
+> I encountered something that puzzled me. In a situation where the Hessian of the log likelihood is indeed sparse in a random effect, this sparsity is lost when I  calculate linear predictors via matrix-vector multiplication instead of element wise. I attach a silly minimal example below.
+>
+> Now obviously I know how to avoid the sparsity loss, but I would be interested in what's going on here and if there is a way to keep sparsity even using matrix-vector multiplication (because allows more general coding).
+>
+> Minimal example:
+>
+> library(RTMB)
+>
+> nll1 <- function(par) {
+>   getAll(par)
+>   mu <- beta[1] + beta[2] * x # keeps sparsity
+>   -sum(dnorm(y, mu, 1, log = TRUE)) - sum(dnorm(x, log = TRUE))
+> }
+> nll2 <- function(par){
+>   getAll(par)
+>   X <- cbind(1, x)
+>   mu <- X %*% beta # destroys sparsity
+>   -sum(dnorm(y, mu, 1, log = TRUE)) - sum(dnorm(x, log = TRUE))
+> }
+>
+> beta <- c(2, 1)
+> x <- rnorm(10)
+> y <- beta[1] + beta[2] * x + rnorm(10)
+>
+> par <- list(beta = beta, x = x)
+>
+> obj1 <- MakeADFun(nll1, par, random = "x")
+> obj1$env$spHess(random = TRUE) # sparse
+>
+> obj2 <- MakeADFun(nll2, par, random = "x")
+> obj2$env$spHess(random = TRUE) # dense
+>
+> Cheers
+
+From uadc8ca6cfb4e05df at groups.google.com  Tue Jul 22 09:22:05 2025
+From: uadc8ca6cfb4e05df at groups.google.com (Kinh Nguyen)
+Date: Tue, 22 Jul 2025 09:22:05 +0000
+Subject: 
+Message-ID: <ZeiFIw9ud4Y.Do9t4wYpAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <ZeiFIw9ud4Y.L70St-eFAQAJ@tmb-users.groups.google.com>
+References: <ZeiFIw9ud4Y.L70St-eFAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ZeiFIw9ud4Y/m/Do9t4wYpAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u258b98968d0ad8b9 at groups.google.com  Mon Jul 28 09:55:35 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Mon, 28 Jul 2025 09:55:35 +0000
+Subject: Re: Sparsity loss with matrix-vector multiplication
+Message-ID: <EOu9CG1AdjI.nk87OVYCBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <EOu9CG1AdjI.ZcImKsS3BQAJ@tmb-users.groups.google.com>
+References: <EOu9CG1AdjI.ZcImKsS3BQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/EOu9CG1AdjI/m/nk87OVYCBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The 'RTMB-advanced' vignette has a bit of information on this - see section 'Tape configuration':
+https://kaskr.r-universe.dev/articles/RTMB/RTMB-advanced.html
+
+It is mentioned that you can use TapeConfig() to change the tape representation of matrix multiply. The plain non-atomic version preserves sparsity.
+
+On Wednesday, July 16, 2025 at 12:12:27 PM UTC+2 janole...@gmail.com wrote:
+> In the meantime, if anyone encounters the same problem, this seems to do the job:
+>
+> `%sp%` <- function(A, B) {
+>   A <- as.matrix(A)
+>   B <- as.matrix(B)
+>
+>   n <- nrow(A)
+>   p <- ncol(A)
+>   q <- nrow(B)
+>   m <- ncol(B)
+>
+>   if (p != q) {
+>     stop("Non-conformable matrices: ncol(A) must equal nrow(B)")
+>   }
+>
+>   At <- t(A)  # p x n
+>   sapply(1:m, function(j) colSums(At * B[, j])) # sums of element-wise multiplication retain sparsity
+> }
+>
+> while probably not super safe :D
+>
+> Jan-Ole Koslik schrieb am Donnerstag, 10. Juli 2025 um 11:34:37 UTC+2:
+> > Hi,
+> >
+> > I encountered something that puzzled me. In a situation where the Hessian of the log likelihood is indeed sparse in a random effect, this sparsity is lost when I  calculate linear predictors via matrix-vector multiplication instead of element wise. I attach a silly minimal example below.
+> >
+> > Now obviously I know how to avoid the sparsity loss, but I would be interested in what's going on here and if there is a way to keep sparsity even using matrix-vector multiplication (because allows more general coding).
+> >
+> > Minimal example:
+> >
+> > library(RTMB)
+> >
+> > nll1 <- function(par) {
+> >   getAll(par)
+> >   mu <- beta[1] + beta[2] * x # keeps sparsity
+> >   -sum(dnorm(y, mu, 1, log = TRUE)) - sum(dnorm(x, log = TRUE))
+> > }
+> > nll2 <- function(par){
+> >   getAll(par)
+> >   X <- cbind(1, x)
+> >   mu <- X %*% beta # destroys sparsity
+> >   -sum(dnorm(y, mu, 1, log = TRUE)) - sum(dnorm(x, log = TRUE))
+> > }
+> >
+> > beta <- c(2, 1)
+> > x <- rnorm(10)
+> > y <- beta[1] + beta[2] * x + rnorm(10)
+> >
+> > par <- list(beta = beta, x = x)
+> >
+> > obj1 <- MakeADFun(nll1, par, random = "x")
+> > obj1$env$spHess(random = TRUE) # sparse
+> >
+> > obj2 <- MakeADFun(nll2, par, random = "x")
+> > obj2$env$spHess(random = TRUE) # dense
+> >
+> > Cheers
+
+From u258b98968d0ad8b9 at groups.google.com  Mon Jul 28 10:08:06 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Mon, 28 Jul 2025 10:08:06 +0000
+Subject: Re: AD to numeric in RTMB
+Message-ID: <piElsasUGak.lgv4DwUDBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <piElsasUGak.vT9wfq_PBQAJ@tmb-users.groups.google.com>
+References: <piElsasUGak.vT9wfq_PBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/piElsasUGak/m/lgv4DwUDBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Reported objects should never be AD. Quoting from ?advector:
+
+An ‘advector’ is a class used behind the scenes...
+you do not _see_ / _need to know_ it as a normal user...
+
+It is strongly discouraged to convert 'advector' to numeric. However, for debugging purposes one can can extract the underlying numeric values using the un-exported RTMB:::getValues(). Do NOT use the Re()/Im() to extract information!
+
+On Thursday, July 10, 2025 at 6:52:57 PM UTC+2 codek...@gmail.com wrote:
+> Hi Dr. Kasper Kristensen,
+>
+> I am trying to convert my TMB codes to RTMB nowadays. I find RTMB is really helpful, especially for beginners. I tried to extract reports from the RTMB object (from MakeADFun), but those are in AD objects, and they cause errors because they are not numeric objects.
+>
+> For example, I had the following issue:
+> > library(RTMB)
+> > x <- advector(c(1:5))
+> > data.frame(x)
+>        x
+> 1 NaN+1i
+> 2 NaN+2i
+> 3 NaN+3i
+> 4 NaN+4i
+> 5 NaN+5i
+>
+> As a solution, I tried:
+> > class(x) <- NULL
+> > data.frame(Im(x))
+>   Im.x.
+> 1     1
+> 2     2
+> 3     3
+> 4     4
+> 5     5
+>
+> Following that, I wrote the following code to convert ad objects to numeric objects.
+>
+> rep.nowt <- obj$report()
+> INV_AD <- function(x){
+>   if("advector"%in%class(x)){
+>     dim_arr <- dim(x)
+>     if(!is.null(dim_arr)){
+>       class(x) <- NULL
+>       OUT <- array(Im(x), dim = dim_arr)
+>     }else{
+>       class(x) <- NULL
+>       OUT <- Im(x)
+>     }
+>   }else{
+>     OUT <- x
+>   }
+>   return(OUT)
+> }
+> rep.nowt_new <- list()
+> for(list_i in 1:length(rep.nowt)){
+>   rep.nowt_new[[list_i]] <- INV_AD(rep.nowt[[list_i]])
+> }
+> names(rep.nowt_new) <- names(rep.nowt)
+> rep.nowt <- rep.nowt_new
+>
+> I am not sure whether I am missing anything here. Could you please guide me on this issue?
+>
+> Thank you.
+> Regards,
+> Kanna.
+
+From uc3e53d7d5317214f at groups.google.com  Thu Jul 31 10:07:18 2025
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Thu, 31 Jul 2025 10:07:18 +0000
+Subject: Re: gamma function
+Message-ID: <3LeRzRNsYSU.MC6uaBX7BAAJ@tmb-users.groups.google.com>
+In-Reply-To: <3LeRzRNsYSU.m1Z4xCFFBAAJ@tmb-users.groups.google.com>
+References: <3LeRzRNsYSU.m1Z4xCFFBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3LeRzRNsYSU/m/MC6uaBX7BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Kasper, thanks for that.
+How can I use lgamma inside a package and make sure it's using the RTMB version?
+
+kasper.k...@gmail.com schrieb am Freitag, 17. Januar 2025 um 08:16:13 UTC+1:
+> It's in the 'Math group', that's why its hidden:
+>
+> RTMB::MakeTape(lgamma,1)
+>
+>
+> On Thursday, January 16, 2025 at 9:05:33 PM UTC+1 janole...@gmail.com wrote:
+> > Hi,
+> >
+> > I'm currently implementing some nonstandard distributions to be compatible with RTMB.
+> >
+> > I am really not sure if I'm just overlooking stuff, but it seems like there is no simple AD implementation of the gamma function, which I really need.
+> >
+> > I found this post <https://github.com/kaskr/RTMB/issues/33> by Ben, where you (Kasper) mention the rtmbXtras <https://github.com/kaskr/RTMB/tree/master/rtmbXtra> package that has logspace_gamma() <https://github.com/kaskr/RTMB/blob/master/rtmbXtra/src/RcppExports.cpp>.
+> >
+> > However, as I use the distributions within a package, I would like to avoid linking to rtmbXtras in addition to RTMB. Would it be possible to have an implementation in RTMB? Or is there one and I am just really stupid?
+> >
+> > For now I found the kind of silly workaround
+> >
+> > lgamma_ad <- function(x) {
+> >   - RTMB::dgamma(1, shape = x, scale = 1, log = TRUE) - 1
+> > }
+> > lgamma_ad(exp(-100))
+> > lgamma(exp(-100))
+> >
+> > but this seems very rough to me :D
+> >
+> > Thanks in advance :)
+
+From u258b98968d0ad8b9 at groups.google.com  Thu Jul 31 10:23:14 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Thu, 31 Jul 2025 10:23:14 +0000
+Subject: Re: [TMB users] Re: gamma function
+Message-ID: <3LeRzRNsYSU.0sE6A_T7BAAJ@tmb-users.groups.google.com>
+In-Reply-To: <3LeRzRNsYSU.MC6uaBX7BAAJ@tmb-users.groups.google.com>
+References: <3LeRzRNsYSU.m1Z4xCFFBAAJ@tmb-users.groups.google.com> <3LeRzRNsYSU.MC6uaBX7BAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3LeRzRNsYSU/m/0sE6A_T7BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Does it work to add this to the NAMESPACE file?:
+
+import("RTMB") ## All RTMB functions and classes
+
+You might not want to import everything though. There's probably a way to import only the Math group, but I'm not sure how to do that.
+
+On Thu, Jul 31, 2025 at 12:07 PM Jan-Ole Koslik <janole...@gmail.com> wrote:
+
+> Hi Kasper, thanks for that.
+> How can I use lgamma inside a package and make sure it's using the RTMB version?
+>
+> kasper.k...@gmail.com schrieb am Freitag, 17. Januar 2025 um 08:16:13 UTC+1:
+> > It's in the 'Math group', that's why its hidden:
+> >
+> > RTMB::MakeTape(lgamma,1)
+> >
+> >
+> > On Thursday, January 16, 2025 at 9:05:33 PM UTC+1 janole...@gmail.com wrote:
+> > > Hi,
+> > >
+> > > I'm currently implementing some nonstandard distributions to be compatible with RTMB.
+> > >
+> > > I am really not sure if I'm just overlooking stuff, but it seems like there is no simple AD implementation of the gamma function, which I really need.
+> > >
+> > > I found this post <https://github.com/kaskr/RTMB/issues/33> by Ben, where you (Kasper) mention the rtmbXtras <https://github.com/kaskr/RTMB/tree/master/rtmbXtra> package that has logspace_gamma() <https://github.com/kaskr/RTMB/blob/master/rtmbXtra/src/RcppExports.cpp>.
+> > >
+> > > However, as I use the distributions within a package, I would like to avoid linking to rtmbXtras in addition to RTMB. Would it be possible to have an implementation in RTMB? Or is there one and I am just really stupid?
+> > >
+> > > For now I found the kind of silly workaround
+> > >
+> > > lgamma_ad <- function(x) {
+> > >   - RTMB::dgamma(1, shape = x, scale = 1, log = TRUE) - 1
+> > > }
+> > > lgamma_ad(exp(-100))
+> > > lgamma(exp(-100))
+> > >
+> > > but this seems very rough to me :D
+> > >
+> > > Thanks in advance :)
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/tmb-users/741d2200-021e-4374-a84c-5d9dab7548c2n%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/741d2200-021e-4374-a84c-5d9dab7548c2n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uc3e53d7d5317214f at groups.google.com  Thu Jul 31 10:40:17 2025
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Thu, 31 Jul 2025 10:40:17 +0000
+Subject: 
+Message-ID: <3LeRzRNsYSU.b514QeL8BAAJ@tmb-users.groups.google.com>
+In-Reply-To: <3LeRzRNsYSU.m1Z4xCFFBAAJ@tmb-users.groups.google.com>
+References: <3LeRzRNsYSU.m1Z4xCFFBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3LeRzRNsYSU/m/b514QeL8BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+

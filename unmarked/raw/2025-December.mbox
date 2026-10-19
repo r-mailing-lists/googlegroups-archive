@@ -1,0 +1,507 @@
+From u403be63af7ebf220 at groups.google.com  Tue Dec  2 14:33:41 2025
+From: u403be63af7ebf220 at groups.google.com (Richard Chandler)
+Date: Tue, 02 Dec 2025 14:33:41 +0000
+Subject: Re: [unmarked] estimating number of new recruits per survey in Dail-Madsen N-mixture model
+Message-ID: <i7PFkKBCxdI.Ju4WVoe3CQAJ@unmarked.groups.google.com>
+In-Reply-To: <i7PFkKBCxdI.He8XvRgtBQAJ@unmarked.groups.google.com>
+References: <i7PFkKBCxdI.He8XvRgtBQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/i7PFkKBCxdI/m/Ju4WVoe3CQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Marc, you're right that the documentation wasn't very clear, so I tried to clean it up a bit. The changes are up on github and will be included in the next release.
+
+David, I also wrote some code to show how to compute the *realized* number of recruits summed over sites, for each time period. The 'predict' method applied to a fitted model will give you the *expected* values of recruitment (or per-capita recruitment, depending on the 'dynamics' you specify). The predict method applied to the output of 'ranef' lets you do posterior prediction, the empirical Bayes way. Both the expected values and the realized values may be useful. This code requires the development version of unmarked on github. Hope it helps.
+
+example(pcountOpen) # Run the example code first
+
+re <- ranef(m1)
+
+plot(re, layout=c(5,5), subset = site %in% 1:25 & year %in% 1:2, xlim=c(-1,15))
+
+G           # Matrix of recruits from simulation in example
+
+sim_conditional_recruits <- function(x, fm) {
+  N <- x ## To be clear that x is abundance
+  dynamics <- fm@dynamics
+  if(fm@immigration)
+    warning("Ignoring immigration")
+  n_sites <- nrow(x)
+  n_years <- ncol(x)
+  gam_vec <- predict(fm, type="gamma")$Predicted
+  gam <- matrix(gam_vec, n_sites, n_years-1)
+  omega_vec <- predict(fm, type="omega")$Predicted
+  omega <- matrix(omega_vec, n_sites, n_years-1)
+  S <- matrix(NA_integer_, n_sites, n_years-1) # Survivors
+  G <- matrix(NA_integer_, n_sites, n_years-1) # Recruits
+  rcat <- function(probs) which(rmultinom(n=1, size=1, prob=probs)==1)
+  for(i in 1:n_sites) {
+    for(t in 2:n_years) {
+      possible_survivors <- 0:N[i,t-1]
+      possible_recruits <- N[i,t]-possible_survivors
+      p_survivors <- dbinom(possible_survivors, N[i,t-1], omega[i,t-1])
+      if(dynamics=="constant")
+        p_recruits <- dpois(possible_recruits, gam[i,t-1])
+      else if(dynamics=="autoreg")
+        p_recruits <- dpois(possible_recruits, gam[i,t-1]*N[i,t-1])
+      else
+        stop("dynamics not implemented")
+      p_joint0 <- p_survivors*p_recruits
+      p_joint <- p_joint0/sum(p_joint0)
+      index <- rcat(p_joint)
+      S[i,t-1] <- possible_survivors[index]
+      G[i,t-1] <- possible_recruits[index]
+    }
+  }
+  return(G=colSums(G))
+}
+
+# Posterior prediction, using Empirical Bayes
+G_post <- predict(re, func=sim_conditional_recruits, nsims=10, fm=m1)
+
+rowMeans(G_post) ## Estimates of *realized* recruits per time interval
+apply(G_post, 1, quantile, probs=c(0.025, 0.975))
+
+colSums(G)  # Actual recruits per time interval (from simulated data)
+gam*M       # Estimate of the expected number of recruits per interval
+
+Richard
+
+--
+Richard Chandler
+Professor
+Wildlife Ecology and Conservation
+Warnell School of Forestry and Natural Resources
+University of Georgia
+762-499-4085
+http://chandlerlab.uga.edu/
+From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Marc Kery <marc...@vogelwarte.ch>
+Sent: Tuesday, November 25, 2025 1:53 AM
+To: unmarked <unma...@googlegroups.com>
+Subject: Re: [unmarked] estimating number of new recruits per survey in Dail-Madsen N-mixture model
+
+[EXTERNAL SENDER - PROCEED CAUTIOUSLY]
+
+Dear David,
+
+I think you confuse dynamics = "constant" with dynamics = 'autoreg'. See here in the help text of the function:
+
+"Character string describing the type of population dynamics. "constant" indicates that there is no relationship between omega and gamma. "autoreg" is an auto-regressive model in which recruitment is modeled as gamma*N[i,t-1]."
+
+[On a side-note, I wonder whether 'omega' should be replaced with lambda or possibly N ?].
+
+So, your predictions should yield directly what you want.
+
+Best regards  --- Marc
+
+From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of David Rosenbaum <rsnb...@gmail.com>
+Sent: Monday, November 24, 2025 20:54
+To: unmarked <unma...@googlegroups.com>
+Subject: [unmarked] estimating number of new recruits per survey in Dail-Madsen N-mixture model
+
+Hi all,
+
+I have been fitting Dail-Madsen N-mixture models in unmarked using function pcountOpen(), and with dynamics set to "constant." I have a covariate of gamma/immigration, which changes value during each primary period (I am not modeling closed/secondary survey periods). This covariate has a unimodal relationship with survey dates, so immigration rate and abundance increase during middle surveys and decrease during ending survey periods (ranef() and bup() show abundances gradually increasing and then dropping again through time across surveys.
+
+I would like to estimate the number of gains to the population each survey period. Using predict() with values of my immigration covariate, I've outputted model-estimated immigration rate for each survey. I was under the impression that if I multiplied predicted gamma at survey 2 * lambda at survey 1, this would grant an estimate of the mean number of new recruits in survey 2.
+Continuing this line of thought throughout surveys, If I multiplied gamma of survey 3 by the calculated number of individuals estimated in survey 2 ( (survey 2 recruitment rate* lambda) + (survival rate * lambda) ), and gamma at survey 4 by the number of individuals estimated in survey 3 ((survey 3 recruitment rate * survey 2 abun.) + (survival rate * survey 2 abu.n) ), I figured I could continue down and estimate number of recruits for all surveys. However, this leads to abundance estimates that continue to increase through time, when according the the model, abundance should drop in the latter surveys since predicted immigration rate drops towards the end of the survey window.
+
+Would anyone be able to provide insight on what I may be missing here? Am I miscalculating recruitment rate or misunderstanding the relationship between the model parameters?
+
+Thank you,
+David
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+To view this discussion visit  https://groups.google.com/d/msgid/unmarked/2983da59-2b5a-49a7-ad9f-77f441e9bff4n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/2983da59-2b5a-49a7-ad9f-77f441e9bff4n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+
+To view this discussion visit  https://groups.google.com/d/msgid/unmarked/ZR0P278MB08690FF3DF0E536A45CF7D68EBD1A%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM <https://groups.google.com/d/msgid/unmarked/ZR0P278MB08690FF3DF0E536A45CF7D68EBD1A%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM?utm_medium=email&utm_source=footer>.
+
+From u00ebeb6e0521112d at groups.google.com  Sun Dec  7 11:56:02 2025
+From: u00ebeb6e0521112d at groups.google.com (Marc Kery)
+Date: Sun, 07 Dec 2025 11:56:02 +0000
+Subject: Re: [unmarked] estimating number of new recruits per survey in Dail-Madsen N-mixture model
+Message-ID: <i7PFkKBCxdI.6d0nePb9CAAJ@unmarked.groups.google.com>
+In-Reply-To: <i7PFkKBCxdI.He8XvRgtBQAJ@unmarked.groups.google.com>
+References: <i7PFkKBCxdI.He8XvRgtBQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/i7PFkKBCxdI/m/6d0nePb9CAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Great, thanks a lot, Richard !
+
+Marc
+
+From: 'Richard Chandler' via unmarked <unma...@googlegroups.com>
+Sent: Tuesday, December 2, 2025 15:33
+
+To: unmarked <unma...@googlegroups.com>
+Subject: Re: [unmarked] estimating number of new recruits per survey in Dail-Madsen N-mixture model
+
+Hi Marc, you're right that the documentation wasn't very clear, so I tried to clean it up a bit. The changes are up on github and will be included in the next release.
+
+David, I also wrote some code to show how to compute the *realized* number of recruits summed over sites, for each time period. The 'predict' method applied to a fitted model will give you the *expected* values of recruitment (or per-capita recruitment, depending on the 'dynamics' you specify). The predict method applied to the output of 'ranef' lets you do posterior prediction, the empirical Bayes way. Both the expected values and the realized values may be useful. This code requires the development version of unmarked on github. Hope it helps.
+
+example(pcountOpen) # Run the example code first
+
+re <- ranef(m1)
+
+plot(re, layout=c(5,5), subset = site %in% 1:25 & year %in% 1:2, xlim=c(-1,15))
+
+G           # Matrix of recruits from simulation in example
+
+sim_conditional_recruits <- function(x, fm) {
+  N <- x ## To be clear that x is abundance
+  dynamics <- fm@dynamics
+  if(fm@immigration)
+    warning("Ignoring immigration")
+  n_sites <- nrow(x)
+  n_years <- ncol(x)
+  gam_vec <- predict(fm, type="gamma")$Predicted
+  gam <- matrix(gam_vec, n_sites, n_years-1)
+  omega_vec <- predict(fm, type="omega")$Predicted
+  omega <- matrix(omega_vec, n_sites, n_years-1)
+  S <- matrix(NA_integer_, n_sites, n_years-1) # Survivors
+  G <- matrix(NA_integer_, n_sites, n_years-1) # Recruits
+  rcat <- function(probs) which(rmultinom(n=1, size=1, prob=probs)==1)
+  for(i in 1:n_sites) {
+    for(t in 2:n_years) {
+      possible_survivors <- 0:N[i,t-1]
+      possible_recruits <- N[i,t]-possible_survivors
+      p_survivors <- dbinom(possible_survivors, N[i,t-1], omega[i,t-1])
+      if(dynamics=="constant")
+        p_recruits <- dpois(possible_recruits, gam[i,t-1])
+      else if(dynamics=="autoreg")
+        p_recruits <- dpois(possible_recruits, gam[i,t-1]*N[i,t-1])
+      else
+        stop("dynamics not implemented")
+      p_joint0 <- p_survivors*p_recruits
+      p_joint <- p_joint0/sum(p_joint0)
+      index <- rcat(p_joint)
+      S[i,t-1] <- possible_survivors[index]
+      G[i,t-1] <- possible_recruits[index]
+    }
+  }
+  return(G=colSums(G))
+}
+
+# Posterior prediction, using Empirical Bayes
+G_post <- predict(re, func=sim_conditional_recruits, nsims=10, fm=m1)
+
+rowMeans(G_post) ## Estimates of *realized* recruits per time interval
+apply(G_post, 1, quantile, probs=c(0.025, 0.975))
+
+colSums(G)  # Actual recruits per time interval (from simulated data)
+gam*M       # Estimate of the expected number of recruits per interval
+
+Richard
+
+--
+Richard Chandler
+Professor
+Wildlife Ecology and Conservation
+Warnell School of Forestry and Natural Resources
+University of Georgia
+762-499-4085
+http://chandlerlab.uga.edu/
+From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Marc Kery <marc...@vogelwarte.ch>
+Sent: Tuesday, November 25, 2025 1:53 AM
+To: unmarked <unma...@googlegroups.com>
+Subject: Re: [unmarked] estimating number of new recruits per survey in Dail-Madsen N-mixture model
+
+[EXTERNAL SENDER - PROCEED CAUTIOUSLY]
+
+Dear David,
+
+I think you confuse dynamics = "constant" with dynamics = 'autoreg'. See here in the help text of the function:
+
+"Character string describing the type of population dynamics. "constant" indicates that there is no relationship between omega and gamma. "autoreg" is an auto-regressive model in which recruitment is modeled as gamma*N[i,t-1]."
+
+[On a side-note, I wonder whether 'omega' should be replaced with lambda or possibly N ?].
+
+So, your predictions should yield directly what you want.
+
+Best regards  --- Marc
+
+From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of David Rosenbaum <rsnb...@gmail.com>
+Sent: Monday, November 24, 2025 20:54
+To: unmarked <unma...@googlegroups.com>
+Subject: [unmarked] estimating number of new recruits per survey in Dail-Madsen N-mixture model
+
+Hi all,
+
+I have been fitting Dail-Madsen N-mixture models in unmarked using function pcountOpen(), and with dynamics set to "constant." I have a covariate of gamma/immigration, which changes value during each primary period (I am not modeling closed/secondary survey periods). This covariate has a unimodal relationship with survey dates, so immigration rate and abundance increase during middle surveys and decrease during ending survey periods (ranef() and bup() show abundances gradually increasing and then dropping again through time across surveys.
+
+I would like to estimate the number of gains to the population each survey period. Using predict() with values of my immigration covariate, I've outputted model-estimated immigration rate for each survey. I was under the impression that if I multiplied predicted gamma at survey 2 * lambda at survey 1, this would grant an estimate of the mean number of new recruits in survey 2.
+Continuing this line of thought throughout surveys, If I multiplied gamma of survey 3 by the calculated number of individuals estimated in survey 2 ( (survey 2 recruitment rate* lambda) + (survival rate * lambda) ), and gamma at survey 4 by the number of individuals estimated in survey 3 ((survey 3 recruitment rate * survey 2 abun.) + (survival rate * survey 2 abu.n) ), I figured I could continue down and estimate number of recruits for all surveys. However, this leads to abundance estimates that continue to increase through time, when according the the model, abundance should drop in the latter surveys since predicted immigration rate drops towards the end of the survey window.
+
+Would anyone be able to provide insight on what I may be missing here? Am I miscalculating recruitment rate or misunderstanding the relationship between the model parameters?
+
+Thank you,
+David
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+To view this discussion visit  https://groups.google.com/d/msgid/unmarked/2983da59-2b5a-49a7-ad9f-77f441e9bff4n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/2983da59-2b5a-49a7-ad9f-77f441e9bff4n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+To view this discussion visit  https://groups.google.com/d/msgid/unmarked/ZR0P278MB08690FF3DF0E536A45CF7D68EBD1A%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM <https://groups.google.com/d/msgid/unmarked/ZR0P278MB08690FF3DF0E536A45CF7D68EBD1A%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM?utm_medium=email&utm_source=footer>.
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+
+To view this discussion visit  https://groups.google.com/d/msgid/unmarked/IA1PR02MB95375528E6D9F3C32589076EFBD8A%40IA1PR02MB9537.namprd02.prod.outlook.com <https://groups.google.com/d/msgid/unmarked/IA1PR02MB95375528E6D9F3C32589076EFBD8A%40IA1PR02MB9537.namprd02.prod.outlook.com?utm_medium=email&utm_source=footer>.
+
+From ud65f5725499ff761 at groups.google.com  Wed Dec 17 13:44:27 2025
+From: ud65f5725499ff761 at groups.google.com (=?utf-8?q?Sa=C3=A2d_HANANE?=)
+Date: Wed, 17 Dec 2025 13:44:27 +0000
+Subject: Dealing with spatial autocorrelation using distsamp
+Message-ID: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/JbMbelOgUnE/m/AJQohAU2AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+I am currently working with distance sampling (distsamp). Everything is going well, except for one issue: dealing with spatial autocorrelation (SAC). My Moran's I test shows a highly significant result (p-value < 0.0001).
+
+Could you please advise if there is a way to account for SAC in distsamp? Ideally, my estimates should be adjusted to consider SAC. Additionally, how should SAC be handled when predicting the effects of covariates included in the best AICc model, particularly for producing figures?
+
+Thank you
+
+From u00ebeb6e0521112d at groups.google.com  Wed Dec 17 14:03:46 2025
+From: u00ebeb6e0521112d at groups.google.com (Marc Kery)
+Date: Wed, 17 Dec 2025 14:03:46 +0000
+Subject: Re: [unmarked] Dealing with spatial autocorrelation using distsamp
+Message-ID: <JbMbelOgUnE.v-SNTRM3AAAJ@unmarked.groups.google.com>
+In-Reply-To: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+References: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/JbMbelOgUnE/m/v-SNTRM3AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Saad,
+
+you can't formally deal with SAC in unmarked, other than trying to "explain it away" by adding new, and more informative, covariates.
+
+For modeling SAC, you'd normally have to go down the JAGS/NIMBLE way, or, actually, your best stab would be the R package spAbundance. This provides for hierarchical distance sampling with SAC.
+
+Best regards  -- Marc
+
+From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Saâd HANANE <sdha...@gmail.com>
+Sent: Wednesday, December 17, 2025 13:18
+To: unmarked <unma...@googlegroups.com>
+Subject: [unmarked] Dealing with spatial autocorrelation using distsamp
+
+Dear all,
+
+I am currently working with distance sampling (distsamp). Everything is going well, except for one issue: dealing with spatial autocorrelation (SAC). My Moran's I test shows a highly significant result (p-value < 0.0001).
+
+Could you please advise if there is a way to account for SAC in distsamp? Ideally, my estimates should be adjusted to consider SAC. Additionally, how should SAC be handled when predicting the effects of covariates included in the best AICc model, particularly for producing figures?
+
+Thank you
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+To view this discussion visit  https://groups.google.com/d/msgid/unmarked/424b25e8-0e99-4fec-bb65-adf4badcf908n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/424b25e8-0e99-4fec-bb65-adf4badcf908n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4a15de51da4445ae at groups.google.com  Wed Dec 17 14:19:54 2025
+From: u4a15de51da4445ae at groups.google.com (Jeffrey Royle)
+Date: Wed, 17 Dec 2025 14:19:54 +0000
+Subject: Re: [unmarked] Dealing with spatial autocorrelation using distsamp
+Message-ID: <JbMbelOgUnE.70H1yPQ3AAAJ@unmarked.groups.google.com>
+In-Reply-To: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+References: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/JbMbelOgUnE/m/70H1yPQ3AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Saad,
+  In addition to what Marc said (with regard to how to do it), I would suggest that SAC is pretty unimportant in general as long as your study design is not too pathological. For example if you did a random or systematic, or systematic random sample then the existence of unaccounted for spatial structure (that would produce SAC) probably only induces a little bias in the variance estimates. You could adjust for this using a lack-of-fit or quasi-likelihood adjustment (how poor is the model fit, anyways?).  It might be better to try and identify the relevant source of the SAC (i.e., missing habitat information) and model it that way but if you feel it's really important then spAbundance (or JAGS/NIMBLE) is the way to go.
+ As always it would be interesting to see a simulation study done to characterize exactly how bad you do (and in what manner) by not accounting for the SAC.
+regards
+andy
+
+On Wed, Dec 17, 2025 at 8:44 AM Saâd HANANE <sdha...@gmail.com> wrote:
+
+> Dear all,
+>
+> I am currently working with distance sampling (distsamp). Everything is going well, except for one issue: dealing with spatial autocorrelation (SAC). My Moran's I test shows a highly significant result (p-value < 0.0001).
+>
+> Could you please advise if there is a way to account for SAC in distsamp? Ideally, my estimates should be adjusted to consider SAC. Additionally, how should SAC be handled when predicting the effects of covariates included in the best AICc model, particularly for producing figures?
+>
+> Thank you
+>
+
+> --
+
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/unmarked/424b25e8-0e99-4fec-bb65-adf4badcf908n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/424b25e8-0e99-4fec-bb65-adf4badcf908n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uca2ba694c4b4c79b at groups.google.com  Wed Dec 24 13:08:58 2025
+From: uca2ba694c4b4c79b at groups.google.com (Alexis Cerezo)
+Date: Wed, 24 Dec 2025 13:08:58 +0000
+Subject: Re: [unmarked] Dealing with spatial autocorrelation using distsamp
+Message-ID: <JbMbelOgUnE.zPtURcEQAgAJ@unmarked.groups.google.com>
+In-Reply-To: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+References: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/JbMbelOgUnE/m/zPtURcEQAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello Jeff and Saad,
+
+In support of what Jeff is saying, that is, in particular case when comparing glm models with and without a spatial autocorrelation structure, and in situations when predictors "mopped up" most of these effects, SAC effects (if still present) were only detectable on standard error estimates (as known, decreasing the estimates) when predictive variables had negligible or no effect on the response variable, in other words, when effects were not significant (I presented my results in a biostatistical congress in Argentina a while ago, but I can scrounge around for these if you're interested). Even then, the effects of SAC on stderr estimates were small.
+
+Hope this helps!
+
+Alexis
+
+El mié, 17 dic 2025, 11:19 a. m., Jeffrey Royle <jar...@gmail.com> escribió:
+
+> Dear Saad,
+>   In addition to what Marc said (with regard to how to do it), I would suggest that SAC is pretty unimportant in general as long as your study design is not too pathological. For example if you did a random or systematic, or systematic random sample then the existence of unaccounted for spatial structure (that would produce SAC) probably only induces a little bias in the variance estimates. You could adjust for this using a lack-of-fit or quasi-likelihood adjustment (how poor is the model fit, anyways?).  It might be better to try and identify the relevant source of the SAC (i.e., missing habitat information) and model it that way but if you feel it's really important then spAbundance (or JAGS/NIMBLE) is the way to go.
+>  As always it would be interesting to see a simulation study done to characterize exactly how bad you do (and in what manner) by not accounting for the SAC.
+> regards
+> andy
+>
+>
+> On Wed, Dec 17, 2025 at 8:44 AM Saâd HANANE <sdha...@gmail.com> wrote:
+> > Dear all,
+> >
+> > I am currently working with distance sampling (distsamp). Everything is going well, except for one issue: dealing with spatial autocorrelation (SAC). My Moran's I test shows a highly significant result (p-value < 0.0001).
+> >
+> > Could you please advise if there is a way to account for SAC in distsamp? Ideally, my estimates should be adjusted to consider SAC. Additionally, how should SAC be handled when predicting the effects of covariates included in the best AICc model, particularly for producing figures?
+> >
+> > Thank you
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/unmarked/424b25e8-0e99-4fec-bb65-adf4badcf908n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/424b25e8-0e99-4fec-bb65-adf4badcf908n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+
+> To view this discussion visit https://groups.google.com/d/msgid/unmarked/CAE%2BwgF0bGy2ZZTKCKPbkP3_Lkt%2BSpjGd8ReZnHVtMLaFib4_aA%40mail.gmail.com <https://groups.google.com/d/msgid/unmarked/CAE%2BwgF0bGy2ZZTKCKPbkP3_Lkt%2BSpjGd8ReZnHVtMLaFib4_aA%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From uca2ba694c4b4c79b at groups.google.com  Wed Dec 24 13:09:32 2025
+From: uca2ba694c4b4c79b at groups.google.com (Alexis Cerezo)
+Date: Wed, 24 Dec 2025 13:09:32 +0000
+Subject: Re: [unmarked] Dealing with spatial autocorrelation using distsamp
+Message-ID: <JbMbelOgUnE.6troNckQAgAJ@unmarked.groups.google.com>
+In-Reply-To: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+References: <JbMbelOgUnE.AJQohAU2AAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/JbMbelOgUnE/m/6troNckQAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+And perhaps I should also add that there was no effect on point estimates at all, even in the described situation.
+
+El mié, 24 dic 2025, 10:01 a. m., Alexis Cerezo <a.ce...@fundaeco.org.gt> escribió:
+> Hello Jeff and Saad,
+>
+> In support of what Jeff is saying, that is, in particular case when comparing glm models with and without a spatial autocorrelation structure, and in situations when predictors "mopped up" most of these effects, SAC effects (if still present) were only detectable on standard error estimates (as known, decreasing the estimates) when predictive variables had negligible or no effect on the response variable, in other words, when effects were not significant (I presented my results in a biostatistical congress in Argentina a while ago, but I can scrounge around for these if you're interested). Even then, the effects of SAC on stderr estimates were small.
+>
+> Hope this helps!
+>
+> Alexis
+>
+> El mié, 17 dic 2025, 11:19 a. m., Jeffrey Royle <jar...@gmail.com> escribió:
+> > Dear Saad,
+> >   In addition to what Marc said (with regard to how to do it), I would suggest that SAC is pretty unimportant in general as long as your study design is not too pathological. For example if you did a random or systematic, or systematic random sample then the existence of unaccounted for spatial structure (that would produce SAC) probably only induces a little bias in the variance estimates. You could adjust for this using a lack-of-fit or quasi-likelihood adjustment (how poor is the model fit, anyways?).  It might be better to try and identify the relevant source of the SAC (i.e., missing habitat information) and model it that way but if you feel it's really important then spAbundance (or JAGS/NIMBLE) is the way to go.
+> >  As always it would be interesting to see a simulation study done to characterize exactly how bad you do (and in what manner) by not accounting for the SAC.
+> > regards
+> > andy
+> >
+> >
+> > On Wed, Dec 17, 2025 at 8:44 AM Saâd HANANE <sdha...@gmail.com> wrote:
+> > > Dear all,
+> > >
+> > > I am currently working with distance sampling (distsamp). Everything is going well, except for one issue: dealing with spatial autocorrelation (SAC). My Moran's I test shows a highly significant result (p-value < 0.0001).
+> > >
+> > > Could you please advise if there is a way to account for SAC in distsamp? Ideally, my estimates should be adjusted to consider SAC. Additionally, how should SAC be handled when predicting the effects of covariates included in the best AICc model, particularly for producing figures?
+> > >
+> > > Thank you
+> > >
+> > > --
+> > > *** Three hierarchical modeling email lists ***
+> > > (1) unmarked (this list): for questions specific to the R package unmarked
+> > > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> > > To view this discussion visit https://groups.google.com/d/msgid/unmarked/424b25e8-0e99-4fec-bb65-adf4badcf908n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/424b25e8-0e99-4fec-bb65-adf4badcf908n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/unmarked/CAE%2BwgF0bGy2ZZTKCKPbkP3_Lkt%2BSpjGd8ReZnHVtMLaFib4_aA%40mail.gmail.com <https://groups.google.com/d/msgid/unmarked/CAE%2BwgF0bGy2ZZTKCKPbkP3_Lkt%2BSpjGd8ReZnHVtMLaFib4_aA%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+

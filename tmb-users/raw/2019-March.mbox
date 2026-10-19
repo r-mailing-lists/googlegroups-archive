@@ -1,0 +1,809 @@
+From u6cf4f730b8d1254e at groups.google.com  Thu Mar  7 18:36:27 2019
+From: u6cf4f730b8d1254e at groups.google.com (Bert van der Veen)
+Date: Thu, 07 Mar 2019 18:36:27 +0000
+Subject: Large values for gradient of Latent Variable Model
+Message-ID: <caasF_WUtNU.8SoXjFveCQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/caasF_WUtNU/m/8SoXjFveCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+I'm attempting to fit a latent variable model with TMB, that includes a second-order polynomial on the latent variable. However, on convergence the gradient is not zero.
+
+Here's example code for a univariate case
+
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  //declares all data and parameters used
+  DATA_VECTOR(y);
+  DATA_VECTOR(x);
+
+  PARAMETER(b);
+  PARAMETER(b1);
+  PARAMETER(b2);
+
+  //latent variables, u, are treated as parameters
+  PARAMETER_VECTOR(u);
+
+  int n = y.rows();
+
+  vector<Type> eta(n);
+
+  Type nll = 0.0; // initial value of log-likelihood
+
+  for (int i=0; i<n; i++) {
+  eta(i) = x(i)*b + u(i)*b1 + pow(u(i),2)*b2;
+  }
+
+  //latent variable is assumed to be from N(0,1)
+
+    for (int i=0; i<n; i++) {
+      nll -= dnorm(u(i),Type(0),Type(1),true);
+    }
+
+    for (int i=0; i<n; i++) {
+      nll -= dpois(y(i), exp(eta(i)), true);
+    }
+  return nll;
+}
+
+And the R code to simulate some data and call TMB
+
+library("TMB")
+compile("lvm_poisson_quadratic_example.cpp")
+dyn.load(dynlib("lvm_poisson_quadratic_example"))
+
+#Simulate some univariate data
+set.seed(07-03-2019)
+b <- rnorm(1,1); u <- rnorm(20); b1 <- rnorm(1,1); b2 <- rnorm(1)
+
+#True mean
+eta <- b + u*b1 + u^2*b2
+y <- round(exp(eta),0)
+
+#Let TMB do its magic
+model <- TMB::MakeADFun(
+  data = list(y = y, x = rep(1,length(y))),
+  parameters = list(b = b, b1 = b1, b2 = b2, u = u),
+  random = c("u"), DLL = "lvm_poisson_quadratic_example")
+
+#Estimate the parameters
+fit <- optim(model$par, model$fn, model$gr,method="BFGS",control = list(trace=T,maxit=1000))
+
+#check gradient
+model$gr(fit$par)
+
+This results to the values -54597583, 720315525 and 37266208 for the gradient. Any feedback or suggestions will be greatly appreciated!
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Mar  8 13:00:42 2019
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 08 Mar 2019 13:00:42 +0000
+Subject: Re: Large values for gradient of Latent Variable Model
+Message-ID: <caasF_WUtNU.C6DG450aCgAJ@tmb-users.groups.google.com>
+In-Reply-To: <caasF_WUtNU.8SoXjFveCQAJ@tmb-users.groups.google.com>
+References: <caasF_WUtNU.8SoXjFveCQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/caasF_WUtNU/m/C6DG450aCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The problem you experience occurs because it is possible to choose the outer parameters in a way such that the inner problem looks like a 4th order polynomial without the 2nd order term.
+In this situation you are essentially integrating something like exp(-u^4) using the Laplace approximation. The result will be infinity, i.e. the outer optimization problem gets infinite reward by going into the bad parts of the parameter space where the Laplace approximation is inaccurate!
+You'll see the negative log likelihood function has a ridge where it is most inaccurate (that's why you get the large gradients):
+
+prof <- tmbprofile(model, 1, slice=TRUE, ytol=20)
+plot(prof)
+
+It is likely that in the future TMB will be able to handle your example using different integration techniques. For now the only easy option seems to be MCMC, e.g.:
+
+library(tmbstan)
+fit <- tmbstan(model)
+plot(fit)
+
+FWIW, another example with the same symptoms is given here: https://github.com/kaskr/laplace_accuracy
+
+On Thursday, March 7, 2019 at 7:36:27 PM UTC+1, Bert van der Veen wrote:
+> Dear all,
+>
+> I'm attempting to fit a latent variable model with TMB, that includes a second-order polynomial on the latent variable. However, on convergence the gradient is not zero.
+>
+> Here's example code for a univariate case
+>
+> #include <TMB.hpp>
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   //declares all data and parameters used
+>   DATA_VECTOR(y);
+>   DATA_VECTOR(x);
+>
+>   PARAMETER(b);
+>   PARAMETER(b1);
+>   PARAMETER(b2);
+>
+>   //latent variables, u, are treated as parameters
+>   PARAMETER_VECTOR(u);
+>
+>   int n = y.rows();
+>
+>   vector<Type> eta(n);
+>
+>   Type nll = 0.0; // initial value of log-likelihood
+>
+>   for (int i=0; i<n; i++) {
+>   eta(i) = x(i)*b + u(i)*b1 + pow(u(i),2)*b2;
+>   }
+>
+>   //latent variable is assumed to be from N(0,1)
+>
+>     for (int i=0; i<n; i++) {
+>       nll -= dnorm(u(i),Type(0),Type(1),true);
+>     }
+>
+>     for (int i=0; i<n; i++) {
+>       nll -= dpois(y(i), exp(eta(i)), true);
+>     }
+>   return nll;
+> }
+>
+>
+> And the R code to simulate some data and call TMB
+>
+> library("TMB")
+> compile("lvm_poisson_quadratic_example.cpp")
+> dyn.load(dynlib("lvm_poisson_quadratic_example"))
+>
+> #Simulate some univariate data
+> set.seed(07-03-2019)
+> b <- rnorm(1,1); u <- rnorm(20); b1 <- rnorm(1,1); b2 <- rnorm(1)
+>
+> #True mean
+> eta <- b + u*b1 + u^2*b2
+> y <- round(exp(eta),0)
+>
+> #Let TMB do its magic
+> model <- TMB::MakeADFun(
+>   data = list(y = y, x = rep(1,length(y))),
+>   parameters = list(b = b, b1 = b1, b2 = b2, u = u),
+>   random = c("u"), DLL = "lvm_poisson_quadratic_example")
+>
+> #Estimate the parameters
+> fit <- optim(model$par, model$fn, model$gr,method="BFGS",control = list(trace=T,maxit=1000))
+>
+> #check gradient
+> model$gr(fit$par)
+>
+> This results to the values -54597583, 720315525 and 37266208 for the gradient. Any feedback or suggestions will be greatly appreciated!
+>
+>
+
+From u6cf4f730b8d1254e at groups.google.com  Wed Mar 13 10:16:36 2019
+From: u6cf4f730b8d1254e at groups.google.com (Bert van der Veen)
+Date: Wed, 13 Mar 2019 10:16:36 +0000
+Subject: Re: Large values for gradient of Latent Variable Model
+Message-ID: <caasF_WUtNU.whAxzZOoCwAJ@tmb-users.groups.google.com>
+In-Reply-To: <caasF_WUtNU.C6DG450aCgAJ@tmb-users.groups.google.com>
+References: <caasF_WUtNU.8SoXjFveCQAJ@tmb-users.groups.google.com> <caasF_WUtNU.C6DG450aCgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/caasF_WUtNU/m/whAxzZOoCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for taking the time to answer, Kasper. I'll have a look at other options and will consider you advice w.r.t. using MCMC.
+
+On Friday, 8 March 2019 14:00:42 UTC+1, Kasper Kristensen wrote:
+> The problem you experience occurs because it is possible to choose the outer parameters in a way such that the inner problem looks like a 4th order polynomial without the 2nd order term.
+> In this situation you are essentially integrating something like exp(-u^4) using the Laplace approximation. The result will be infinity, i.e. the outer optimization problem gets infinite reward by going into the bad parts of the parameter space where the Laplace approximation is inaccurate!
+> You'll see the negative log likelihood function has a ridge where it is most inaccurate (that's why you get the large gradients):
+>
+> prof <- tmbprofile(model, 1, slice=TRUE, ytol=20)
+> plot(prof)
+>
+>
+> It is likely that in the future TMB will be able to handle your example using different integration techniques. For now the only easy option seems to be MCMC, e.g.:
+>
+> library(tmbstan)
+> fit <- tmbstan(model)
+> plot(fit)
+>
+> FWIW, another example with the same symptoms is given here: https://github.com/kaskr/laplace_accuracy
+>
+>
+> On Thursday, March 7, 2019 at 7:36:27 PM UTC+1, Bert van der Veen wrote:
+> > Dear all,
+> >
+> > I'm attempting to fit a latent variable model with TMB, that includes a second-order polynomial on the latent variable. However, on convergence the gradient is not zero.
+> >
+> > Here's example code for a univariate case
+> >
+> > #include <TMB.hpp>
+> >
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> >   //declares all data and parameters used
+> >   DATA_VECTOR(y);
+> >   DATA_VECTOR(x);
+> >
+> >   PARAMETER(b);
+> >   PARAMETER(b1);
+> >   PARAMETER(b2);
+> >
+> >   //latent variables, u, are treated as parameters
+> >   PARAMETER_VECTOR(u);
+> >
+> >   int n = y.rows();
+> >
+> >   vector<Type> eta(n);
+> >
+> >   Type nll = 0.0; // initial value of log-likelihood
+> >
+> >   for (int i=0; i<n; i++) {
+> >   eta(i) = x(i)*b + u(i)*b1 + pow(u(i),2)*b2;
+> >   }
+> >
+> >   //latent variable is assumed to be from N(0,1)
+> >
+> >     for (int i=0; i<n; i++) {
+> >       nll -= dnorm(u(i),Type(0),Type(1),true);
+> >     }
+> >
+> >     for (int i=0; i<n; i++) {
+> >       nll -= dpois(y(i), exp(eta(i)), true);
+> >     }
+> >   return nll;
+> > }
+> >
+> >
+> > And the R code to simulate some data and call TMB
+> >
+> > library("TMB")
+> > compile("lvm_poisson_quadratic_example.cpp")
+> > dyn.load(dynlib("lvm_poisson_quadratic_example"))
+> >
+> > #Simulate some univariate data
+> > set.seed(07-03-2019)
+> > b <- rnorm(1,1); u <- rnorm(20); b1 <- rnorm(1,1); b2 <- rnorm(1)
+> >
+> > #True mean
+> > eta <- b + u*b1 + u^2*b2
+> > y <- round(exp(eta),0)
+> >
+> > #Let TMB do its magic
+> > model <- TMB::MakeADFun(
+> >   data = list(y = y, x = rep(1,length(y))),
+> >   parameters = list(b = b, b1 = b1, b2 = b2, u = u),
+> >   random = c("u"), DLL = "lvm_poisson_quadratic_example")
+> >
+> > #Estimate the parameters
+> > fit <- optim(model$par, model$fn, model$gr,method="BFGS",control = list(trace=T,maxit=1000))
+> >
+> > #check gradient
+> > model$gr(fit$par)
+> >
+> > This results to the values -54597583, 720315525 and 37266208 for the gradient. Any feedback or suggestions will be greatly appreciated!
+> >
+> >
+
+From ud53f3b9a3d56d6e5 at groups.google.com  Fri Mar 22 11:32:00 2019
+From: ud53f3b9a3d56d6e5 at groups.google.com (Andrew Seaton)
+Date: Fri, 22 Mar 2019 11:32:00 +0000
+Subject: pass list of matrices to TMB
+Message-ID: <cq3ibfSf6H4.vIInzlzjAAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cq3ibfSf6H4/m/vIInzlzjAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+My data consists of a list of matrices with integer values.
+
+Any one of these on their own I would pass to TMB using DATA_IMATRIX()
+
+How can I send the whole list so that in the end TMB stores them as vector<matrix<int> >
+
+Looking at DATA_STRUCT() example I don't want to have to name each one as there could be ~100 of them, not sure how I can do this.
+
+The other way I thought to do it was to send a 3D array and slice it up in C++ but there doesn't seem to be an easy way to do that either.
+
+Andy
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Mar 22 16:26:40 2019
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 22 Mar 2019 16:26:40 +0000
+Subject: Re: pass list of matrices to TMB
+Message-ID: <cq3ibfSf6H4.tGdgP3HzAAAJ@tmb-users.groups.google.com>
+In-Reply-To: <cq3ibfSf6H4.vIInzlzjAAAJ@tmb-users.groups.google.com>
+References: <cq3ibfSf6H4.vIInzlzjAAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cq3ibfSf6H4/m/tGdgP3HzAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Inspired by
+https://github.com/kaskr/adcomp/issues/96
+and
+https://github.com/kaskr/adcomp/blob/abbd69a1a684b4b8e442a4c73fbc41f3ba921540/TMB/inst/include/tmb_core.hpp#L372
+you could modify to something like (not tested):
+
+#include<TMB.hpp>
+
+/* List of integer matrices */
+template<class Type>
+struct LOIM_t : vector<matrix<int> > {
+  LOIM_t(SEXP x){  /* x = List passed from R */
+    (*this).resize(LENGTH(x));
+    for(int i=0; i<LENGTH(x); i++){
+      SEXP sm = VECTOR_ELT(x, i);
+      if(!Rf_isMatrix(sm)) Rf_error("Not a matrix");
+      (*this)(i) = asMatrix<int>(sm);
+    }
+  }
+};
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // x = list of sparse matrices
+  DATA_STRUCT(x, LOIM_t);
+  // Get the first...
+  matrix<int> y = x(0);
+  REPORT(y);
+  return 0;
+
+}
+
+On Friday, March 22, 2019 at 12:32:00 PM UTC+1, Andrew Seaton wrote:
+> Hi,
+>
+> My data consists of a list of matrices with integer values.
+>
+> Any one of these on their own I would pass to TMB using DATA_IMATRIX()
+>
+> How can I send the whole list so that in the end TMB stores them as vector<matrix<int> >
+>
+> Looking at DATA_STRUCT() example I don't want to have to name each one as there could be ~100 of them, not sure how I can do this.
+>
+> The other way I thought to do it was to send a 3D array and slice it up in C++ but there doesn't seem to be an easy way to do that either.
+>
+> Andy
+
+From u4dce9e23c73e5fad at groups.google.com  Wed Mar 27 16:08:57 2019
+From: u4dce9e23c73e5fad at groups.google.com (sivite...@yahoo.co.uk)
+Date: Wed, 27 Mar 2019 16:08:57 +0000
+Subject: Positive confidence intervals for data that is zero-inflated
+Message-ID: <7q8wkewJx3k.ox4vvXqgBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/7q8wkewJx3k/m/ox4vvXqgBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am using glmmTMB to look at the data below. Egg number is the variable I am interested and the ppb refer to a pesticide concentration.
+
+A hurdle approach is clearly the right approach to use for this data (I am interested in both the zero/count outputs) and thus the code used is;
+
+full_model<-glmmTMB(egg_number~treatment+(1|original_colony),data = colony_data, ziformula=~.,family=truncated_poisson)
+
+M0<-glmmTMB(egg_number~1+(1|original_colony),data = colony_data, ziformula=~.,family=truncated_poisson)
+
+model.sel(full_model,M0)
+
+summary(full_model)
+
+confint(full_model)
+
+Everything runs fine and the results are as expected but when plotting the confidence intervals using the confint function the estimates for the zero inflated part of the model at 250ppb are positive (see below, highlighted yellow)
+
+                                               2.5 %      97.5 %    Estimate
+
+cond.(Intercept)                          2.79742862  3.04169246  2.91956054
+
+cond.treatmentb.5ppb                     -0.31039812 -0.01374274 -0.16207043
+
+cond.treatmentc.10ppb                    -0.23927447  0.04183210 -0.09872118
+
+cond.treatmentd.250ppb                   -1.91255944 -0.69548880 -1.30402412
+
+original_colony.cond.Std.Dev.(Intercept)  0.04105453  0.22809239  0.09676893
+
+zi.zi~(Intercept)                        -3.02949098 -0.02523687 -1.52736392
+
+zi.zi~treatmentb.5ppb                    -0.45068969  2.23628979  0.89280005
+
+zi.zi~treatmentc.10ppb                   -0.88815643  1.84441758  0.47813058
+
+zi.zi~treatmentd.250ppb                   2.81994191  6.93370741  4.87682466
+
+original_colony.zi.Std.Dev.(Intercept)    0.69680373  3.04478442  1.45657720
+
+Given the results (only one positive value) for 250pbb this seems odd to me, as surly you would expect it to be a negative value? I have made several mock data sets and find the same result every time. Is this something to do with how this package reads the data or should I be worried about it? Any advice of suggestions would be much appreciated!
+
+From uefdde7826c05851f at groups.google.com  Wed Mar 27 16:30:23 2019
+From: uefdde7826c05851f at groups.google.com (Koen van Benthem)
+Date: Wed, 27 Mar 2019 16:30:23 +0000
+Subject: Re: [TMB users] Positive confidence intervals for data that is zero-inflated
+Message-ID: <7q8wkewJx3k.TfTQvyv2AAAJ@tmb-users.groups.google.com>
+In-Reply-To: <7q8wkewJx3k.ox4vvXqgBQAJ@tmb-users.groups.google.com>
+References: <7q8wkewJx3k.ox4vvXqgBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/7q8wkewJx3k/m/TfTQvyv2AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+not sure if the following answers your question, but since it might, I'll write it to you anyway.
+
+I think it is crucial to realize that the 'zero inflated' part of the model, models the probability of an 'extra' zero occurring. The higher the probability of an additional zero occurring is, the lower the expected egg-count. This should explain why higher coefficient values lead to lower expected values. In the end, the overall expected value can be calculated by multiplying the probability of not obtaining an additional zero (1 - p(zi), with p(zi)=plogis(zi.zi.intercept+zi.zi.treatment.250ppb)) with the expected outcome of the fixed effect model.
+
+Obtaining confidence intervals for these expectations can be hard however, as also discussed in https://github.com/glmmTMB/glmmTMB/issues/378 .
+
+Best regards,
+
+Koen
+
+Op wo 27 mrt. 2019 om 17:08 schreef siviterharry via TMB Users <tmb-...@googlegroups.com>:
+
+> I am using glmmTMB to look at the data below. Egg number is the variable I am interested and the ppb refer to a pesticide concentration.
+>
+>
+>
+>
+>
+>
+>
+> A hurdle approach is clearly the right approach to use for this data (I am interested in both the zero/count outputs) and thus the code used is;
+>
+>
+>
+> full_model<-glmmTMB(egg_number~treatment+(1|original_colony),data = colony_data, ziformula=~.,family=truncated_poisson)
+>
+> M0<-glmmTMB(egg_number~1+(1|original_colony),data = colony_data, ziformula=~.,family=truncated_poisson)
+>
+> model.sel(full_model,M0)
+>
+> summary(full_model)
+>
+> confint(full_model)
+>
+>
+>
+> Everything runs fine and the results are as expected but when plotting the confidence intervals using the confint function the estimates for the zero inflated part of the model at 250ppb are positive (see below, highlighted yellow)
+>
+>                                                2.5 %      97.5 %    Estimate
+>
+> cond.(Intercept)                          2.79742862  3.04169246  2.91956054
+>
+> cond.treatmentb.5ppb                     -0.31039812 -0.01374274 -0.16207043
+>
+> cond.treatmentc.10ppb                    -0.23927447  0.04183210 -0.09872118
+>
+> cond.treatmentd.250ppb                   -1.91255944 -0.69548880 -1.30402412
+>
+> original_colony.cond.Std.Dev.(Intercept)  0.04105453  0.22809239  0.09676893
+>
+> zi.zi~(Intercept)                        -3.02949098 -0.02523687 -1.52736392
+>
+> zi.zi~treatmentb.5ppb                    -0.45068969  2.23628979  0.89280005
+>
+> zi.zi~treatmentc.10ppb                   -0.88815643  1.84441758  0.47813058
+>
+> zi.zi~treatmentd.250ppb                   2.81994191  6.93370741  4.87682466
+>
+> original_colony.zi.Std.Dev.(Intercept)    0.69680373  3.04478442  1.45657720
+>
+>
+>
+> Given the results (only one positive value) for 250pbb this seems odd to me, as surly you would expect it to be a negative value? I have made several mock data sets and find the same result every time. Is this something to do with how this package reads the data or should I be worried about it? Any advice of suggestions would be much appreciated!
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/166004e3-d2b1-47d8-bba8-97fc50bdbbbb%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/166004e3-d2b1-47d8-bba8-97fc50bdbbbb%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u395bdca538bcae5d at groups.google.com  Thu Mar 28 16:18:52 2019
+From: u395bdca538bcae5d at groups.google.com (Cole Monnahan [mon...@uw.edu])
+Date: Thu, 28 Mar 2019 16:18:52 +0000
+Subject: Re: Large values for gradient of Latent Variable Model
+Message-ID: <caasF_WUtNU.4GthxJnvBQAJ@tmb-users.groups.google.com>
+In-Reply-To: <caasF_WUtNU.whAxzZOoCwAJ@tmb-users.groups.google.com>
+References: <caasF_WUtNU.8SoXjFveCQAJ@tmb-users.groups.google.com> <caasF_WUtNU.whAxzZOoCwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/caasF_WUtNU/m/4GthxJnvBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+For those curious I ran MCMC on this. I think I'm having similar issues with my own model so I wanted to look deeper into this. Several parameters are bimodal in MCMC and it's easy to see why. Since b1 is so small a value of u=2 and u=-2 will lead to the same prediction. I've attached an output plot showing the behavior. So it seems it's not a LA-specific problem, but rather an ill-posed model more generally.
+
+On Wednesday, March 13, 2019 at 3:16:36 AM UTC-7, Bert van der Veen wrote:
+> Thanks for taking the time to answer, Kasper. I'll have a look at other options and will consider you advice w.r.t. using MCMC.
+>
+> On Friday, 8 March 2019 14:00:42 UTC+1, Kasper Kristensen wrote:
+> > The problem you experience occurs because it is possible to choose the outer parameters in a way such that the inner problem looks like a 4th order polynomial without the 2nd order term.
+> > In this situation you are essentially integrating something like exp(-u^4) using the Laplace approximation. The result will be infinity, i.e. the outer optimization problem gets infinite reward by going into the bad parts of the parameter space where the Laplace approximation is inaccurate!
+> > You'll see the negative log likelihood function has a ridge where it is most inaccurate (that's why you get the large gradients):
+> >
+> > prof <- tmbprofile(model, 1, slice=TRUE, ytol=20)
+> > plot(prof)
+> >
+> >
+> > It is likely that in the future TMB will be able to handle your example using different integration techniques. For now the only easy option seems to be MCMC, e.g.:
+> >
+> > library(tmbstan)
+> > fit <- tmbstan(model)
+> > plot(fit)
+> >
+> > FWIW, another example with the same symptoms is given here: https://github.com/kaskr/laplace_accuracy
+> >
+> >
+> > On Thursday, March 7, 2019 at 7:36:27 PM UTC+1, Bert van der Veen wrote:
+> > > Dear all,
+> > >
+> > > I'm attempting to fit a latent variable model with TMB, that includes a second-order polynomial on the latent variable. However, on convergence the gradient is not zero.
+> > >
+> > > Here's example code for a univariate case
+> > >
+> > > #include <TMB.hpp>
+> > >
+> > > template<class Type>
+> > > Type objective_function<Type>::operator() ()
+> > > {
+> > >   //declares all data and parameters used
+> > >   DATA_VECTOR(y);
+> > >   DATA_VECTOR(x);
+> > >
+> > >   PARAMETER(b);
+> > >   PARAMETER(b1);
+> > >   PARAMETER(b2);
+> > >
+> > >   //latent variables, u, are treated as parameters
+> > >   PARAMETER_VECTOR(u);
+> > >
+> > >   int n = y.rows();
+> > >
+> > >   vector<Type> eta(n);
+> > >
+> > >   Type nll = 0.0; // initial value of log-likelihood
+> > >
+> > >   for (int i=0; i<n; i++) {
+> > >   eta(i) = x(i)*b + u(i)*b1 + pow(u(i),2)*b2;
+> > >   }
+> > >
+> > >   //latent variable is assumed to be from N(0,1)
+> > >
+> > >     for (int i=0; i<n; i++) {
+> > >       nll -= dnorm(u(i),Type(0),Type(1),true);
+> > >     }
+> > >
+> > >     for (int i=0; i<n; i++) {
+> > >       nll -= dpois(y(i), exp(eta(i)), true);
+> > >     }
+> > >   return nll;
+> > > }
+> > >
+> > >
+> > > And the R code to simulate some data and call TMB
+> > >
+> > > library("TMB")
+> > > compile("lvm_poisson_quadratic_example.cpp")
+> > > dyn.load(dynlib("lvm_poisson_quadratic_example"))
+> > >
+> > > #Simulate some univariate data
+> > > set.seed(07-03-2019)
+> > > b <- rnorm(1,1); u <- rnorm(20); b1 <- rnorm(1,1); b2 <- rnorm(1)
+> > >
+> > > #True mean
+> > > eta <- b + u*b1 + u^2*b2
+> > > y <- round(exp(eta),0)
+> > >
+> > > #Let TMB do its magic
+> > > model <- TMB::MakeADFun(
+> > >   data = list(y = y, x = rep(1,length(y))),
+> > >   parameters = list(b = b, b1 = b1, b2 = b2, u = u),
+> > >   random = c("u"), DLL = "lvm_poisson_quadratic_example")
+> > >
+> > > #Estimate the parameters
+> > > fit <- optim(model$par, model$fn, model$gr,method="BFGS",control = list(trace=T,maxit=1000))
+> > >
+> > > #check gradient
+> > > model$gr(fit$par)
+> > >
+> > > This results to the values -54597583, 720315525 and 37266208 for the gradient. Any feedback or suggestions will be greatly appreciated!
+> > >
+> > >
+
+From u395bdca538bcae5d at groups.google.com  Thu Mar 28 16:48:05 2019
+From: u395bdca538bcae5d at groups.google.com (Cole Monnahan)
+Date: Thu, 28 Mar 2019 16:48:05 +0000
+Subject: Re: [TMB users] Re: NA/NaN warning
+Message-ID: <h1VM7bjzTcA.yUeemLdFAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <h1VM7bjzTcA._7KWW-AWEQAJ@tmb-users.groups.google.com>
+References: <h1VM7bjzTcA.zXn0iUmPDAAJ@tmb-users.groups.google.com> <h1VM7bjzTcA._7KWW-AWEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/h1VM7bjzTcA/m/yUeemLdFAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Craig, thanks for following up. That is indeed a good tip and I just used it today. However I had something strange happen. When the model crashes with NaN gradient
+
+Error in nlminb(start = startpar, objective = fn, gradient = gr, control = control,  :
+
+  (converted from warning) NA/NaN function evaluation
+
+I then pass that last.par through and as expected get NaN for both fn and gr
+
+all <- Obj$env$last.par
+fixed <- all[-Obj$env$random]
+Obj$fn(fixed)
+Obj$gr(fixed)
+
+However, when I run the report and extract the objective function (jnll) it is not NaN!
+
+> Obj$report(all)$jnll
+[1] 70987.23
+
+This NLL is about what the starting values are, i.e., not great but not outrageous. How is it possible that fn() returns NaN but report()$nll is valid? I assume there is something weird going on with the LA? When I take the trace output and put it back through the model to get a fn and max(abs(gr)) values the NLL decreases as expected but the gradients are not reliable.
+
+I'm experimenting with MCMC but thought I'd ask if anyone else has experienced such strange behavior.
+
+On Wed, Feb 6, 2019 at 8:36 PM Craig Marsh <craig....@gmail.com> wrote:
+
+> Thought I would comment on this for future users, if you want to find the combination of parameters that cause a NA/NaN during an optimization I have I used the following code.
+>
+>
+> options(warn = 2); # any warning gets upgraded to an error and so will kick out of optim() or nlminb() if encountered.
+> obj = MakeADFun(...)
+> opt = nlminb(obj$par, obj$fn, obj$gr)
+> # Error in nlminb(mod_2$par, mod_2$fn, mod_2$gr ...)
+> #(converted from warning) NA/NaN function evaluation
+> obj$env$last.par
+>
+>
+>
+>
+>
+>
+> On Wed, Aug 8, 2018 at 7:41 PM Hans Skaug <hsk...@gmail.com> wrote:
+> > I agree. On its way to the minimum, nlminb() visits some part of the parameter space where the objective
+> > function is not well defined. This is not a problem if convergence in the end is OK. I guess
+> > tracepar = TRUE can help you find out for which parameter value this happened, and hence
+> > teach you something about the structure of your model.
+> >
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/48a95cf5-0791-465c-817f-2d3851b7d18e%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/48a95cf5-0791-465c-817f-2d3851b7d18e%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/CAHwSJtbLTuraMtcAqr5pPCV1AjhvCG_6DxnaaWEVkYYYFyntHg%40mail.gmail.com <https://groups.google.com/d/msgid/tmb-users/CAHwSJtbLTuraMtcAqr5pPCV1AjhvCG_6DxnaaWEVkYYYFyntHg%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u6cf4f730b8d1254e at groups.google.com  Thu Mar 28 16:53:17 2019
+From: u6cf4f730b8d1254e at groups.google.com (Bert van der Veen)
+Date: Thu, 28 Mar 2019 16:53:17 +0000
+Subject: Re: Large values for gradient of Latent Variable Model
+Message-ID: <caasF_WUtNU.G8vXjXrxBQAJ@tmb-users.groups.google.com>
+In-Reply-To: <caasF_WUtNU.8SoXjFveCQAJ@tmb-users.groups.google.com>
+References: <caasF_WUtNU.8SoXjFveCQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/caasF_WUtNU/m/G8vXjXrxBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Although you're right about the example, the real (multivariate) model is run with sign constraints to prevent switching (and identifiability constraints)
+
+With constraints, the model runs just fine in MCMC.
+
+From u90b303eef43fd993 at groups.google.com  Thu Mar 28 17:46:28 2019
+From: u90b303eef43fd993 at groups.google.com (Kasper Kristensen)
+Date: Thu, 28 Mar 2019 17:46:28 +0000
+Subject: Re: [TMB users] Re: NA/NaN warning
+Message-ID: <h1VM7bjzTcA.D7x1KOdIAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <h1VM7bjzTcA._7KWW-AWEQAJ@tmb-users.groups.google.com>
+References: <h1VM7bjzTcA.zXn0iUmPDAAJ@tmb-users.groups.google.com> <h1VM7bjzTcA._7KWW-AWEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/h1VM7bjzTcA/m/D7x1KOdIAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Cole, the reason is that 'Obj$fn(fixed)' is the marginal likelihood obtained using the LA. LA returns NaN because the inner hessian matrix is singular (determinant=0). That's why this really is a problem with the LA: The marginal likelihood, determined by LA, becomes infinite when the outer parameters are tuned in a way such that singularity occurs. nlminb always ends up with a crazy value because it gets attracted by the worst possible point(s) in the parameter space where LA is most inaccurate!
+In contrast 'Obj$report(all)$jnll' returns the joint negative log likelihood which is finite. There is no contradiction.
+
+From: tmb-...@googlegroups.com <tmb-...@googlegroups.com> on behalf of Cole Monnahan <mon...@uw.edu>
+Sent: Thursday, March 28, 2019 5:47:38 PM
+To: Craig Marsh
+Cc: Hans Skaug; TMB Users
+Subject: Re: [TMB users] Re: NA/NaN warning
+
+Hi Craig, thanks for following up. That is indeed a good tip and I just used it today. However I had something strange happen. When the model crashes with NaN gradient
+
+Error in nlminb(start = startpar, objective = fn, gradient = gr, control = control,  :
+  (converted from warning) NA/NaN function evaluation
+
+I then pass that last.par through and as expected get NaN for both fn and gr
+
+all <- Obj$env$last.par
+fixed <- all[-Obj$env$random]
+Obj$fn(fixed)
+Obj$gr(fixed)
+
+However, when I run the report and extract the objective function (jnll) it is not NaN!
+
+> Obj$report(all)$jnll
+[1] 70987.23
+
+This NLL is about what the starting values are, i.e., not great but not outrageous. How is it possible that fn() returns NaN but report()$nll is valid? I assume there is something weird going on with the LA? When I take the trace output and put it back through the model to get a fn and max(abs(gr)) values the NLL decreases as expected but the gradients are not reliable.
+
+I'm experimenting with MCMC but thought I'd ask if anyone else has experienced such strange behavior.
+
+On Wed, Feb 6, 2019 at 8:36 PM Craig Marsh <craig....@gmail.com> wrote:
+> Thought I would comment on this for future users, if you want to find the combination of parameters that cause a NA/NaN during an optimization I have I used the following code.
+>
+>
+> options(warn = 2); # any warning gets upgraded to an error and so will kick out of optim() or nlminb() if encountered.
+> obj = MakeADFun(...)
+> opt = nlminb(obj$par, obj$fn, obj$gr)
+> # Error in nlminb(mod_2$par, mod_2$fn, mod_2$gr ...)
+> #(converted from warning) NA/NaN function evaluation
+> obj$env$last.par
+>
+>
+>
+>
+>
+>
+> On Wed, Aug 8, 2018 at 7:41 PM Hans Skaug <hsk...@gmail.com> wrote:
+> > I agree. On its way to the minimum, nlminb() visits some part of the parameter space where the objective
+> > function is not well defined. This is not a problem if convergence in the end is OK. I guess
+> > tracepar = TRUE can help you find out for which parameter value this happened, and hence
+> > teach you something about the structure of your model.
+> >
+> >
+> > --
+> > To post to this group, send email to  us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/48a95cf5-0791-465c-817f-2d3851b7d18e%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/48a95cf5-0791-465c-817f-2d3851b7d18e%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit  https://groups.google.com/d/optout.
+>
+> --
+> To post to this group, send email to  us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/CAHwSJtbLTuraMtcAqr5pPCV1AjhvCG_6DxnaaWEVkYYYFyntHg%40mail.gmail.com <https://groups.google.com/d/msgid/tmb-users/CAHwSJtbLTuraMtcAqr5pPCV1AjhvCG_6DxnaaWEVkYYYFyntHg%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> For more options, visit  https://groups.google.com/d/optout.
+
+--
+To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+---
+You received this message because you are subscribed to the Google Groups "TMB Users" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/CAHFpBEqwL49YmRGjJYm9FA%3DaAJ0X3x0%3D5tRaNFJxPBQ7VkYmpA%40mail.gmail.com <https://groups.google.com/d/msgid/tmb-users/CAHFpBEqwL49YmRGjJYm9FA%3DaAJ0X3x0%3D5tRaNFJxPBQ7VkYmpA%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+For more options, visit https://groups.google.com/d/optout.
+

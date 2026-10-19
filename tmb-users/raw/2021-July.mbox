@@ -1,0 +1,1179 @@
+From u9721e69203f06751 at groups.google.com  Thu Jul  8 21:51:21 2021
+From: u9721e69203f06751 at groups.google.com (Sam R)
+Date: Thu, 08 Jul 2021 21:51:21 +0000
+Subject: Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/0Gq4IdAPBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I have a question about how memory usage can be reduced when fitting smoothers with many basis dimensions. I'm working with a large spatial dataset (20000 points) and I'm using a thin-plate spline with 60 basis dimensions from mgcv:
+
+gam(y ~ s(easting,northing,bs='ts',k=60))
+
+Here's a simple version of the model code:
+
+#include <TMB.hpp>   //Links in the TMB libraries
+template<class Type>
+Type objective_function<Type>::operator() (){
+  using namespace density;
+  using namespace Eigen; //Needed for sparse structures
+
+  //2-D GAM
+
+  //Read data from R------------------
+  DATA_VECTOR(yield);                 // Response
+  DATA_MATRIX(smoothMat);             // Design matrix (basis dimensions with no intercept)
+  DATA_SPARSE_MATRIX(penaltyMat);     // Sparse penalty matrix from mgcv
+  DATA_INTEGER(penaltyDim);           // Dimensions of penalty matrix
+
+  //Read parameters from R------------
+  PARAMETER(b0);                      // Intercept
+  PARAMETER_VECTOR(smoothCoefs);      // Smooth coefficients
+  PARAMETER(log_lambda);              // Log penalization parameter
+  PARAMETER(log_sigma);               // log(SD) of measurement error
+
+  //Transform SD and penalization parameters
+  Type sigma = exp(log_sigma);
+  Type lambda = exp(log_lambda);
+
+  //Initialize objective function
+  Type nll=0;
+
+  // Penalization part ------------------------------------
+
+  //Uses penalization approach from pSplines.cpp (tmb_case_studies)
+  SparseMatrix<Type> S = lambda*penaltyMat; //Penalty term * Penalty matrix
+  nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+
+  // Main model -------------------------------------------
+  vector<Type> mu = b0 + smoothMat*smoothCoefs; //Expected value: mu = Intercept + model matrix %*% coefs
+
+  nll -= sum(dnorm(yield, mu, sigma, true)); //Decrement logLik
+
+  return nll; //Return likelihood
+}
+
+This model fits, but during the first run of obj$fn() the Optimizing Tape routine the memory usage spikes to about 16GB. Is there any way to reduce this? I've managed to fit similar spatial models in TMB using the R-INLA mesh approach, but they never have the same problems with memory usage.
+
+Thanks,
+Sam R
+
+From u472eb53ede066ba3 at groups.google.com  Fri Jul  9 07:35:39 2021
+From: u472eb53ede066ba3 at groups.google.com (Mark Clements)
+Date: Fri, 09 Jul 2021 07:35:39 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.Jdrc37IvBQAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/Jdrc37IvBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+As a naive question, what would happen if we replaced the line:
+
+  nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+
+with:
+
+  nll -= 0.5*(smoothCoefs * (S * smoothCoefs.matrix()).array()).sum();
+
+Sincerely, Mark.
+
+On 08/07/2021 23:51, Sam R wrote:
+
+> Hello,
+>
+> I have a question about how memory usage can be reduced when fitting smoothers with many basis dimensions. I'm working with a large spatial dataset (20000 points) and I'm using a thin-plate spline with 60 basis dimensions from mgcv:
+>
+> gam(y ~ s(easting,northing,bs='ts',k=60))
+>
+> Here's a simple version of the model code:
+>
+> #include <TMB.hpp>   //Links in the TMB libraries
+> template<class Type>
+> Type objective_function<Type>::operator() (){
+>   using namespace density;
+>   using namespace Eigen; //Needed for sparse structures
+>
+>   //2-D GAM
+>
+>   //Read data from R------------------
+>   DATA_VECTOR(yield);                 // Response
+>   DATA_MATRIX(smoothMat);             // Design matrix (basis dimensions with no intercept)
+>   DATA_SPARSE_MATRIX(penaltyMat);     // Sparse penalty matrix from mgcv
+>   DATA_INTEGER(penaltyDim);           // Dimensions of penalty matrix
+>
+>   //Read parameters from R------------
+>   PARAMETER(b0);                      // Intercept
+>   PARAMETER_VECTOR(smoothCoefs);      // Smooth coefficients
+>   PARAMETER(log_lambda);              // Log penalization parameter
+>   PARAMETER(log_sigma);               // log(SD) of measurement error
+>
+>   //Transform SD and penalization parameters
+>   Type sigma = exp(log_sigma);
+>   Type lambda = exp(log_lambda);
+>
+>   //Initialize objective function
+>   Type nll=0;
+>
+>   // Penalization part ------------------------------------
+>
+>   //Uses penalization approach from pSplines.cpp (tmb_case_studies)
+>   SparseMatrix<Type> S = lambda*penaltyMat; //Penalty term * Penalty matrix
+>   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+>
+>   // Main model -------------------------------------------
+>   vector<Type> mu = b0 + smoothMat*smoothCoefs; //Expected value: mu = Intercept + model matrix %*% coefs
+>
+>   nll -= sum(dnorm(yield, mu, sigma, true)); //Decrement logLik
+>
+>   return nll; //Return likelihood
+> }
+>
+> This model fits, but during the first run of  obj$fn() the Optimizing Tape routine the memory usage spikes to about 16GB. Is there any way to reduce this? I've managed to fit similar spatial models in TMB using the R-INLA mesh approach, but they never have the same problems with memory usage.
+>
+> Thanks,
+> Sam R
+
+> --
+> To post to this group, send email to  us...@tmb-project.org. Before posting, please check the wiki and issuetracker at  https://github.com/kaskr/adcomp/ <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgithub.com%2Fkaskr%2Fadcomp%2F&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739818755%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=XWus511I8YS%2BPdCr8DdJxckto7sG0hz0JFtalLJcwbc%3D&reserved=0>. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/326a8c1b-bc4e-4b65-91ed-329d9fef267bn%40googlegroups.com <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgroups.google.com%2Fd%2Fmsgid%2Ftmb-users%2F326a8c1b-bc4e-4b65-91ed-329d9fef267bn%2540googlegroups.com%3Futm_medium%3Demail%26utm_source%3Dfooter&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739828750%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=rf93Bbu1ZIuAD%2B7v%2BsEHENPLeF8mT7pnRR%2BvMCaFfxQ%3D&reserved=0>.
+
+När du skickar e-post till Karolinska Institutet (KI) innebär detta att KI kommer att behandla dina personuppgifter. Här finns information om hur KI behandlar personuppgifter <https://ki.se/medarbetare/integritetsskyddspolicy>.
+
+Sending email to Karolinska Institutet (KI) will result in KI processing your personal data. You can read more about KI’s processing of personal data here <https://ki.se/en/staff/data-protection-policy>.
+
+From ue5c7e56038437512 at groups.google.com  Fri Jul  9 12:48:39 2021
+From: ue5c7e56038437512 at groups.google.com (jcavieresg)
+Date: Fri, 09 Jul 2021 12:48:39 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.Nv1yVsdABQAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/Nv1yVsdABQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+Can you post a minimal example of your R code? Because I have adapted your template for simulated data in R and I have no problem with memory problem using:
+opt <- nlminb(obj$par, obj$fn, obj$gr)
+
+Cheers
+
+El viernes, 9 de julio de 2021 a las 3:35:39 UTC-4, mark.c...@ki.se escribió:
+>
+> As a naive question, what would happen if we replaced the line:
+>
+>   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+>
+> with:
+>
+>   nll -= 0.5*(smoothCoefs * (S * smoothCoefs.matrix()).array()).sum();
+>
+> Sincerely, Mark.
+> On 08/07/2021 23:51, Sam R wrote:
+> > Hello,
+> >
+> > I have a question about how memory usage can be reduced when fitting smoothers with many basis dimensions. I'm working with a large spatial dataset (20000 points) and I'm using a thin-plate spline with 60 basis dimensions from mgcv:
+> >
+> > gam(y ~ s(easting,northing,bs='ts',k=60))
+> >
+> > Here's a simple version of the model code:
+> >
+> > #include <TMB.hpp>   //Links in the TMB libraries
+> > template<class Type>
+> > Type objective_function<Type>::operator() (){
+> >   using namespace density;
+> >   using namespace Eigen; //Needed for sparse structures
+> >
+> >   //2-D GAM
+> >
+> >   //Read data from R------------------
+> >   DATA_VECTOR(yield);                 // Response
+> >   DATA_MATRIX(smoothMat);             // Design matrix (basis dimensions with no intercept)
+> >   DATA_SPARSE_MATRIX(penaltyMat);     // Sparse penalty matrix from mgcv
+> >   DATA_INTEGER(penaltyDim);           // Dimensions of penalty matrix
+> >
+> >   //Read parameters from R------------
+> >   PARAMETER(b0);                      // Intercept
+> >   PARAMETER_VECTOR(smoothCoefs);      // Smooth coefficients
+> >   PARAMETER(log_lambda);              // Log penalization parameter
+> >   PARAMETER(log_sigma);               // log(SD) of measurement error
+> >
+> >   //Transform SD and penalization parameters
+> >   Type sigma = exp(log_sigma);
+> >   Type lambda = exp(log_lambda);
+> >
+> >   //Initialize objective function
+> >   Type nll=0;
+> >
+> >   // Penalization part ------------------------------------
+> >
+> >   //Uses penalization approach from pSplines.cpp (tmb_case_studies)
+> >   SparseMatrix<Type> S = lambda*penaltyMat; //Penalty term * Penalty matrix
+> >   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+> >
+> >   // Main model -------------------------------------------
+> >   vector<Type> mu = b0 + smoothMat*smoothCoefs; //Expected value: mu = Intercept + model matrix %*% coefs
+> >
+> >   nll -= sum(dnorm(yield, mu, sigma, true)); //Decrement logLik
+> >
+> >   return nll; //Return likelihood
+> > }
+> >
+> > This model fits, but during the first run of  obj$fn() the Optimizing Tape routine the memory usage spikes to about 16GB. Is there any way to reduce this? I've managed to fit similar spatial models in TMB using the R-INLA mesh approach, but they never have the same problems with memory usage.
+> >
+> > Thanks,
+> > Sam R
+> > --
+> > To post to this group, send email to  us...@tmb-project.org. Before posting, please check the wiki and issuetracker at  https://github.com/kaskr/adcomp/ <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgithub.com%2Fkaskr%2Fadcomp%2F&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739818755%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=XWus511I8YS%2BPdCr8DdJxckto7sG0hz0JFtalLJcwbc%3D&reserved=0>. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/326a8c1b-bc4e-4b65-91ed-329d9fef267bn%40googlegroups.com <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgroups.google.com%2Fd%2Fmsgid%2Ftmb-users%2F326a8c1b-bc4e-4b65-91ed-329d9fef267bn%2540googlegroups.com%3Futm_medium%3Demail%26utm_source%3Dfooter&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739828750%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=rf93Bbu1ZIuAD%2B7v%2BsEHENPLeF8mT7pnRR%2BvMCaFfxQ%3D&reserved=0>.
+>
+>
+>
+> När du skickar e-post till Karolinska Institutet (KI) innebär detta att KI kommer att behandla dina personuppgifter. Här finns information om hur KI behandlar personuppgifter <https://ki.se/medarbetare/integritetsskyddspolicy>.
+>
+>
+> Sending email to Karolinska Institutet (KI) will result in KI processing your personal data. You can read more about KI’s processing of personal data here <https://ki.se/en/staff/data-protection-policy>.
+
+From u9721e69203f06751 at groups.google.com  Fri Jul  9 16:10:14 2021
+From: u9721e69203f06751 at groups.google.com (Sam R)
+Date: Fri, 09 Jul 2021 16:10:14 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.VmuXYsdLBQAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.Nv1yVsdABQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com> <HhIMeA4k_Ik.Nv1yVsdABQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/VmuXYsdLBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+Mark:
+
+I tried your approach for penalization, but the model goes through hundreds of iterations without convergence:
+...
+iter: 210  value: -6.7097e+123 mgc: 6.238772e+59 ustep: 0.9896908
+iter: 211  Error in iterate(par) : Newton dropout because inner gradient too steep.
+In addition: Warning message:
+  In nlminb(obj$par, obj$fn, obj$gr) : NA/NaN function evaluation
+iter: 1  value: -50130.75 mgc: 47.14993 ustep: 1
+...
+
+Javier:
+
+I've attached an R and TMB script that replicate the issue on my machine. Here's a screenshot of my memory usage during the process:
+
+Thanks,
+SR
+
+On Friday, July 9, 2021 at 6:48:39 AM UTC-6 jcavieresg wrote:
+> Hi!
+>
+> Can you post a minimal example of your R code? Because I have adapted your template for simulated data in R and I have no problem with memory problem using:
+> opt <- nlminb(obj$par, obj$fn, obj$gr)
+>
+> Cheers
+>
+> El viernes, 9 de julio de 2021 a las 3:35:39 UTC-4, mark.c...@ki.se escribió:
+> >
+> > As a naive question, what would happen if we replaced the line:
+> >
+> >   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+> >
+> > with:
+> >
+> >   nll -= 0.5*(smoothCoefs * (S * smoothCoefs.matrix()).array()).sum();
+> >
+> > Sincerely, Mark.
+> > On 08/07/2021 23:51, Sam R wrote:
+> > > Hello,
+> > >
+> > > I have a question about how memory usage can be reduced when fitting smoothers with many basis dimensions. I'm working with a large spatial dataset (20000 points) and I'm using a thin-plate spline with 60 basis dimensions from mgcv:
+> > >
+> > > gam(y ~ s(easting,northing,bs='ts',k=60))
+> > >
+> > > Here's a simple version of the model code:
+> > >
+> > > #include <TMB.hpp>   //Links in the TMB libraries
+> > > template<class Type>
+> > > Type objective_function<Type>::operator() (){
+> > >   using namespace density;
+> > >   using namespace Eigen; //Needed for sparse structures
+> > >
+> > >   //2-D GAM
+> > >
+> > >   //Read data from R------------------
+> > >   DATA_VECTOR(yield);                 // Response
+> > >   DATA_MATRIX(smoothMat);             // Design matrix (basis dimensions with no intercept)
+> > >   DATA_SPARSE_MATRIX(penaltyMat);     // Sparse penalty matrix from mgcv
+> > >   DATA_INTEGER(penaltyDim);           // Dimensions of penalty matrix
+> > >
+> > >   //Read parameters from R------------
+> > >   PARAMETER(b0);                      // Intercept
+> > >   PARAMETER_VECTOR(smoothCoefs);      // Smooth coefficients
+> > >   PARAMETER(log_lambda);              // Log penalization parameter
+> > >   PARAMETER(log_sigma);               // log(SD) of measurement error
+> > >
+> > >   //Transform SD and penalization parameters
+> > >   Type sigma = exp(log_sigma);
+> > >   Type lambda = exp(log_lambda);
+> > >
+> > >   //Initialize objective function
+> > >   Type nll=0;
+> > >
+> > >   // Penalization part ------------------------------------
+> > >
+> > >   //Uses penalization approach from pSplines.cpp (tmb_case_studies)
+> > >   SparseMatrix<Type> S = lambda*penaltyMat; //Penalty term * Penalty matrix
+> > >   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+> > >
+> > >   // Main model -------------------------------------------
+> > >   vector<Type> mu = b0 + smoothMat*smoothCoefs; //Expected value: mu = Intercept + model matrix %*% coefs
+> > >
+> > >   nll -= sum(dnorm(yield, mu, sigma, true)); //Decrement logLik
+> > >
+> > >   return nll; //Return likelihood
+> > > }
+> > >
+> > > This model fits, but during the first run of  obj$fn() the Optimizing Tape routine the memory usage spikes to about 16GB. Is there any way to reduce this? I've managed to fit similar spatial models in TMB using the R-INLA mesh approach, but they never have the same problems with memory usage.
+> > >
+> > > Thanks,
+> > > Sam R
+> > > --
+> > > To post to this group, send email to  us...@tmb-project.org. Before posting, please check the wiki and issuetracker at  https://github.com/kaskr/adcomp/ <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgithub.com%2Fkaskr%2Fadcomp%2F&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739818755%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=XWus511I8YS%2BPdCr8DdJxckto7sG0hz0JFtalLJcwbc%3D&reserved=0>. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/326a8c1b-bc4e-4b65-91ed-329d9fef267bn%40googlegroups.com <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgroups.google.com%2Fd%2Fmsgid%2Ftmb-users%2F326a8c1b-bc4e-4b65-91ed-329d9fef267bn%2540googlegroups.com%3Futm_medium%3Demail%26utm_source%3Dfooter&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739828750%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=rf93Bbu1ZIuAD%2B7v%2BsEHENPLeF8mT7pnRR%2BvMCaFfxQ%3D&reserved=0>.
+> >
+> >
+> >
+> > När du skickar e-post till Karolinska Institutet (KI) innebär detta att KI kommer att behandla dina personuppgifter. Här finns information om hur KI behandlar personuppgifter <https://ki.se/medarbetare/integritetsskyddspolicy>.
+> >
+> >
+> > Sending email to Karolinska Institutet (KI) will result in KI processing your personal data. You can read more about KI’s processing of personal data here <https://ki.se/en/staff/data-protection-policy>.
+
+From u9721e69203f06751 at groups.google.com  Fri Jul  9 16:28:41 2021
+From: u9721e69203f06751 at groups.google.com (Sam R)
+Date: Fri, 09 Jul 2021 16:28:41 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.WEiRK8lMBQAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.VmuXYsdLBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com> <HhIMeA4k_Ik.VmuXYsdLBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/WEiRK8lMBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Also, here's my R session info after the script ran, if that helps:
+
+R version 4.1.0 (2021-05-18)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: Ubuntu 20.04.2 LTS
+
+Matrix products: default
+BLAS:   /usr/lib/x86_64-linux-gnu/blas/libblas.so.3.9.0
+LAPACK: /usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.9.0
+
+locale:
+ [1] LC_CTYPE=en_CA.UTF-8       LC_NUMERIC=C               LC_TIME=en_CA.UTF-8        LC_COLLATE=en_CA.UTF-8     LC_MONETARY=en_CA.UTF-8    LC_MESSAGES=en_CA.UTF-8
+ [7] LC_PAPER=en_CA.UTF-8       LC_NAME=C                  LC_ADDRESS=C               LC_TELEPHONE=C             LC_MEASUREMENT=en_CA.UTF-8 LC_IDENTIFICATION=C
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base
+
+other attached packages:
+[1] ggplot2_3.3.3 TMB_1.7.20    mgcv_1.8-36   nlme_3.1-152
+
+loaded via a namespace (and not attached):
+ [1] magrittr_2.0.1   splines_4.1.0    tidyselect_1.1.1 munsell_0.5.0    colorspace_2.0-1 lattice_0.20-44  R6_2.5.0         rlang_0.4.11     fansi_0.5.0      dplyr_1.0.6
+[11] tools_4.1.0      grid_4.1.0       gtable_0.3.0     utf8_1.2.1       DBI_1.1.1        withr_2.4.2      ellipsis_0.3.2   digest_0.6.27    assertthat_0.2.1 tibble_3.1.2
+[21] lifecycle_1.0.0  crayon_1.4.1     Matrix_1.3-4     farver_2.1.0     purrr_0.3.4      vctrs_0.3.8      glue_1.4.2       labeling_0.4.2   compiler_4.1.0   pillar_1.6.1
+[31] generics_0.1.0   scales_1.1.1     pkgconfig_2.0.3
+
+On Friday, July 9, 2021 at 10:10:14 AM UTC-6 Sam R wrote:
+> Hi all,
+>
+> Mark:
+>
+> I tried your approach for penalization, but the model goes through hundreds of iterations without convergence:
+> ...
+> iter: 210  value: -6.7097e+123 mgc: 6.238772e+59 ustep: 0.9896908
+> iter: 211  Error in iterate(par) : Newton dropout because inner gradient too steep.
+> In addition: Warning message:
+>   In nlminb(obj$par, obj$fn, obj$gr) : NA/NaN function evaluation
+> iter: 1  value: -50130.75 mgc: 47.14993 ustep: 1
+> ...
+>
+> Javier:
+>
+> I've attached an R and TMB script that replicate the issue on my machine. Here's a screenshot of my memory usage during the process:
+>
+>
+>
+> Thanks,
+> SR
+>
+> On Friday, July 9, 2021 at 6:48:39 AM UTC-6 jcavieresg wrote:
+> > Hi!
+> >
+> > Can you post a minimal example of your R code? Because I have adapted your template for simulated data in R and I have no problem with memory problem using:
+> > opt <- nlminb(obj$par, obj$fn, obj$gr)
+> >
+> > Cheers
+> >
+> > El viernes, 9 de julio de 2021 a las 3:35:39 UTC-4, mark.c...@ki.se escribió:
+> > >
+> > > As a naive question, what would happen if we replaced the line:
+> > >
+> > >   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+> > >
+> > > with:
+> > >
+> > >   nll -= 0.5*(smoothCoefs * (S * smoothCoefs.matrix()).array()).sum();
+> > >
+> > > Sincerely, Mark.
+> > > On 08/07/2021 23:51, Sam R wrote:
+> > > > Hello,
+> > > >
+> > > > I have a question about how memory usage can be reduced when fitting smoothers with many basis dimensions. I'm working with a large spatial dataset (20000 points) and I'm using a thin-plate spline with 60 basis dimensions from mgcv:
+> > > >
+> > > > gam(y ~ s(easting,northing,bs='ts',k=60))
+> > > >
+> > > > Here's a simple version of the model code:
+> > > >
+> > > > #include <TMB.hpp>   //Links in the TMB libraries
+> > > > template<class Type>
+> > > > Type objective_function<Type>::operator() (){
+> > > >   using namespace density;
+> > > >   using namespace Eigen; //Needed for sparse structures
+> > > >
+> > > >   //2-D GAM
+> > > >
+> > > >   //Read data from R------------------
+> > > >   DATA_VECTOR(yield);                 // Response
+> > > >   DATA_MATRIX(smoothMat);             // Design matrix (basis dimensions with no intercept)
+> > > >   DATA_SPARSE_MATRIX(penaltyMat);     // Sparse penalty matrix from mgcv
+> > > >   DATA_INTEGER(penaltyDim);           // Dimensions of penalty matrix
+> > > >
+> > > >   //Read parameters from R------------
+> > > >   PARAMETER(b0);                      // Intercept
+> > > >   PARAMETER_VECTOR(smoothCoefs);      // Smooth coefficients
+> > > >   PARAMETER(log_lambda);              // Log penalization parameter
+> > > >   PARAMETER(log_sigma);               // log(SD) of measurement error
+> > > >
+> > > >   //Transform SD and penalization parameters
+> > > >   Type sigma = exp(log_sigma);
+> > > >   Type lambda = exp(log_lambda);
+> > > >
+> > > >   //Initialize objective function
+> > > >   Type nll=0;
+> > > >
+> > > >   // Penalization part ------------------------------------
+> > > >
+> > > >   //Uses penalization approach from pSplines.cpp (tmb_case_studies)
+> > > >   SparseMatrix<Type> S = lambda*penaltyMat; //Penalty term * Penalty matrix
+> > > >   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+> > > >
+> > > >   // Main model -------------------------------------------
+> > > >   vector<Type> mu = b0 + smoothMat*smoothCoefs; //Expected value: mu = Intercept + model matrix %*% coefs
+> > > >
+> > > >   nll -= sum(dnorm(yield, mu, sigma, true)); //Decrement logLik
+> > > >
+> > > >   return nll; //Return likelihood
+> > > > }
+> > > >
+> > > > This model fits, but during the first run of  obj$fn() the Optimizing Tape routine the memory usage spikes to about 16GB. Is there any way to reduce this? I've managed to fit similar spatial models in TMB using the R-INLA mesh approach, but they never have the same problems with memory usage.
+> > > >
+> > > > Thanks,
+> > > > Sam R
+> > > > --
+> > > > To post to this group, send email to  us...@tmb-project.org. Before posting, please check the wiki and issuetracker at  https://github.com/kaskr/adcomp/ <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgithub.com%2Fkaskr%2Fadcomp%2F&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739818755%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=XWus511I8YS%2BPdCr8DdJxckto7sG0hz0JFtalLJcwbc%3D&reserved=0>. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > > To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/326a8c1b-bc4e-4b65-91ed-329d9fef267bn%40googlegroups.com <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgroups.google.com%2Fd%2Fmsgid%2Ftmb-users%2F326a8c1b-bc4e-4b65-91ed-329d9fef267bn%2540googlegroups.com%3Futm_medium%3Demail%26utm_source%3Dfooter&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739828750%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=rf93Bbu1ZIuAD%2B7v%2BsEHENPLeF8mT7pnRR%2BvMCaFfxQ%3D&reserved=0>.
+> > >
+> > >
+> > >
+> > > När du skickar e-post till Karolinska Institutet (KI) innebär detta att KI kommer att behandla dina personuppgifter. Här finns information om hur KI behandlar personuppgifter <https://ki.se/medarbetare/integritetsskyddspolicy>.
+> > >
+> > >
+> > > Sending email to Karolinska Institutet (KI) will result in KI processing your personal data. You can read more about KI’s processing of personal data here <https://ki.se/en/staff/data-protection-policy>.
+
+From u02e03030784aa6a7 at groups.google.com  Sun Jul 11 07:17:32 2021
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Sun, 11 Jul 2021 07:17:32 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.9V1x6t7LBQAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/9V1x6t7LBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I suspect that the large memory use is due to "model matrix %*% coefs",
+and not the penalty term (dim 60 is not large). You can check if
+I am right by reducing the number of observations, but keeping the number of basis functions.
+
+The only way around this problem that I see is to feed the observations
+in batches to the objective function. You then need to write
+an R-wrapper that accumulates the objective and gradient values.
+There are various ways of implementing this on the c++ side. One
+simple is to add "start" and "stop" arguments to determine a batch.
+(The penalty should of course only be calculated once, for instance when start==0)
+
+Hans
+
+On Friday, July 9, 2021 at 6:28:41 PM UTC+2 samuel.vj...@gmail.com wrote:
+> Also, here's my R session info after the script ran, if that helps:
+>
+> R version 4.1.0 (2021-05-18)
+> Platform: x86_64-pc-linux-gnu (64-bit)
+> Running under: Ubuntu 20.04.2 LTS
+>
+> Matrix products: default
+> BLAS:   /usr/lib/x86_64-linux-gnu/blas/libblas.so.3.9.0
+> LAPACK: /usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.9.0
+>
+> locale:
+>  [1] LC_CTYPE=en_CA.UTF-8       LC_NUMERIC=C               LC_TIME=en_CA.UTF-8        LC_COLLATE=en_CA.UTF-8     LC_MONETARY=en_CA.UTF-8    LC_MESSAGES=en_CA.UTF-8
+>  [7] LC_PAPER=en_CA.UTF-8       LC_NAME=C                  LC_ADDRESS=C               LC_TELEPHONE=C             LC_MEASUREMENT=en_CA.UTF-8 LC_IDENTIFICATION=C
+>
+> attached base packages:
+> [1] stats     graphics  grDevices utils     datasets  methods   base
+>
+> other attached packages:
+> [1] ggplot2_3.3.3 TMB_1.7.20    mgcv_1.8-36   nlme_3.1-152
+>
+> loaded via a namespace (and not attached):
+>  [1] magrittr_2.0.1   splines_4.1.0    tidyselect_1.1.1 munsell_0.5.0    colorspace_2.0-1 lattice_0.20-44  R6_2.5.0         rlang_0.4.11     fansi_0.5.0      dplyr_1.0.6
+> [11] tools_4.1.0      grid_4.1.0       gtable_0.3.0     utf8_1.2.1       DBI_1.1.1        withr_2.4.2      ellipsis_0.3.2   digest_0.6.27    assertthat_0.2.1 tibble_3.1.2
+> [21] lifecycle_1.0.0  crayon_1.4.1     Matrix_1.3-4     farver_2.1.0     purrr_0.3.4      vctrs_0.3.8      glue_1.4.2       labeling_0.4.2   compiler_4.1.0   pillar_1.6.1
+> [31] generics_0.1.0   scales_1.1.1     pkgconfig_2.0.3
+>
+> On Friday, July 9, 2021 at 10:10:14 AM UTC-6 Sam R wrote:
+> > Hi all,
+> >
+> > Mark:
+> >
+> > I tried your approach for penalization, but the model goes through hundreds of iterations without convergence:
+> > ...
+> > iter: 210  value: -6.7097e+123 mgc: 6.238772e+59 ustep: 0.9896908
+> > iter: 211  Error in iterate(par) : Newton dropout because inner gradient too steep.
+> > In addition: Warning message:
+> >   In nlminb(obj$par, obj$fn, obj$gr) : NA/NaN function evaluation
+> > iter: 1  value: -50130.75 mgc: 47.14993 ustep: 1
+> > ...
+> >
+> > Javier:
+> >
+> > I've attached an R and TMB script that replicate the issue on my machine. Here's a screenshot of my memory usage during the process:
+> >
+> >
+> >
+> > Thanks,
+> > SR
+> >
+> > On Friday, July 9, 2021 at 6:48:39 AM UTC-6 jcavieresg wrote:
+> > > Hi!
+> > >
+> > > Can you post a minimal example of your R code? Because I have adapted your template for simulated data in R and I have no problem with memory problem using:
+> > > opt <- nlminb(obj$par, obj$fn, obj$gr)
+> > >
+> > > Cheers
+> > >
+> > > El viernes, 9 de julio de 2021 a las 3:35:39 UTC-4, mark.c...@ki.se escribió:
+> > > >
+> > > > As a naive question, what would happen if we replaced the line:
+> > > >
+> > > >   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+> > > >
+> > > > with:
+> > > >
+> > > >   nll -= 0.5*(smoothCoefs * (S * smoothCoefs.matrix()).array()).sum();
+> > > >
+> > > > Sincerely, Mark.
+> > > > On 08/07/2021 23:51, Sam R wrote:
+> > > > > Hello,
+> > > > >
+> > > > > I have a question about how memory usage can be reduced when fitting smoothers with many basis dimensions. I'm working with a large spatial dataset (20000 points) and I'm using a thin-plate spline with 60 basis dimensions from mgcv:
+> > > > >
+> > > > > gam(y ~ s(easting,northing,bs='ts',k=60))
+> > > > >
+> > > > > Here's a simple version of the model code:
+> > > > >
+> > > > > #include <TMB.hpp>   //Links in the TMB libraries
+> > > > > template<class Type>
+> > > > > Type objective_function<Type>::operator() (){
+> > > > >   using namespace density;
+> > > > >   using namespace Eigen; //Needed for sparse structures
+> > > > >
+> > > > >   //2-D GAM
+> > > > >
+> > > > >   //Read data from R------------------
+> > > > >   DATA_VECTOR(yield);                 // Response
+> > > > >   DATA_MATRIX(smoothMat);             // Design matrix (basis dimensions with no intercept)
+> > > > >   DATA_SPARSE_MATRIX(penaltyMat);     // Sparse penalty matrix from mgcv
+> > > > >   DATA_INTEGER(penaltyDim);           // Dimensions of penalty matrix
+> > > > >
+> > > > >   //Read parameters from R------------
+> > > > >   PARAMETER(b0);                      // Intercept
+> > > > >   PARAMETER_VECTOR(smoothCoefs);      // Smooth coefficients
+> > > > >   PARAMETER(log_lambda);              // Log penalization parameter
+> > > > >   PARAMETER(log_sigma);               // log(SD) of measurement error
+> > > > >
+> > > > >   //Transform SD and penalization parameters
+> > > > >   Type sigma = exp(log_sigma);
+> > > > >   Type lambda = exp(log_lambda);
+> > > > >
+> > > > >   //Initialize objective function
+> > > > >   Type nll=0;
+> > > > >
+> > > > >   // Penalization part ------------------------------------
+> > > > >
+> > > > >   //Uses penalization approach from pSplines.cpp (tmb_case_studies)
+> > > > >   SparseMatrix<Type> S = lambda*penaltyMat; //Penalty term * Penalty matrix
+> > > > >   nll -= 0.5*penaltyDim*log_lambda - 0.5*GMRF(S).Quadform(smoothCoefs);
+> > > > >
+> > > > >   // Main model -------------------------------------------
+> > > > >   vector<Type> mu = b0 + smoothMat*smoothCoefs; //Expected value: mu = Intercept + model matrix %*% coefs
+> > > > >
+> > > > >   nll -= sum(dnorm(yield, mu, sigma, true)); //Decrement logLik
+> > > > >
+> > > > >   return nll; //Return likelihood
+> > > > > }
+> > > > >
+> > > > > This model fits, but during the first run of  obj$fn() the Optimizing Tape routine the memory usage spikes to about 16GB. Is there any way to reduce this? I've managed to fit similar spatial models in TMB using the R-INLA mesh approach, but they never have the same problems with memory usage.
+> > > > >
+> > > > > Thanks,
+> > > > > Sam R
+> > > > > --
+> > > > > To post to this group, send email to  us...@tmb-project.org. Before posting, please check the wiki and issuetracker at  https://github.com/kaskr/adcomp/ <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgithub.com%2Fkaskr%2Fadcomp%2F&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739818755%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=XWus511I8YS%2BPdCr8DdJxckto7sG0hz0JFtalLJcwbc%3D&reserved=0>. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > > > To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/326a8c1b-bc4e-4b65-91ed-329d9fef267bn%40googlegroups.com <https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgroups.google.com%2Fd%2Fmsgid%2Ftmb-users%2F326a8c1b-bc4e-4b65-91ed-329d9fef267bn%2540googlegroups.com%3Futm_medium%3Demail%26utm_source%3Dfooter&data=04%...%40ki.se%7C6e0d9ceecad24b2cd33008d9425a8760%7Cbff7eef1cf4b4f32be3da1dda043c05d%7C0%7C0%7C637613779739828750%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C2000&sdata=rf93Bbu1ZIuAD%2B7v%2BsEHENPLeF8mT7pnRR%2BvMCaFfxQ%3D&reserved=0>.
+> > > >
+> > > >
+> > > >
+> > > > När du skickar e-post till Karolinska Institutet (KI) innebär detta att KI kommer att behandla dina personuppgifter. Här finns information om hur KI behandlar personuppgifter <https://ki.se/medarbetare/integritetsskyddspolicy>.
+> > > >
+> > > >
+> > > > Sending email to Karolinska Institutet (KI) will result in KI processing your personal data. You can read more about KI’s processing of personal data here <https://ki.se/en/staff/data-protection-policy>.
+
+From u02e03030784aa6a7 at groups.google.com  Sun Jul 11 10:22:00 2021
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Sun, 11 Jul 2021 10:22:00 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.0Me30-_VBQAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/0Me30-_VBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+... in order to get any gain in memory use you probably have to use  DATA_UPDATE
+
+http://kaskr.github.io/adcomp/group__macros.html#ga3a3716228d46fbe32e23856b2f53be8d
+
+I have not tried this whole approach myself, so you must be prepared to do
+the required reading and experimentation if you want to go in this direction.
+
+From ue5c7e56038437512 at groups.google.com  Mon Jul 12 15:09:38 2021
+From: ue5c7e56038437512 at groups.google.com (jcavieresg)
+Date: Mon, 12 Jul 2021 15:09:38 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.KqlFhzY0BgAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/KqlFhzY0BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+I have check your code and you are right, the memory allocated is very high (in my case the memory is almost complete with 15 gb (I have 16gb of RAM in my laptop) for the 20000 observations. It is obvious because you are estimating one coefficient for each observation.
+However, if you don't specify the knots in the gam function (gam(y~s(E,N,bs='ts'),data=dat,fit=FALSE)) the memory allocated is reduced notably for the same set of 20000 observations (from 6gb to 10gb).
+
+I don't remember exactly how internally works the library 'mgcv' to select the optimum number of knots so you should check the differences for both options (for example, the error between your first model (knots = 60) and your second model (without specify the knots in the gam function).
+
+Cheers
+
+El domingo, 11 de julio de 2021 a las 6:22:00 UTC-4, Hans Skaug escribió:
+> ... in order to get any gain in memory use you probably have to use  DATA_UPDATE
+>
+> http://kaskr.github.io/adcomp/group__macros.html#ga3a3716228d46fbe32e23856b2f53be8d
+>
+> I have not tried this whole approach myself, so you must be prepared to do
+> the required reading and experimentation if you want to go in this direction.
+
+From u258b98968d0ad8b9 at groups.google.com  Mon Jul 12 20:51:02 2021
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Mon, 12 Jul 2021 20:51:02 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.rgL7w9dGBgAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.KqlFhzY0BgAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com> <HhIMeA4k_Ik.KqlFhzY0BgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/rgL7w9dGBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Just to let you know there's a new feature in the upcoming TMB version (github branch 'TMB_experimental') that can reduce memory usage for models with symptoms similar to the ones described in this thread. Currently the feature has to be enabled by setting a flag:
+
+TMB::config(tmbad.sparse_hessian_compress = 1)
+
+which should reduce memory substantially, although at the cost of a minor slowdown.
+
+On Monday, July 12, 2021 at 5:09:38 PM UTC+2 jcavieresg wrote:
+> Hi!
+>
+> I have check your code and you are right, the memory allocated is very high (in my case the memory is almost complete with 15 gb (I have 16gb of RAM in my laptop) for the 20000 observations. It is obvious because you are estimating one coefficient for each observation.
+> However, if you don't specify the knots in the gam function (gam(y~s(E,N,bs='ts'),data=dat,fit=FALSE)) the memory allocated is reduced notably for the same set of 20000 observations (from 6gb to 10gb).
+>
+> I don't remember exactly how internally works the library 'mgcv' to select the optimum number of knots so you should check the differences for both options (for example, the error between your first model (knots = 60) and your second model (without specify the knots in the gam function).
+>
+> Cheers
+>
+>
+>
+> El domingo, 11 de julio de 2021 a las 6:22:00 UTC-4, Hans Skaug escribió:
+> > ... in order to get any gain in memory use you probably have to use  DATA_UPDATE
+> >
+> > http://kaskr.github.io/adcomp/group__macros.html#ga3a3716228d46fbe32e23856b2f53be8d
+> >
+> > I have not tried this whole approach myself, so you must be prepared to do
+> > the required reading and experimentation if you want to go in this direction.
+
+From u9721e69203f06751 at groups.google.com  Tue Jul 13 23:45:25 2021
+From: u9721e69203f06751 at groups.google.com (Sam R)
+Date: Tue, 13 Jul 2021 23:45:25 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.k0dmETALAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/k0dmETALAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+Mark -----------------------------------------
+
+I tried your approach again with nll += rather than nll -=. The model ran and converged and the results were identical to the penalty approach I used, both in terms of results and the spike in memory.
+
+Hans -------------------------------------------
+
+Yes, it's due to the large number of observations. When you thin the dataset to only 1000 samples the memory usage doesn't spike. I could do this with my own dataset if I have to, but I'd prefer to use all the available data if possible.
+
+I think I understand the basic premise of the "batch" approach, at least from the c++ side. I think I would split the model matrix into smaller matrices using some kind of index, do the matrix * coef multiplication on each matrix separately, then add them to the likelihood at the end. However, I'm unsure of how I'd accomplish this from the R side; are there any examples of others that have managed to do something similar?
+
+Javier -------------------------------------------
+
+The reason that the model runs more quickly when you don't specify k=60 is that the default number of basis dimensions for a 2D GAM is 30 (i.e. k=30).
+
+Thanks,
+SR
+
+On Monday, July 12, 2021 at 2:51:02 PM UTC-6 kasper.k...@gmail.com wrote:
+>
+> Just to let you know there's a new feature in the upcoming TMB version (github branch 'TMB_experimental') that can reduce memory usage for models with symptoms similar to the ones described in this thread. Currently the feature has to be enabled by setting a flag:
+>
+> TMB::config(tmbad.sparse_hessian_compress = 1)
+>
+> which should reduce memory substantially, although at the cost of a minor slowdown.
+>
+> On Monday, July 12, 2021 at 5:09:38 PM UTC+2 jcavieresg wrote:
+> > Hi!
+> >
+> > I have check your code and you are right, the memory allocated is very high (in my case the memory is almost complete with 15 gb (I have 16gb of RAM in my laptop) for the 20000 observations. It is obvious because you are estimating one coefficient for each observation.
+> > However, if you don't specify the knots in the gam function (gam(y~s(E,N,bs='ts'),data=dat,fit=FALSE)) the memory allocated is reduced notably for the same set of 20000 observations (from 6gb to 10gb).
+> >
+> > I don't remember exactly how internally works the library 'mgcv' to select the optimum number of knots so you should check the differences for both options (for example, the error between your first model (knots = 60) and your second model (without specify the knots in the gam function).
+> >
+> > Cheers
+> >
+> >
+> >
+> > El domingo, 11 de julio de 2021 a las 6:22:00 UTC-4, Hans Skaug escribió:
+> > > ... in order to get any gain in memory use you probably have to use  DATA_UPDATE
+> > >
+> > > http://kaskr.github.io/adcomp/group__macros.html#ga3a3716228d46fbe32e23856b2f53be8d
+> > >
+> > > I have not tried this whole approach myself, so you must be prepared to do
+> > > the required reading and experimentation if you want to go in this direction.
+
+From u9721e69203f06751 at groups.google.com  Thu Jul 15 21:21:15 2021
+From: u9721e69203f06751 at groups.google.com (Sam R)
+Date: Thu, 15 Jul 2021 21:21:15 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.gdIjDhruAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.k0dmETALAQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com> <HhIMeA4k_Ik.k0dmETALAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/gdIjDhruAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Hans,
+
+Here's my first attempt at doing this; the memory spike remains, so clearly I'm misunderstanding the process in the c++ code. The DATA_UPDATE macro seems useful, so I'll see if I can figure out some kind of R-side solution.
+
+Thanks,
+SR
+
+On Tuesday, July 13, 2021 at 5:45:25 PM UTC-6 Sam R wrote:
+> Hi all,
+>
+> Mark -----------------------------------------
+>
+> I tried your approach again with nll += rather than nll -=. The model ran and converged and the results were identical to the penalty approach I used, both in terms of results and the spike in memory.
+>
+> Hans -------------------------------------------
+>
+> Yes, it's due to the large number of observations. When you thin the dataset to only 1000 samples the memory usage doesn't spike. I could do this with my own dataset if I have to, but I'd prefer to use all the available data if possible.
+>
+> I think I understand the basic premise of the "batch" approach, at least from the c++ side. I think I would split the model matrix into smaller matrices using some kind of index, do the matrix * coef multiplication on each matrix separately, then add them to the likelihood at the end. However, I'm unsure of how I'd accomplish this from the R side; are there any examples of others that have managed to do something similar?
+>
+> Javier -------------------------------------------
+>
+> The reason that the model runs more quickly when you don't specify k=60 is that the default number of basis dimensions for a 2D GAM is 30 (i.e. k=30).
+>
+> Thanks,
+> SR
+>
+> On Monday, July 12, 2021 at 2:51:02 PM UTC-6 kasper.k...@gmail.com wrote:
+> >
+> > Just to let you know there's a new feature in the upcoming TMB version (github branch 'TMB_experimental') that can reduce memory usage for models with symptoms similar to the ones described in this thread. Currently the feature has to be enabled by setting a flag:
+> >
+> > TMB::config(tmbad.sparse_hessian_compress = 1)
+> >
+> > which should reduce memory substantially, although at the cost of a minor slowdown.
+> >
+> > On Monday, July 12, 2021 at 5:09:38 PM UTC+2 jcavieresg wrote:
+> > > Hi!
+> > >
+> > > I have check your code and you are right, the memory allocated is very high (in my case the memory is almost complete with 15 gb (I have 16gb of RAM in my laptop) for the 20000 observations. It is obvious because you are estimating one coefficient for each observation.
+> > > However, if you don't specify the knots in the gam function (gam(y~s(E,N,bs='ts'),data=dat,fit=FALSE)) the memory allocated is reduced notably for the same set of 20000 observations (from 6gb to 10gb).
+> > >
+> > > I don't remember exactly how internally works the library 'mgcv' to select the optimum number of knots so you should check the differences for both options (for example, the error between your first model (knots = 60) and your second model (without specify the knots in the gam function).
+> > >
+> > > Cheers
+> > >
+> > >
+> > >
+> > > El domingo, 11 de julio de 2021 a las 6:22:00 UTC-4, Hans Skaug escribió:
+> > > > ... in order to get any gain in memory use you probably have to use  DATA_UPDATE
+> > > >
+> > > > http://kaskr.github.io/adcomp/group__macros.html#ga3a3716228d46fbe32e23856b2f53be8d
+> > > >
+> > > > I have not tried this whole approach myself, so you must be prepared to do
+> > > > the required reading and experimentation if you want to go in this direction.
+
+From u9721e69203f06751 at groups.google.com  Thu Jul 15 22:17:15 2021
+From: u9721e69203f06751 at groups.google.com (Sam R)
+Date: Thu, 15 Jul 2021 22:17:15 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.bc_SSyjxAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.gdIjDhruAgAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com> <HhIMeA4k_Ik.gdIjDhruAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/bc_SSyjxAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Success!
+
+Hans' approach to splitting up the data into batches on the R side worked. I made a new objective and gradient function that swaps out the data for each batch and then accumulates the objective function/gradient. I've attached an update example that shows how I did it. The functions could probably be modified or improved (parallelized?), but the basic version works!
+
+Something like this -- maybe just a simple linear model -- would also be nice to have on the tmb-case-studies repository, in case other people are working with large datasets and need some way to break it into bits.
+
+Thanks for the help,
+SR
+
+On Thursday, July 15, 2021 at 3:21:15 PM UTC-6 Sam R wrote:
+> Hi Hans,
+>
+> Here's my first attempt at doing this; the memory spike remains, so clearly I'm misunderstanding the process in the c++ code. The DATA_UPDATE macro seems useful, so I'll see if I can figure out some kind of R-side solution.
+>
+> Thanks,
+> SR
+>
+> On Tuesday, July 13, 2021 at 5:45:25 PM UTC-6 Sam R wrote:
+> > Hi all,
+> >
+> > Mark -----------------------------------------
+> >
+> > I tried your approach again with nll += rather than nll -=. The model ran and converged and the results were identical to the penalty approach I used, both in terms of results and the spike in memory.
+> >
+> > Hans -------------------------------------------
+> >
+> > Yes, it's due to the large number of observations. When you thin the dataset to only 1000 samples the memory usage doesn't spike. I could do this with my own dataset if I have to, but I'd prefer to use all the available data if possible.
+> >
+> > I think I understand the basic premise of the "batch" approach, at least from the c++ side. I think I would split the model matrix into smaller matrices using some kind of index, do the matrix * coef multiplication on each matrix separately, then add them to the likelihood at the end. However, I'm unsure of how I'd accomplish this from the R side; are there any examples of others that have managed to do something similar?
+> >
+> > Javier -------------------------------------------
+> >
+> > The reason that the model runs more quickly when you don't specify k=60 is that the default number of basis dimensions for a 2D GAM is 30 (i.e. k=30).
+> >
+> > Thanks,
+> > SR
+> >
+> > On Monday, July 12, 2021 at 2:51:02 PM UTC-6 kasper.k...@gmail.com wrote:
+> > >
+> > > Just to let you know there's a new feature in the upcoming TMB version (github branch 'TMB_experimental') that can reduce memory usage for models with symptoms similar to the ones described in this thread. Currently the feature has to be enabled by setting a flag:
+> > >
+> > > TMB::config(tmbad.sparse_hessian_compress = 1)
+> > >
+> > > which should reduce memory substantially, although at the cost of a minor slowdown.
+> > >
+> > > On Monday, July 12, 2021 at 5:09:38 PM UTC+2 jcavieresg wrote:
+> > > > Hi!
+> > > >
+> > > > I have check your code and you are right, the memory allocated is very high (in my case the memory is almost complete with 15 gb (I have 16gb of RAM in my laptop) for the 20000 observations. It is obvious because you are estimating one coefficient for each observation.
+> > > > However, if you don't specify the knots in the gam function (gam(y~s(E,N,bs='ts'),data=dat,fit=FALSE)) the memory allocated is reduced notably for the same set of 20000 observations (from 6gb to 10gb).
+> > > >
+> > > > I don't remember exactly how internally works the library 'mgcv' to select the optimum number of knots so you should check the differences for both options (for example, the error between your first model (knots = 60) and your second model (without specify the knots in the gam function).
+> > > >
+> > > > Cheers
+> > > >
+> > > >
+> > > >
+> > > > El domingo, 11 de julio de 2021 a las 6:22:00 UTC-4, Hans Skaug escribió:
+> > > > > ... in order to get any gain in memory use you probably have to use  DATA_UPDATE
+> > > > >
+> > > > > http://kaskr.github.io/adcomp/group__macros.html#ga3a3716228d46fbe32e23856b2f53be8d
+> > > > >
+> > > > > I have not tried this whole approach myself, so you must be prepared to do
+> > > > > the required reading and experimentation if you want to go in this direction.
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Jul 16 09:38:59 2021
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 16 Jul 2021 09:38:59 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.DJXg01sWAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/DJXg01sWAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Nice idea, but I'm sorry to say that it doesn't work (unless I'm overlooking something... I hope I am!).
+
+You cannot apply Laplace for each batch and then sum up because
+log( integrate exp(f1(u)+f2(u)) du )
+is not in general equal to
+log( integrate exp(f1(u)) du ) + log( integrate exp(f2(u)) du )
+
+Hardly relevant if the approach doesn't work, but pay special attention to this line of the DATA_UPDATE documentation:
+"Updatable data items behave like parameters. In particular, if-else branching on such data should be avoided."
+which means that the branch:
+if(usePenalty==1){ ... }
+won't behave as expected when 'usePenalty' is updated.
+
+On Friday, July 16, 2021 at 12:17:15 AM UTC+2 samuel.vj...@gmail.com wrote:
+> Success!
+>
+> Hans' approach to splitting up the data into batches on the R side worked. I made a new objective and gradient function that swaps out the data for each batch and then accumulates the objective function/gradient. I've attached an update example that shows how I did it. The functions could probably be modified or improved (parallelized?), but the basic version works!
+>
+> Something like this -- maybe just a simple linear model -- would also be nice to have on the tmb-case-studies repository, in case other people are working with large datasets and need some way to break it into bits.
+>
+> Thanks for the help,
+> SR
+>
+> On Thursday, July 15, 2021 at 3:21:15 PM UTC-6 Sam R wrote:
+> > Hi Hans,
+> >
+> > Here's my first attempt at doing this; the memory spike remains, so clearly I'm misunderstanding the process in the c++ code. The DATA_UPDATE macro seems useful, so I'll see if I can figure out some kind of R-side solution.
+> >
+> > Thanks,
+> > SR
+> >
+> > On Tuesday, July 13, 2021 at 5:45:25 PM UTC-6 Sam R wrote:
+> > > Hi all,
+> > >
+> > > Mark -----------------------------------------
+> > >
+> > > I tried your approach again with nll += rather than nll -=. The model ran and converged and the results were identical to the penalty approach I used, both in terms of results and the spike in memory.
+> > >
+> > > Hans -------------------------------------------
+> > >
+> > > Yes, it's due to the large number of observations. When you thin the dataset to only 1000 samples the memory usage doesn't spike. I could do this with my own dataset if I have to, but I'd prefer to use all the available data if possible.
+> > >
+> > > I think I understand the basic premise of the "batch" approach, at least from the c++ side. I think I would split the model matrix into smaller matrices using some kind of index, do the matrix * coef multiplication on each matrix separately, then add them to the likelihood at the end. However, I'm unsure of how I'd accomplish this from the R side; are there any examples of others that have managed to do something similar?
+> > >
+> > > Javier -------------------------------------------
+> > >
+> > > The reason that the model runs more quickly when you don't specify k=60 is that the default number of basis dimensions for a 2D GAM is 30 (i.e. k=30).
+> > >
+> > > Thanks,
+> > > SR
+> > >
+> > > On Monday, July 12, 2021 at 2:51:02 PM UTC-6 kasper.k...@gmail.com wrote:
+> > > >
+> > > > Just to let you know there's a new feature in the upcoming TMB version (github branch 'TMB_experimental') that can reduce memory usage for models with symptoms similar to the ones described in this thread. Currently the feature has to be enabled by setting a flag:
+> > > >
+> > > > TMB::config(tmbad.sparse_hessian_compress = 1)
+> > > >
+> > > > which should reduce memory substantially, although at the cost of a minor slowdown.
+> > > >
+> > > > On Monday, July 12, 2021 at 5:09:38 PM UTC+2 jcavieresg wrote:
+> > > > > Hi!
+> > > > >
+> > > > > I have check your code and you are right, the memory allocated is very high (in my case the memory is almost complete with 15 gb (I have 16gb of RAM in my laptop) for the 20000 observations. It is obvious because you are estimating one coefficient for each observation.
+> > > > > However, if you don't specify the knots in the gam function (gam(y~s(E,N,bs='ts'),data=dat,fit=FALSE)) the memory allocated is reduced notably for the same set of 20000 observations (from 6gb to 10gb).
+> > > > >
+> > > > > I don't remember exactly how internally works the library 'mgcv' to select the optimum number of knots so you should check the differences for both options (for example, the error between your first model (knots = 60) and your second model (without specify the knots in the gam function).
+> > > > >
+> > > > > Cheers
+> > > > >
+> > > > >
+> > > > >
+> > > > > El domingo, 11 de julio de 2021 a las 6:22:00 UTC-4, Hans Skaug escribió:
+> > > > > > ... in order to get any gain in memory use you probably have to use  DATA_UPDATE
+> > > > > >
+> > > > > > http://kaskr.github.io/adcomp/group__macros.html#ga3a3716228d46fbe32e23856b2f53be8d
+> > > > > >
+> > > > > > I have not tried this whole approach myself, so you must be prepared to do
+> > > > > > the required reading and experimentation if you want to go in this direction.
+
+From u9721e69203f06751 at groups.google.com  Mon Jul 26 16:48:05 2021
+From: u9721e69203f06751 at groups.google.com (Sam R)
+Date: Mon, 26 Jul 2021 16:48:05 +0000
+Subject: Re: [TMB users] Thin-plate splines (GAM) in TMB: high memory usage
+Message-ID: <HhIMeA4k_Ik.hIIX7nkeAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+References: <HhIMeA4k_Ik.0Gq4IdAPBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/HhIMeA4k_Ik/m/hIIX7nkeAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+Kasper's prediction appears to have panned out with respect to the simulated data. Here are the estimated (+/- 1.95 * SD) for the "batches" and "no batches" models. The gradients at convergence are also completely different as well.
+
+However, both approaches "somewhat" approximated the true values. I'd be curious if there's another way around this using batches. I haven't tried using tmbad.sparse_hessian_compress from experimental branch yet.
+
+Thanks,
+SR
+
+On Friday, July 16, 2021 at 3:38:59 AM UTC-6 kasper.k...@gmail.com wrote:
+> Nice idea, but I'm sorry to say that it doesn't work (unless I'm overlooking something... I hope I am!).
+>
+> You cannot apply Laplace for each batch and then sum up because
+> log( integrate exp(f1(u)+f2(u)) du )
+> is not in general equal to
+> log( integrate exp(f1(u)) du ) + log( integrate exp(f2(u)) du )
+>
+> Hardly relevant if the approach doesn't work, but pay special attention to this line of the DATA_UPDATE documentation:
+> "Updatable data items behave like parameters. In particular, if-else branching on such data should be avoided."
+> which means that the branch:
+> if(usePenalty==1){ ... }
+> won't behave as expected when 'usePenalty' is updated.
+>
+>
+> On Friday, July 16, 2021 at 12:17:15 AM UTC+2 samuel.vj...@gmail.com wrote:
+> > Success!
+> >
+> > Hans' approach to splitting up the data into batches on the R side worked. I made a new objective and gradient function that swaps out the data for each batch and then accumulates the objective function/gradient. I've attached an update example that shows how I did it. The functions could probably be modified or improved (parallelized?), but the basic version works!
+> >
+> > Something like this -- maybe just a simple linear model -- would also be nice to have on the tmb-case-studies repository, in case other people are working with large datasets and need some way to break it into bits.
+> >
+> > Thanks for the help,
+> > SR
+> >
+> > On Thursday, July 15, 2021 at 3:21:15 PM UTC-6 Sam R wrote:
+> > > Hi Hans,
+> > >
+> > > Here's my first attempt at doing this; the memory spike remains, so clearly I'm misunderstanding the process in the c++ code. The DATA_UPDATE macro seems useful, so I'll see if I can figure out some kind of R-side solution.
+> > >
+> > > Thanks,
+> > > SR
+> > >
+> > > On Tuesday, July 13, 2021 at 5:45:25 PM UTC-6 Sam R wrote:
+> > > > Hi all,
+> > > >
+> > > > Mark -----------------------------------------
+> > > >
+> > > > I tried your approach again with nll += rather than nll -=. The model ran and converged and the results were identical to the penalty approach I used, both in terms of results and the spike in memory.
+> > > >
+> > > > Hans -------------------------------------------
+> > > >
+> > > > Yes, it's due to the large number of observations. When you thin the dataset to only 1000 samples the memory usage doesn't spike. I could do this with my own dataset if I have to, but I'd prefer to use all the available data if possible.
+> > > >
+> > > > I think I understand the basic premise of the "batch" approach, at least from the c++ side. I think I would split the model matrix into smaller matrices using some kind of index, do the matrix * coef multiplication on each matrix separately, then add them to the likelihood at the end. However, I'm unsure of how I'd accomplish this from the R side; are there any examples of others that have managed to do something similar?
+> > > >
+> > > > Javier -------------------------------------------
+> > > >
+> > > > The reason that the model runs more quickly when you don't specify k=60 is that the default number of basis dimensions for a 2D GAM is 30 (i.e. k=30).
+> > > >
+> > > > Thanks,
+> > > > SR
+> > > >
+> > > > On Monday, July 12, 2021 at 2:51:02 PM UTC-6 kasper.k...@gmail.com wrote:
+> > > > >
+> > > > > Just to let you know there's a new feature in the upcoming TMB version (github branch 'TMB_experimental') that can reduce memory usage for models with symptoms similar to the ones described in this thread. Currently the feature has to be enabled by setting a flag:
+> > > > >
+> > > > > TMB::config(tmbad.sparse_hessian_compress = 1)
+> > > > >
+> > > > > which should reduce memory substantially, although at the cost of a minor slowdown.
+> > > > >
+> > > > > On Monday, July 12, 2021 at 5:09:38 PM UTC+2 jcavieresg wrote:
+> > > > > > Hi!
+> > > > > >
+> > > > > > I have check your code and you are right, the memory allocated is very high (in my case the memory is almost complete with 15 gb (I have 16gb of RAM in my laptop) for the 20000 observations. It is obvious because you are estimating one coefficient for each observation.
+> > > > > > However, if you don't specify the knots in the gam function (gam(y~s(E,N,bs='ts'),data=dat,fit=FALSE)) the memory allocated is reduced notably for the same set of 20000 observations (from 6gb to 10gb).
+> > > > > >
+> > > > > > I don't remember exactly how internally works the library 'mgcv' to select the optimum number of knots so you should check the differences for both options (for example, the error between your first model (knots = 60) and your second model (without specify the knots in the gam function).
+> > > > > >
+> > > > > > Cheers
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > El domingo, 11 de julio de 2021 a las 6:22:00 UTC-4, Hans Skaug escribió:
+> > > > > > > ... in order to get any gain in memory use you probably have to use  DATA_UPDATE
+> > > > > > >
+> > > > > > > http://kaskr.github.io/adcomp/group__macros.html#ga3a3716228d46fbe32e23856b2f53be8d
+> > > > > > >
+> > > > > > > I have not tried this whole approach myself, so you must be prepared to do
+> > > > > > > the required reading and experimentation if you want to go in this direction.
+
+From u805125e60bf7c9cf at groups.google.com  Fri Jul 30 02:59:02 2021
+From: u805125e60bf7c9cf at groups.google.com (marks...@gmail.com)
+Date: Fri, 30 Jul 2021 02:59:02 +0000
+Subject: indexing issues and "the bomb" in rStudio
+Message-ID: <X48AHCVOpKg.b7z-gI4rBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/X48AHCVOpKg/m/b7z-gI4rBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I can't express how helpful the newer tools for debugging errors during compilation are, but I'm wondering if there are tools for preventing rStudio from crashing when initializing a model with values that go outside the bounds of an array.
+
+Thanks!!
+Mark
+
