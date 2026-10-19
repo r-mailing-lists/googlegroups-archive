@@ -1,0 +1,2528 @@
+From ucd8f7acd42ea75d7 at groups.google.com  Tue Jun  3 15:57:28 2025
+From: ucd8f7acd42ea75d7 at groups.google.com (=?utf-8?b?aOG7r3UgdGh14bqnbiBwaOG6oW0=?=)
+Date: Tue, 03 Jun 2025 15:57:28 +0000
+Subject: Failed to create the shared library when compile NIMBLE
+Message-ID: <ZB9GXX4ncGY.OmLJdx3XAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ZB9GXX4ncGY/m/OmLJdx3XAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone, I am new to nimble and when I try to run MCMC with my likelihood I have problem with compile. This is my code:
+#define custom likelihood:
+dkl<-nimbleFunction(
+  run = function(x = double(0),
+               delta = double(2),
+               X = double(2),
+               Y = double(2),
+               log = integer(0, default = 0)) {
+
+  n_x <- dim(X)[1]
+  n_y <- dim(Y)[1]
+  p <- dim(X)[2]
+
+  sum_x <- 0
+  for (i in 1:n_x) {
+    row_X <- matrix(X[i, 1:p], nrow = 1)
+    plus<-row_X%*%delta
+    sum_x<-sum_x+inprod(plus,row_X)
+  }
+
+  sum_y <- 0
+  for (i in 1:n_y) {
+    row_Y <- matrix(Y[i, 1:p], nrow = 1)
+    plus<-row_Y%*%delta
+    sum_y<-sum_y+inprod(plus,row_Y)
+  }
+
+  loglik <- -sum_x / n_x + log(sum_y / n_y)
+
+  returnType(double(0))
+  if (log) return(-loglik) else return(exp(-loglik))
+}
+)
+#build model:
+model_code<-nimbleCode({
+  psi~dunif(0,1)
+  #Prior
+  for (i in 1:numvar){
+    for (j in 1:numvar){
+      z[i,j]~dbern(psi)
+      delta[i,j]~dnorm(0,sd=10)
+      zdelta[i,j]<-z[i,j]*delta[i,j]
+    }
+  }
+ target ~ dkl(delta = zdelta[1:numvar, 1:numvar], X[1:n_x,1:numvar] ,Y[1:n_y,1:numvar])
+})
+#constant and init
+constants<-list(numvar=dim(X)[2],n_x=dim(X)[1],n_y=dim(Y)[1])
+Inits <- list(psi = 0.5,
+     delta =matrix( rnorm(constants$numvar*constants$numvar),constants$numvar,constants$numvar),
+   z = matrix(0,constants$numvar,constants$numvar))
+data<-list(X=X,Y=Y)
+#registration distribution
+registerDistributions(list(
+  dkl=list(
+    BUGSdist='dkl(delta,X,Y)',
+    types=c('value=double(0)','delta=double(2)',
+            'X=double(2)','Y=double(2)')
+  )
+))
+#compile model
+model<-nimbleModel(code=model_code,constants=constants,inits=Inits,data=data)
+conf<-configureMCMC(model)
+conf$addMonitors('z')
+mcmcRJ<-buildMCMC(conf)
+cmodel<-compileNimble(model)
+CMCMRJ<-compileNimble(mcmcRJ,project=model)
+samples<-runMCMC(CMCMRJ,niter=10000,nburnin=1000)
+*******************
+and in step cmodel<-compileNimble(model) I received this message: Failed to create the shared library when compile NIMBLE.
+Can anyone know how to fix this problem?
+
+From udd632bd3bbcdd7e9 at groups.google.com  Tue Jun  3 16:20:10 2025
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Tue, 03 Jun 2025 16:20:10 +0000
+Subject: Re: Failed to create the shared library when compile NIMBLE
+Message-ID: <ZB9GXX4ncGY.2UYAyFrYAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <ZB9GXX4ncGY.OmLJdx3XAAAJ@nimble-users.groups.google.com>
+References: <ZB9GXX4ncGY.OmLJdx3XAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ZB9GXX4ncGY/m/2UYAyFrYAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Pham,
+Thanks for the question. I couldn't run your code without having X and Y, so this response is only from reading it.
+It looks like you are using inprod(plus,row_X) with both arguments being matrices, but inprod wants vectors as inputs. I am actually not sure what you intend here. If you want the sum of element-wise products of matrices, you could use sum(plus * row_X) (but I am not sure in this case if they have the same dimensions, so I am not sure what you want). A way to get a vector from a matrix is by indexing, e.g. X[i, 1:p] will be a vector. Typing is strict so even if plus is 1-by-n, you would need plus[1, 1:n] or simply plus[1, ] to get a vector. A good way to debug is to run uncompiled and use debug() or put browser() calls in your function (i.e. your nimbleFunction). Unfortunately it can be hard to find problems with matrix vs vector vs scalar in this way because R is forgiving (dynamically typed) but C++ via nimble is not. But nevertheless you can inspect variables within a function call if you have any doubts about their sizes and shapes. If you encounter further errors at the compileNimble step, you can either follow the suggestion about how to print out the C++ compiler messages, or you can first do nimbleOptions(showCompilerOutput=TRUE). The output contains many harmless warnings but there should be any error messages as well. Sometimes one can make a good guess about the source of the problem from the (often mangled) C++ variable names around the error, or you can send it in a new post here. Alternatively you can provide a fully reproducible example, for example using set.seed and creating X and Y, or providing them by file. HTH!
+Perry
+
+On Tue, Jun 3, 2025 at 8:57 AM hữu thuần phạm <pham.h....@gmail.com> wrote:
+
+> Hi everyone, I am new to nimble and when I try to run MCMC with my likelihood I have problem with compile. This is my code:
+> #define custom likelihood:
+> dkl<-nimbleFunction(
+>   run = function(x = double(0),
+>                delta = double(2),
+>                X = double(2),
+>                Y = double(2),
+>                log = integer(0, default = 0)) {
+>
+>   n_x <- dim(X)[1]
+>   n_y <- dim(Y)[1]
+>   p <- dim(X)[2]
+>
+>   sum_x <- 0
+>   for (i in 1:n_x) {
+>     row_X <- matrix(X[i, 1:p], nrow = 1)
+>     plus<-row_X%*%delta
+>     sum_x<-sum_x+inprod(plus,row_X)
+>   }
+>
+>   sum_y <- 0
+>   for (i in 1:n_y) {
+>     row_Y <- matrix(Y[i, 1:p], nrow = 1)
+>     plus<-row_Y%*%delta
+>     sum_y<-sum_y+inprod(plus,row_Y)
+>   }
+>
+>   loglik <- -sum_x / n_x + log(sum_y / n_y)
+>
+>   returnType(double(0))
+>   if (log) return(-loglik) else return(exp(-loglik))
+> }
+> )
+> #build model:
+> model_code<-nimbleCode({
+>   psi~dunif(0,1)
+>   #Prior
+>   for (i in 1:numvar){
+>     for (j in 1:numvar){
+>       z[i,j]~dbern(psi)
+>       delta[i,j]~dnorm(0,sd=10)
+>       zdelta[i,j]<-z[i,j]*delta[i,j]
+>     }
+>   }
+>  target ~ dkl(delta = zdelta[1:numvar, 1:numvar], X[1:n_x,1:numvar] ,Y[1:n_y,1:numvar])
+> })
+> #constant and init
+> constants<-list(numvar=dim(X)[2],n_x=dim(X)[1],n_y=dim(Y)[1])
+> Inits <- list(psi = 0.5,
+>      delta =matrix( rnorm(constants$numvar*constants$numvar),constants$numvar,constants$numvar),
+>    z = matrix(0,constants$numvar,constants$numvar))
+> data<-list(X=X,Y=Y)
+> #registration distribution
+> registerDistributions(list(
+>   dkl=list(
+>     BUGSdist='dkl(delta,X,Y)',
+>     types=c('value=double(0)','delta=double(2)',
+>             'X=double(2)','Y=double(2)')
+>   )
+> ))
+> #compile model
+> model<-nimbleModel(code=model_code,constants=constants,inits=Inits,data=data)
+> conf<-configureMCMC(model)
+> conf$addMonitors('z')
+> mcmcRJ<-buildMCMC(conf)
+> cmodel<-compileNimble(model)
+> CMCMRJ<-compileNimble(mcmcRJ,project=model)
+> samples<-runMCMC(CMCMRJ,niter=10000,nburnin=1000)
+> *******************
+> and in step cmodel<-compileNimble(model) I received this message: Failed to create the shared library when compile NIMBLE.
+> Can anyone know how to fix this problem?
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/9a5961ba-75c9-4688-b29f-81ce7ed9c91dn%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9a5961ba-75c9-4688-b29f-81ce7ed9c91dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ucd8f7acd42ea75d7 at groups.google.com  Tue Jun  3 16:29:24 2025
+From: ucd8f7acd42ea75d7 at groups.google.com (=?utf-8?b?aOG7r3UgdGh14bqnbiBwaOG6oW0=?=)
+Date: Tue, 03 Jun 2025 16:29:24 +0000
+Subject: Re: Failed to create the shared library when compile NIMBLE
+Message-ID: <ZB9GXX4ncGY.IDJlrdvYAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <ZB9GXX4ncGY.OmLJdx3XAAAJ@nimble-users.groups.google.com>
+References: <ZB9GXX4ncGY.OmLJdx3XAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ZB9GXX4ncGY/m/IDJlrdvYAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,
+Thank you for your response,
+X and Y are the 50x9 matrix data I generated from normal distribution.
+plus and row_X are really vector. After update nimble I can run the compile but I have a new problem in samples:
+running chain 1... Error in mcmc$run(niter, nburnin = nburnin, thin = thinToUseVec[1], thin2 = thinToUseVec[2], : user-defined distribution dkl provided without random generation function.
+I am sending you the file I written. I would be grateful if you could look into it.
+Sorry if this is any inconvenience to you.
+Thuan
+Vào lúc 23:20:10 UTC+7 ngày Thứ Ba, 3 tháng 6, 2025, Perry de Valpine đã viết:
+
+> Hi Pham,
+> Thanks for the question. I couldn't run your code without having X and Y, so this response is only from reading it.
+> It looks like you are using inprod(plus,row_X) with both arguments being matrices, but inprod wants vectors as inputs. I am actually not sure what you intend here. If you want the sum of element-wise products of matrices, you could use sum(plus * row_X) (but I am not sure in this case if they have the same dimensions, so I am not sure what you want). A way to get a vector from a matrix is by indexing, e.g. X[i, 1:p] will be a vector. Typing is strict so even if plus is 1-by-n, you would need plus[1, 1:n] or simply plus[1, ] to get a vector. A good way to debug is to run uncompiled and use debug() or put browser() calls in your function (i.e. your nimbleFunction). Unfortunately it can be hard to find problems with matrix vs vector vs scalar in this way because R is forgiving (dynamically typed) but C++ via nimble is not. But nevertheless you can inspect variables within a function call if you have any doubts about their sizes and shapes. If you encounter further errors at the compileNimble step, you can either follow the suggestion about how to print out the C++ compiler messages, or you can first do nimbleOptions(showCompilerOutput=TRUE). The output contains many harmless warnings but there should be any error messages as well. Sometimes one can make a good guess about the source of the problem from the (often mangled) C++ variable names around the error, or you can send it in a new post here. Alternatively you can provide a fully reproducible example, for example using set.seed and creating X and Y, or providing them by file. HTH!
+> Perry
+>
+>
+> On Tue, Jun 3, 2025 at 8:57 AM hữu thuần phạm <pham.h....@gmail.com> wrote:
+> > Hi everyone, I am new to nimble and when I try to run MCMC with my likelihood I have problem with compile. This is my code:
+> > #define custom likelihood:
+> > dkl<-nimbleFunction(
+> >   run = function(x = double(0),
+> >                delta = double(2),
+> >                X = double(2),
+> >                Y = double(2),
+> >                log = integer(0, default = 0)) {
+> >
+> >   n_x <- dim(X)[1]
+> >   n_y <- dim(Y)[1]
+> >   p <- dim(X)[2]
+> >
+> >   sum_x <- 0
+> >   for (i in 1:n_x) {
+> >     row_X <- matrix(X[i, 1:p], nrow = 1)
+> >     plus<-row_X%*%delta
+> >     sum_x<-sum_x+inprod(plus,row_X)
+> >   }
+> >
+> >   sum_y <- 0
+> >   for (i in 1:n_y) {
+> >     row_Y <- matrix(Y[i, 1:p], nrow = 1)
+> >     plus<-row_Y%*%delta
+> >     sum_y<-sum_y+inprod(plus,row_Y)
+> >   }
+> >
+> >   loglik <- -sum_x / n_x + log(sum_y / n_y)
+> >
+> >   returnType(double(0))
+> >   if (log) return(-loglik) else return(exp(-loglik))
+> > }
+> > )
+> > #build model:
+> > model_code<-nimbleCode({
+> >   psi~dunif(0,1)
+> >   #Prior
+> >   for (i in 1:numvar){
+> >     for (j in 1:numvar){
+> >       z[i,j]~dbern(psi)
+> >       delta[i,j]~dnorm(0,sd=10)
+> >       zdelta[i,j]<-z[i,j]*delta[i,j]
+> >     }
+> >   }
+> >  target ~ dkl(delta = zdelta[1:numvar, 1:numvar], X[1:n_x,1:numvar] ,Y[1:n_y,1:numvar])
+> > })
+> > #constant and init
+> > constants<-list(numvar=dim(X)[2],n_x=dim(X)[1],n_y=dim(Y)[1])
+> > Inits <- list(psi = 0.5,
+> >      delta =matrix( rnorm(constants$numvar*constants$numvar),constants$numvar,constants$numvar),
+> >    z = matrix(0,constants$numvar,constants$numvar))
+> > data<-list(X=X,Y=Y)
+> > #registration distribution
+> > registerDistributions(list(
+> >   dkl=list(
+> >     BUGSdist='dkl(delta,X,Y)',
+> >     types=c('value=double(0)','delta=double(2)',
+> >             'X=double(2)','Y=double(2)')
+> >   )
+> > ))
+> > #compile model
+> > model<-nimbleModel(code=model_code,constants=constants,inits=Inits,data=data)
+> > conf<-configureMCMC(model)
+> > conf$addMonitors('z')
+> > mcmcRJ<-buildMCMC(conf)
+> > cmodel<-compileNimble(model)
+> > CMCMRJ<-compileNimble(mcmcRJ,project=model)
+> > samples<-runMCMC(CMCMRJ,niter=10000,nburnin=1000)
+> > *******************
+> > and in step cmodel<-compileNimble(model) I received this message: Failed to create the shared library when compile NIMBLE.
+> > Can anyone know how to fix this problem?
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/9a5961ba-75c9-4688-b29f-81ce7ed9c91dn%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9a5961ba-75c9-4688-b29f-81ce7ed9c91dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Tue Jun  3 17:05:18 2025
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Tue, 03 Jun 2025 17:05:18 +0000
+Subject: Re: Failed to create the shared library when compile NIMBLE
+Message-ID: <ZB9GXX4ncGY.Pzg9StHaAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <ZB9GXX4ncGY.IDJlrdvYAAAJ@nimble-users.groups.google.com>
+References: <ZB9GXX4ncGY.OmLJdx3XAAAJ@nimble-users.groups.google.com> <ZB9GXX4ncGY.IDJlrdvYAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ZB9GXX4ncGY/m/Pzg9StHaAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ok, here's what I see.
+The inprod() calls are fine. I wasn't successfully tracking what the arguments would be from reading the code only. It does handle matrices with one dimension having size 1.
+The error you were seeing arose because you had not initialized target. If there is no initial value for a node, then nimble's MCMC system will want to generate one by drawing from the "r" random number function. But that would mean you would need to provide "rkl" so it could do so. To avoid this, provide an init for target, e.g:
+
+Inits <- list(psi = 0.5,
+     delta =matrix( rnorm(constants$numvar*constants$numvar),constants$numvar,constants$numvar),
+
+   z = matrix(0,constants$numvar,constants$numvar),
+   target = 1) # added by perry
+
+In addition, a user-defined distribution should be used as a stochastic node, i.e. declared with "~" instead of "<-". So please try this:
+ target ~ dkl(delta = zdelta[1:numvar, 1:numvar], X[1:n_x,1:numvar] ,Y[1:n_y,1:numvar]) # perry changed from <- to ~
+Then when dkl is called, the first argument ("x") will be target. I notice that x is not used within dkl, which is ok but unusual. It means that your "target" node is just a placeholder in order to get the calculations you are doing with delta, X and Y included as a log probability for the model.
+
+Finally, your initial values for X, Y and delta result in the log probability from dkl being Inf. I took a look at this by:
+
+model$calculate('psi') # good
+model$calculate('z') # good
+model$calculate('delta') #good
+model$calculate('target') # returns Inf
+debug(dkl)
+model$calculate('target') # stepped through, and this returns Inf because sum_y is 0
+undebug(dkl)
+
+(Also, is that the negative log probability or the log probability? just checking)
+
+HTH
+Perry
+
+On Tue, Jun 3, 2025 at 9:29 AM hữu thuần phạm <pham.h....@gmail.com> wrote:
+
+> Hi Perry,
+> Thank you for your response,
+> X and Y are the 50x9 matrix data I generated from normal distribution.
+> plus and row_X are really vector. After update nimble I can run the compile but I have a new problem in samples:
+> running chain 1... Error in mcmc$run(niter, nburnin = nburnin, thin = thinToUseVec[1], thin2 = thinToUseVec[2], : user-defined distribution dkl provided without random generation function.
+> I am sending you the file I written. I would be grateful if you could look into it.
+> Sorry if this is any inconvenience to you.
+> Thuan
+> Vào lúc 23:20:10 UTC+7 ngày Thứ Ba, 3 tháng 6, 2025, Perry de Valpine đã viết:
+> > Hi Pham,
+> > Thanks for the question. I couldn't run your code without having X and Y, so this response is only from reading it.
+> > It looks like you are using inprod(plus,row_X) with both arguments being matrices, but inprod wants vectors as inputs. I am actually not sure what you intend here. If you want the sum of element-wise products of matrices, you could use sum(plus * row_X) (but I am not sure in this case if they have the same dimensions, so I am not sure what you want). A way to get a vector from a matrix is by indexing, e.g. X[i, 1:p] will be a vector. Typing is strict so even if plus is 1-by-n, you would need plus[1, 1:n] or simply plus[1, ] to get a vector. A good way to debug is to run uncompiled and use debug() or put browser() calls in your function (i.e. your nimbleFunction). Unfortunately it can be hard to find problems with matrix vs vector vs scalar in this way because R is forgiving (dynamically typed) but C++ via nimble is not. But nevertheless you can inspect variables within a function call if you have any doubts about their sizes and shapes. If you encounter further errors at the compileNimble step, you can either follow the suggestion about how to print out the C++ compiler messages, or you can first do nimbleOptions(showCompilerOutput=TRUE). The output contains many harmless warnings but there should be any error messages as well. Sometimes one can make a good guess about the source of the problem from the (often mangled) C++ variable names around the error, or you can send it in a new post here. Alternatively you can provide a fully reproducible example, for example using set.seed and creating X and Y, or providing them by file. HTH!
+> > Perry
+> >
+> >
+> > On Tue, Jun 3, 2025 at 8:57 AM hữu thuần phạm <pham.h....@gmail.com> wrote:
+> > > Hi everyone, I am new to nimble and when I try to run MCMC with my likelihood I have problem with compile. This is my code:
+> > > #define custom likelihood:
+> > > dkl<-nimbleFunction(
+> > >   run = function(x = double(0),
+> > >                delta = double(2),
+> > >                X = double(2),
+> > >                Y = double(2),
+> > >                log = integer(0, default = 0)) {
+> > >
+> > >   n_x <- dim(X)[1]
+> > >   n_y <- dim(Y)[1]
+> > >   p <- dim(X)[2]
+> > >
+> > >   sum_x <- 0
+> > >   for (i in 1:n_x) {
+> > >     row_X <- matrix(X[i, 1:p], nrow = 1)
+> > >     plus<-row_X%*%delta
+> > >     sum_x<-sum_x+inprod(plus,row_X)
+> > >   }
+> > >
+> > >   sum_y <- 0
+> > >   for (i in 1:n_y) {
+> > >     row_Y <- matrix(Y[i, 1:p], nrow = 1)
+> > >     plus<-row_Y%*%delta
+> > >     sum_y<-sum_y+inprod(plus,row_Y)
+> > >   }
+> > >
+> > >   loglik <- -sum_x / n_x + log(sum_y / n_y)
+> > >
+> > >   returnType(double(0))
+> > >   if (log) return(-loglik) else return(exp(-loglik))
+> > > }
+> > > )
+> > > #build model:
+> > > model_code<-nimbleCode({
+> > >   psi~dunif(0,1)
+> > >   #Prior
+> > >   for (i in 1:numvar){
+> > >     for (j in 1:numvar){
+> > >       z[i,j]~dbern(psi)
+> > >       delta[i,j]~dnorm(0,sd=10)
+> > >       zdelta[i,j]<-z[i,j]*delta[i,j]
+> > >     }
+> > >   }
+> > >  target ~ dkl(delta = zdelta[1:numvar, 1:numvar], X[1:n_x,1:numvar] ,Y[1:n_y,1:numvar])
+> > > })
+> > > #constant and init
+> > > constants<-list(numvar=dim(X)[2],n_x=dim(X)[1],n_y=dim(Y)[1])
+> > > Inits <- list(psi = 0.5,
+> > >      delta =matrix( rnorm(constants$numvar*constants$numvar),constants$numvar,constants$numvar),
+> > >    z = matrix(0,constants$numvar,constants$numvar))
+> > > data<-list(X=X,Y=Y)
+> > > #registration distribution
+> > > registerDistributions(list(
+> > >   dkl=list(
+> > >     BUGSdist='dkl(delta,X,Y)',
+> > >     types=c('value=double(0)','delta=double(2)',
+> > >             'X=double(2)','Y=double(2)')
+> > >   )
+> > > ))
+> > > #compile model
+> > > model<-nimbleModel(code=model_code,constants=constants,inits=Inits,data=data)
+> > > conf<-configureMCMC(model)
+> > > conf$addMonitors('z')
+> > > mcmcRJ<-buildMCMC(conf)
+> > > cmodel<-compileNimble(model)
+> > > CMCMRJ<-compileNimble(mcmcRJ,project=model)
+> > > samples<-runMCMC(CMCMRJ,niter=10000,nburnin=1000)
+> > > *******************
+> > > and in step cmodel<-compileNimble(model) I received this message: Failed to create the shared library when compile NIMBLE.
+> > > Can anyone know how to fix this problem?
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/9a5961ba-75c9-4688-b29f-81ce7ed9c91dn%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9a5961ba-75c9-4688-b29f-81ce7ed9c91dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/b18f006f-989d-4232-8158-2849d402a6f5n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/b18f006f-989d-4232-8158-2849d402a6f5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ucd8f7acd42ea75d7 at groups.google.com  Tue Jun  3 18:19:04 2025
+From: ucd8f7acd42ea75d7 at groups.google.com (=?utf-8?b?aOG7r3UgdGh14bqnbiBwaOG6oW0=?=)
+Date: Tue, 03 Jun 2025 18:19:04 +0000
+Subject: Re: Failed to create the shared library when compile NIMBLE
+Message-ID: <ZB9GXX4ncGY.ffAYpdfeAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <ZB9GXX4ncGY.IDJlrdvYAAAJ@nimble-users.groups.google.com>
+References: <ZB9GXX4ncGY.OmLJdx3XAAAJ@nimble-users.groups.google.com> <ZB9GXX4ncGY.IDJlrdvYAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ZB9GXX4ncGY/m/ffAYpdfeAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you very much for your support.
+I have some mistake.
+Now everything is fine.
+Thuan
+
+Vào lúc 00:05:18 UTC+7 ngày Thứ Tư, 4 tháng 6, 2025, Perry de Valpine đã viết:
+
+> Ok, here's what I see.
+> The inprod() calls are fine. I wasn't successfully tracking what the arguments would be from reading the code only. It does handle matrices with one dimension having size 1.
+> The error you were seeing arose because you had not initialized target. If there is no initial value for a node, then nimble's MCMC system will want to generate one by drawing from the "r" random number function. But that would mean you would need to provide "rkl" so it could do so. To avoid this, provide an init for target, e.g:
+> Inits <- list(psi = 0.5,
+>      delta =matrix( rnorm(constants$numvar*constants$numvar),constants$numvar,constants$numvar),
+>    z = matrix(0,constants$numvar,constants$numvar),
+>    target = 1) # added by perry
+>
+> In addition, a user-defined distribution should be used as a stochastic node, i.e. declared with "~" instead of "<-". So please try this:
+>  target ~ dkl(delta = zdelta[1:numvar, 1:numvar], X[1:n_x,1:numvar] ,Y[1:n_y,1:numvar]) # perry changed from <- to ~
+> Then when dkl is called, the first argument ("x") will be target. I notice that x is not used within dkl, which is ok but unusual. It means that your "target" node is just a placeholder in order to get the calculations you are doing with delta, X and Y included as a log probability for the model.
+>
+> Finally, your initial values for X, Y and delta result in the log probability from dkl being Inf. I took a look at this by:
+>
+> model$calculate('psi') # good
+> model$calculate('z') # good
+> model$calculate('delta') #good
+> model$calculate('target') # returns Inf
+> debug(dkl)
+> model$calculate('target') # stepped through, and this returns Inf because sum_y is 0
+> undebug(dkl)
+>
+> (Also, is that the negative log probability or the log probability? just checking)
+>
+> HTH
+> Perry
+>
+> On Tue, Jun 3, 2025 at 9:29 AM hữu thuần phạm <pham.h....@gmail.com> wrote:
+> > Hi Perry,
+> > Thank you for your response,
+> > X and Y are the 50x9 matrix data I generated from normal distribution.
+> > plus and row_X are really vector. After update nimble I can run the compile but I have a new problem in samples:
+> > running chain 1... Error in mcmc$run(niter, nburnin = nburnin, thin = thinToUseVec[1], thin2 = thinToUseVec[2], : user-defined distribution dkl provided without random generation function.
+> > I am sending you the file I written. I would be grateful if you could look into it.
+> > Sorry if this is any inconvenience to you.
+> > Thuan
+> > Vào lúc 23:20:10 UTC+7 ngày Thứ Ba, 3 tháng 6, 2025, Perry de Valpine đã viết:
+> > > Hi Pham,
+> > > Thanks for the question. I couldn't run your code without having X and Y, so this response is only from reading it.
+> > > It looks like you are using inprod(plus,row_X) with both arguments being matrices, but inprod wants vectors as inputs. I am actually not sure what you intend here. If you want the sum of element-wise products of matrices, you could use sum(plus * row_X) (but I am not sure in this case if they have the same dimensions, so I am not sure what you want). A way to get a vector from a matrix is by indexing, e.g. X[i, 1:p] will be a vector. Typing is strict so even if plus is 1-by-n, you would need plus[1, 1:n] or simply plus[1, ] to get a vector. A good way to debug is to run uncompiled and use debug() or put browser() calls in your function (i.e. your nimbleFunction). Unfortunately it can be hard to find problems with matrix vs vector vs scalar in this way because R is forgiving (dynamically typed) but C++ via nimble is not. But nevertheless you can inspect variables within a function call if you have any doubts about their sizes and shapes. If you encounter further errors at the compileNimble step, you can either follow the suggestion about how to print out the C++ compiler messages, or you can first do nimbleOptions(showCompilerOutput=TRUE). The output contains many harmless warnings but there should be any error messages as well. Sometimes one can make a good guess about the source of the problem from the (often mangled) C++ variable names around the error, or you can send it in a new post here. Alternatively you can provide a fully reproducible example, for example using set.seed and creating X and Y, or providing them by file. HTH!
+> > > Perry
+> > >
+> > >
+> > > On Tue, Jun 3, 2025 at 8:57 AM hữu thuần phạm <pham.h....@gmail.com> wrote:
+> > > > Hi everyone, I am new to nimble and when I try to run MCMC with my likelihood I have problem with compile. This is my code:
+> > > > #define custom likelihood:
+> > > > dkl<-nimbleFunction(
+> > > >   run = function(x = double(0),
+> > > >                delta = double(2),
+> > > >                X = double(2),
+> > > >                Y = double(2),
+> > > >                log = integer(0, default = 0)) {
+> > > >
+> > > >   n_x <- dim(X)[1]
+> > > >   n_y <- dim(Y)[1]
+> > > >   p <- dim(X)[2]
+> > > >
+> > > >   sum_x <- 0
+> > > >   for (i in 1:n_x) {
+> > > >     row_X <- matrix(X[i, 1:p], nrow = 1)
+> > > >     plus<-row_X%*%delta
+> > > >     sum_x<-sum_x+inprod(plus,row_X)
+> > > >   }
+> > > >
+> > > >   sum_y <- 0
+> > > >   for (i in 1:n_y) {
+> > > >     row_Y <- matrix(Y[i, 1:p], nrow = 1)
+> > > >     plus<-row_Y%*%delta
+> > > >     sum_y<-sum_y+inprod(plus,row_Y)
+> > > >   }
+> > > >
+> > > >   loglik <- -sum_x / n_x + log(sum_y / n_y)
+> > > >
+> > > >   returnType(double(0))
+> > > >   if (log) return(-loglik) else return(exp(-loglik))
+> > > > }
+> > > > )
+> > > > #build model:
+> > > > model_code<-nimbleCode({
+> > > >   psi~dunif(0,1)
+> > > >   #Prior
+> > > >   for (i in 1:numvar){
+> > > >     for (j in 1:numvar){
+> > > >       z[i,j]~dbern(psi)
+> > > >       delta[i,j]~dnorm(0,sd=10)
+> > > >       zdelta[i,j]<-z[i,j]*delta[i,j]
+> > > >     }
+> > > >   }
+> > > >  target ~ dkl(delta = zdelta[1:numvar, 1:numvar], X[1:n_x,1:numvar] ,Y[1:n_y,1:numvar])
+> > > > })
+> > > > #constant and init
+> > > > constants<-list(numvar=dim(X)[2],n_x=dim(X)[1],n_y=dim(Y)[1])
+> > > > Inits <- list(psi = 0.5,
+> > > >      delta =matrix( rnorm(constants$numvar*constants$numvar),constants$numvar,constants$numvar),
+> > > >    z = matrix(0,constants$numvar,constants$numvar))
+> > > > data<-list(X=X,Y=Y)
+> > > > #registration distribution
+> > > > registerDistributions(list(
+> > > >   dkl=list(
+> > > >     BUGSdist='dkl(delta,X,Y)',
+> > > >     types=c('value=double(0)','delta=double(2)',
+> > > >             'X=double(2)','Y=double(2)')
+> > > >   )
+> > > > ))
+> > > > #compile model
+> > > > model<-nimbleModel(code=model_code,constants=constants,inits=Inits,data=data)
+> > > > conf<-configureMCMC(model)
+> > > > conf$addMonitors('z')
+> > > > mcmcRJ<-buildMCMC(conf)
+> > > > cmodel<-compileNimble(model)
+> > > > CMCMRJ<-compileNimble(mcmcRJ,project=model)
+> > > > samples<-runMCMC(CMCMRJ,niter=10000,nburnin=1000)
+> > > > *******************
+> > > > and in step cmodel<-compileNimble(model) I received this message: Failed to create the shared library when compile NIMBLE.
+> > > > Can anyone know how to fix this problem?
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/9a5961ba-75c9-4688-b29f-81ce7ed9c91dn%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9a5961ba-75c9-4688-b29f-81ce7ed9c91dn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/b18f006f-989d-4232-8158-2849d402a6f5n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/b18f006f-989d-4232-8158-2849d402a6f5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u19ef47129946a640 at groups.google.com  Mon Jun  9 16:39:43 2025
+From: u19ef47129946a640 at groups.google.com (Kirsty Laurenson)
+Date: Mon, 09 Jun 2025 16:39:43 +0000
+Subject: Re: specifying initial values
+Message-ID: <OvHv6hXBXXU.2RnIi1bSAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <OvHv6hXBXXU.wvvXwSdsFAAJ@nimble-users.groups.google.com>
+References: <OvHv6hXBXXU.W2AocwxpFAAJ@nimble-users.groups.google.com> <OvHv6hXBXXU.wvvXwSdsFAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/OvHv6hXBXXU/m/2RnIi1bSAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry, all,
+
+Thank you for your helpful response! I think my issue is stemming from the fact that I have some ages/stages that are 'absorbing' - non-breeders aged 5+ and breeders aged 6+ - which end up with larger numbers of birds than earlier ages/stages. I didn't know that this was impossible in nimble, so this is really helpful information. I've now successfully got that IPM running.
+
+However, I now want to turn my IPM into a PVA and project the population forward 20 years under different proposed climate scenarios, but I'm running into issues with my initial values again. I want to investigate the impact of weather on some demographic parameters, and how the population might change in the future with these weather effects. I want to include weather impacts on juvenile survival (phi.1 in my model), adult survival (phi.adult), and recruitment (alpha.6). However, when I run nimbleModel I'm getting this warning:
+
+ [Note] Missing values (NAs) or non-finite values were found in model variables: phi.1, phi.adult, alpha.6, lifted_oPNB4_oB2_comma_t_cB_plus_NB5_dot_T_oB2_comma_t_cB_plus_NB6_dot_T_oB2_comma_t_cB_cP_L253, lifted_p_oBt_cB_over_2_times_phi_dot_1_oB2_comma_t_cB_L253, lifted_phi_dot_4_oBt_cB_times__oP1_minus_alpha_dot_4_oBt_cB_cP_L256, lifted_phi_dot_adult_oB2_comma_t_cB_times__oP1_minus_alpha_dot_5_oBt_cB_cP_L257, lifted_phi_dot_adult_oB2_comma_t_cB_times__oP1_minus_alpha_dot_6_oB2_comma_t_cB_cP_L258, lifted_phi_dot_4_oBt_cB_times_alpha_dot_4_oBt_cB_L259, lifted_phi_dot_adult_oB2_comma_t_cB_times_alpha_dot_5_oBt_cB_L260, lifted_oPphi_dot_adult_oB2_comma_t_cB_times_alpha_dot_6_oB2_comma_t_cB_cP_L262, lifted_oPNB4_oB3_comma_t_cB_plus_NB5_dot_T_oB3_comma_t_cB_plus_NB6_dot_T_oB3_comma_t_cB_cP_L283, lifted_p_oBt_cB_over_2_times_phi_dot_1_oB3_comma_t_cB_L283, lifted_phi_dot_4_oBt_cB_times__oP1_minus_alpha_dot_4_oBt_cB_cP_L286, lifted_phi_dot_adult_oB3_comma_t_cB_times__oP1_minus_alpha_dot_5_oBt_cB_cP_L287, lifted_phi_dot_adult_oB3_comma_t_cB_times__oP1_minus_alpha_dot_6_oB3_comma_t_cB_cP_L288, lifted_phi_dot_4_oBt_cB_times_alpha_dot_4_oBt_cB_L289, lifted_phi_dot_adult_oB3_comma_t_cB_times_alpha_dot_5_oBt_cB_L290, lifted_oPphi_dot_adult_oB3_comma_t_cB_times_alpha_dot_6_oB3_comma_t_cB_cP_L292.
+
+I've tried following the advice for initial values in the nimble manual, but I'm still not sure how to get this sorted - especially for the lifted nodes, as this wasn't an issue before! Any advice or help would be greatly appreciated!! I've attached the latest version of my code, and I am happy to share data off-list.
+
+Many thanks,
+Kirsty
+
+On Fri, 16 May 2025 at 16:29, Perry de Valpine <pdeva...@berkeley.edu> wrote:
+> Hi Kirsty,
+>
+> Thanks for the question. Usually what you've described turns out to be a situation where the initial values provided make something impossible in the model, resulting in a probability of 0, or log probability of -Inf. In ecological models this has happened when there is something like
+>
+> N2 ~ dbin(p, N1)
+>
+> where the initial values have N2 > N1, which is impossible, or
+>
+> z ~ dcat(p[1:T])
+>
+> where z takes a value such that p[z]==0, which is impossible.
+>
+>
+> You can use the model object (you will have to use nimbleModel rather than going straight to nimbleMCMC) to inspect any calculated values and pinpoint exactly where impossible stochastic outcomes are occurring.
+>
+> Here is our user manual section on initialization issues <https://r-nimble.org/html_manual/cha-mcmc.html#sec:initMCMC>, in case you haven't checked it out yet.
+>
+> So your steps to debug would look something like this:
+>
+> model <- nimbleModel(code = nimble.random.ipm,
+>                                            constants = my.constants,
+>                                            data = my.data,
+>                                            inits = initial.values)
+> # you may get a message warning your the model is not fully initialized. If so you can follow the instructions by running model$initializeInfo().
+>
+> Either way, you can then dig into where there is a problem. For example:
+> model$calculate("NJ") # sum of log probs for all nodes in the variable NJ.
+> # If that is -Inf, you can look at the individual log probabilities in several ways
+> model$calculate("NJ[1]") # log prob for this single node
+> # or
+> model$calculate("NJ[1:10]") # sub of log probs for this set of single nodes
+> # or
+> model$logProb_NJ # vector of all log probabilities for NJ
+> # Say you find that NJ[5] has a logProb of -Inf. Then you can figure out why by inspecting its inputs:
+> model$p[4]
+> model$phi.1[4]
+> model$NB4[4]
+> # etc.
+>
+> HTH
+> Perry
+>
+>
+> On Fri, May 16, 2025 at 7:32 AM 'Kirsty Laurenson' via nimble-users <nimble...@googlegroups.com> wrote:
+> >
+> > Hi all,
+> >
+> >
+> >
+> > I’m trying to run an IPM for a seabird population in the UK, with mark-recapture data from birds ringed as chicks and adults, breeding success data, and count data from 1995-2021. I have a version of the model which runs without any issues; however, the model cannot estimate adult survival rates very well from the beginning as there were no birds ringed as adults in 1995, and therefore does not estimate overall population size very well. I decided to remove 1995 from all my datasets and run my IPM from 1996 onwards, however, I’m having trouble getting the initial values right. From my second MCMC chain onwards (never the first chain), I get a warning which says ‘log prob is -Inf’ for some of the population size nodes, then once the MCMC chain starts I get the ‘slice sampler reached maximum number of contractions’ warning.
+> >
+> >
+> >
+> > I understand that this is a problem with the initial values, but I don’t understand what’s wrong with the initial values I’ve specified as the model ran without issues with the data from 1995-2021; and I don’t know what initial values would be suitable! My code for the two models is attached (1995-2021 and 1996-2021), and I’m happy to share data off-list if anyone could help me get my initial values right!
+> >
+> >
+> >
+> > Many thanks,
+> >
+> > Kirsty
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/95d244ac-bf60-4cc8-adc1-245bd576cec4n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/95d244ac-bf60-4cc8-adc1-245bd576cec4n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uf116cbe5c604c988 at groups.google.com  Mon Jun  9 20:33:32 2025
+From: uf116cbe5c604c988 at groups.google.com (Daniel Turek)
+Date: Mon, 09 Jun 2025 20:33:32 +0000
+Subject: Re: specifying initial values
+Message-ID: <OvHv6hXBXXU.O3uL3hjfAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <OvHv6hXBXXU.2RnIi1bSAwAJ@nimble-users.groups.google.com>
+References: <OvHv6hXBXXU.W2AocwxpFAAJ@nimble-users.groups.google.com> <OvHv6hXBXXU.2RnIi1bSAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/OvHv6hXBXXU/m/O3uL3hjfAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Kristy, I'm not certain if you're able to (or if you already have) shared the multitude of csv data files which are used in your script.  If you are (or already have), that would help immeasurably for tracking down the issue.  Is that something you're able to do?  (sharing off-list is totally fine, as well).
+
+Thanks,
+Daniel
+
+On Mon, Jun 9, 2025 at 12:39 PM 'Kirsty Laurenson' via nimble-users <nimble...@googlegroups.com> wrote:
+
+> Hi Perry, all,
+>
+> Thank you for your helpful response! I think my issue is stemming from the fact that I have some ages/stages that are 'absorbing' - non-breeders aged 5+ and breeders aged 6+ - which end up with larger numbers of birds than earlier ages/stages. I didn't know that this was impossible in nimble, so this is really helpful information. I've now successfully got that IPM running.
+>
+> However, I now want to turn my IPM into a PVA and project the population forward 20 years under different proposed climate scenarios, but I'm running into issues with my initial values again. I want to investigate the impact of weather on some demographic parameters, and how the population might change in the future with these weather effects. I want to include weather impacts on juvenile survival (phi.1 in my model), adult survival (phi.adult), and recruitment (alpha.6). However, when I run nimbleModel I'm getting this warning:
+>
+>  [Note] Missing values (NAs) or non-finite values were found in model variables: phi.1, phi.adult, alpha.6, lifted_oPNB4_oB2_comma_t_cB_plus_NB5_dot_T_oB2_comma_t_cB_plus_NB6_dot_T_oB2_comma_t_cB_cP_L253, lifted_p_oBt_cB_over_2_times_phi_dot_1_oB2_comma_t_cB_L253, lifted_phi_dot_4_oBt_cB_times__oP1_minus_alpha_dot_4_oBt_cB_cP_L256, lifted_phi_dot_adult_oB2_comma_t_cB_times__oP1_minus_alpha_dot_5_oBt_cB_cP_L257, lifted_phi_dot_adult_oB2_comma_t_cB_times__oP1_minus_alpha_dot_6_oB2_comma_t_cB_cP_L258, lifted_phi_dot_4_oBt_cB_times_alpha_dot_4_oBt_cB_L259, lifted_phi_dot_adult_oB2_comma_t_cB_times_alpha_dot_5_oBt_cB_L260, lifted_oPphi_dot_adult_oB2_comma_t_cB_times_alpha_dot_6_oB2_comma_t_cB_cP_L262, lifted_oPNB4_oB3_comma_t_cB_plus_NB5_dot_T_oB3_comma_t_cB_plus_NB6_dot_T_oB3_comma_t_cB_cP_L283, lifted_p_oBt_cB_over_2_times_phi_dot_1_oB3_comma_t_cB_L283, lifted_phi_dot_4_oBt_cB_times__oP1_minus_alpha_dot_4_oBt_cB_cP_L286, lifted_phi_dot_adult_oB3_comma_t_cB_times__oP1_minus_alpha_dot_5_oBt_cB_cP_L287, lifted_phi_dot_adult_oB3_comma_t_cB_times__oP1_minus_alpha_dot_6_oB3_comma_t_cB_cP_L288, lifted_phi_dot_4_oBt_cB_times_alpha_dot_4_oBt_cB_L289, lifted_phi_dot_adult_oB3_comma_t_cB_times_alpha_dot_5_oBt_cB_L290, lifted_oPphi_dot_adult_oB3_comma_t_cB_times_alpha_dot_6_oB3_comma_t_cB_cP_L292.
+>
+> I've tried following the advice for initial values in the nimble manual, but I'm still not sure how to get this sorted - especially for the lifted nodes, as this wasn't an issue before! Any advice or help would be greatly appreciated!! I've attached the latest version of my code, and I am happy to share data off-list.
+>
+> Many thanks,
+> Kirsty
+>
+> On Fri, 16 May 2025 at 16:29, Perry de Valpine <pdeva...@berkeley.edu> wrote:
+> > Hi Kirsty,
+> >
+> > Thanks for the question. Usually what you've described turns out to be a situation where the initial values provided make something impossible in the model, resulting in a probability of 0, or log probability of -Inf. In ecological models this has happened when there is something like
+> >
+> > N2 ~ dbin(p, N1)
+> >
+> > where the initial values have N2 > N1, which is impossible, or
+> >
+> > z ~ dcat(p[1:T])
+> >
+> > where z takes a value such that p[z]==0, which is impossible.
+> >
+> >
+> > You can use the model object (you will have to use nimbleModel rather than going straight to nimbleMCMC) to inspect any calculated values and pinpoint exactly where impossible stochastic outcomes are occurring.
+> >
+> > Here is our user manual section on initialization issues <https://r-nimble.org/html_manual/cha-mcmc.html#sec:initMCMC>, in case you haven't checked it out yet.
+> >
+> > So your steps to debug would look something like this:
+> >
+> > model <- nimbleModel(code = nimble.random.ipm,
+> >                                            constants = my.constants,
+> >                                            data = my.data,
+> >                                            inits = initial.values)
+> > # you may get a message warning your the model is not fully initialized. If so you can follow the instructions by running model$initializeInfo().
+> >
+> > Either way, you can then dig into where there is a problem. For example:
+> > model$calculate("NJ") # sum of log probs for all nodes in the variable NJ.
+> > # If that is -Inf, you can look at the individual log probabilities in several ways
+> > model$calculate("NJ[1]") # log prob for this single node
+> > # or
+> > model$calculate("NJ[1:10]") # sub of log probs for this set of single nodes
+> > # or
+> > model$logProb_NJ # vector of all log probabilities for NJ
+> > # Say you find that NJ[5] has a logProb of -Inf. Then you can figure out why by inspecting its inputs:
+> > model$p[4]
+> > model$phi.1[4]
+> > model$NB4[4]
+> > # etc.
+> >
+> > HTH
+> > Perry
+> >
+> >
+> > On Fri, May 16, 2025 at 7:32 AM 'Kirsty Laurenson' via nimble-users <nimble...@googlegroups.com> wrote:
+> > >
+> > > Hi all,
+> > >
+> > >
+> > >
+> > > I’m trying to run an IPM for a seabird population in the UK, with mark-recapture data from birds ringed as chicks and adults, breeding success data, and count data from 1995-2021. I have a version of the model which runs without any issues; however, the model cannot estimate adult survival rates very well from the beginning as there were no birds ringed as adults in 1995, and therefore does not estimate overall population size very well. I decided to remove 1995 from all my datasets and run my IPM from 1996 onwards, however, I’m having trouble getting the initial values right. From my second MCMC chain onwards (never the first chain), I get a warning which says ‘log prob is -Inf’ for some of the population size nodes, then once the MCMC chain starts I get the ‘slice sampler reached maximum number of contractions’ warning.
+> > >
+> > >
+> > >
+> > > I understand that this is a problem with the initial values, but I don’t understand what’s wrong with the initial values I’ve specified as the model ran without issues with the data from 1995-2021; and I don’t know what initial values would be suitable! My code for the two models is attached (1995-2021 and 1996-2021), and I’m happy to share data off-list if anyone could help me get my initial values right!
+> > >
+> > >
+> > >
+> > > Many thanks,
+> > >
+> > > Kirsty
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/95d244ac-bf60-4cc8-adc1-245bd576cec4n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/95d244ac-bf60-4cc8-adc1-245bd576cec4n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CAMzqVo_-UVUytyk3g3DF7hzxLs4theEJBj1ddd3Fqk_gB2hJkQ%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAMzqVo_-UVUytyk3g3DF7hzxLs4theEJBj1ddd3Fqk_gB2hJkQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From ud78486bfff620d81 at groups.google.com  Tue Jun 10 22:26:35 2025
+From: ud78486bfff620d81 at groups.google.com (Chris Paciorek)
+Date: Tue, 10 Jun 2025 22:26:35 +0000
+Subject: Re: specifying initial values
+Message-ID: <OvHv6hXBXXU.D9heAj5dAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <OvHv6hXBXXU.O3uL3hjfAwAJ@nimble-users.groups.google.com>
+References: <OvHv6hXBXXU.W2AocwxpFAAJ@nimble-users.groups.google.com> <OvHv6hXBXXU.O3uL3hjfAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/OvHv6hXBXXU/m/D9heAj5dAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi Kirsty, I'm not sure any of us on the dev team will be able to look at this in detail in the near future, but my high-level suggestions are:
+
+1) I am wondering if the issue is the nodes that have the logit transformation on the left side and something is getting messed up there.
+
+What do you see as the values for phi.1, phi.adult, alpha.6 in the model once it is built? And relatedly, what do you see for the values of mu.phi1, ep.phi1, mu.phiadult, ep.phiadult, mu.alpha6, ep.alpha6, which should be used to calculate phi.1, phi.adult, and alpha.6?
+
+2) Focus on the non-lifted nodes, as the lifted nodes should get initialized deterministically based on non-lifted nodes. For example, you can dive a bit into the calculation of the lifted nodes and try to see what is going on. E.g.,  `lifted_oPNB4_oB2_comma_t_cB_plus_NB5_dot_T_oB2_comma_t_cB_plus_NB6_dot_T_oB2_comma_t_cB_cP_L253` is produced from `(NB4[2,t] + NB5.T[2,t] + NB6.T[2,t])`, so check the values of NB4, NB5.T, and NB6.T in the model.
+
+-chris
+
+On Mon, Jun 9, 2025 at 1:33 PM Daniel Turek <danie...@gmail.com> wrote:
+
+> Kristy, I'm not certain if you're able to (or if you already have) shared the multitude of csv data files which are used in your script.  If you are (or already have), that would help immeasurably for tracking down the issue.  Is that something you're able to do?  (sharing off-list is totally fine, as well).
+>
+> Thanks,
+> Daniel
+>
+>
+> On Mon, Jun 9, 2025 at 12:39 PM 'Kirsty Laurenson' via nimble-users <nimble...@googlegroups.com> wrote:
+> > Hi Perry, all,
+> >
+> > Thank you for your helpful response! I think my issue is stemming from the fact that I have some ages/stages that are 'absorbing' - non-breeders aged 5+ and breeders aged 6+ - which end up with larger numbers of birds than earlier ages/stages. I didn't know that this was impossible in nimble, so this is really helpful information. I've now successfully got that IPM running.
+> >
+> > However, I now want to turn my IPM into a PVA and project the population forward 20 years under different proposed climate scenarios, but I'm running into issues with my initial values again. I want to investigate the impact of weather on some demographic parameters, and how the population might change in the future with these weather effects. I want to include weather impacts on juvenile survival (phi.1 in my model), adult survival (phi.adult), and recruitment (alpha.6). However, when I run nimbleModel I'm getting this warning:
+> >
+> >  [Note] Missing values (NAs) or non-finite values were found in model variables: phi.1, phi.adult, alpha.6, lifted_oPNB4_oB2_comma_t_cB_plus_NB5_dot_T_oB2_comma_t_cB_plus_NB6_dot_T_oB2_comma_t_cB_cP_L253, lifted_p_oBt_cB_over_2_times_phi_dot_1_oB2_comma_t_cB_L253, lifted_phi_dot_4_oBt_cB_times__oP1_minus_alpha_dot_4_oBt_cB_cP_L256, lifted_phi_dot_adult_oB2_comma_t_cB_times__oP1_minus_alpha_dot_5_oBt_cB_cP_L257, lifted_phi_dot_adult_oB2_comma_t_cB_times__oP1_minus_alpha_dot_6_oB2_comma_t_cB_cP_L258, lifted_phi_dot_4_oBt_cB_times_alpha_dot_4_oBt_cB_L259, lifted_phi_dot_adult_oB2_comma_t_cB_times_alpha_dot_5_oBt_cB_L260, lifted_oPphi_dot_adult_oB2_comma_t_cB_times_alpha_dot_6_oB2_comma_t_cB_cP_L262, lifted_oPNB4_oB3_comma_t_cB_plus_NB5_dot_T_oB3_comma_t_cB_plus_NB6_dot_T_oB3_comma_t_cB_cP_L283, lifted_p_oBt_cB_over_2_times_phi_dot_1_oB3_comma_t_cB_L283, lifted_phi_dot_4_oBt_cB_times__oP1_minus_alpha_dot_4_oBt_cB_cP_L286, lifted_phi_dot_adult_oB3_comma_t_cB_times__oP1_minus_alpha_dot_5_oBt_cB_cP_L287, lifted_phi_dot_adult_oB3_comma_t_cB_times__oP1_minus_alpha_dot_6_oB3_comma_t_cB_cP_L288, lifted_phi_dot_4_oBt_cB_times_alpha_dot_4_oBt_cB_L289, lifted_phi_dot_adult_oB3_comma_t_cB_times_alpha_dot_5_oBt_cB_L290, lifted_oPphi_dot_adult_oB3_comma_t_cB_times_alpha_dot_6_oB3_comma_t_cB_cP_L292.
+> >
+> > I've tried following the advice for initial values in the nimble manual, but I'm still not sure how to get this sorted - especially for the lifted nodes, as this wasn't an issue before! Any advice or help would be greatly appreciated!! I've attached the latest version of my code, and I am happy to share data off-list.
+> >
+> > Many thanks,
+> > Kirsty
+> >
+> > On Fri, 16 May 2025 at 16:29, Perry de Valpine <pdeva...@berkeley.edu> wrote:
+> > > Hi Kirsty,
+> > >
+> > > Thanks for the question. Usually what you've described turns out to be a situation where the initial values provided make something impossible in the model, resulting in a probability of 0, or log probability of -Inf. In ecological models this has happened when there is something like
+> > >
+> > > N2 ~ dbin(p, N1)
+> > >
+> > > where the initial values have N2 > N1, which is impossible, or
+> > >
+> > > z ~ dcat(p[1:T])
+> > >
+> > > where z takes a value such that p[z]==0, which is impossible.
+> > >
+> > >
+> > > You can use the model object (you will have to use nimbleModel rather than going straight to nimbleMCMC) to inspect any calculated values and pinpoint exactly where impossible stochastic outcomes are occurring.
+> > >
+> > > Here is our user manual section on initialization issues <https://r-nimble.org/html_manual/cha-mcmc.html#sec:initMCMC>, in case you haven't checked it out yet.
+> > >
+> > > So your steps to debug would look something like this:
+> > >
+> > > model <- nimbleModel(code = nimble.random.ipm,
+> > >                                            constants = my.constants,
+> > >                                            data = my.data,
+> > >                                            inits = initial.values)
+> > > # you may get a message warning your the model is not fully initialized. If so you can follow the instructions by running model$initializeInfo().
+> > >
+> > > Either way, you can then dig into where there is a problem. For example:
+> > > model$calculate("NJ") # sum of log probs for all nodes in the variable NJ.
+> > > # If that is -Inf, you can look at the individual log probabilities in several ways
+> > > model$calculate("NJ[1]") # log prob for this single node
+> > > # or
+> > > model$calculate("NJ[1:10]") # sub of log probs for this set of single nodes
+> > > # or
+> > > model$logProb_NJ # vector of all log probabilities for NJ
+> > > # Say you find that NJ[5] has a logProb of -Inf. Then you can figure out why by inspecting its inputs:
+> > > model$p[4]
+> > > model$phi.1[4]
+> > > model$NB4[4]
+> > > # etc.
+> > >
+> > > HTH
+> > > Perry
+> > >
+> > >
+> > > On Fri, May 16, 2025 at 7:32 AM 'Kirsty Laurenson' via nimble-users <nimble...@googlegroups.com> wrote:
+> > > >
+> > > > Hi all,
+> > > >
+> > > >
+> > > >
+> > > > I’m trying to run an IPM for a seabird population in the UK, with mark-recapture data from birds ringed as chicks and adults, breeding success data, and count data from 1995-2021. I have a version of the model which runs without any issues; however, the model cannot estimate adult survival rates very well from the beginning as there were no birds ringed as adults in 1995, and therefore does not estimate overall population size very well. I decided to remove 1995 from all my datasets and run my IPM from 1996 onwards, however, I’m having trouble getting the initial values right. From my second MCMC chain onwards (never the first chain), I get a warning which says ‘log prob is -Inf’ for some of the population size nodes, then once the MCMC chain starts I get the ‘slice sampler reached maximum number of contractions’ warning.
+> > > >
+> > > >
+> > > >
+> > > > I understand that this is a problem with the initial values, but I don’t understand what’s wrong with the initial values I’ve specified as the model ran without issues with the data from 1995-2021; and I don’t know what initial values would be suitable! My code for the two models is attached (1995-2021 and 1996-2021), and I’m happy to share data off-list if anyone could help me get my initial values right!
+> > > >
+> > > >
+> > > >
+> > > > Many thanks,
+> > > >
+> > > > Kirsty
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/95d244ac-bf60-4cc8-adc1-245bd576cec4n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/95d244ac-bf60-4cc8-adc1-245bd576cec4n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CAMzqVo_-UVUytyk3g3DF7hzxLs4theEJBj1ddd3Fqk_gB2hJkQ%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAMzqVo_-UVUytyk3g3DF7hzxLs4theEJBj1ddd3Fqk_gB2hJkQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hpWw%2BNTAj67AZkw-m56sSOWr2uqdwvV6zSDOHbYcr0Cig%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hpWw%2BNTAj67AZkw-m56sSOWr2uqdwvV6zSDOHbYcr0Cig%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From u8571999736b4d873 at groups.google.com  Wed Jun 11 14:32:11 2025
+From: u8571999736b4d873 at groups.google.com (Felipe Montealegre)
+Date: Wed, 11 Jun 2025 14:32:11 +0000
+Subject: NaNs produced by dbinom within CAR hierarchical model (reproducible minimal example attached)
+Message-ID: <x0vIgp583pk.abq5eO-RAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/x0vIgp583pk/m/abq5eO-RAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+I've been trying to use an N-mixture model with a conditional autoregressive (CAR) component (essentially like Model 3 in: doi:10.1111/2041-210X.12983). I started running into error messages I couldn't quite diagnose so I wrote a minimal example model that reproduces the problem. I'll attach the full script for reproduction, but here is the model code:
+
+```
+code <- nimbleCode({
+
+  d[1:nsites] ~ dcar_proper(
+    mu=mu[1:nsites],
+    adj=adj[1:len.adj],
+    num=n.neigh[1:nsites],
+    tau=1,
+    gamma=0.0
+    # between -1 and 1 since we omit M, C (see help(dcar_proper))
+  )
+  effect ~ dnorm(0,1)
+
+  for(i in 1:nsites){
+    counts[i] ~ dbinom(exp(d[i] + effect), 0.8)
+  }
+})
+```
+
+Here, counts is the only data node for the model.
+
+When I attempt to run Markov chains for this model on a simple hand-made dataset, I run into the problem of getting `logProb_counts = -Inf`:
+
+```
+Warning messages:
+1: In dbinom(model$counts[getNodeFunctionIndexedInfo(INDEXEDNODEINFO_,  : NaNs produced
+[...]
+```
+
+Normally, I know that this can happen because some variable wasn't initialized and shouldn't give problems, but the problem is that the chains come out 'flat':
+```
+$chain1
+Markov Chain Monte Carlo (MCMC) output:
+Start = 1
+End = 4000
+Thinning interval = 1
+        d[1] d[2] d[3] d[4] d[5] effect
+   [1,]    2    2    2    2    2      0
+   [2,]    2    2    2    2    2      0
+   [3,]    2    2    2    2    2      0
+   [4,]    2    2    2    2    2      0
+   [5,]    2    2    2    2    2      0
+   [6,]    2    2    2    2    2      0
+   [7,]    2    2    2    2    2      0
+```
+
+So something has to be wrong with the way I specified the model, but I can't figure out what's going wrong. Does anyone happen to know what might be up? My guess is that it has to do with the CAR component, since it's my first time writing a CAR model. But I'm not sure, I might have just overlooked something very basic too haha.
+
+Thank you so much in advance!!
+
+From u8571999736b4d873 at groups.google.com  Wed Jun 11 14:50:45 2025
+From: u8571999736b4d873 at groups.google.com (Felipe Montealegre)
+Date: Wed, 11 Jun 2025 14:50:45 +0000
+Subject: Re: NaNs produced by dbinom within CAR hierarchical model (reproducible minimal example attached)
+Message-ID: <x0vIgp583pk.NbHcnPKSAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <x0vIgp583pk.abq5eO-RAAAJ@nimble-users.groups.google.com>
+References: <x0vIgp583pk.abq5eO-RAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/x0vIgp583pk/m/NbHcnPKSAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I kinda realized it myself - this is embarassing haha but the 'size' parameter in the binomial distribution has to be an integer and in my model that wasn't the case. If I instead use lambda[i] <- exp(d[i] + effect), N[i] ~ dpois(lambda[i]), counts[i] ~ binom(N[i], 0.8) the problem goes away.
+
+For completeness in case someone runs into the same issue in the future and googles this, I also tried rounding exp(d[i] + effect) to the nearest integer but I couldn't get that to work. I don't think that rounding would be a reasonable thing for a model in most situations anyway, but I just wanted to have my afternoon headache potentially help someone in the future haha!
+
+On Wednesday, June 11, 2025 at 7:32:11 AM UTC-7 Felipe Montealegre wrote:
+> Hi!
+>
+> I've been trying to use an N-mixture model with a conditional autoregressive (CAR) component (essentially like Model 3 in: doi:10.1111/2041-210X.12983). I started running into error messages I couldn't quite diagnose so I wrote a minimal example model that reproduces the problem. I'll attach the full script for reproduction, but here is the model code:
+>
+> ```
+> code <- nimbleCode({
+>
+>   d[1:nsites] ~ dcar_proper(
+>     mu=mu[1:nsites],
+>     adj=adj[1:len.adj],
+>     num=n.neigh[1:nsites],
+>     tau=1,
+>     gamma=0.0
+>     # between -1 and 1 since we omit M, C (see help(dcar_proper))
+>   )
+>   effect ~ dnorm(0,1)
+>
+>   for(i in 1:nsites){
+>     counts[i] ~ dbinom(exp(d[i] + effect), 0.8)
+>   }
+> })
+> ```
+>
+> Here, counts is the only data node for the model.
+>
+> When I attempt to run Markov chains for this model on a simple hand-made dataset, I run into the problem of getting `logProb_counts = -Inf`:
+>
+> ```
+> Warning messages:
+> 1: In dbinom(model$counts[getNodeFunctionIndexedInfo(INDEXEDNODEINFO_,  : NaNs produced
+> [...]
+> ```
+>
+> Normally, I know that this can happen because some variable wasn't initialized and shouldn't give problems, but the problem is that the chains come out 'flat':
+> ```
+> $chain1
+> Markov Chain Monte Carlo (MCMC) output:
+> Start = 1
+> End = 4000
+> Thinning interval = 1
+>         d[1] d[2] d[3] d[4] d[5] effect
+>    [1,]    2    2    2    2    2      0
+>    [2,]    2    2    2    2    2      0
+>    [3,]    2    2    2    2    2      0
+>    [4,]    2    2    2    2    2      0
+>    [5,]    2    2    2    2    2      0
+>    [6,]    2    2    2    2    2      0
+>    [7,]    2    2    2    2    2      0
+> ```
+>
+> So something has to be wrong with the way I specified the model, but I can't figure out what's going wrong. Does anyone happen to know what might be up? My guess is that it has to do with the CAR component, since it's my first time writing a CAR model. But I'm not sure, I might have just overlooked something very basic too haha.
+>
+> Thank you so much in advance!!
+>
+
+From u9c2c0c89a3d22b1b at groups.google.com  Sun Jun 22 21:18:36 2025
+From: u9c2c0c89a3d22b1b at groups.google.com (PierGianLuca)
+Date: Sun, 22 Jun 2025 21:18:36 +0000
+Subject: Difference between "conjugate sampler" and "RW_dirichlet sampler"?
+Message-ID: <p_MU5fAXv-o.8CKZ9FVdAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/p_MU5fAXv-o/m/8CKZ9FVdAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Nimble devs and users,
+
+I was wondering what is the difference between "conjugate sampler" and "RW_dirichlet sampler" for a node that follows a Dirichlet distribution.
+
+More in detail (simplifying the original model):
+
+A. If I write a model as follows:
+
+W[1:n] ~ ddirch(alpha = alphas[1:n])
+
+WW[1:n] <- W[1:n] + 1e-100 # to avoid zero-elements
+
+for(d in 1:m){
+   K[d] ~ dcat(prob = WW[1:n])
+   data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+}
+
+Then I see that W is assigned a RW_dirichlet sampler:
+----
+categorical sampler (11)
+   [...]
+   - K[]  (10 elements)
+RW_dirichlet sampler (1)
+   - W[1:64]
+----
+
+B. If I write the model as follows:
+
+W[1:n] ~ ddirch(alpha = alphas[1:n])
+
+for(d in 1:m){
+   K[d] ~ dcat(prob = W[1:n])
+   data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+}
+
+Then I see that W is assigned a conjugate sampler:
+----
+conjugate sampler (1025)
+   [...]
+   - W[1:64]
+categorical sampler (11)
+   [...]
+   - K[]  (10 elements)
+----
+
+But in either case, shouldn't the posterior for W follow a Dirichlet distribution? How does the "conjugate sampler" for W in case B. differ from the RW_dirichlet sampler in case A.?
+
+Thank you for your help!
+Best regards,
+Luca
+
+From u10e17346e14a0eac at groups.google.com  Tue Jun 24 17:21:41 2025
+From: u10e17346e14a0eac at groups.google.com (Jeffrey Hostetler)
+Date: Tue, 24 Jun 2025 17:21:41 +0000
+Subject: Density dependence in an integrated population model with prior parameter estimates
+Message-ID: <00gxOFJdagg.erFqQpHtAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/00gxOFJdagg/m/erFqQpHtAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+Apologies for cross-posting.
+
+We developed an integrated population model (IPM) for a marine mammal that we're now adapting in various ways. One of these adaptations is to build in density dependence in reproductive probabilities:
+
+  # reproduction
+  for(i in 1:nYearsRepro){
+    ggb[i] <- ilogit(rep.betas[i])
+    rep.betas[i] <- rep.inter + rep.coef * (Ntot[i] / K[i]) + kappa[i]
+    kappa[i] ~ dnorm(0, rep.prec)
+  }
+
+When we try to define the model in NIMBLE, we get the following error message:
+
+Error in igraph::topo_sort(graph, mode = "out") :
+At vendor/cigraph/src/properties/dag.c:125 : The graph has cycles; topological sorting is only possible in acyclic graphs. Invalid value
+
+Since this is the same model of density dependence used in many other IPMs, except for the time-varying carrying capacity (K; which we're not trying to estimate in the IPM), I suspect the error message is due to the workarounds we set up to allow this sort of modeling where the data are not the direct reproductive data but previously estimated reproductive probabilities:
+
+  rep.mu <http://rep.mu>[1:nYearsRepro] ~ dmnorm(rep.betas[1:nYearsRepro],
+                                 cov = rep.vcv[1:nYearsRepro,1:nYearsRepro])
+  rep.prec ~ dgamma(0.001, 0.001)
+  rep.sd <http://rep.sd> <- rep.prec ^ -0.5
+  rep.inter ~ dnorm(0, sd = 3)
+  rep.coef ~ dnorm(0, sd = 3)
+
+Does anyone know of a way we can make density dependence work within this IPM, short of duplicating previously developed complex mark-recapture models implemented in MARK?
+
+Reproducible example attached.
+
+Thank you,
+
+Jeff
+
+Jeffrey A. Hostetler, Ph.D.
+Research Biologist
+U.S. Geological Survey
+Eastern Ecological Science Center
+12100 Beech Forest Road
+Laurel, MD 20708
+USGS Staff Profile <https://www.usgs.gov/staff-profiles/jeffrey-a-hostetler> | ORCID <https://orcid.org/0000-0003-3669-1758>
+
+From uea29cead5e3b8075 at groups.google.com  Tue Jun 24 18:07:16 2025
+From: uea29cead5e3b8075 at groups.google.com (Daniel Gibson)
+Date: Tue, 24 Jun 2025 18:07:16 +0000
+Subject: Re: Density dependence in an integrated population model with prior parameter estimates
+Message-ID: <00gxOFJdagg.o9dwr5loBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <00gxOFJdagg.erFqQpHtAwAJ@nimble-users.groups.google.com>
+References: <00gxOFJdagg.erFqQpHtAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/00gxOFJdagg/m/o9dwr5loBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jeffrey,
+
+My guess is that the multivariate normal distribution is causing the error since it is 'trying' to resolve all years of fecundity data at once, but the linear model describing fecundity (rep.betas) is being informed by parameters that are being calculated/estimated during each year of the study. I've had acyclic graph issues in the past when I've tried to include DD in the model with multivariate samplers, which were resolved by changing the multivariate sampler to a univariate distribution.
+
+Specifically, if you change the dmnorm section of the code to the following:
+
+  #reproduction
+  for(t in 1:nYearsRepro){
+     rep.mu <http://rep.mu>[t] ~ dnorm(rep.betas[t],  sd = rep.vcv[t,t])
+  }
+
+results in a model that "runs" but loses the ability to leverage the covariance structure specified in the code. I am using runs in quotes since a few other errors popped up based on this parameterization, which superficially looked like initial values problems.
+
+Best
+-Dan
+
+On Tue, Jun 24, 2025 at 12:21 PM Jeffrey Hostetler <falaf...@gmail.com> wrote:
+
+> Hello,
+>
+> Apologies for cross-posting.
+>
+> We developed an integrated population model (IPM) for a marine mammal that we're now adapting in various ways. One of these adaptations is to build in density dependence in reproductive probabilities:
+>
+>   # reproduction
+>   for(i in 1:nYearsRepro){
+>     ggb[i] <- ilogit(rep.betas[i])
+>     rep.betas[i] <- rep.inter + rep.coef * (Ntot[i] / K[i]) + kappa[i]
+>     kappa[i] ~ dnorm(0, rep.prec)
+>   }
+>
+> When we try to define the model in NIMBLE, we get the following error message:
+>
+> Error in igraph::topo_sort(graph, mode = "out") :
+> At vendor/cigraph/src/properties/dag.c:125 : The graph has cycles; topological sorting is only possible in acyclic graphs. Invalid value
+>
+> Since this is the same model of density dependence used in many other IPMs, except for the time-varying carrying capacity (K; which we're not trying to estimate in the IPM), I suspect the error message is due to the workarounds we set up to allow this sort of modeling where the data are not the direct reproductive data but previously estimated reproductive probabilities:
+>
+>   rep.mu <http://rep.mu>[1:nYearsRepro] ~ dmnorm(rep.betas[1:nYearsRepro],
+>                                  cov = rep.vcv[1:nYearsRepro,1:nYearsRepro])
+>   rep.prec ~ dgamma(0.001, 0.001)
+>   rep.sd <http://rep.sd> <- rep.prec ^ -0.5
+>   rep.inter ~ dnorm(0, sd = 3)
+>   rep.coef ~ dnorm(0, sd = 3)
+>
+> Does anyone know of a way we can make density dependence work within this IPM, short of duplicating previously developed complex mark-recapture models implemented in MARK?
+>
+> Reproducible example attached.
+>
+> Thank you,
+>
+> Jeff
+>
+> Jeffrey A. Hostetler, Ph.D.
+> Research Biologist
+> U.S. Geological Survey
+> Eastern Ecological Science Center
+> 12100 Beech Forest Road
+> Laurel, MD 20708
+> USGS Staff Profile <https://www.usgs.gov/staff-profiles/jeffrey-a-hostetler> | ORCID <https://orcid.org/0000-0003-3669-1758>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/e8347aa8-d652-478d-8966-e2baabfa4e8bn%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/e8347aa8-d652-478d-8966-e2baabfa4e8bn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u10e17346e14a0eac at groups.google.com  Tue Jun 24 18:40:47 2025
+From: u10e17346e14a0eac at groups.google.com (Jeffrey Hostetler)
+Date: Tue, 24 Jun 2025 18:40:47 +0000
+Subject: Re: Density dependence in an integrated population model with prior parameter estimates
+Message-ID: <00gxOFJdagg.ikMU2m1qBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <00gxOFJdagg.o9dwr5loBgAJ@nimble-users.groups.google.com>
+References: <00gxOFJdagg.erFqQpHtAwAJ@nimble-users.groups.google.com> <00gxOFJdagg.o9dwr5loBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/00gxOFJdagg/m/ikMU2m1qBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Dan,
+
+Thanks for looking into this!
+
+Did you change anything else? I still get the same error message when I replace the dmnorm with that.
+
+Jeff
+
+On Tuesday, June 24, 2025 at 2:07:16 PM UTC-4 Daniel Gibson wrote:
+> Hi Jeffrey,
+>
+> My guess is that the multivariate normal distribution is causing the error since it is 'trying' to resolve all years of fecundity data at once, but the linear model describing fecundity (rep.betas) is being informed by parameters that are being calculated/estimated during each year of the study. I've had acyclic graph issues in the past when I've tried to include DD in the model with multivariate samplers, which were resolved by changing the multivariate sampler to a univariate distribution.
+>
+> Specifically, if you change the dmnorm section of the code to the following:
+>
+>   #reproduction
+>   for(t in 1:nYearsRepro){
+>      rep.mu <http://rep.mu>[t] ~ dnorm(rep.betas[t],  sd = rep.vcv[t,t])
+>   }
+>
+> results in a model that "runs" but loses the ability to leverage the covariance structure specified in the code. I am using runs in quotes since a few other errors popped up based on this parameterization, which superficially looked like initial values problems.
+>
+> Best
+> -Dan
+>
+> On Tue, Jun 24, 2025 at 12:21 PM Jeffrey Hostetler <falaf...@gmail.com> wrote:
+> > Hello,
+> >
+> > Apologies for cross-posting.
+> >
+> > We developed an integrated population model (IPM) for a marine mammal that we're now adapting in various ways. One of these adaptations is to build in density dependence in reproductive probabilities:
+> >
+> >   # reproduction
+> >   for(i in 1:nYearsRepro){
+> >     ggb[i] <- ilogit(rep.betas[i])
+> >     rep.betas[i] <- rep.inter + rep.coef * (Ntot[i] / K[i]) + kappa[i]
+> >     kappa[i] ~ dnorm(0, rep.prec)
+> >   }
+> >
+> > When we try to define the model in NIMBLE, we get the following error message:
+> >
+> > Error in igraph::topo_sort(graph, mode = "out") :
+> > At vendor/cigraph/src/properties/dag.c:125 : The graph has cycles; topological sorting is only possible in acyclic graphs. Invalid value
+> >
+> > Since this is the same model of density dependence used in many other IPMs, except for the time-varying carrying capacity (K; which we're not trying to estimate in the IPM), I suspect the error message is due to the workarounds we set up to allow this sort of modeling where the data are not the direct reproductive data but previously estimated reproductive probabilities:
+> >
+> >   rep.mu <http://rep.mu>[1:nYearsRepro] ~ dmnorm(rep.betas[1:nYearsRepro],
+> >                                  cov = rep.vcv[1:nYearsRepro,1:nYearsRepro])
+> >   rep.prec ~ dgamma(0.001, 0.001)
+> >   rep.sd <http://rep.sd> <- rep.prec ^ -0.5
+> >   rep.inter ~ dnorm(0, sd = 3)
+> >   rep.coef ~ dnorm(0, sd = 3)
+> >
+> > Does anyone know of a way we can make density dependence work within this IPM, short of duplicating previously developed complex mark-recapture models implemented in MARK?
+> >
+> > Reproducible example attached.
+> >
+> > Thank you,
+> >
+> > Jeff
+> >
+> > Jeffrey A. Hostetler, Ph.D.
+> > Research Biologist
+> > U.S. Geological Survey
+> > Eastern Ecological Science Center
+> > 12100 Beech Forest Road
+> > Laurel, MD 20708
+> > USGS Staff Profile <https://www.usgs.gov/staff-profiles/jeffrey-a-hostetler> | ORCID <https://orcid.org/0000-0003-3669-1758>
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/e8347aa8-d652-478d-8966-e2baabfa4e8bn%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/e8347aa8-d652-478d-8966-e2baabfa4e8bn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ubf6d77e39d193c5e at groups.google.com  Tue Jun 24 19:35:35 2025
+From: ubf6d77e39d193c5e at groups.google.com (David Christianson)
+Date: Tue, 24 Jun 2025 19:35:35 +0000
+Subject: Re: Density dependence in an integrated population model with prior parameter estimates
+Message-ID: <00gxOFJdagg.nxHHTWttBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <00gxOFJdagg.ikMU2m1qBgAJ@nimble-users.groups.google.com>
+References: <00gxOFJdagg.erFqQpHtAwAJ@nimble-users.groups.google.com> <00gxOFJdagg.ikMU2m1qBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/00gxOFJdagg/m/nxHHTWttBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jeff,
+Is there any way Ntot[i] is dependent on something on the left hand side in the model code snippets you shared?
+
+On Tuesday, June 24, 2025 at 11:21:41 AM UTC-6 Jeffrey Hostetler wrote:
+> Hello,
+>
+> Apologies for cross-posting.
+>
+> We developed an integrated population model (IPM) for a marine mammal that we're now adapting in various ways. One of these adaptations is to build in density dependence in reproductive probabilities:
+>
+>   # reproduction
+>   for(i in 1:nYearsRepro){
+>     ggb[i] <- ilogit(rep.betas[i])
+>     rep.betas[i] <- rep.inter + rep.coef * (Ntot[i] / K[i]) + kappa[i]
+>     kappa[i] ~ dnorm(0, rep.prec)
+>   }
+>
+> When we try to define the model in NIMBLE, we get the following error message:
+>
+> Error in igraph::topo_sort(graph, mode = "out") :
+> At vendor/cigraph/src/properties/dag.c:125 : The graph has cycles; topological sorting is only possible in acyclic graphs. Invalid value
+>
+> Since this is the same model of density dependence used in many other IPMs, except for the time-varying carrying capacity (K; which we're not trying to estimate in the IPM), I suspect the error message is due to the workarounds we set up to allow this sort of modeling where the data are not the direct reproductive data but previously estimated reproductive probabilities:
+>
+>   rep.mu <http://rep.mu>[1:nYearsRepro] ~ dmnorm(rep.betas[1:nYearsRepro],
+>                                  cov = rep.vcv[1:nYearsRepro,1:nYearsRepro])
+>   rep.prec ~ dgamma(0.001, 0.001)
+>   rep.sd <http://rep.sd> <- rep.prec ^ -0.5
+>   rep.inter ~ dnorm(0, sd = 3)
+>   rep.coef ~ dnorm(0, sd = 3)
+>
+> Does anyone know of a way we can make density dependence work within this IPM, short of duplicating previously developed complex mark-recapture models implemented in MARK?
+>
+> Reproducible example attached.
+>
+> Thank you,
+>
+> Jeff
+>
+> Jeffrey A. Hostetler, Ph.D.
+> Research Biologist
+> U.S. Geological Survey
+> Eastern Ecological Science Center
+> 12100 Beech Forest Road
+> Laurel, MD 20708
+> USGS Staff Profile <https://www.usgs.gov/staff-profiles/jeffrey-a-hostetler> | ORCID <https://orcid.org/0000-0003-3669-1758>
+>
+
+From uf97d21be02e5ed9b at groups.google.com  Tue Jun 24 20:22:08 2025
+From: uf97d21be02e5ed9b at groups.google.com (Dr. Heather Gaya)
+Date: Tue, 24 Jun 2025 20:22:08 +0000
+Subject: Re: Density dependence in an integrated population model with prior parameter estimates
+Message-ID: <00gxOFJdagg.GwVizPVvBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <00gxOFJdagg.nxHHTWttBgAJ@nimble-users.groups.google.com>
+References: <00gxOFJdagg.erFqQpHtAwAJ@nimble-users.groups.google.com> <00gxOFJdagg.nxHHTWttBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/00gxOFJdagg/m/GwVizPVvBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think it something to do with this line:
+
+l.mean.ggp <- logit(mean(ggp[1:(nYears-1)]))
+
+ggp = ggb, which means ggp is dependent on Ntot. In my experience, neither nimble nor JAGS like it when you try to use the mean of the posterior to inform the parameter which you are trying to get the posterior of. (Great English on my part I know :) )
+
+So, I don't know exactly what you want to do to make that work, but you can't use the l.mean.ggp formulation you have above. If you remove that, your code runs clean.
+
+-Heather
+
+On Tue, Jun 24, 2025 at 3:35 PM David Christianson <daveal...@gmail.com> wrote:
+
+> Hi Jeff,
+> Is there any way Ntot[i] is dependent on something on the left hand side in the model code snippets you shared?
+>
+> On Tuesday, June 24, 2025 at 11:21:41 AM UTC-6 Jeffrey Hostetler wrote:
+> > Hello,
+> >
+> > Apologies for cross-posting.
+> >
+> > We developed an integrated population model (IPM) for a marine mammal that we're now adapting in various ways. One of these adaptations is to build in density dependence in reproductive probabilities:
+> >
+> >   # reproduction
+> >   for(i in 1:nYearsRepro){
+> >     ggb[i] <- ilogit(rep.betas[i])
+> >     rep.betas[i] <- rep.inter + rep.coef * (Ntot[i] / K[i]) + kappa[i]
+> >     kappa[i] ~ dnorm(0, rep.prec)
+> >   }
+> >
+> > When we try to define the model in NIMBLE, we get the following error message:
+> >
+> > Error in igraph::topo_sort(graph, mode = "out") :
+> > At vendor/cigraph/src/properties/dag.c:125 : The graph has cycles; topological sorting is only possible in acyclic graphs. Invalid value
+> >
+> > Since this is the same model of density dependence used in many other IPMs, except for the time-varying carrying capacity (K; which we're not trying to estimate in the IPM), I suspect the error message is due to the workarounds we set up to allow this sort of modeling where the data are not the direct reproductive data but previously estimated reproductive probabilities:
+> >
+> >   rep.mu <http://rep.mu>[1:nYearsRepro] ~ dmnorm(rep.betas[1:nYearsRepro],
+> >                                  cov = rep.vcv[1:nYearsRepro,1:nYearsRepro])
+> >   rep.prec ~ dgamma(0.001, 0.001)
+> >   rep.sd <http://rep.sd> <- rep.prec ^ -0.5
+> >   rep.inter ~ dnorm(0, sd = 3)
+> >   rep.coef ~ dnorm(0, sd = 3)
+> >
+> > Does anyone know of a way we can make density dependence work within this IPM, short of duplicating previously developed complex mark-recapture models implemented in MARK?
+> >
+> > Reproducible example attached.
+> >
+> > Thank you,
+> >
+> > Jeff
+> >
+> > Jeffrey A. Hostetler, Ph.D.
+> > Research Biologist
+> > U.S. Geological Survey
+> > Eastern Ecological Science Center
+> > 12100 Beech Forest Road
+> > Laurel, MD 20708
+> > USGS Staff Profile <https://www.usgs.gov/staff-profiles/jeffrey-a-hostetler> | ORCID <https://orcid.org/0000-0003-3669-1758>
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/e48f8fa2-0a1e-4f96-8f52-fc788ad3c2d1n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/e48f8fa2-0a1e-4f96-8f52-fc788ad3c2d1n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u10e17346e14a0eac at groups.google.com  Tue Jun 24 20:48:45 2025
+From: u10e17346e14a0eac at groups.google.com (Jeffrey Hostetler)
+Date: Tue, 24 Jun 2025 20:48:45 +0000
+Subject: Re: Density dependence in an integrated population model with prior parameter estimates
+Message-ID: <00gxOFJdagg.Sn2Wc2lxBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <00gxOFJdagg.GwVizPVvBgAJ@nimble-users.groups.google.com>
+References: <00gxOFJdagg.erFqQpHtAwAJ@nimble-users.groups.google.com> <00gxOFJdagg.GwVizPVvBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/00gxOFJdagg/m/Sn2Wc2lxBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+That did it - thank you, Heather! I can work around that issue.
+
+Jeff
+
+On Tuesday, June 24, 2025 at 4:22:08 PM UTC-4 Dr. Heather Gaya wrote:
+> I think it something to do with this line:
+>
+> l.mean.ggp <- logit(mean(ggp[1:(nYears-1)]))
+>
+> ggp = ggb, which means ggp is dependent on Ntot. In my experience, neither nimble nor JAGS like it when you try to use the mean of the posterior to inform the parameter which you are trying to get the posterior of. (Great English on my part I know :) )
+>
+> So, I don't know exactly what you want to do to make that work, but you can't use the l.mean.ggp formulation you have above. If you remove that, your code runs clean.
+>
+> -Heather
+>
+> On Tue, Jun 24, 2025 at 3:35 PM David Christianson <daveal...@gmail.com> wrote:
+> > Hi Jeff,
+> > Is there any way Ntot[i] is dependent on something on the left hand side in the model code snippets you shared?
+> >
+> > On Tuesday, June 24, 2025 at 11:21:41 AM UTC-6 Jeffrey Hostetler wrote:
+> > > Hello,
+> > >
+> > > Apologies for cross-posting.
+> > >
+> > > We developed an integrated population model (IPM) for a marine mammal that we're now adapting in various ways. One of these adaptations is to build in density dependence in reproductive probabilities:
+> > >
+> > >   # reproduction
+> > >   for(i in 1:nYearsRepro){
+> > >     ggb[i] <- ilogit(rep.betas[i])
+> > >     rep.betas[i] <- rep.inter + rep.coef * (Ntot[i] / K[i]) + kappa[i]
+> > >     kappa[i] ~ dnorm(0, rep.prec)
+> > >   }
+> > >
+> > > When we try to define the model in NIMBLE, we get the following error message:
+> > >
+> > > Error in igraph::topo_sort(graph, mode = "out") :
+> > > At vendor/cigraph/src/properties/dag.c:125 : The graph has cycles; topological sorting is only possible in acyclic graphs. Invalid value
+> > >
+> > > Since this is the same model of density dependence used in many other IPMs, except for the time-varying carrying capacity (K; which we're not trying to estimate in the IPM), I suspect the error message is due to the workarounds we set up to allow this sort of modeling where the data are not the direct reproductive data but previously estimated reproductive probabilities:
+> > >
+> > >   rep.mu <http://rep.mu>[1:nYearsRepro] ~ dmnorm(rep.betas[1:nYearsRepro],
+> > >                                  cov = rep.vcv[1:nYearsRepro,1:nYearsRepro])
+> > >   rep.prec ~ dgamma(0.001, 0.001)
+> > >   rep.sd <http://rep.sd> <- rep.prec ^ -0.5
+> > >   rep.inter ~ dnorm(0, sd = 3)
+> > >   rep.coef ~ dnorm(0, sd = 3)
+> > >
+> > > Does anyone know of a way we can make density dependence work within this IPM, short of duplicating previously developed complex mark-recapture models implemented in MARK?
+> > >
+> > > Reproducible example attached.
+> > >
+> > > Thank you,
+> > >
+> > > Jeff
+> > >
+> > > Jeffrey A. Hostetler, Ph.D.
+> > > Research Biologist
+> > > U.S. Geological Survey
+> > > Eastern Ecological Science Center
+> > > 12100 Beech Forest Road
+> > > Laurel, MD 20708
+> > > USGS Staff Profile <https://www.usgs.gov/staff-profiles/jeffrey-a-hostetler> | ORCID <https://orcid.org/0000-0003-3669-1758>
+> > >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/e48f8fa2-0a1e-4f96-8f52-fc788ad3c2d1n%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/e48f8fa2-0a1e-4f96-8f52-fc788ad3c2d1n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uf116cbe5c604c988 at groups.google.com  Tue Jun 24 22:35:27 2025
+From: uf116cbe5c604c988 at groups.google.com (Daniel Turek)
+Date: Tue, 24 Jun 2025 22:35:27 +0000
+Subject: Re: Difference between "conjugate sampler" and "RW_dirichlet sampler"?
+Message-ID: <p_MU5fAXv-o.e_45Dzx3BgAJ@nimble-users.groups.google.com>
+In-Reply-To: <p_MU5fAXv-o.8CKZ9FVdAwAJ@nimble-users.groups.google.com>
+References: <p_MU5fAXv-o.8CKZ9FVdAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/p_MU5fAXv-o/m/e_45Dzx3BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Luca, these are good questions.
+
+The "conjugate sampler" does conjugate updates to the elements of W[], using (in your case) the dirichlet prior - categorical likelihood conjugate relationship.  This is a specific case of the more general dirichlet prior - multinomial likelihood conjugate relationship.  In this case, yes, the exact posterior of W[] is dirichlet, and we can sample it directly.
+
+The RW_dirichlet sampler does metropolis-hastings updates, one at a time and on a logarithmic scale, to the elements of W[], normalizing the sum of the elements of W[] to 1 along the way.  This applies when W[] does not exactly fall into a conjugate relationship.  I just did a quick pencil and paper check, and I don't believe that when W[] follows a dirichlet prior, then you add a constant to all elements of W[] (in your case the very small constant 1e-100), then use that sum as the probability parameter for a categorical distribution, the posterior is no longer exactly dirichlet.  I think you could also verify this by writing down the pdf/pmf of the dirichlet and categorical distributions.
+
+That said, you shouldn't need to add the constant 1e-100 to the elements of W[], because the corner case of any W[i] = 0 is a boundary case, and that should never arise during MCMC updates.  Just make sure to initialize all elements of W[] to positive values which sum to 1, and I think you'll be ok.  Does this make sense?  Please let me know if I've looked over your code or your questions too quickly.
+
+Daniel
+
+On Sun, Jun 22, 2025 at 5:18 PM 'PierGianLuca' via nimble-users <nimble...@googlegroups.com> wrote:
+
+> Dear Nimble devs and users,
+>
+> I was wondering what is the difference between "conjugate sampler" and "RW_dirichlet sampler" for a node that follows a Dirichlet distribution.
+>
+> More in detail (simplifying the original model):
+>
+> A. If I write a model as follows:
+>
+> W[1:n] ~ ddirch(alpha = alphas[1:n])
+>
+> WW[1:n] <- W[1:n] + 1e-100 # to avoid zero-elements
+>
+> for(d in 1:m){
+>    K[d] ~ dcat(prob = WW[1:n])
+>    data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+> }
+>
+>
+> Then I see that W is assigned a RW_dirichlet sampler:
+> ----
+> categorical sampler (11)
+>    [...]
+>    - K[]  (10 elements)
+> RW_dirichlet sampler (1)
+>    - W[1:64]
+> ----
+>
+>
+>
+> B. If I write the model as follows:
+>
+> W[1:n] ~ ddirch(alpha = alphas[1:n])
+>
+> for(d in 1:m){
+>    K[d] ~ dcat(prob = W[1:n])
+>    data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+> }
+>
+> Then I see that W is assigned a conjugate sampler:
+> ----
+> conjugate sampler (1025)
+>    [...]
+>    - W[1:64]
+> categorical sampler (11)
+>    [...]
+>    - K[]  (10 elements)
+> ----
+>
+>
+> But in either case, shouldn't the posterior for W follow a Dirichlet distribution? How does the "conjugate sampler" for W in case B. differ from the RW_dirichlet sampler in case A.?
+>
+> Thank you for your help!
+> Best regards,
+> Luca
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/edad4822-2c09-b174-78af-ca32cc065786%40magnaspesmeretrix.org.
+
+From ud78486bfff620d81 at groups.google.com  Wed Jun 25 00:32:50 2025
+From: ud78486bfff620d81 at groups.google.com (Chris Paciorek)
+Date: Wed, 25 Jun 2025 00:32:50 +0000
+Subject: Re: Difference between "conjugate sampler" and "RW_dirichlet sampler"?
+Message-ID: <p_MU5fAXv-o.lBDF96N9BgAJ@nimble-users.groups.google.com>
+In-Reply-To: <p_MU5fAXv-o.e_45Dzx3BgAJ@nimble-users.groups.google.com>
+References: <p_MU5fAXv-o.8CKZ9FVdAwAJ@nimble-users.groups.google.com> <p_MU5fAXv-o.e_45Dzx3BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/p_MU5fAXv-o/m/lBDF96N9BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Daniel,
+
+I was talking with Luca about his code in a separate issue (the warnings when logProb values are Inf) and he reminded me that he had discussed this modeling context on the list some time ago. The issue is that W[i]=0 can be caused by numerical underflow, so it does indeed happen, unfortunately. I think at the time, I may have looked at this and not figured out a solution for the underflow happening in conjugate sampler, since there's not really a way to intervene and set the 0 values to some small epsilon. In Luca's case the underflow leads to an Inf log probability when sampling parameters of which W is a dependency. So it's all something of a numerical hairball, so to speak.
+
+-chris
+
+On Tue, Jun 24, 2025 at 3:35 PM Daniel Turek <danie...@gmail.com> wrote:
+
+> Luca, these are good questions.
+>
+> The "conjugate sampler" does conjugate updates to the elements of W[], using (in your case) the dirichlet prior - categorical likelihood conjugate relationship.  This is a specific case of the more general dirichlet prior - multinomial likelihood conjugate relationship.  In this case, yes, the exact posterior of W[] is dirichlet, and we can sample it directly.
+>
+> The RW_dirichlet sampler does metropolis-hastings updates, one at a time and on a logarithmic scale, to the elements of W[], normalizing the sum of the elements of W[] to 1 along the way.  This applies when W[] does not exactly fall into a conjugate relationship.  I just did a quick pencil and paper check, and I don't believe that when W[] follows a dirichlet prior, then you add a constant to all elements of W[] (in your case the very small constant 1e-100), then use that sum as the probability parameter for a categorical distribution, the posterior is no longer exactly dirichlet.  I think you could also verify this by writing down the pdf/pmf of the dirichlet and categorical distributions.
+>
+> That said, you shouldn't need to add the constant 1e-100 to the elements of W[], because the corner case of any W[i] = 0 is a boundary case, and that should never arise during MCMC updates.  Just make sure to initialize all elements of W[] to positive values which sum to 1, and I think you'll be ok.  Does this make sense?  Please let me know if I've looked over your code or your questions too quickly.
+>
+> Daniel
+>
+>
+> On Sun, Jun 22, 2025 at 5:18 PM 'PierGianLuca' via nimble-users <nimble...@googlegroups.com> wrote:
+> > Dear Nimble devs and users,
+> >
+> > I was wondering what is the difference between "conjugate sampler" and "RW_dirichlet sampler" for a node that follows a Dirichlet distribution.
+> >
+> > More in detail (simplifying the original model):
+> >
+> > A. If I write a model as follows:
+> >
+> > W[1:n] ~ ddirch(alpha = alphas[1:n])
+> >
+> > WW[1:n] <- W[1:n] + 1e-100 # to avoid zero-elements
+> >
+> > for(d in 1:m){
+> >    K[d] ~ dcat(prob = WW[1:n])
+> >    data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+> > }
+> >
+> >
+> > Then I see that W is assigned a RW_dirichlet sampler:
+> > ----
+> > categorical sampler (11)
+> >    [...]
+> >    - K[]  (10 elements)
+> > RW_dirichlet sampler (1)
+> >    - W[1:64]
+> > ----
+> >
+> >
+> >
+> > B. If I write the model as follows:
+> >
+> > W[1:n] ~ ddirch(alpha = alphas[1:n])
+> >
+> > for(d in 1:m){
+> >    K[d] ~ dcat(prob = W[1:n])
+> >    data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+> > }
+> >
+> > Then I see that W is assigned a conjugate sampler:
+> > ----
+> > conjugate sampler (1025)
+> >    [...]
+> >    - W[1:64]
+> > categorical sampler (11)
+> >    [...]
+> >    - K[]  (10 elements)
+> > ----
+> >
+> >
+> > But in either case, shouldn't the posterior for W follow a Dirichlet distribution? How does the "conjugate sampler" for W in case B. differ from the RW_dirichlet sampler in case A.?
+> >
+> > Thank you for your help!
+> > Best regards,
+> > Luca
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/edad4822-2c09-b174-78af-ca32cc065786%40magnaspesmeretrix.org.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hqLD7M73H%2BvtnrshKoa1QhRiwJ-6Vzk%2BC9VoGUQbu5Osw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hqLD7M73H%2BvtnrshKoa1QhRiwJ-6Vzk%2BC9VoGUQbu5Osw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From uf116cbe5c604c988 at groups.google.com  Wed Jun 25 01:51:34 2025
+From: uf116cbe5c604c988 at groups.google.com (Daniel Turek)
+Date: Wed, 25 Jun 2025 01:51:34 +0000
+Subject: Re: Difference between "conjugate sampler" and "RW_dirichlet sampler"?
+Message-ID: <p_MU5fAXv-o.28Zk0--BBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <p_MU5fAXv-o.lBDF96N9BgAJ@nimble-users.groups.google.com>
+References: <p_MU5fAXv-o.8CKZ9FVdAwAJ@nimble-users.groups.google.com> <p_MU5fAXv-o.lBDF96N9BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/p_MU5fAXv-o/m/28Zk0--BBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for following up, Chris.  I hope we can figure this one out.
+
+On Tue, Jun 24, 2025 at 8:32 PM Chris Paciorek <paci...@stat.berkeley.edu> wrote:
+> Hi Daniel,
+>
+> I was talking with Luca about his code in a separate issue (the warnings when logProb values are Inf) and he reminded me that he had discussed this modeling context on the list some time ago. The issue is that W[i]=0 can be caused by numerical underflow, so it does indeed happen, unfortunately. I think at the time, I may have looked at this and not figured out a solution for the underflow happening in conjugate sampler, since there's not really a way to intervene and set the 0 values to some small epsilon. In Luca's case the underflow leads to an Inf log probability when sampling parameters of which W is a dependency. So it's all something of a numerical hairball, so to speak.
+>
+> -chris
+>
+> On Tue, Jun 24, 2025 at 3:35 PM Daniel Turek <danie...@gmail.com> wrote:
+> > Luca, these are good questions.
+> >
+> > The "conjugate sampler" does conjugate updates to the elements of W[], using (in your case) the dirichlet prior - categorical likelihood conjugate relationship.  This is a specific case of the more general dirichlet prior - multinomial likelihood conjugate relationship.  In this case, yes, the exact posterior of W[] is dirichlet, and we can sample it directly.
+> >
+> > The RW_dirichlet sampler does metropolis-hastings updates, one at a time and on a logarithmic scale, to the elements of W[], normalizing the sum of the elements of W[] to 1 along the way.  This applies when W[] does not exactly fall into a conjugate relationship.  I just did a quick pencil and paper check, and I don't believe that when W[] follows a dirichlet prior, then you add a constant to all elements of W[] (in your case the very small constant 1e-100), then use that sum as the probability parameter for a categorical distribution, the posterior is no longer exactly dirichlet.  I think you could also verify this by writing down the pdf/pmf of the dirichlet and categorical distributions.
+> >
+> > That said, you shouldn't need to add the constant 1e-100 to the elements of W[], because the corner case of any W[i] = 0 is a boundary case, and that should never arise during MCMC updates.  Just make sure to initialize all elements of W[] to positive values which sum to 1, and I think you'll be ok.  Does this make sense?  Please let me know if I've looked over your code or your questions too quickly.
+> >
+> > Daniel
+> >
+> >
+> > On Sun, Jun 22, 2025 at 5:18 PM 'PierGianLuca' via nimble-users <nimble...@googlegroups.com> wrote:
+> > > Dear Nimble devs and users,
+> > >
+> > > I was wondering what is the difference between "conjugate sampler" and "RW_dirichlet sampler" for a node that follows a Dirichlet distribution.
+> > >
+> > > More in detail (simplifying the original model):
+> > >
+> > > A. If I write a model as follows:
+> > >
+> > > W[1:n] ~ ddirch(alpha = alphas[1:n])
+> > >
+> > > WW[1:n] <- W[1:n] + 1e-100 # to avoid zero-elements
+> > >
+> > > for(d in 1:m){
+> > >    K[d] ~ dcat(prob = WW[1:n])
+> > >    data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+> > > }
+> > >
+> > >
+> > > Then I see that W is assigned a RW_dirichlet sampler:
+> > > ----
+> > > categorical sampler (11)
+> > >    [...]
+> > >    - K[]  (10 elements)
+> > > RW_dirichlet sampler (1)
+> > >    - W[1:64]
+> > > ----
+> > >
+> > >
+> > >
+> > > B. If I write the model as follows:
+> > >
+> > > W[1:n] ~ ddirch(alpha = alphas[1:n])
+> > >
+> > > for(d in 1:m){
+> > >    K[d] ~ dcat(prob = W[1:n])
+> > >    data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+> > > }
+> > >
+> > > Then I see that W is assigned a conjugate sampler:
+> > > ----
+> > > conjugate sampler (1025)
+> > >    [...]
+> > >    - W[1:64]
+> > > categorical sampler (11)
+> > >    [...]
+> > >    - K[]  (10 elements)
+> > > ----
+> > >
+> > >
+> > > But in either case, shouldn't the posterior for W follow a Dirichlet distribution? How does the "conjugate sampler" for W in case B. differ from the RW_dirichlet sampler in case A.?
+> > >
+> > > Thank you for your help!
+> > > Best regards,
+> > > Luca
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/edad4822-2c09-b174-78af-ca32cc065786%40magnaspesmeretrix.org.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hqLD7M73H%2BvtnrshKoa1QhRiwJ-6Vzk%2BC9VoGUQbu5Osw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hqLD7M73H%2BvtnrshKoa1QhRiwJ-6Vzk%2BC9VoGUQbu5Osw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From u9c2c0c89a3d22b1b at groups.google.com  Thu Jun 26 08:27:51 2025
+From: u9c2c0c89a3d22b1b at groups.google.com (PierGianLuca)
+Date: Thu, 26 Jun 2025 08:27:51 +0000
+Subject: Re: Difference between "conjugate sampler" and "RW_dirichlet sampler"?
+Message-ID: <p_MU5fAXv-o.SVGAmyTmBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <p_MU5fAXv-o.28Zk0--BBgAJ@nimble-users.groups.google.com>
+References: <p_MU5fAXv-o.8CKZ9FVdAwAJ@nimble-users.groups.google.com> <p_MU5fAXv-o.28Zk0--BBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/p_MU5fAXv-o/m/SVGAmyTmBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Chris and Daniel,
+
+Daniel: "pencil and paper check [...] the posterior is no longer exactly dirichlet". – Absolutely right! Sorry for writing without thinking properly first.
+
+The thing here is that by adding something like 1e-100 I expect it to be "almost conjugate". As Chris kindly mentioned, this is related to zero W-element values occurring because of underflow.
+
+Let me report some small findings about this, and submit a request. For context, the initial problem, 2 years ago, was that zero-values for W elements were throwing off child- or parent-nodes with categorical samplers, making them give nonsensical samples. Because of this I switched to a slice sampler for the categorical nodes; it has seemed to give reasonable results.
+
+– Now, two years later, I've tried the categorical sampler again. It behaves correctly now, even when zero-W values appear in a child- or parent-node with a Dirichlet distribution. So one of the latest versions of Nimble fixed this. Thank you so much! 🚀
+
+– I've also applied the correction suggested by Daniel two years ago: add 1e-100 or so to W, to make sure it has no zero elements. From runs on very different datasets, I can say that the results are practically identical, within Monte Carlo variability, with those achieved without Daniel's correction. By "results" I mean not only MC estimates but also various Monte Carlo traces, standard deviations, ESS, and so on.
+
+– Daniel's correction has the advantage that it makes the whole procedure more sound, and there are no warnings about infinite log-probabilities from the sampler. But it has the disadvantage of being slightly slower, 5% or almost 10% from a quick look. I don't know if that's because of the extra "+1e-100" deterministic node, or because of the RW-sampler that then gets used, or both.
+
+So I was wondering whether it would make sense theoretically, and if so whether it'd be possible, to have a non-default option of adding a small number like 1e-100 to W, internally *within* the Dirichlet sampler itself, in order to avoid underflow. So that the conjugate sampler could still be used and log-probability warnings avoided.
+
+Anyway, nothing urgent from my side. Thank you again for the continuous improvements and fixes!
+
+Cheers,
+Luca
+
+On 250625 03:50, Daniel Turek wrote:
+> Thanks for following up, Chris.  I hope we can figure this one out.
+>
+
+> On Tue, Jun 24, 2025 at 8:32 PM Chris Paciorek <paci...@stat.berkeley.edu <mailto:paci...@stat.berkeley.edu>> wrote:
+>
+>     Hi Daniel,
+>
+>     I was talking with Luca about his code in a separate issue (the warnings when logProb values are Inf) and he reminded me that he had discussed this modeling context on the list some time ago. The issue is that W[i]=0 can be caused by numerical underflow, so it does indeed happen, unfortunately. I think at the time, I may have looked at this and not figured out a solution for the underflow happening in conjugate sampler, since there's not really a way to intervene and set the 0 values to some small epsilon. In Luca's case the underflow leads to an Inf log probability when sampling parameters of which W is a dependency. So it's all something of a numerical hairball, so to speak.
+>
+>     -chris
+>
+
+>     On Tue, Jun 24, 2025 at 3:35 PM Daniel Turek <danie...@gmail.com <mailto:danie...@gmail.com>> wrote:
+>
+>         Luca, these are good questions.
+>
+>         The "conjugate sampler" does conjugate updates to the elements of W[], using (in your case) the dirichlet prior - categorical likelihood conjugate relationship.  This is a specific case of the more general dirichlet prior - multinomial likelihood conjugate relationship.  In this case, yes, the exact posterior of W[] is dirichlet, and we can sample it directly.
+>
+>         The RW_dirichlet sampler does metropolis-hastings updates, one at a time and on a logarithmic scale, to the elements of W[], normalizing the sum of the elements of W[] to 1 along the way.  This applies when W[] does not exactly fall into a conjugate relationship.  I just did a quick pencil and paper check, and I don't believe that when W[] follows a dirichlet prior, then you add a constant to all elements of W[] (in your case the very small constant 1e-100), then use that sum as the probability parameter for a categorical distribution, the posterior is no longer exactly dirichlet.  I think you could also verify this by writing down the pdf/pmf of the dirichlet and categorical distributions.
+>
+>         That said, you shouldn't need to add the constant 1e-100 to the elements of W[], because the corner case of any W[i] = 0 is a boundary case, and that should never arise during MCMC updates.  Just make sure to initialize all elements of W[] to positive values which sum to 1, and I think you'll be ok.  Does this make sense?  Please let me know if I've looked over your code or your questions too quickly.
+>
+>         Daniel
+>
+>
+>         On Sun, Jun 22, 2025 at 5:18 PM 'PierGianLuca' via nimble-users <nimble...@googlegroups.com <mailto:nimble...@googlegroups.com>> wrote:
+>
+>             Dear Nimble devs and users,
+>
+>             I was wondering what is the difference between "conjugate sampler" and "RW_dirichlet sampler" for a node that follows a Dirichlet distribution.
+>
+>             More in detail (simplifying the original model):
+>
+>             A. If I write a model as follows:
+>
+>             W[1:n] ~ ddirch(alpha = alphas[1:n])
+>
+>             WW[1:n] <- W[1:n] + 1e-100 # to avoid zero-elements
+>
+>             for(d in 1:m){
+>                 K[d] ~ dcat(prob = WW[1:n])
+>                 data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+>             }
+>
+>
+>             Then I see that W is assigned a RW_dirichlet sampler:
+>             ----
+>             categorical sampler (11)
+>                 [...]
+>                 - K[]  (10 elements)
+>             RW_dirichlet sampler (1)
+>                 - W[1:64]
+>             ----
+>
+>
+>
+>             B. If I write the model as follows:
+>
+>             W[1:n] ~ ddirch(alpha = alphas[1:n])
+>
+>             for(d in 1:m){
+>                 K[d] ~ dcat(prob = W[1:n])
+>                 data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+>             }
+>
+>             Then I see that W is assigned a conjugate sampler:
+>             ----
+>             conjugate sampler (1025)
+>                 [...]
+>                 - W[1:64]
+>             categorical sampler (11)
+>                 [...]
+>                 - K[]  (10 elements)
+>             ----
+>
+>
+>             But in either case, shouldn't the posterior for W follow a Dirichlet distribution? How does the "conjugate sampler" for W in case B. differ from the RW_dirichlet sampler in case A.?
+>
+>             Thank you for your help!
+>             Best regards,
+>             Luca
+>
+>             --
+>             You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+>             To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <mailto:nimble-users%2Bunsu...@googlegroups.com>.
+>             To view this discussion visit https://groups.google.com/d/msgid/nimble-users/edad4822-2c09-b174-78af-ca32cc065786%40magnaspesmeretrix.org <https://groups.google.com/d/msgid/nimble-users/edad4822-2c09-b174-78af-ca32cc065786%40magnaspesmeretrix.org>.
+
+>
+>         --
+>         You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+>         To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <mailto:nimble-users...@googlegroups.com>.
+>         To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hqLD7M73H%2BvtnrshKoa1QhRiwJ-6Vzk%2BC9VoGUQbu5Osw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hqLD7M73H%2BvtnrshKoa1QhRiwJ-6Vzk%2BC9VoGUQbu5Osw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+>
+
+From u94c2ffcec4dc149d at groups.google.com  Thu Jun 26 14:42:12 2025
+From: u94c2ffcec4dc149d at groups.google.com (Brook Milligan)
+Date: Thu, 26 Jun 2025 14:42:12 +0000
+Subject: integer-valued uniform distribution
+Message-ID: <h6d5PvaQI4E.0MOgCJL6BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/h6d5PvaQI4E/m/0MOgCJL6BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I need an integer-valued uniform distribution for a prior, but it is unclear that one is provided by NIMBLE.  Am I missing it or is it missing?
+
+Thanks for your help.
+
+Cheers,
+Brook
+
+From ud78486bfff620d81 at groups.google.com  Thu Jun 26 15:23:18 2025
+From: ud78486bfff620d81 at groups.google.com (Chris Paciorek)
+Date: Thu, 26 Jun 2025 15:23:18 +0000
+Subject: Re: integer-valued uniform distribution
+Message-ID: <h6d5PvaQI4E.DBk1PdD8BgAJ@nimble-users.groups.google.com>
+In-Reply-To: <h6d5PvaQI4E.0MOgCJL6BgAJ@nimble-users.groups.google.com>
+References: <h6d5PvaQI4E.0MOgCJL6BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/h6d5PvaQI4E/m/DBk1PdD8BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi Brook,
+
+You could use `dcat` for this, provided the valid integer values are positive. You'd need to set the probability parameter vector equal to 1/K for the K valid values. And if the valid integers are not sequential, you'd need to set appropriate elements of the probability vector to 0.  (And if the valid integers were not all positive, you could take the random variable that has dcat as its distribution and use subtraction to map onto the actual integers of interest.)
+
+It would also be possible to create a user-defined distribution.
+
+If there are lots of gaps and you are using MCMC, it may make sampling less efficient.
+
+-chris
+
+On Thu, Jun 26, 2025 at 7:42 AM 'Brook Milligan' via nimble-users <nimble...@googlegroups.com> wrote:
+
+> Hi,
+>
+> I need an integer-valued uniform distribution for a prior, but it is unclear that one is provided by NIMBLE.  Am I missing it or is it missing?
+>
+> Thanks for your help.
+>
+> Cheers,
+> Brook
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/408A7630-30B2-40FB-8B11-C97BE063D169%40nmsu.edu.
+
+From u94c2ffcec4dc149d at groups.google.com  Thu Jun 26 17:06:41 2025
+From: u94c2ffcec4dc149d at groups.google.com (Brook Milligan)
+Date: Thu, 26 Jun 2025 17:06:41 +0000
+Subject: Re: integer-valued uniform distribution
+Message-ID: <h6d5PvaQI4E.3y02OlMuAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <h6d5PvaQI4E.DBk1PdD8BgAJ@nimble-users.groups.google.com>
+References: <h6d5PvaQI4E.0MOgCJL6BgAJ@nimble-users.groups.google.com> <h6d5PvaQI4E.DBk1PdD8BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/h6d5PvaQI4E/m/3y02OlMuAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Chris,
+
+Thanks for the quick reply.  Good to know that I am not missing something obvious in the manual.
+
+I am trying the user-defined route, as that seems cleaner.  Here is my attempt:
+
+# integer-valued uniform distribution
+dUnif <- nimbleFunction(
+    run = function(x = integer(),
+    	  	   min = integer(0,default=0),
+		   max = integer(0,default=1),
+		   log=integer(0,default=FALSE))
+	  {
+            returnType(double())
+	    if (x < min | x > max) {
+	      p <- 0
+	    } else {
+	      p <- 1 / (max - min + 1)
+	    }
+ 	    if (log) return (log(p)) else return (p)
+	  }
+)
+rUnif <- nimbleFunction(
+    run = function(n = integer(),
+    	  	   min = integer(0,default=0),
+		   max = integer(0,default=1))
+	  {
+            returnType(integer())
+	    if (n != 1)  stop('only n=1 is supported')
+	    s <- runif(n=n,min=min,max=max+1)
+	    s <- floor(s)
+	    s <- as.integer(s)
+	    return (s)
+	  }
+)
+registerDistributions(list(
+  dUnif=list(BUGSdist="dUnif(min,max)",
+             types=c("min=integer()","max=integer()"),
+	     discrete=TRUE)))
+
+N ~ dUnif(min=0,max=10)
+
+The error from compiling the model is the following, which comes from rUnif():
+
+	Error: Number of dimensions 1 of the return() argument does not match number 0 given in the returnType() statement. This occurred for: return(s)
+
+It seems that the NIMBLE version of runif() must return a vector, even when n=1?
+
+Any help greatly appreciated, as this is likely obvious to those of you more versed in user-defined distributions.
+
+Thanks a lot.
+
+Cheers,
+Brook
+
+> On Jun 26, 2025, at 09:22, 'Chris Paciorek' via nimble-users <nimble...@googlegroups.com> wrote:
+>
+> hi Brook,
+>
+> You could use `dcat` for this, provided the valid integer values are positive. You'd need to set the probability parameter vector equal to 1/K for the K valid values. And if the valid integers are not sequential, you'd need to set appropriate elements of the probability vector to 0.  (And if the valid integers were not all positive, you could take the random variable that has dcat as its distribution and use subtraction to map onto the actual integers of interest.)
+>
+> It would also be possible to create a user-defined distribution.
+>
+> If there are lots of gaps and you are using MCMC, it may make sampling less efficient.
+>
+> -chris
+>
+> On Thu, Jun 26, 2025 at 7:42 AM 'Brook Milligan' via nimble-users <nimble...@googlegroups.com> wrote:
+> Hi,
+>
+> I need an integer-valued uniform distribution for a prior, but it is unclear that one is provided by NIMBLE.  Am I missing it or is it missing?
+>
+> Thanks for your help.
+>
+> Cheers,
+> Brook
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email tonimble-user...@googlegroups.com.
+
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/408A7630-30B2-40FB-8B11-C97BE063D169%40nmsu.edu.
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email tonimble-user...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CA%2B7Ts_orXr5nfNh3p1GiEk-wV-uoR8NgxgGQLY-SZh2FGeQ3xw%40mail.gmail.com.
+
+From ud78486bfff620d81 at groups.google.com  Thu Jun 26 18:28:09 2025
+From: ud78486bfff620d81 at groups.google.com (Chris Paciorek)
+Date: Thu, 26 Jun 2025 18:28:09 +0000
+Subject: Re: integer-valued uniform distribution
+Message-ID: <h6d5PvaQI4E.dtZwa8UyAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <h6d5PvaQI4E.3y02OlMuAgAJ@nimble-users.groups.google.com>
+References: <h6d5PvaQI4E.0MOgCJL6BgAJ@nimble-users.groups.google.com> <h6d5PvaQI4E.3y02OlMuAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/h6d5PvaQI4E/m/dtZwa8UyAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yeah, since you have `n` as the first arg to `runif`, the nimble compiler is treating `s` as a vector.
+
+Also, you can't redefine `s` to be an integer because variable types must stay constant in nimbleFunction code since that code is translated into C++.
+
+Finally (and this is minor, since it should work to use `integer()` as you have it), all model variables are treated as doubles (i.e., floating point/real-valued numbers), so you might as well do that within your `rUnif`. Unless one is working with very large numbers, integer-valued reals are represented exactly, so this won't be a numerical issue.
+
+So taking account of all that, try this:
+
+```
+
+rUnif <- nimbleFunction(
+    run = function(n = integer(),
+
+                   min = double(0,default=0),
+                   max = double(0,default=1))
+          {
+            returnType(double())
+
+            if (n != 1)  stop('only n=1 is supported')
+
+            s <- runif(n=1,min=min,max=max+1)
+            s <- floor(s)
+            return (s)
+          }
+)
+```
+
+It should be fine to use `integer()` in your `dUnif`. The compiler will handle things behind the scenes. But you could change those to double() as well.
+
+On Thu, Jun 26, 2025 at 10:06 AM Brook Milligan <br...@nmsu.edu> wrote:
+> Hi Chris,
+>
+> Thanks for the quick reply.  Good to know that I am not missing something obvious in the manual.
+>
+> I am trying the user-defined route, as that seems cleaner.  Here is my attempt:
+>
+> # integer-valued uniform distribution
+> dUnif <- nimbleFunction(
+>     run = function(x = integer(),
+>                    min = integer(0,default=0),
+>                    max = integer(0,default=1),
+>                    log=integer(0,default=FALSE))
+>           {
+>             returnType(double())
+>             if (x < min | x > max) {
+>               p <- 0
+>             } else {
+>               p <- 1 / (max - min + 1)
+>             }
+>             if (log) return (log(p)) else return (p)
+>           }
+> )
+> rUnif <- nimbleFunction(
+>     run = function(n = integer(),
+>                    min = integer(0,default=0),
+>                    max = integer(0,default=1))
+>           {
+>             returnType(integer())
+>             if (n != 1)  stop('only n=1 is supported')
+>             s <- runif(n=n,min=min,max=max+1)
+>             s <- floor(s)
+>             s <- as.integer(s)
+>             return (s)
+>           }
+> )
+> registerDistributions(list(
+>   dUnif=list(BUGSdist="dUnif(min,max)",
+>              types=c("min=integer()","max=integer()"),
+>              discrete=TRUE)))
+>
+> N ~ dUnif(min=0,max=10)
+>
+> The error from compiling the model is the following, which comes from rUnif():
+>
+>         Error: Number of dimensions 1 of the return() argument does not match number 0 given in the returnType() statement. This occurred for: return(s)
+>
+> It seems that the NIMBLE version of runif() must return a vector, even when n=1?
+>
+> Any help greatly appreciated, as this is likely obvious to those of you more versed in user-defined distributions.
+>
+> Thanks a lot.
+>
+> Cheers,
+> Brook
+>
+> > On Jun 26, 2025, at 09:22, 'Chris Paciorek' via nimble-users <nimble...@googlegroups.com> wrote:
+> >
+> > hi Brook,
+> >
+> > You could use `dcat` for this, provided the valid integer values are positive. You'd need to set the probability parameter vector equal to 1/K for the K valid values. And if the valid integers are not sequential, you'd need to set appropriate elements of the probability vector to 0.  (And if the valid integers were not all positive, you could take the random variable that has dcat as its distribution and use subtraction to map onto the actual integers of interest.)
+> >
+> > It would also be possible to create a user-defined distribution.
+> >
+> > If there are lots of gaps and you are using MCMC, it may make sampling less efficient.
+> >
+> > -chris
+> >
+> > On Thu, Jun 26, 2025 at 7:42 AM 'Brook Milligan' via nimble-users <nimble...@googlegroups.com> wrote:
+> > Hi,
+> >
+> > I need an integer-valued uniform distribution for a prior, but it is unclear that one is provided by NIMBLE.  Am I missing it or is it missing?
+> >
+> > Thanks for your help.
+> >
+> > Cheers,
+> > Brook
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email tonimble-user...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/408A7630-30B2-40FB-8B11-C97BE063D169%40nmsu.edu.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email tonimble-user...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CA%2B7Ts_orXr5nfNh3p1GiEk-wV-uoR8NgxgGQLY-SZh2FGeQ3xw%40mail.gmail.com.
+>
+
+From uf116cbe5c604c988 at groups.google.com  Sun Jun 29 01:49:51 2025
+From: uf116cbe5c604c988 at groups.google.com (Daniel Turek)
+Date: Sun, 29 Jun 2025 01:49:51 +0000
+Subject: Re: Difference between "conjugate sampler" and "RW_dirichlet sampler"?
+Message-ID: <p_MU5fAXv-o.Xifm0QjoAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <p_MU5fAXv-o.SVGAmyTmBgAJ@nimble-users.groups.google.com>
+References: <p_MU5fAXv-o.8CKZ9FVdAwAJ@nimble-users.groups.google.com> <p_MU5fAXv-o.SVGAmyTmBgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/p_MU5fAXv-o/m/Xifm0QjoAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Luca, what you said makes sense.  I just sketched out a very quick sampler, which performs a conjugate update for a dirichlet-distributed node, then adds an arbitrary constant to all elements of the new node value.  The constant value is called "eps", and you can specify whatever value you want for eps (see example in the code below), or if you don't provide a value for eps then the default value is 1e-100.
+
+This sampler is fairly simplistic and specialized, in that it only operates on a single node, that node must have a dirichlet prior distribution, and all dependencies of that node must have categorical distributions.  Also, a heads up, the sampler is not clever enough to track how the target dirichlet node is actually used in the distributions of the dependent categorical nodes - it assumes that it's used directly as the probability parameter for each dependent categorical node.  So you could easily violate this assumption, which would make the results incorrect.
+
+An example of using this sampler (which is called the conjugate_dirch_plus_eps sampler) is given below, on a trivial example model.  Please try it out, and let me know what you find.  If you specify "eps = 0", then the constant of 0 is added, and you should get identical results as when using the conjugate sampler.  And, when eps > 0, this should prevent the numeric underflow problems you were having before.
+
+Cheers,
+Daniel
+
+library(nimble)
+
+conjugate_dirch_plus_eps <- nimbleFunction(
+    contains = sampler_BASE,
+    setup = function(model, mvSaved, target, control) {
+        ## control list extraction
+        eps <- extractControlElement(control, 'eps', 1e-100)
+        ## node list generation
+        target <- model$expandNodeNames(target)
+        calcNodes <- model$getDependencies(target)
+        depNodes <- model$getDependencies(target, self = FALSE)
+        ## numeric value generation
+        d <- length(model[[target]])
+        Ndeps <- length(depNodes)
+        ## checks
+        if(length(target) > 1) stop('conjugate_dirch_plus_eps only operates on a single node')
+        if(model$getDistribution(target) != 'ddirch') stop('conjugate_dirch_plus_eps target node must have ddirch distribution')
+        depDists <- sapply(depNodes, function(x) model$getDistribution(x))
+        if(!all(depDists == 'dcat')) stop('conjugate_dirch_plus_eps all dependencies should have dcat distributions')
+    },
+    run = function() {
+        posterior_alpha <- model$getParam(target, 'alpha')
+        for(i in 1:Ndeps) {
+            depValue <- model$getParam(depNodes[i], 'value')
+            posterior_alpha[depValue] <- posterior_alpha[depValue] + 1
+        }
+        newTargetValue <- rdirch(1, posterior_alpha)
+        newTargetValue <- newTargetValue + eps
+        model[[target]] <<- newTargetValue
+        model$calculate(calcNodes)
+        nimCopy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+    },
+    methods = list(
+        reset = function() {}
+    )
+)
+
+code <- nimbleCode({
+    x[1:3] ~ ddirch(a[1:3])
+    y ~ dcat(x[1:3])
+    y2 ~ dcat(x[1:3])
+})
+
+constants <- list(a = c(1, 1, 1))
+data <- list(y = 1, y2 = 3)
+inits <- list(x = c(1/3, 1/3, 1/3))
+
+Rmodel <- nimbleModel(code, constants, data, inits)
+
+conf <- configureMCMC(Rmodel)
+
+## set value of eps here (default value is 1e-100)
+conf$replaceSampler('x', conjugate_dirch_plus_eps, eps = 0.001)
+
+Rmcmc <- buildMCMC(conf)
+
+## compile, run, etc.....
+
+On Thu, Jun 26, 2025 at 4:27 AM PierGianLuca <lu...@magnaspesmeretrix.org> wrote:
+> Hi Chris and Daniel,
+>
+> Daniel: "pencil and paper check [...] the posterior is no longer exactly dirichlet". – Absolutely right! Sorry for writing without thinking properly first.
+>
+> The thing here is that by adding something like 1e-100 I expect it to be "almost conjugate". As Chris kindly mentioned, this is related to zero W-element values occurring because of underflow.
+>
+> Let me report some small findings about this, and submit a request. For context, the initial problem, 2 years ago, was that zero-values for W elements were throwing off child- or parent-nodes with categorical samplers, making them give nonsensical samples. Because of this I switched to a slice sampler for the categorical nodes; it has seemed to give reasonable results.
+>
+> – Now, two years later, I've tried the categorical sampler again. It behaves correctly now, even when zero-W values appear in a child- or parent-node with a Dirichlet distribution. So one of the latest versions of Nimble fixed this. Thank you so much! 🚀
+>
+> – I've also applied the correction suggested by Daniel two years ago: add 1e-100 or so to W, to make sure it has no zero elements. From runs on very different datasets, I can say that the results are practically identical, within Monte Carlo variability, with those achieved without Daniel's correction. By "results" I mean not only MC estimates but also various Monte Carlo traces, standard deviations, ESS, and so on.
+>
+> – Daniel's correction has the advantage that it makes the whole procedure more sound, and there are no warnings about infinite log-probabilities from the sampler. But it has the disadvantage of being slightly slower, 5% or almost 10% from a quick look. I don't know if that's because of the extra "+1e-100" deterministic node, or because of the RW-sampler that then gets used, or both.
+>
+>
+> So I was wondering whether it would make sense theoretically, and if so whether it'd be possible, to have a non-default option of adding a small number like 1e-100 to W, internally *within* the Dirichlet sampler itself, in order to avoid underflow. So that the conjugate sampler could still be used and log-probability warnings avoided.
+>
+>
+> Anyway, nothing urgent from my side. Thank you again for the continuous improvements and fixes!
+>
+> Cheers,
+> Luca
+>
+>
+>
+>
+> On 250625 03:50, Daniel Turek wrote:
+> > Thanks for following up, Chris.  I hope we can figure this one out.
+> >
+> > On Tue, Jun 24, 2025 at 8:32 PM Chris Paciorek <paci...@stat.berkeley.edu <mailto:paci...@stat.berkeley.edu>> wrote:
+> >
+> >     Hi Daniel,
+> >
+> >     I was talking with Luca about his code in a separate issue (the warnings when logProb values are Inf) and he reminded me that he had discussed this modeling context on the list some time ago. The issue is that W[i]=0 can be caused by numerical underflow, so it does indeed happen, unfortunately. I think at the time, I may have looked at this and not figured out a solution for the underflow happening in conjugate sampler, since there's not really a way to intervene and set the 0 values to some small epsilon. In Luca's case the underflow leads to an Inf log probability when sampling parameters of which W is a dependency. So it's all something of a numerical hairball, so to speak.
+> >
+> >     -chris
+> >
+> >     On Tue, Jun 24, 2025 at 3:35 PM Daniel Turek <danie...@gmail.com <mailto:danie...@gmail.com>> wrote:
+> >
+> >         Luca, these are good questions.
+> >
+> >         The "conjugate sampler" does conjugate updates to the elements of W[], using (in your case) the dirichlet prior - categorical likelihood conjugate relationship.  This is a specific case of the more general dirichlet prior - multinomial likelihood conjugate relationship.  In this case, yes, the exact posterior of W[] is dirichlet, and we can sample it directly.
+> >
+> >         The RW_dirichlet sampler does metropolis-hastings updates, one at a time and on a logarithmic scale, to the elements of W[], normalizing the sum of the elements of W[] to 1 along the way.  This applies when W[] does not exactly fall into a conjugate relationship.  I just did a quick pencil and paper check, and I don't believe that when W[] follows a dirichlet prior, then you add a constant to all elements of W[] (in your case the very small constant 1e-100), then use that sum as the probability parameter for a categorical distribution, the posterior is no longer exactly dirichlet.  I think you could also verify this by writing down the pdf/pmf of the dirichlet and categorical distributions.
+> >
+> >         That said, you shouldn't need to add the constant 1e-100 to the elements of W[], because the corner case of any W[i] = 0 is a boundary case, and that should never arise during MCMC updates.  Just make sure to initialize all elements of W[] to positive values which sum to 1, and I think you'll be ok.  Does this make sense?  Please let me know if I've looked over your code or your questions too quickly.
+> >
+> >         Daniel
+> >
+> >
+> >         On Sun, Jun 22, 2025 at 5:18 PM 'PierGianLuca' via nimble-users <nimble...@googlegroups.com <mailto:nimble...@googlegroups.com>> wrote:
+> >
+> >             Dear Nimble devs and users,
+> >
+> >             I was wondering what is the difference between "conjugate sampler" and "RW_dirichlet sampler" for a node that follows a Dirichlet distribution.
+> >
+> >             More in detail (simplifying the original model):
+> >
+> >             A. If I write a model as follows:
+> >
+> >             W[1:n] ~ ddirch(alpha = alphas[1:n])
+> >
+> >             WW[1:n] <- W[1:n] + 1e-100 # to avoid zero-elements
+> >
+> >             for(d in 1:m){
+> >                 K[d] ~ dcat(prob = WW[1:n])
+> >                 data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+> >             }
+> >
+> >
+> >             Then I see that W is assigned a RW_dirichlet sampler:
+> >             ----
+> >             categorical sampler (11)
+> >                 [...]
+> >                 - K[]  (10 elements)
+> >             RW_dirichlet sampler (1)
+> >                 - W[1:64]
+> >             ----
+> >
+> >
+> >
+> >             B. If I write the model as follows:
+> >
+> >             W[1:n] ~ ddirch(alpha = alphas[1:n])
+> >
+> >             for(d in 1:m){
+> >                 K[d] ~ dcat(prob = W[1:n])
+> >                 data[d] ~ dnorm(mean = mean[K[d]], var = 1)
+> >             }
+> >
+> >             Then I see that W is assigned a conjugate sampler:
+> >             ----
+> >             conjugate sampler (1025)
+> >                 [...]
+> >                 - W[1:64]
+> >             categorical sampler (11)
+> >                 [...]
+> >                 - K[]  (10 elements)
+> >             ----
+> >
+> >
+> >             But in either case, shouldn't the posterior for W follow a Dirichlet distribution? How does the "conjugate sampler" for W in case B. differ from the RW_dirichlet sampler in case A.?
+> >
+> >             Thank you for your help!
+> >             Best regards,
+> >             Luca
+> >
+> >             --
+> >             You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> >             To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <mailto:nimble-users%2Bunsu...@googlegroups.com>.
+> >             To view this discussion visit https://groups.google.com/d/msgid/nimble-users/edad4822-2c09-b174-78af-ca32cc065786%40magnaspesmeretrix.org <https://groups.google.com/d/msgid/nimble-users/edad4822-2c09-b174-78af-ca32cc065786%40magnaspesmeretrix.org>.
+> >
+> >         --
+> >         You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> >         To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <mailto:nimble-users...@googlegroups.com>.
+> >         To view this discussion visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hqLD7M73H%2BvtnrshKoa1QhRiwJ-6Vzk%2BC9VoGUQbu5Osw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hqLD7M73H%2BvtnrshKoa1QhRiwJ-6Vzk%2BC9VoGUQbu5Osw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> >
+
+From u9c2c0c89a3d22b1b at groups.google.com  Mon Jun 30 04:51:21 2025
+From: u9c2c0c89a3d22b1b at groups.google.com (PierGianLuca)
+Date: Mon, 30 Jun 2025 04:51:21 +0000
+Subject: Re: Difference between "conjugate sampler" and "RW_dirichlet sampler"?
+Message-ID: <p_MU5fAXv-o.XuXLB4VAAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <p_MU5fAXv-o.Xifm0QjoAgAJ@nimble-users.groups.google.com>
+References: <p_MU5fAXv-o.8CKZ9FVdAwAJ@nimble-users.groups.google.com> <p_MU5fAXv-o.Xifm0QjoAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/p_MU5fAXv-o/m/XuXLB4VAAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Daniel, this is fantastic, thank you so much for your interest and time!
+
+I'll test it right away and report back!
+
+Cheers,
+Luca
+
+On 250629 03:48, Daniel Turek wrote:
+> Luca, what you said makes sense.  I just sketched out a very quick sampler, which performs a conjugate update for a dirichlet-distributed node, then adds an arbitrary constant to all elements of the new node value.  The constant value is called "eps", and you can specify whatever value you want for eps (see example in the code below), or if you don't provide a value for eps then the default value is 1e-100.
+>
+> This sampler is fairly simplistic and specialized, in that it only operates on a single node, that node must have a dirichlet prior distribution, and all dependencies of that node must have categorical distributions.  Also, a heads up, the sampler is not clever enough to track how the target dirichlet node is actually used in the distributions of the dependent categorical nodes - it assumes that it's used directly as the probability parameter for each dependent categorical node.  So you could easily violate this assumption, which would make the results incorrect.
+>
+> An example of using this sampler (which is called the conjugate_dirch_plus_eps sampler) is given below, on a trivial example model.  Please try it out, and let me know what you find.  If you specify "eps = 0", then the constant of 0 is added, and you should get identical results as when using the conjugate sampler.  And, when eps > 0, this should prevent the numeric underflow problems you were having before.
+>
+> Cheers,
+> Daniel
+>
+> library(nimble)
+>
+> conjugate_dirch_plus_eps <- nimbleFunction(
+>      contains = sampler_BASE,
+>      setup = function(model, mvSaved, target, control) {
+>          ## control list extraction
+>          eps <- extractControlElement(control, 'eps', 1e-100)
+>          ## node list generation
+>          target <- model$expandNodeNames(target)
+>          calcNodes <- model$getDependencies(target)
+>          depNodes <- model$getDependencies(target, self = FALSE)
+>          ## numeric value generation
+>          d <- length(model[[target]])
+>          Ndeps <- length(depNodes)
+>          ## checks
+>          if(length(target) > 1) stop('conjugate_dirch_plus_eps only operates on a single node')
+>          if(model$getDistribution(target) != 'ddirch') stop('conjugate_dirch_plus_eps target node must have ddirch distribution')
+>          depDists <- sapply(depNodes, function(x) model$getDistribution(x))
+>          if(!all(depDists == 'dcat')) stop('conjugate_dirch_plus_eps all dependencies should have dcat distributions')
+>      },
+>      run = function() {
+>          posterior_alpha <- model$getParam(target, 'alpha')
+>          for(i in 1:Ndeps) {
+>              depValue <- model$getParam(depNodes[i], 'value')
+>              posterior_alpha[depValue] <- posterior_alpha[depValue] + 1
+>          }
+>          newTargetValue <- rdirch(1, posterior_alpha)
+>          newTargetValue <- newTargetValue + eps
+>          model[[target]] <<- newTargetValue
+>          model$calculate(calcNodes)
+>          nimCopy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+>      },
+>      methods = list(
+>          reset = function() {}
+>      )
+> )
+>
+> code <- nimbleCode({
+>      x[1:3] ~ ddirch(a[1:3])
+>      y ~ dcat(x[1:3])
+>      y2 ~ dcat(x[1:3])
+> })
+>
+> constants <- list(a = c(1, 1, 1))
+> data <- list(y = 1, y2 = 3)
+> inits <- list(x = c(1/3, 1/3, 1/3))
+>
+> Rmodel <- nimbleModel(code, constants, data, inits)
+>
+> conf <- configureMCMC(Rmodel)
+>
+> ## set value of eps here (default value is 1e-100)
+> conf$replaceSampler('x', conjugate_dirch_plus_eps, eps = 0.001)
+>
+> Rmcmc <- buildMCMC(conf)
+>
+> ## compile, run, etc.....
+
+From u55737f50d261eab6 at groups.google.com  Mon Jun 30 14:55:13 2025
+From: u55737f50d261eab6 at groups.google.com (Bernardo S. Scaldaferri)
+Date: Mon, 30 Jun 2025 14:55:13 +0000
+Subject: NIMBLE crashing when running compiled code
+Message-ID: <HQ9AutjHj9Y.IY4t6nhhAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/HQ9AutjHj9Y/m/IY4t6nhhAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello everyone, I'm new to NIMBLE and I've been trying to run a RJMCMC for a product partition model with a stick-break parameter. The code compiles but when I try to run the sampler it causes R to crash and I'm very lost as to why since there is no error message I can try to follow for debugging.
+
+Any help is appreciated.
+
+Here is my attempt at a reproducible example:
+

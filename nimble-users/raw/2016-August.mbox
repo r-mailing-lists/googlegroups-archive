@@ -1,0 +1,424 @@
+From u243d9dde5595d8e7 at groups.google.com  Mon Aug 29 00:50:37 2016
+From: u243d9dde5595d8e7 at groups.google.com (soledad...@gmail.com)
+Date: Mon, 29 Aug 2016 00:50:37 +0000
+Subject: detecting NAs within nimble functions
+Message-ID: <dDi76DpFewg._BAldZzuBAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/dDi76DpFewg/m/_BAldZzuBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I noted that in Nimble functions (nfs),  is.nan(x) recognises NAs or NaNs. I didn't find any issue with NaN.
+But I noted that is.na <http://is.na>(x) behaves differently with NAs depending on whether NA is part of a numeric class vector or a logical class vector.
+On example, this function gives the number of NA or NaN elements of a vector:
+
+test <- nimbleFunction(
+        run = function (x=double(1)) {
+            lx <- length(x)
+            ans <- 0
+            for (i in 1:lx)  {
+                if(is.nan(x[i]))
+                    ans <- ans + 1
+                    }
+            returnType(integer())
+        return(ans)
+    }
+)
+cTest <- compileNimble(test)
+
+'cTest' returns the right answer as long as the vector is considered numeric, which is the case for 'a', 'b', 'c' and 'd' below, but not for 'e' (logical class):
+
+## vectors
+a <- c(1,     1.2,  2,     3) ##  numeric
+b <- c(NA,  1.2, NaN, 3) ##  numeric
+c <- c(NaN, 1.2, 2,     3) ##  numeric
+d <- c(NA,  1.2,  2,     3) ##  numeric
+e <- c(NA, NA, NA, NA) ##  logical
+
+cTest(a) ## good
+cTest(b) ## good
+cTest(c) ## good
+cTest(d) ## good
+cTest(e) ## wrong
+
+## I have the same issue when the variable of the function is a scalar: NA is logical while NaN is numeric, so:
+
+isNAorNaN <- nimbleFunction(
+    run = function (x=double()) {
+        returnType(logical())
+        return(is.nan(x))
+    }
+)
+
+CisNAorNaN <- compileNimble(isNAorNaN)
+
+CisNAorNaN(5)       ## ok
+CisNAorNaN(NaN)  ## ok
+CisNAorNaN(NA)    ## wrong
+
+## Including the statement "is.nan(x) | is.na <http://is.na>(x)" in return()  doesn't fix the problem, given that apparently Nimble doesn't manage is.na <http://is.na>(x), as I noted here:
+
+notNA <- nimbleFunction(
+    run = function (x= double()) {
+        returnType(logical())
+        return( ! is.na <http://is.na>(x))
+    }
+)
+
+cnotNA <- compileNimble(notNA)
+cnotNA(1.1)   ## good answer
+cnotNA(NaN) ## good answer
+cnotNA(NA)   ## wrong
+
+I found a temporary solution: checking is.na <http://is.na>(x) in setup and adapting the run code to that. I didt it, on example, for a nf doing the job of 'all(is.finite(x))'.
+Exploring is.na <http://is.na>(x) in setup doesn't look like the more efficient way to do it: I need a specialization for every vector I apply the function.
+
+allIsFinite <- nimbleFunction(
+    setup = function(x) {
+        isna <- as.numeric(is.na <http://is.na>(x)) ## without 'as.numeric', R crashes when running compiled version
+        lx <- length(x)
+    },
+    run = function () {
+        returnType(logical())
+        ans <- 0
+        for (i in 1:lx) {
+            if (isna[i] == TRUE ) { ## when NA or NaN
+                ans <- ans + 1
+            } else {
+                if (x[i] == Inf | x[i] == -Inf)
+                    ans <- ans + 1
+            }
+        }
+        return(ans==0)
+    }
+)
+
+x <- c(1.1, 2, 3.3)                   ## numeric
+y <- c( 0.5, 1.5, Inf, 66, NA)   ## numeric
+z <- c(NA,NA,NA)                  ## logical
+w <- c(NaN,NaN,NaN)           ## numeric
+
+allIsFiniteX <- allIsFinite(x)
+allIsFiniteY <- allIsFinite(y)
+allIsFiniteZ <- allIsFinite(z)
+allIsFiniteW <- allIsFinite(w)
+
+## compile for every vector
+cAllIsFiniteX <- compileNimble(allIsFiniteX)
+cAllIsFiniteY <- compileNimble(allIsFiniteY)
+cAllIsFiniteZ <- compileNimble(allIsFiniteZ)
+cAllIsFiniteW <- compileNimble(allIsFiniteW)
+
+## compare uncompiled & compiled versions
+allIsFiniteX$run(); cAllIsFiniteX$run() ## ok
+allIsFiniteY$run(); cAllIsFiniteY$run() ## ok
+allIsFiniteZ$run(); cAllIsFiniteZ$run() ## ok
+allIsFiniteW$run(); cAllIsFiniteW$run() ## ok
+
+So my question: is there a more efficient way to deal with inspecting NAs within nfs I didn't see ??
+
+Thank you,
+
+Soledad
+
+From u243d9dde5595d8e7 at groups.google.com  Mon Aug 29 01:41:31 2016
+From: u243d9dde5595d8e7 at groups.google.com (=?utf-8?q?Sol_Casta=C3=B1o?=)
+Date: Mon, 29 Aug 2016 01:41:31 +0000
+Subject: Re: detecting NAs within nimble functions
+Message-ID: <dDi76DpFewg.Txudp2PxBAAJ@nimble-users.groups.google.com>
+In-Reply-To: <dDi76DpFewg._BAldZzuBAAJ@nimble-users.groups.google.com>
+References: <dDi76DpFewg._BAldZzuBAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/dDi76DpFewg/m/Txudp2PxBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is probably related to the previous post:
+
+I'm aware that bad indexing prevents compilation and/or can crash the R session in certain cases.
+
+For the examples below I was expecting to obtain some compilation error or error message/NA when running compiled version. I obtain extremely small outputs instead.
+
+How can Nimble detect NA elements due to bad indexing in vectors as 'x' in test1 or test2? or should I add a suitable filter for every case?
+
+Thank  you,
+S.
+
+test1 <- nimbleFunction(
+    run = function(x = double(1) ){
+        lx <- length(x)
+        return(x[lx + 1])
+        returnType(double(0))
+    }
+)
+
+x <- c(1.5, 2, 3)
+test1(x)     ## NA
+ctest1 <- compileNimble(test1)
+ctest1(x)   ##  1.111648e-321
+
+## The same here, when values as x[ii] (ii > length(x)) are used in an arithmetic operation.
+test2 <- nimbleFunction(
+    run = function(x = double(1) ){
+        lx <- length(x)
+        a <- numeric(lx + 5)
+        for ( i in 1:(lx+ 5))
+            a[i] <- x[i] + 1000
+        return(a)
+        returnType(double(1))
+    }
+)
+
+test2(x)       ## [1] 1001.5 1002.0 1003.0     NA     NA     NA     NA     NA
+ctest2 <- compileNimble(test2)
+ctest2(x)     ## [1] 1001.5 1002.0 1003.0 1000.0 1000.0 1000.0 1000.0 1000.0
+
+2016-08-28 20:50 GMT-04:00 <soledad...@gmail.com>:
+
+> Hi,
+>
+> I noted that in Nimble functions (nfs),  is.nan(x) recognises NAs or NaNs. I didn't find any issue with NaN.
+> But I noted that is.na <http://is.na>(x) behaves differently with NAs depending on whether NA is part of a numeric class vector or a logical class vector.
+> On example, this function gives the number of NA or NaN elements of a vector:
+>
+> test <- nimbleFunction(
+>         run = function (x=double(1)) {
+>             lx <- length(x)
+>             ans <- 0
+>             for (i in 1:lx)  {
+>                 if(is.nan(x[i]))
+>                     ans <- ans + 1
+>                     }
+>             returnType(integer())
+>         return(ans)
+>     }
+> )
+> cTest <- compileNimble(test)
+>
+>
+> 'cTest' returns the right answer as long as the vector is considered numeric, which is the case for 'a', 'b', 'c' and 'd' below, but not for 'e' (logical class):
+>
+> ## vectors
+> a <- c(1,     1.2,  2,     3) ##  numeric
+> b <- c(NA,  1.2, NaN, 3) ##  numeric
+> c <- c(NaN, 1.2, 2,     3) ##  numeric
+> d <- c(NA,  1.2,  2,     3) ##  numeric
+> e <- c(NA, NA, NA, NA) ##  logical
+>
+> cTest(a) ## good
+> cTest(b) ## good
+> cTest(c) ## good
+> cTest(d) ## good
+> cTest(e) ## wrong
+>
+> ## I have the same issue when the variable of the function is a scalar: NA is logical while NaN is numeric, so:
+>
+> isNAorNaN <- nimbleFunction(
+>     run = function (x=double()) {
+>         returnType(logical())
+>         return(is.nan(x))
+>     }
+> )
+>
+> CisNAorNaN <- compileNimble(isNAorNaN)
+>
+> CisNAorNaN(5)       ## ok
+> CisNAorNaN(NaN)  ## ok
+> CisNAorNaN(NA)    ## wrong
+>
+> ## Including the statement "is.nan(x) | is.na <http://is.na>(x)" in return()  doesn't fix the problem, given that apparently Nimble doesn't manage is.na <http://is.na>(x), as I noted here:
+>
+> notNA <- nimbleFunction(
+>     run = function (x= double()) {
+>         returnType(logical())
+>         return( ! is.na <http://is.na>(x))
+>     }
+> )
+>
+> cnotNA <- compileNimble(notNA)
+> cnotNA(1.1)   ## good answer
+> cnotNA(NaN) ## good answer
+> cnotNA(NA)   ## wrong
+>
+> I found a temporary solution: checking is.na <http://is.na>(x) in setup and adapting the run code to that. I didt it, on example, for a nf doing the job of 'all(is.finite(x))'.
+> Exploring is.na <http://is.na>(x) in setup doesn't look like the more efficient way to do it: I need a specialization for every vector I apply the function.
+>
+> allIsFinite <- nimbleFunction(
+>     setup = function(x) {
+>         isna <- as.numeric(is.na <http://is.na>(x)) ## without 'as.numeric', R crashes when running compiled version
+>         lx <- length(x)
+>     },
+>     run = function () {
+>         returnType(logical())
+>         ans <- 0
+>         for (i in 1:lx) {
+>             if (isna[i] == TRUE ) { ## when NA or NaN
+>                 ans <- ans + 1
+>             } else {
+>                 if (x[i] == Inf | x[i] == -Inf)
+>                     ans <- ans + 1
+>             }
+>         }
+>         return(ans==0)
+>     }
+> )
+>
+> x <- c(1.1, 2, 3.3)                   ## numeric
+> y <- c( 0.5, 1.5, Inf, 66, NA)   ## numeric
+> z <- c(NA,NA,NA)                  ## logical
+> w <- c(NaN,NaN,NaN)           ## numeric
+>
+> allIsFiniteX <- allIsFinite(x)
+> allIsFiniteY <- allIsFinite(y)
+> allIsFiniteZ <- allIsFinite(z)
+> allIsFiniteW <- allIsFinite(w)
+>
+> ## compile for every vector
+> cAllIsFiniteX <- compileNimble(allIsFiniteX)
+> cAllIsFiniteY <- compileNimble(allIsFiniteY)
+> cAllIsFiniteZ <- compileNimble(allIsFiniteZ)
+> cAllIsFiniteW <- compileNimble(allIsFiniteW)
+>
+> ## compare uncompiled & compiled versions
+> allIsFiniteX$run(); cAllIsFiniteX$run() ## ok
+> allIsFiniteY$run(); cAllIsFiniteY$run() ## ok
+> allIsFiniteZ$run(); cAllIsFiniteZ$run() ## ok
+> allIsFiniteW$run(); cAllIsFiniteW$run() ## ok
+>
+>
+> So my question: is there a more efficient way to deal with inspecting NAs within nfs I didn't see ??
+>
+>
+> Thank you,
+>
+> Soledad
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/b96b3ba2-daaf-4a75-a61a-9b24b78fa751%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/b96b3ba2-daaf-4a75-a61a-9b24b78fa751%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ubebd85531a67ef86 at groups.google.com  Mon Aug 29 02:42:00 2016
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Mon, 29 Aug 2016 02:42:00 +0000
+Subject: Re: detecting NAs within nimble functions
+Message-ID: <dDi76DpFewg.RXE9mrD0BAAJ@nimble-users.groups.google.com>
+In-Reply-To: <dDi76DpFewg._BAldZzuBAAJ@nimble-users.groups.google.com>
+References: <dDi76DpFewg._BAldZzuBAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/dDi76DpFewg/m/RXE9mrD0BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+>
+> How can Nimble detect NA elements due to bad indexing in vectors as 'x' in test1 or test2? or should I add a suitable filter for every case?
+>
+> Thank  you,
+> S.
+>
+> test1 <- nimbleFunction(
+>     run = function(x = double(1) ){
+>         lx <- length(x)
+>         return(x[lx + 1])
+>         returnType(double(0))
+>     }
+> )
+
+In C there is no way the programmer to predict or guess what value might be stored in memory slot x[lx + 1]. x has an address (a pointer) in the memory that locates where in the memory the first element of x is stored. The next element of x is located at the address next door. And the next element of x at the address next door to that. So when you go seeking a value at the memory slot addressed by x[lx + 1] you are off the map so to speak. Anything could be stored there so having a test to detect that is non-trivial because what should you be testing for?  Sometimes, if you are lucky, such a programming error will give rise to a crash or to obviously bugged output. If not, your results could just be plain wrong and you may never know.
+
+One option to test for such things is to use 'valgrind' that is designed for tracking down memory bugs. It can be pretty slow though and the output is sometimes cryptic. I don't think I've seen an example in the Nimble literature of using valgrind. I tried valgrind the other day on a sampler I'm writing and it took a lot of time and turned out to be less helpful than going away and thinking about the problem in a new way & re-writing the problem piece of code.
+
+From u38e260fc5780b4d6 at groups.google.com  Mon Aug 29 17:43:30 2016
+From: u38e260fc5780b4d6 at groups.google.com (Andria Dawson)
+Date: Mon, 29 Aug 2016 17:43:30 +0000
+Subject: Re: Nimble in RStudio?
+Message-ID: <sa_S9cM-ul0.B0Vgd-IlBQAJ@nimble-users.groups.google.com>
+In-Reply-To: <sa_S9cM-ul0.33ShDSEnIcIJ@nimble-users.groups.google.com>
+References: <sa_S9cM-ul0.jjHs8tqPRF4J@nimble-users.groups.google.com> <sa_S9cM-ul0.33ShDSEnIcIJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/sa_S9cM-ul0/m/B0Vgd-IlBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Daniel,
+
+Just wanted to update and let you know that I am still having this issue. As long as I remember to switch the evironment, everything works as expected. However, every few months I forget to switch away from the Global Environment and get stuck on this again. Not a big deal, but thought it might be helpful to follow up.
+
+My session info is below.
+
+Thanks,
+Andria
+
+> sessionInfo()
+R version 3.1.2 (2014-10-31)
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+locale:
+ [1] LC_CTYPE=en_CA.UTF-8       LC_NUMERIC=C               LC_TIME=en_CA.UTF-8        LC_COLLATE=en_CA.UTF-8
+ [5] LC_MONETARY=en_CA.UTF-8    LC_MESSAGES=en_CA.UTF-8    LC_PAPER=en_CA.UTF-8       LC_NAME=C
+ [9] LC_ADDRESS=C               LC_TELEPHONE=C             LC_MEASUREMENT=en_CA.UTF-8 LC_IDENTIFICATION=C
+
+attached base packages:
+[1] grid      stats     graphics  grDevices utils     datasets  methods   base
+
+other attached packages:
+[1] nimble_0.5-1   ggplot2_2.1.0  reshape2_1.4.1 fields_6.9.1   maps_2.3-6     spam_0.41-0    dplR_1.6.0
+[8] plotrix_3.6
+
+loaded via a namespace (and not attached):
+ [1] coda_0.18-1      colorspace_1.2-6 digest_0.6.9     gmp_0.5-12       gtable_0.2.0     igraph_1.0.1
+ [7] labeling_0.3     lattice_0.20-29  magrittr_1.5     munsell_0.4.3    plyr_1.8.3.9000  Rcpp_0.12.5
+[13] scales_0.4.0     stringi_1.1.1    stringr_1.0.0    tools_3.1.2      XML_3.98-1.4
+
+On Thursday, December 4, 2014 at 11:47:43 AM UTC-7, Daniel Turek wrote:
+> Carl, thanks for raising this issue.  Let me explain, in detail, what I've done to get NIMBLE working in RStudio, on Windows.
+>
+> First, I'm running 64-bit Windows 7 Enterprise edition, RStudio version 0.98.932, and R version 3.1.2 (Pumpkin Helmet).
+>
+> The RStudio GUI has four major panes.
+> Exactly what appears in each of these is customizable via menu item Tools > Global Options > Pane Layout, then a series of drop-down menus and check boxes.
+> However, regardless of how you customize it, the "Environment" display will necessarily appear in one of these panes.
+> To explain by example, I'll leave Environment coupled (in the same pane) along with History, Packages, and Viewer.
+>
+> Now, back to RStudio.
+> In that pane containing Environment, History, Packages, and Viewer, there are 4 tabs corresponding to these views.
+> To get NIMBLE working, it **does not matter** which of these tabs is clicked.  You may as well just leave it displaying the Environment tab, in this pane.
+>
+> Looking at this pane, the top line has the 4 tabs (Environment, History, Packages, Viewer).
+> The next line below that has some little icons: a folder, a disc, "import dataset", a broom, etc..
+> The next line below that -- this one is the key! -- on the far left, there's clickable text with a small downward arrow, selecting *which* environment/package/namespace contents to display.
+> If this is left on the default selection "Global Environment", then NIMBLE will hang, essentially right when you create the first NIMBLE model object.
+> If you click this text, opening a drop-down menu, and select "package:stats" (that's what I leave mine on), then it will display the contents of that package -- not any of the NIMBLE objects.
+> Now, NIMBLE should work fine.
+> Just don't ever change that back to "Global Environment".
+>
+> Please let me know if this isn't clear in any way.  Or, if it solves the problem for you!
+>
+> Good luck,
+> Daniel
+> NIMBLE Development Team
+>
+>
+>
+> On Wed, Dec 3, 2014 at 9:00 PM, Carl Boettiger <cboe...@gmail.com> wrote:
+> > Hi Nimble-users,
+> >
+> > I see that the manual suggests to 'turn off the option to display the global environment' but I'm not quite clear what that means.  (Seems I am not alone either: https://support.rstudio.com/hc/communities/public/questions/201403153-is-it-possible-not-to-display-the-global-environment). I can minimize the global environment but do not see a way to 'turn it off'.  Even with it minimized RStudio seems to hang when simply running the pump example (chapter 2 in the manual). Outside of RStudio things seem fine.
+> >
+> > Thanks,
+> >
+> > Carl
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAN_1p9w7MkFt71HoGwuN_V3GhTVm4xVEcXKD7bwjM4bYc65WSw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAN_1p9w7MkFt71HoGwuN_V3GhTVm4xVEcXKD7bwjM4bYc65WSw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+

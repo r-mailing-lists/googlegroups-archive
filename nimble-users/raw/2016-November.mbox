@@ -1,0 +1,3438 @@
+From u42eec6aa1e70a8d1 at groups.google.com  Wed Nov  2 22:27:10 2016
+From: u42eec6aa1e70a8d1 at groups.google.com (Abhirup Datta)
+Date: Wed, 02 Nov 2016 22:27:10 +0000
+Subject: Random effects not updating
+Message-ID: <t0rnrjK8t_8.nvHR9B3aAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/t0rnrjK8t_8/m/nvHR9B3aAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I'm trying to run a simple random effect model but the random effect vectors are not updating even after running the MCMC long. Here is a MWE.
+
+## model code ###
+gpCode <- nimbleCode({
+    for(i in 1:n){ y[i] ~ dnorm(w[i],sd=tau)}
+    Vw[,] <- sigma*chol(G[,])
+    w[] ~ dmnorm(muw[], cholesky=Vw[,], prec_param=0)
+    sigma ~ dunif(0, 100)
+    tau ~ dunif(0, 10)
+})
+
+## data ###
+set.seed(1)
+n=100
+sigs=4
+w=as.vector(rmvnorm(1,rep(0,n),sigs*0.5^as.matrix(dist(1:n))))
+Y=w+sqrt(0.5*sigs)*rnorm(n)
+
+### setting up nimble model ####
+gpModel <- nimbleModel(gpCode, constants = list(n = n, G=0.5^as.matrix(dist(1:n)), muw=rep(0,n)),
+    dimensions=list(y=n, Vw=c(n, n), w=n, Vy=c(n, n), G = c(n, n)), check=FALSE)
+
+gpModel$setData(list(y = Y))
+
+gpModel$sigma <- 1
+gpModel$tau <- 0.1
+gpModel$w <- rep(0,n)
+
+CgpModel <- compileNimble(gpModel)
+
+### MCMC ####
+
+gpconf <- configureMCMC(CgpModel, print=TRUE)
+gpconf$addMonitors(c('w'))
+
+gpMCMC <- buildMCMC(gpconf)
+
+CgpMCMC <- compileNimble(gpMCMC, project = CgpModel)
+
+Nmcmc=100000
+set.seed(1)
+CgpMCMC$run(Nmcmc)
+
+gpMCMCsamples <- as.matrix(CgpMCMC$mvSamples)
+
+plot(gpMCMCsamples[,"w[1]"])   ### all values are 0 (same for all the other random effects)
+
+Is this just because the block RW Metropolis is slow for a 100-dimensional vector ? Still no movement after 100000 iterations seem odd. Also if I use gpModel$w <- rep(1,n) instead, I do see movements in the values of w's.
+Also how do I change the block RW for w to 100 univariate RWs, one for each w[i] ?
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Thu Nov  3 01:32:38 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Thu, 03 Nov 2016 01:32:38 +0000
+Subject: Re: Random effects not updating
+Message-ID: <t0rnrjK8t_8.Zo3_Dj3kAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <t0rnrjK8t_8.nvHR9B3aAwAJ@nimble-users.groups.google.com>
+References: <t0rnrjK8t_8.nvHR9B3aAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/t0rnrjK8t_8/m/Zo3_Dj3kAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Abhirup, thanks for your use of NIMBLE and sending your question to the list.  Right off hand I don't know why the block sampler isn't updating, but replacing the block sampler with 100 univariate RW samplers on the w[i] terms shows good mixing.  You can do that via:
+
+gpconf <- configureMCMC(CgpModel, print=TRUE)
+
+##### changes begin here
+gpconf$removeSamplers('w')
+for(node in gpModel$expandNodeNames('w', returnScalarComponents=TRUE)) {
+    gpconf$addSampler(node, 'RW')
+}
+gpconf$printSamplers()
+##### changes end here
+
+gpconf$addMonitors(c('w'))
+gpMCMC <- buildMCMC(gpconf)
+CgpMCMC <- compileNimble(gpMCMC, project = CgpModel)
+
+Then the sampling looks good for the w[i] terms.
+
+Let us know how that works for you.
+
+Daniel
+
+On Wed, Nov 2, 2016 at 6:27 PM, Abhirup Datta <abhi...@gmail.com> wrote:
+
+> Hi,
+>
+> I'm trying to run a simple random effect model but the random effect vectors are not updating even after running the MCMC long. Here is a MWE.
+>
+> ## model code ###
+> gpCode <- nimbleCode({
+>     for(i in 1:n){ y[i] ~ dnorm(w[i],sd=tau)}
+>     Vw[,] <- sigma*chol(G[,])
+>     w[] ~ dmnorm(muw[], cholesky=Vw[,], prec_param=0)
+>     sigma ~ dunif(0, 100)
+>     tau ~ dunif(0, 10)
+> })
+>
+> ## data ###
+> set.seed(1)
+> n=100
+> sigs=4
+> w=as.vector(rmvnorm(1,rep(0,n),sigs*0.5^as.matrix(dist(1:n))))
+> Y=w+sqrt(0.5*sigs)*rnorm(n)
+>
+> ### setting up nimble model ####
+> gpModel <- nimbleModel(gpCode, constants = list(n = n, G=0.5^as.matrix(dist(1:n)), muw=rep(0,n)),
+>     dimensions=list(y=n, Vw=c(n, n), w=n, Vy=c(n, n), G = c(n, n)), check=FALSE)
+>
+> gpModel$setData(list(y = Y))
+>
+> gpModel$sigma <- 1
+> gpModel$tau <- 0.1
+> gpModel$w <- rep(0,n)
+>
+> CgpModel <- compileNimble(gpModel)
+>
+> ### MCMC ####
+>
+> gpconf <- configureMCMC(CgpModel, print=TRUE)
+> gpconf$addMonitors(c('w'))
+>
+> gpMCMC <- buildMCMC(gpconf)
+>
+> CgpMCMC <- compileNimble(gpMCMC, project = CgpModel)
+>
+> Nmcmc=100000
+> set.seed(1)
+> CgpMCMC$run(Nmcmc)
+>
+> gpMCMCsamples <- as.matrix(CgpMCMC$mvSamples)
+>
+> plot(gpMCMCsamples[,"w[1]"])   ### all values are 0 (same for all the other random effects)
+>
+>
+> Is this just because the block RW Metropolis is slow for a 100-dimensional vector ? Still no movement after 100000 iterations seem odd. Also if I use gpModel$w <- rep(1,n) instead, I do see movements in the values of w's.
+> Also how do I change the block RW for w to 100 univariate RWs, one for each w[i] ?
+>
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/0d31f690-6be4-4450-9618-f3e18289ed4f%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/0d31f690-6be4-4450-9618-f3e18289ed4f%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u42eec6aa1e70a8d1 at groups.google.com  Thu Nov  3 01:41:52 2016
+From: u42eec6aa1e70a8d1 at groups.google.com (Abhirup Datta)
+Date: Thu, 03 Nov 2016 01:41:52 +0000
+Subject: Re: Random effects not updating
+Message-ID: <t0rnrjK8t_8.SY9A2b3kAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <t0rnrjK8t_8.Zo3_Dj3kAwAJ@nimble-users.groups.google.com>
+References: <t0rnrjK8t_8.nvHR9B3aAwAJ@nimble-users.groups.google.com> <t0rnrjK8t_8.Zo3_Dj3kAwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/t0rnrjK8t_8/m/SY9A2b3kAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Daniel and Sol for the replies. Seems like the initial choice I provide comes from a very improbable part of the parameter space. I'd try out both the options you suggested.
+
+Thanks,
+Abhi
+
+On Wed, Nov 2, 2016 at 9:31 PM, Daniel Turek <db...@williams.edu> wrote:
+
+> Abhirup, thanks for your use of NIMBLE and sending your question to the list.  Right off hand I don't know why the block sampler isn't updating, but replacing the block sampler with 100 univariate RW samplers on the w[i] terms shows good mixing.  You can do that via:
+>
+> gpconf <- configureMCMC(CgpModel, print=TRUE)
+>
+> ##### changes begin here
+> gpconf$removeSamplers('w')
+> for(node in gpModel$expandNodeNames('w', returnScalarComponents=TRUE)) {
+>     gpconf$addSampler(node, 'RW')
+> }
+> gpconf$printSamplers()
+> ##### changes end here
+>
+> gpconf$addMonitors(c('w'))
+> gpMCMC <- buildMCMC(gpconf)
+> CgpMCMC <- compileNimble(gpMCMC, project = CgpModel)
+>
+> Then the sampling looks good for the w[i] terms.
+>
+> Let us know how that works for you.
+>
+> Daniel
+>
+>
+>
+> On Wed, Nov 2, 2016 at 6:27 PM, Abhirup Datta <abhi...@gmail.com> wrote:
+> > Hi,
+> >
+> > I'm trying to run a simple random effect model but the random effect vectors are not updating even after running the MCMC long. Here is a MWE.
+> >
+> > ## model code ###
+> > gpCode <- nimbleCode({
+> >     for(i in 1:n){ y[i] ~ dnorm(w[i],sd=tau)}
+> >     Vw[,] <- sigma*chol(G[,])
+> >     w[] ~ dmnorm(muw[], cholesky=Vw[,], prec_param=0)
+> >     sigma ~ dunif(0, 100)
+> >     tau ~ dunif(0, 10)
+> > })
+> >
+> > ## data ###
+> > set.seed(1)
+> > n=100
+> > sigs=4
+> > w=as.vector(rmvnorm(1,rep(0,n),sigs*0.5^as.matrix(dist(1:n))))
+> > Y=w+sqrt(0.5*sigs)*rnorm(n)
+> >
+> > ### setting up nimble model ####
+> > gpModel <- nimbleModel(gpCode, constants = list(n = n, G=0.5^as.matrix(dist(1:n)), muw=rep(0,n)),
+> >     dimensions=list(y=n, Vw=c(n, n), w=n, Vy=c(n, n), G = c(n, n)), check=FALSE)
+> >
+> > gpModel$setData(list(y = Y))
+> >
+> > gpModel$sigma <- 1
+> > gpModel$tau <- 0.1
+> > gpModel$w <- rep(0,n)
+> >
+> > CgpModel <- compileNimble(gpModel)
+> >
+> > ### MCMC ####
+> >
+> > gpconf <- configureMCMC(CgpModel, print=TRUE)
+> > gpconf$addMonitors(c('w'))
+> >
+> > gpMCMC <- buildMCMC(gpconf)
+> >
+> > CgpMCMC <- compileNimble(gpMCMC, project = CgpModel)
+> >
+> > Nmcmc=100000
+> > set.seed(1)
+> > CgpMCMC$run(Nmcmc)
+> >
+> > gpMCMCsamples <- as.matrix(CgpMCMC$mvSamples)
+> >
+> > plot(gpMCMCsamples[,"w[1]"])   ### all values are 0 (same for all the other random effects)
+> >
+> >
+> > Is this just because the block RW Metropolis is slow for a 100-dimensional vector ? Still no movement after 100000 iterations seem odd. Also if I use gpModel$w <- rep(1,n) instead, I do see movements in the values of w's.
+> > Also how do I change the block RW for w to 100 univariate RWs, one for each w[i] ?
+> >
+> >
+> >
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/0d31f690-6be4-4450-9618-f3e18289ed4f%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/0d31f690-6be4-4450-9618-f3e18289ed4f%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+
+> You received this message because you are subscribed to a topic in the Google Groups "nimble-users" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/nimble-users/t0rnrjK8t_8/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAKbe0hrsBzTx9Q%3D1x8YFbqXB8NugR2TgacL%2BOTD_%2BQtzomRUjw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAKbe0hrsBzTx9Q%3D1x8YFbqXB8NugR2TgacL%2BOTD_%2BQtzomRUjw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From ufbae97f3696b2723 at groups.google.com  Fri Nov  4 05:47:42 2016
+From: ufbae97f3696b2723 at groups.google.com (Dave Ramsey)
+Date: Fri, 04 Nov 2016 05:47:42 +0000
+Subject: spatial CAR model
+Message-ID: <Ugy57RYC9ZA.LCCfp7xABAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Ugy57RYC9ZA/m/LCCfp7xABAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,  I am analysing some Poisson counts on a square grid where it might be useful to include spatial correlation among neighboring cells.  In particular I am interested in fitting the intrinsic conditional autoregressive or CAR model - similar to the car.normal() distribution available in WinBUGS.
+
+Anyway, I can fit the model in WinBUGS no problems but the chains converge slowly (but they do converge) so thought it might be useful to try implementing this in Nimble.
+
+So following the example for creating a custom distribution function available on the website and a description of the conditional mean and variance of the CAR model from the GeoBUGS manual I put together the following code:
+
+Briefly, adj is the 'adjacency matrix' (actually a vector) listing the ID's of the neighbours for all cells.  offset is a vector of positions listing the neighbours for each cell such that adj[(offset[i]+1):offset[i+1]] are the neighbours for cell i.  numN is a vector giving the number of neighbors for each cell and tau is the precision parameter.
+
+For the 'weights' I assume that all neighbours of a cell have a weight of 1 and 0 otherwise.
+
+The problem is I can't get the following code to work.   In fact compileNimble(dcar.normal) fails so I obviously have some misunderstanding of nimbleFunction syntax.
+
+I'd be grateful for any help.
+
+thanks
+Dave
+
+dcar.normal<- nimbleFunction(
+  run = function(x = double(1), adj=integer(1), offset=integer(1), numN=integer(1),
+                 tau=double(0), log = logical(0, default = 0)) {
+    returnType(double(1))
+    n<- dim(x)[1]
+    z<- numeric(n, init=FALSE)
+    for(i in 1:n){
+      x.adj<- adj[(offset[i]+1):offset[i+1]]
+      mu<- mean(x[x.adj])
+      V<- 1/tau
+      sigmaS<- sqrt(V/numN[i])
+      z[i]<- dnorm(x[i], mu, sigmaS)
+    }
+    return(z)
+  })
+
+rcar.normal<- nimbleFunction(
+  run = function(n=integer(), adj=integer(1), off=integer(1), numN=integer(1),
+                 tau=double(0)) {
+    returnType(double(1))
+    nregions<- dim(num)[1]
+    V<- 1/tau
+    sigmaS<- sqrt(V/numN)
+    # not sure the following is correct
+    return(rnorm(nregions, 0, sigmaS))
+    })
+
+registerDistributions(list(
+  dcar.normal = list(
+    BUGSdist = "dcar.normal(adj, offset, numN, tau)",
+    discrete = FALSE,
+    range = c(-Inf, Inf),
+    types = c('value = double(1)', 'adj = integer(1)', 'offset = integer(1)',
+              'numN=integer(1)','tau=double(0)')
+  )))
+
+From udd632bd3bbcdd7e9 at groups.google.com  Fri Nov  4 15:30:36 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Fri, 04 Nov 2016 15:30:36 +0000
+Subject: Re: spatial CAR model
+Message-ID: <Ugy57RYC9ZA.Q3VV44tgBAAJ@nimble-users.groups.google.com>
+In-Reply-To: <Ugy57RYC9ZA.LCCfp7xABAAJ@nimble-users.groups.google.com>
+References: <Ugy57RYC9ZA.LCCfp7xABAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Ugy57RYC9ZA/m/Q3VV44tgBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Dave,
+
+Glad to see this application.  I’ve made some comments below.
+
+> On Nov 3, 2016, at 10:47 PM, Dave Ramsey <rams...@gmail.com> wrote:
+>
+> Hi,  I am analysing some Poisson counts on a square grid where it might be useful to include spatial correlation among neighboring cells.  In particular I am interested in fitting the intrinsic conditional autoregressive or CAR model - similar to the car.normal() distribution available in WinBUGS.
+>
+> Anyway, I can fit the model in WinBUGS no problems but the chains converge slowly (but they do converge) so thought it might be useful to try implementing this in Nimble.
+>
+> So following the example for creating a custom distribution function available on the website and a description of the conditional mean and variance of the CAR model from the GeoBUGS manual I put together the following code:
+>
+> Briefly, adj is the 'adjacency matrix' (actually a vector) listing the ID's of the neighbours for all cells.  offset is a vector of positions listing the neighbours for each cell such that adj[(offset[i]+1):offset[i+1]] are the neighbours for cell i.  numN is a vector giving the number of neighbors for each cell and tau is the precision parameter.
+>
+> For the 'weights' I assume that all neighbours of a cell have a weight of 1 and 0 otherwise.
+>
+> The problem is I can't get the following code to work.   In fact compileNimble(dcar.normal) fails so I obviously have some misunderstanding of nimbleFunction syntax.
+>
+> I'd be grateful for any help.
+>
+> thanks
+> Dave
+>
+>
+> dcar.normal<- nimbleFunction(
+>   run = function(x = double(1), adj=integer(1), offset=integer(1), numN=integer(1),
+>                  tau=double(0), log = logical(0, default = 0)) {
+>     returnType(double(1))
+
+A “d” function should always return a scalar (“returnType(double(0))”). NIMBLE will treat a node declared to follow dcar.normal as a single node, with a single log probability density value associated with it.
+
+>     n<- dim(x)[1]
+>     z<- numeric(n, init=FALSE)
+>     for(i in 1:n){
+>       x.adj<- adj[(offset[i]+1):offset[i+1]]
+>       mu<- mean(x[x.adj])
+
+Unfortunately NIMBLE won’t compile arbitrary indexing like “x[x.adj]” yet.  It will handle that in the future.  For now you will have to write a for loop to accomplish what you want.
+
+>       V<- 1/tau
+>       sigmaS<- sqrt(V/numN[i])
+>       z[i]<- dnorm(x[i], mu, sigmaS)
+
+Because a “d” function should return a scalar, you’ll have to add up the dnorm values that you are currently putting in a vector.  Also, NIMBLE will call a “d” function with “log = TRUE”, so you must support that.  I suggest using dnorm(x[i], mu, sigmaS, log = TRUE), adding up results from that for each i.  Then use something like
+
+if(log) return(sum_of_z)
+else return(exp(sum_of_z))
+
+>     }
+>     return(z)
+>   })
+
+>
+> rcar.normal<- nimbleFunction(
+>   run = function(n=integer(), adj=integer(1), off=integer(1), numN=integer(1),
+>                  tau=double(0)) {
+>     returnType(double(1))
+>     nregions<- dim(num)[1]
+>     V<- 1/tau
+>     sigmaS<- sqrt(V/numN)
+>     # not sure the following is correct
+>     return(rnorm(nregions, 0, sigmaS))
+
+NIMBLE won’t compile a vectorized call to rnorm.  That is something else that will work in the future.  For now you will have to do something like
+
+result <- numeric(nregions)
+for(i in 1:nregions) result[i] <- rnorm(1, 0, sigmaS)
+return(result)
+
+>     })
+>
+> registerDistributions(list(
+>   dcar.normal = list(
+>     BUGSdist = "dcar.normal(adj, offset, numN, tau)",
+>     discrete = FALSE,
+>     range = c(-Inf, Inf),
+>     types = c('value = double(1)', 'adj = integer(1)', 'offset = integer(1)',
+>               'numN=integer(1)','tau=double(0)')
+>   )))
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/b06732a3-bce0-4f44-a75d-42a560113d59%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/b06732a3-bce0-4f44-a75d-42a560113d59%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ufbae97f3696b2723 at groups.google.com  Fri Nov  4 22:04:09 2016
+From: ufbae97f3696b2723 at groups.google.com (Dave Ramsey)
+Date: Fri, 04 Nov 2016 22:04:09 +0000
+Subject: Re: spatial CAR model
+Message-ID: <Ugy57RYC9ZA.jnEFpQV2BAAJ@nimble-users.groups.google.com>
+In-Reply-To: <Ugy57RYC9ZA.LCCfp7xABAAJ@nimble-users.groups.google.com>
+References: <Ugy57RYC9ZA.LCCfp7xABAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Ugy57RYC9ZA/m/jnEFpQV2BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,  Thanks for the prompt reply.   Looks like the nimble DSL is a bit closer to C++ than I had realised.   Thanks for all those suggestions.  I'll see how I get on and post the results.
+
+cheers
+Dave
+
+On Friday, November 4, 2016 at 4:47:42 PM UTC+11, Dave Ramsey wrote:
+> Hi,  I am analysing some Poisson counts on a square grid where it might be useful to include spatial correlation among neighboring cells.  In particular I am interested in fitting the intrinsic conditional autoregressive or CAR model - similar to the car.normal() distribution available in WinBUGS.
+>
+> Anyway, I can fit the model in WinBUGS no problems but the chains converge slowly (but they do converge) so thought it might be useful to try implementing this in Nimble.
+>
+> So following the example for creating a custom distribution function available on the website and a description of the conditional mean and variance of the CAR model from the GeoBUGS manual I put together the following code:
+>
+> Briefly, adj is the 'adjacency matrix' (actually a vector) listing the ID's of the neighbours for all cells.  offset is a vector of positions listing the neighbours for each cell such that adj[(offset[i]+1):offset[i+1]] are the neighbours for cell i.  numN is a vector giving the number of neighbors for each cell and tau is the precision parameter.
+>
+> For the 'weights' I assume that all neighbours of a cell have a weight of 1 and 0 otherwise.
+>
+> The problem is I can't get the following code to work.   In fact compileNimble(dcar.normal) fails so I obviously have some misunderstanding of nimbleFunction syntax.
+>
+> I'd be grateful for any help.
+>
+> thanks
+> Dave
+>
+>
+> dcar.normal<- nimbleFunction(
+>   run = function(x = double(1), adj=integer(1), offset=integer(1), numN=integer(1),
+>                  tau=double(0), log = logical(0, default = 0)) {
+>     returnType(double(1))
+>     n<- dim(x)[1]
+>     z<- numeric(n, init=FALSE)
+>     for(i in 1:n){
+>       x.adj<- adj[(offset[i]+1):offset[i+1]]
+>       mu<- mean(x[x.adj])
+>       V<- 1/tau
+>       sigmaS<- sqrt(V/numN[i])
+>       z[i]<- dnorm(x[i], mu, sigmaS)
+>     }
+>     return(z)
+>   })
+>
+> rcar.normal<- nimbleFunction(
+>   run = function(n=integer(), adj=integer(1), off=integer(1), numN=integer(1),
+>                  tau=double(0)) {
+>     returnType(double(1))
+>     nregions<- dim(num)[1]
+>     V<- 1/tau
+>     sigmaS<- sqrt(V/numN)
+>     # not sure the following is correct
+>     return(rnorm(nregions, 0, sigmaS))
+>     })
+>
+> registerDistributions(list(
+>   dcar.normal = list(
+>     BUGSdist = "dcar.normal(adj, offset, numN, tau)",
+>     discrete = FALSE,
+>     range = c(-Inf, Inf),
+>     types = c('value = double(1)', 'adj = integer(1)', 'offset = integer(1)',
+>               'numN=integer(1)','tau=double(0)')
+>   )))
+>
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Nov  4 22:11:24 2016
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Fri, 04 Nov 2016 22:11:24 +0000
+Subject: Re: spatial CAR model
+Message-ID: <Ugy57RYC9ZA.jrK8B2t2BAAJ@nimble-users.groups.google.com>
+In-Reply-To: <Ugy57RYC9ZA.jnEFpQV2BAAJ@nimble-users.groups.google.com>
+References: <Ugy57RYC9ZA.LCCfp7xABAAJ@nimble-users.groups.google.com> <Ugy57RYC9ZA.jnEFpQV2BAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Ugy57RYC9ZA/m/jrK8B2t2BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Dave, just a note of caution here: it doesn't look to me that your
+specification correctly specifies the joint distribution for all the
+components. The sum of the log densities for the individual components
+is not the density for the components jointly because of the
+dependence between the components.
+
+We're hoping to implement a CAR model in the somewhat near future. The
+difficulty is that specifying the distribution of each component in a
+spatial CAR in a univariate fashion does not give a directed acyclic
+graph. We can write down the density for all the components jointly
+(which has a sparse precision matrix), but then if one does univariate
+sampling, one is recomputing the density for all the components every
+time a single one is updated, which is inefficient.
+
+-chris
+
+On Fri, Nov 4, 2016 at 3:04 PM, Dave Ramsey <rams...@gmail.com> wrote:
+> Hi Perry,  Thanks for the prompt reply.   Looks like the nimble DSL is a bit
+> closer to C++ than I had realised.   Thanks for all those suggestions.  I'll
+> see how I get on and post the results.
+>
+> cheers
+> Dave
+>
+>
+> On Friday, November 4, 2016 at 4:47:42 PM UTC+11, Dave Ramsey wrote:
+>>
+>> Hi,  I am analysing some Poisson counts on a square grid where it might be
+>> useful to include spatial correlation among neighboring cells.  In
+>> particular I am interested in fitting the intrinsic conditional
+>> autoregressive or CAR model - similar to the car.normal() distribution
+>> available in WinBUGS.
+>>
+>> Anyway, I can fit the model in WinBUGS no problems but the chains converge
+>> slowly (but they do converge) so thought it might be useful to try
+>> implementing this in Nimble.
+>>
+>> So following the example for creating a custom distribution function
+>> available on the website and a description of the conditional mean and
+>> variance of the CAR model from the GeoBUGS manual I put together the
+>> following code:
+>>
+>> Briefly, adj is the 'adjacency matrix' (actually a vector) listing the
+>> ID's of the neighbours for all cells.  offset is a vector of positions
+>> listing the neighbours for each cell such that
+>> adj[(offset[i]+1):offset[i+1]] are the neighbours for cell i.  numN is a
+>> vector giving the number of neighbors for each cell and tau is the precision
+>> parameter.
+>>
+>> For the 'weights' I assume that all neighbours of a cell have a weight of
+>> 1 and 0 otherwise.
+>>
+>> The problem is I can't get the following code to work.   In fact
+>> compileNimble(dcar.normal) fails so I obviously have some misunderstanding
+>> of nimbleFunction syntax.
+>>
+>> I'd be grateful for any help.
+>>
+>> thanks
+>> Dave
+>>
+>>
+>> dcar.normal<- nimbleFunction(
+>>   run = function(x = double(1), adj=integer(1), offset=integer(1),
+>> numN=integer(1),
+>>                  tau=double(0), log = logical(0, default = 0)) {
+>>     returnType(double(1))
+>>     n<- dim(x)[1]
+>>     z<- numeric(n, init=FALSE)
+>>     for(i in 1:n){
+>>       x.adj<- adj[(offset[i]+1):offset[i+1]]
+>>       mu<- mean(x[x.adj])
+>>       V<- 1/tau
+>>       sigmaS<- sqrt(V/numN[i])
+>>       z[i]<- dnorm(x[i], mu, sigmaS)
+>>     }
+>>     return(z)
+>>   })
+>>
+>> rcar.normal<- nimbleFunction(
+>>   run = function(n=integer(), adj=integer(1), off=integer(1),
+>> numN=integer(1),
+>>                  tau=double(0)) {
+>>     returnType(double(1))
+>>     nregions<- dim(num)[1]
+>>     V<- 1/tau
+>>     sigmaS<- sqrt(V/numN)
+>>     # not sure the following is correct
+>>     return(rnorm(nregions, 0, sigmaS))
+>>     })
+>>
+>> registerDistributions(list(
+>>   dcar.normal = list(
+>>     BUGSdist = "dcar.normal(adj, offset, numN, tau)",
+>>     discrete = FALSE,
+>>     range = c(-Inf, Inf),
+>>     types = c('value = double(1)', 'adj = integer(1)', 'offset =
+>> integer(1)',
+>>               'numN=integer(1)','tau=double(0)')
+>>   )))
+>>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit
+
+> https://groups.google.com/d/msgid/nimble-users/330e4316-7d8d-4f3b-b833-e36973f8239e%40googlegroups.com.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From ufbae97f3696b2723 at groups.google.com  Fri Nov  4 22:36:19 2016
+From: ufbae97f3696b2723 at groups.google.com (Dave Ramsey)
+Date: Fri, 04 Nov 2016 22:36:19 +0000
+Subject: Re: spatial CAR model
+Message-ID: <Ugy57RYC9ZA.Id-oGMd3BAAJ@nimble-users.groups.google.com>
+In-Reply-To: <Ugy57RYC9ZA.LCCfp7xABAAJ@nimble-users.groups.google.com>
+References: <Ugy57RYC9ZA.LCCfp7xABAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Ugy57RYC9ZA/m/Id-oGMd3BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Chris,  Thanks for the heads-up.   Looks like this one is more difficult than I had realised.
+
+cheers
+Dave
+
+On Saturday, November 5, 2016 at 9:11:24 AM UTC+11, Christopher Paciorek wrote:
+> Hi Dave, just a note of caution here: it doesn't look to me that your
+> specification correctly specifies the joint distribution for all the
+> components. The sum of the log densities for the individual components
+> is not the density for the components jointly because of the
+> dependence between the components.
+>
+> We're hoping to implement a CAR model in the somewhat near future. The
+> difficulty is that specifying the distribution of each component in a
+> spatial CAR in a univariate fashion does not give a directed acyclic
+> graph. We can write down the density for all the components jointly
+> (which has a sparse precision matrix), but then if one does univariate
+> sampling, one is recomputing the density for all the components every
+> time a single one is updated, which is inefficient.
+>
+> -chris
+>
+> On Fri, Nov 4, 2016 at 3:04 PM, Dave Ramsey <rams...@gmail.com> wrote:
+> > Hi Perry,  Thanks for the prompt reply.   Looks like the nimble DSL is a bit
+> > closer to C++ than I had realised.   Thanks for all those suggestions.  I'll
+> > see how I get on and post the results.
+> >
+> > cheers
+> > Dave
+> >
+> >
+> > On Friday, November 4, 2016 at 4:47:42 PM UTC+11, Dave Ramsey wrote:
+> >>
+> >> Hi,  I am analysing some Poisson counts on a square grid where it might be
+> >> useful to include spatial correlation among neighboring cells.  In
+> >> particular I am interested in fitting the intrinsic conditional
+> >> autoregressive or CAR model - similar to the car.normal() distribution
+> >> available in WinBUGS.
+> >>
+> >> Anyway, I can fit the model in WinBUGS no problems but the chains converge
+> >> slowly (but they do converge) so thought it might be useful to try
+> >> implementing this in Nimble.
+> >>
+> >> So following the example for creating a custom distribution function
+> >> available on the website and a description of the conditional mean and
+> >> variance of the CAR model from the GeoBUGS manual I put together the
+> >> following code:
+> >>
+> >> Briefly, adj is the 'adjacency matrix' (actually a vector) listing the
+> >> ID's of the neighbours for all cells.  offset is a vector of positions
+> >> listing the neighbours for each cell such that
+> >> adj[(offset[i]+1):offset[i+1]] are the neighbours for cell i.  numN is a
+> >> vector giving the number of neighbors for each cell and tau is the precision
+> >> parameter.
+> >>
+> >> For the 'weights' I assume that all neighbours of a cell have a weight of
+> >> 1 and 0 otherwise.
+> >>
+> >> The problem is I can't get the following code to work.   In fact
+> >> compileNimble(dcar.normal) fails so I obviously have some misunderstanding
+> >> of nimbleFunction syntax.
+> >>
+> >> I'd be grateful for any help.
+> >>
+> >> thanks
+> >> Dave
+> >>
+> >>
+> >> dcar.normal<- nimbleFunction(
+> >>   run = function(x = double(1), adj=integer(1), offset=integer(1),
+> >> numN=integer(1),
+> >>                  tau=double(0), log = logical(0, default = 0)) {
+> >>     returnType(double(1))
+> >>     n<- dim(x)[1]
+> >>     z<- numeric(n, init=FALSE)
+> >>     for(i in 1:n){
+> >>       x.adj<- adj[(offset[i]+1):offset[i+1]]
+> >>       mu<- mean(x[x.adj])
+> >>       V<- 1/tau
+> >>       sigmaS<- sqrt(V/numN[i])
+> >>       z[i]<- dnorm(x[i], mu, sigmaS)
+> >>     }
+> >>     return(z)
+> >>   })
+> >>
+> >> rcar.normal<- nimbleFunction(
+> >>   run = function(n=integer(), adj=integer(1), off=integer(1),
+> >> numN=integer(1),
+> >>                  tau=double(0)) {
+> >>     returnType(double(1))
+> >>     nregions<- dim(num)[1]
+> >>     V<- 1/tau
+> >>     sigmaS<- sqrt(V/numN)
+> >>     # not sure the following is correct
+> >>     return(rnorm(nregions, 0, sigmaS))
+> >>     })
+> >>
+> >> registerDistributions(list(
+> >>   dcar.normal = list(
+> >>     BUGSdist = "dcar.normal(adj, offset, numN, tau)",
+> >>     discrete = FALSE,
+> >>     range = c(-Inf, Inf),
+> >>     types = c('value = double(1)', 'adj = integer(1)', 'offset =
+> >> integer(1)',
+> >>               'numN=integer(1)','tau=double(0)')
+> >>   )))
+> >>
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msgid/nimble-users/330e4316-7d8d-4f3b-b833-e36973f8239e%40googlegroups.com.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Sun Nov  6 21:06:52 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Sun, 06 Nov 2016 21:06:52 +0000
+Subject: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/mBnumA4QBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+
+Thank you,
+
+Colin
+
+testCode <- nimbleCode({
+  #Identity matrix
+  W<-identityMatrix(d = 2)
+
+  #F matrix
+  F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+
+  #G Transition matrix
+  G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+
+  #initial values
+  m<-G%*%x0
+  var0<-sigmaSquaredInvw*W
+  x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+  y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+
+  #Model
+  for (t in 2:T){
+    mu<-G%*%x[1:2,t-1]
+    sigs<-sigmaSquaredInvw*W
+    x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+    y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+  }
+
+  #Initial Values for States
+  c0<-c(0,0)
+  m0<-sigmaSquaredInvw*W
+  x0~dmnorm(c0[1:2],m0[1:2,1:2])
+
+  #Priors
+  sigmaSquaredInvv~dgamma(5,20)
+  sigmaSquaredInvw~dgamma(5,200)
+})
+
+smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+
+From udd632bd3bbcdd7e9 at groups.google.com  Sun Nov  6 21:15:32 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Sun, 06 Nov 2016 21:15:32 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.hfT0locQBQAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/hfT0locQBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Colin,
+
+Here are a couple of things I see in your code:
+
+> On Nov 6, 2016, at 1:06 PM, Colin <clewi...@gmail.com> wrote:
+>
+> Hello,
+>
+> I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+>
+> Thank you,
+>
+> Colin
+>
+> testCode <- nimbleCode({
+>   #Identity matrix
+>   W<-identityMatrix(d = 2)
+>
+>   #F matrix
+>   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+
+You can’t use c() inside the model code.  You will be able to do that in the future.  For now you will need to create a variable with the c(0,1) content, which could be created as part of your model (one element at a time) or passed in as a constant when you call nimbleModel.
+
+>
+>   #G Transition matrix
+>   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+
+There are two issues here.  One is again that you can’t use c().  The other is that in nimble matrix() will only initialize to a single value, not a provided vector.  That is another feature we’ll be providing soon as we extend the range of basic R functions that can be compiled via NIMBLE.  So, again, you’ll need to create G outside the nimbleCode and include it as a constant when you call nimbleModel.
+
+>
+>   #initial values
+>   m<-G%*%x0
+>   var0<-sigmaSquaredInvw*W
+>   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+>   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+
+At the moment it can be problematic to include a linear algebra expression as an argument to produce a scalar distribution parameter.  It would be better to use inner product, inprod(F1[1,1:2], x[1:2,1])
+
+>
+>   #Model
+>   for (t in 2:T){
+>     mu<-G%*%x[1:2,t-1]
+
+Depending on how G is provided, you might need to do G[,] or G[1:2, 1:2]
+
+>     sigs<-sigmaSquaredInvw*W
+>     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+>     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+
+See above
+
+>   }
+>
+>   #Initial Values for States
+>   c0<-c(0,0)
+>   m0<-sigmaSquaredInvw*W
+>   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+>
+>   #Priors
+>   sigmaSquaredInvv~dgamma(5,20)
+>   sigmaSquaredInvw~dgamma(5,200)
+> })
+>
+> smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+>                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Sun Nov  6 21:31:23 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Sun, 06 Nov 2016 21:31:23 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.EgM46mQRBQAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/EgM46mQRBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hey Perry,
+
+Thanks so much for your comments.  Very helpful.  I really appreciate it.
+
+Cheers,
+
+Colin
+
+On Sunday, November 6, 2016 at 3:15:32 PM UTC-6, pdevalpine wrote:
+> Hi Colin,
+>
+> Here are a couple of things I see in your code:
+>
+> > On Nov 6, 2016, at 1:06 PM, Colin <clewi...@gmail.com> wrote:
+> >
+> > Hello,
+> >
+> > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> >
+> > Thank you,
+> >
+> > Colin
+> >
+> > testCode <- nimbleCode({
+> >   #Identity matrix
+> >   W<-identityMatrix(d = 2)
+> >
+> >   #F matrix
+> >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+>
+> You can’t use c() inside the model code.  You will be able to do that in the future.  For now you will need to create a variable with the c(0,1) content, which could be created as part of your model (one element at a time) or passed in as a constant when you call nimbleModel.
+>
+> >
+> >   #G Transition matrix
+> >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+>
+> There are two issues here.  One is again that you can’t use c().  The other is that in nimble matrix() will only initialize to a single value, not a provided vector.  That is another feature we’ll be providing soon as we extend the range of basic R functions that can be compiled via NIMBLE.  So, again, you’ll need to create G outside the nimbleCode and include it as a constant when you call nimbleModel.
+>
+> >
+> >   #initial values
+> >   m<-G%*%x0
+> >   var0<-sigmaSquaredInvw*W
+> >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+>
+> At the moment it can be problematic to include a linear algebra expression as an argument to produce a scalar distribution parameter.  It would be better to use inner product, inprod(F1[1,1:2], x[1:2,1])
+>
+>
+>
+> >
+> >   #Model
+> >   for (t in 2:T){
+> >     mu<-G%*%x[1:2,t-1]
+>
+> Depending on how G is provided, you might need to do G[,] or G[1:2, 1:2]
+>
+> >     sigs<-sigmaSquaredInvw*W
+> >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> See above
+> >   }
+> >
+> >   #Initial Values for States
+> >   c0<-c(0,0)
+> >   m0<-sigmaSquaredInvw*W
+> >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> >
+> >   #Priors
+> >   sigmaSquaredInvv~dgamma(5,20)
+> >   sigmaSquaredInvw~dgamma(5,200)
+> > })
+> >
+> > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Sun Nov  6 21:34:48 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Sun, 06 Nov 2016 21:34:48 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.OW1wyZQRBQAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.EgM46mQRBQAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com> <pA-7JObwwhA.EgM46mQRBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/OW1wyZQRBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+
+You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+
+It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+
+If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+
+Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+
+If the matrix elements might vary, then define them one at a time, e.g.:
+A[1,1] <- [some expression of other elements]
+A[1,2] <- [some expression of other elements]
+etc...
+
+No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+c0[1] <- 0
+c0[2] <- 0
+then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+
+Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+m<-G%*%x0
+defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+m[1:2, 1]
+
+That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+
+A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+
+Thanks,
+Daniel
+NIMBLE development team
+
+On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com> wrote:
+
+> Hello,
+>
+> I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+>
+> Thank you,
+>
+> Colin
+>
+> testCode <- nimbleCode({
+>   #Identity matrix
+>   W<-identityMatrix(d = 2)
+>
+>   #F matrix
+>   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+>
+>   #G Transition matrix
+>   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+>
+>   #initial values
+>   m<-G%*%x0
+>   var0<-sigmaSquaredInvw*W
+>   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+>   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+>
+>   #Model
+>   for (t in 2:T){
+>     mu<-G%*%x[1:2,t-1]
+>     sigs<-sigmaSquaredInvw*W
+>     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+>     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+>   }
+>
+>   #Initial Values for States
+>   c0<-c(0,0)
+>   m0<-sigmaSquaredInvw*W
+>   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+>
+>   #Priors
+>   sigmaSquaredInvv~dgamma(5,20)
+>   sigmaSquaredInvw~dgamma(5,200)
+> })
+>
+> smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+>                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Sun Nov  6 21:35:38 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Sun, 06 Nov 2016 21:35:38 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.uQ04fqARBQAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.OW1wyZQRBQAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com> <pA-7JObwwhA.OW1wyZQRBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/uQ04fqARBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Looks like I was beaten to the punch here.  At least no one can say that the NIMBLE team is slow to respond.
+
+On Sun, Nov 6, 2016 at 4:34 PM, Daniel Turek <db...@williams.edu> wrote:
+> Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+>
+> You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+>
+> It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+>
+> If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+>
+> Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+>
+> If the matrix elements might vary, then define them one at a time, e.g.:
+> A[1,1] <- [some expression of other elements]
+> A[1,2] <- [some expression of other elements]
+> etc...
+>
+> No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+> c0[1] <- 0
+> c0[2] <- 0
+> then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+> Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+>
+> Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+> m<-G%*%x0
+> defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+> m[1:2, 1]
+>
+> That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+>
+> A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+>
+> Thanks,
+> Daniel
+> NIMBLE development team
+>
+>
+> On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com> wrote:
+> > Hello,
+> >
+> > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> >
+> > Thank you,
+> >
+> > Colin
+> >
+> > testCode <- nimbleCode({
+> >   #Identity matrix
+> >   W<-identityMatrix(d = 2)
+> >
+> >   #F matrix
+> >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+> >
+> >   #G Transition matrix
+> >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> >
+> >   #initial values
+> >   m<-G%*%x0
+> >   var0<-sigmaSquaredInvw*W
+> >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+> >
+> >   #Model
+> >   for (t in 2:T){
+> >     mu<-G%*%x[1:2,t-1]
+> >     sigs<-sigmaSquaredInvw*W
+> >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> >   }
+> >
+> >   #Initial Values for States
+> >   c0<-c(0,0)
+> >   m0<-sigmaSquaredInvw*W
+> >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> >
+> >   #Priors
+> >   sigmaSquaredInvv~dgamma(5,20)
+> >   sigmaSquaredInvw~dgamma(5,200)
+> > })
+> >
+> > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u614b5e0181ba03ae at groups.google.com  Mon Nov 14 05:48:02 2016
+From: u614b5e0181ba03ae at groups.google.com (Fengqing Chao)
+Date: Mon, 14 Nov 2016 05:48:02 +0000
+Subject: How to specify parameters to save?
+Message-ID: <PWUn0Lx75Tg.SpqV9Y5SBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/PWUn0Lx75Tg/m/SpqV9Y5SBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+How can I specify the parameters that I want to save in nimble? I want to save not only the hyper parameters with assigned priors, but also parameters that depends on the hyper parameters.
+
+E.g. the following model is just from the nimble website. Even though the code specifies the MCMC for beta2[1:10], but their posterior samples are not saved. How can I save the posterior samples for beta2[1:10] together with other hyper parameters beta0, beta1, and sigma_RE? Is there a setting in nimble similar like "parameters.to.save" in JAGS?
+
+Thanks!
+# load the NIMBLE library
+library(nimble)
+
+## define the model
+code <- nimbleCode({
+  beta0 ~ dnorm(0, sd = 10000)
+  beta1 ~ dnorm(0, sd = 10000)
+  sigma_RE ~ dunif(0, 1000)
+  for(i in 1:N) {
+    beta2[i] ~ dnorm(0, sd = sigma_RE)
+    logit(p[i]) <- beta0 + beta1 * x[i] + beta2[i]
+    r[i] ~ dbin(p[i], n[i])
+  }
+})
+
+## constants, data, and initial values
+constants <- list(N = 10)
+
+data <- list(
+  r = c(10, 23, 23, 26, 17, 5, 53, 55, 32, 46),
+  n = c(39, 62, 81, 51, 39, 6, 74, 72, 51, 79),
+  x = c(0,  0,  0,  0,  0,  1, 1,  1,  1,  1)
+)
+
+inits <- list(beta0 = 0, beta1 = 0, sigma_RE = 1)
+
+## create the model object
+# Rmodel <- nimbleModel(code=code, constants=constants, data=data, inits=inits, check = FALSE)
+Rmodel <- nimbleModel(code=code, constants=constants, data=data, inits=inits)
+spec <- configureMCMC(Rmodel, nodes=NULL)
+spec$addSampler(type = 'slice', target ='beta0')
+spec$addSampler(type = 'slice', target ='beta1')
+spec$addSampler(type = 'RW', target ='sigma_RE')
+spec$addSampler(type = 'RW_block', target ='beta2[1:10]')
+Rmcmc <- buildMCMC(spec)
+Cmodel <- compileNimble(Rmodel)
+Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
+Cmcmc$run(10000)
+samples <- as.matrix(Cmcmc$mvSamples)
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Mon Nov 14 11:58:25 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Mon, 14 Nov 2016 11:58:25 +0000
+Subject: Re: How to specify parameters to save?
+Message-ID: <PWUn0Lx75Tg.MokDR8VmBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <PWUn0Lx75Tg.SpqV9Y5SBwAJ@nimble-users.groups.google.com>
+References: <PWUn0Lx75Tg.SpqV9Y5SBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/PWUn0Lx75Tg/m/MokDR8VmBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Use spec$addMonitors("beta2"), in the code you sent, although we normally now call this object "conf" to represent it's an MCMC configuration object, created using the function configureMCMC().
+
+See section 2.4 of the User Manual <http://r-nimble.org/manuals/NimbleUserManual.pdf>.
+
+Daniel
+
+On Mon, Nov 14, 2016 at 12:48 AM, Fengqing Chao <pinwhee...@gmail.com> wrote:
+
+> Hi all,
+> How can I specify the parameters that I want to save in nimble? I want to save not only the hyper parameters with assigned priors, but also parameters that depends on the hyper parameters.
+>
+> E.g. the following model is just from the nimble website. Even though the code specifies the MCMC for beta2[1:10], but their posterior samples are not saved. How can I save the posterior samples for beta2[1:10] together with other hyper parameters beta0, beta1, and sigma_RE? Is there a setting in nimble similar like "parameters.to.save" in JAGS?
+>
+> Thanks!
+> # load the NIMBLE library
+> library(nimble)
+>
+> ## define the model
+> code <- nimbleCode({
+>   beta0 ~ dnorm(0, sd = 10000)
+>   beta1 ~ dnorm(0, sd = 10000)
+>   sigma_RE ~ dunif(0, 1000)
+>   for(i in 1:N) {
+>     beta2[i] ~ dnorm(0, sd = sigma_RE)
+>     logit(p[i]) <- beta0 + beta1 * x[i] + beta2[i]
+>     r[i] ~ dbin(p[i], n[i])
+>   }
+> })
+>
+> ## constants, data, and initial values
+> constants <- list(N = 10)
+>
+> data <- list(
+>   r = c(10, 23, 23, 26, 17, 5, 53, 55, 32, 46),
+>   n = c(39, 62, 81, 51, 39, 6, 74, 72, 51, 79),
+>   x = c(0,  0,  0,  0,  0,  1, 1,  1,  1,  1)
+> )
+>
+> inits <- list(beta0 = 0, beta1 = 0, sigma_RE = 1)
+>
+> ## create the model object
+> # Rmodel <- nimbleModel(code=code, constants=constants, data=data, inits=inits, check = FALSE)
+> Rmodel <- nimbleModel(code=code, constants=constants, data=data, inits=inits)
+> spec <- configureMCMC(Rmodel, nodes=NULL)
+> spec$addSampler(type = 'slice', target ='beta0')
+> spec$addSampler(type = 'slice', target ='beta1')
+> spec$addSampler(type = 'RW', target ='sigma_RE')
+> spec$addSampler(type = 'RW_block', target ='beta2[1:10]')
+> Rmcmc <- buildMCMC(spec)
+> Cmodel <- compileNimble(Rmodel)
+> Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
+> Cmcmc$run(10000)
+> samples <- as.matrix(Cmcmc$mvSamples)
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/3fae118c-f3fa-4b5d-9f82-8cdbf5097373%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/3fae118c-f3fa-4b5d-9f82-8cdbf5097373%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u614b5e0181ba03ae at groups.google.com  Mon Nov 14 13:48:43 2016
+From: u614b5e0181ba03ae at groups.google.com (Fengqing Chao)
+Date: Mon, 14 Nov 2016 13:48:43 +0000
+Subject: Re: How to specify parameters to save?
+Message-ID: <PWUn0Lx75Tg.MrwREMpsBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <PWUn0Lx75Tg.MokDR8VmBwAJ@nimble-users.groups.google.com>
+References: <PWUn0Lx75Tg.SpqV9Y5SBwAJ@nimble-users.groups.google.com> <PWUn0Lx75Tg.MokDR8VmBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/PWUn0Lx75Tg/m/MrwREMpsBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Daniel,
+Very helpful! Thanks a lot.
+
+On Monday, November 14, 2016 at 7:58:25 PM UTC+8, Daniel Turek wrote:
+
+> Use spec$addMonitors("beta2"), in the code you sent, although we normally now call this object "conf" to represent it's an MCMC configuration object, created using the function configureMCMC().
+>
+> See section 2.4 of the User Manual <http://r-nimble.org/manuals/NimbleUserManual.pdf>.
+>
+> Daniel
+>
+
+> On Mon, Nov 14, 2016 at 12:48 AM, Fengqing Chao <pinwhee...@gmail.com> wrote:
+
+> > Hi all,
+> > How can I specify the parameters that I want to save in nimble? I want to save not only the hyper parameters with assigned priors, but also parameters that depends on the hyper parameters.
+> >
+> > E.g. the following model is just from the nimble website. Even though the code specifies the MCMC for beta2[1:10], but their posterior samples are not saved. How can I save the posterior samples for beta2[1:10] together with other hyper parameters beta0, beta1, and sigma_RE? Is there a setting in nimble similar like "parameters.to.save" in JAGS?
+> >
+> > Thanks!
+> > # load the NIMBLE library
+> > library(nimble)
+> >
+> > ## define the model
+> > code <- nimbleCode({
+> >   beta0 ~ dnorm(0, sd = 10000)
+> >   beta1 ~ dnorm(0, sd = 10000)
+> >   sigma_RE ~ dunif(0, 1000)
+> >   for(i in 1:N) {
+> >     beta2[i] ~ dnorm(0, sd = sigma_RE)
+> >     logit(p[i]) <- beta0 + beta1 * x[i] + beta2[i]
+> >     r[i] ~ dbin(p[i], n[i])
+> >   }
+> > })
+> >
+> > ## constants, data, and initial values
+> > constants <- list(N = 10)
+> >
+> > data <- list(
+> >   r = c(10, 23, 23, 26, 17, 5, 53, 55, 32, 46),
+> >   n = c(39, 62, 81, 51, 39, 6, 74, 72, 51, 79),
+> >   x = c(0,  0,  0,  0,  0,  1, 1,  1,  1,  1)
+> > )
+> >
+> > inits <- list(beta0 = 0, beta1 = 0, sigma_RE = 1)
+> >
+> > ## create the model object
+> > # Rmodel <- nimbleModel(code=code, constants=constants, data=data, inits=inits, check = FALSE)
+> > Rmodel <- nimbleModel(code=code, constants=constants, data=data, inits=inits)
+> > spec <- configureMCMC(Rmodel, nodes=NULL)
+> > spec$addSampler(type = 'slice', target ='beta0')
+> > spec$addSampler(type = 'slice', target ='beta1')
+> > spec$addSampler(type = 'RW', target ='sigma_RE')
+> > spec$addSampler(type = 'RW_block', target ='beta2[1:10]')
+> > Rmcmc <- buildMCMC(spec)
+> > Cmodel <- compileNimble(Rmodel)
+> > Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
+> > Cmcmc$run(10000)
+> > samples <- as.matrix(Cmcmc$mvSamples)
+> >
+> >
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/3fae118c-f3fa-4b5d-9f82-8cdbf5097373%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/3fae118c-f3fa-4b5d-9f82-8cdbf5097373%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From uffb2aff965d4e11b at groups.google.com  Tue Nov 15 19:37:23 2016
+From: uffb2aff965d4e11b at groups.google.com (Lu Zhang)
+Date: Tue, 15 Nov 2016 19:37:23 +0000
+Subject: How to create local variable in nimble code
+Message-ID: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Gjos-G8vC9o/m/VtescmXOBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+     I am working on the implementation of a hierarchical spatial model in nimble.  To get the posterior simulations of the spatial residual, I need to update covariance matrix in a multivariate normal distribution. The function for generating covariance matrix is
+
+CovMat <- nimbleFunction(
+  run = function(phi, dist = double(2), N, sigmasq) {
+
+    # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+
+    CovM <- matrix(0, ncol = N, nrow = N)
+
+    for (j in 1:N){
+      for (k in 1:N){
+        CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])
+      }
+    }
+
+    returnType(double(2))
+    return(CovM[1:N, 1:N])
+  }
+)
+
+When I called this function directly in my nimble code:
+FullGPCode <- nimbleCode({
+
+  w[1:N] ~ dmnorm( meanv[1:N], cov = CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq))
+
+  for (i in 1:N){
+    y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+  }
+
+  # Hyperparameters:
+  phi ~ dgamma(ap, rate = bp)                    # 1/range
+  invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+  invtausq ~ dgamma(at, rate = bt)               # nugguts
+  beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+}
+)
+
+I got this error:
+Error in checkMultivarExpr() :
+  Error with parameter 'cov' of distribution 'dmnorm': multivariate parameters cannot be expressions; please define the expression as a separate deterministic variable and use that variable as the parameter.
+
+Then I tried to use a local variable "Covm" to store the updated covariance matrix and then call in my multivariate normal distribution:
+FullGPCode <- nimbleCode({
+
+  Covm[1:N, 1:N] <-  CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq)
+  w[1:N] ~ dmnorm( meanv[1:N], cov = Covm[1:N, 1:N])
+
+  for (i in 1:N){
+    y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+  }
+
+  # Hyperparameters:
+  phi ~ dgamma(ap, rate = bp)                    # 1/range
+  invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+  invtausq ~ dgamma(at, rate = bt)               # nugguts
+  beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+}
+)
+
+I got this error when I tried to compile the code
+compiling... this may take a minute. On some systems there may be some compiler warnings that can be safely ignored.
+Error in x[[1]] : object of type 'symbol' is not subsettable
+Error: There is some problem at the setSizes processing step for this code:
+ {
+    model$Covm[1:200, 1:200] <<- CovMat(phi = model$phi[1], dist = model$D[1:200, 1:200], N = 200, sigmasq = 1/model$invsigmasq[1])
+}
+
+So my questions are:
+   1. Is there a way to store a matrix output from a user-defined function in a local variable in nimble code?
+   2. How to define a separate deterministic variable and use that variable as the parameter (from the first error)?
+
+Thank you!
+
+Lu
+
+From udd632bd3bbcdd7e9 at groups.google.com  Tue Nov 15 19:49:12 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Tue, 15 Nov 2016 19:49:12 +0000
+Subject: Re: How to create local variable in nimble code
+Message-ID: <Gjos-G8vC9o.946FsQrPBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+References: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Gjos-G8vC9o/m/946FsQrPBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Lu,
+
+Thanks for the query. I see two small issues with your code, one of which you fixed but then the second one tripped you up.
+
+Your fix to do this:
+
+> Covm[1:N, 1:N] <-  CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq)
+>   w[1:N] ~ dmnorm( meanv[1:N], cov = Covm[1:N, 1:N])
+
+is the correct idea.
+
+But I think the next problem arose because you need to declare a type for all arguments to the run function in CovMat, even if they are scalars.  I think you’ll want phi = double(), N = integer(), sigmasq = double().  Note that double() and double(0) are equivalent.  Your declaration for dist looks good.
+
+For those interested in why the call the CovMat can’t be written directly as the cov argument: it is because nimble’s processing of BUGS code does not do as much size processing as one would like, but we must be sure that what is provided for cov is valid and one way to do that is to limit it to only a variable name with index ranges.  We’ll be able to do better when we find some time in the future, but even so there will be tricky cases because for BUGS code we must determine the sizes of all objects in order to build the model correctly.
+
+Perry
+
+> On Nov 15, 2016, at 11:37 AM, Lu Zhang <ny...@g.ucla.edu> wrote:
+>
+
+> Hello,
+>
+>      I am working on the implementation of a hierarchical spatial model in nimble.  To get the posterior simulations of the spatial residual, I need to update covariance matrix in a multivariate normal distribution. The function for generating covariance matrix is
+>
+> CovMat <- nimbleFunction(
+>   run = function(phi, dist = double(2), N, sigmasq) {
+>
+>     # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+>
+>     CovM <- matrix(0, ncol = N, nrow = N)
+>
+>     for (j in 1:N){
+>       for (k in 1:N){
+>         CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])
+>       }
+>     }
+>
+>     returnType(double(2))
+>     return(CovM[1:N, 1:N])
+>   }
+> )
+>
+>
+> When I called this function directly in my nimble code:
+> FullGPCode <- nimbleCode({
+>
+>   w[1:N] ~ dmnorm( meanv[1:N], cov = CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq))
+>
+>   for (i in 1:N){
+>     y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+>   }
+>
+>   # Hyperparameters:
+>   phi ~ dgamma(ap, rate = bp)                    # 1/range
+>   invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+>   invtausq ~ dgamma(at, rate = bt)               # nugguts
+>   beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> }
+> )
+>
+> I got this error:
+> Error in checkMultivarExpr() :
+>   Error with parameter 'cov' of distribution 'dmnorm': multivariate parameters cannot be expressions; please define the expression as a separate deterministic variable and use that variable as the parameter.
+>
+> Then I tried to use a local variable "Covm" to store the updated covariance matrix and then call in my multivariate normal distribution:
+> FullGPCode <- nimbleCode({
+>
+>   Covm[1:N, 1:N] <-  CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq)
+>   w[1:N] ~ dmnorm( meanv[1:N], cov = Covm[1:N, 1:N])
+>
+>   for (i in 1:N){
+>     y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+>   }
+>
+>   # Hyperparameters:
+>   phi ~ dgamma(ap, rate = bp)                    # 1/range
+>   invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+>   invtausq ~ dgamma(at, rate = bt)               # nugguts
+>   beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> }
+> )
+>
+>
+> I got this error when I tried to compile the code
+> compiling... this may take a minute. On some systems there may be some compiler warnings that can be safely ignored.
+> Error in x[[1]] : object of type 'symbol' is not subsettable
+> Error: There is some problem at the setSizes processing step for this code:
+>  {
+>     model$Covm[1:200, 1:200] <<- CovMat(phi = model$phi[1], dist = model$D[1:200, 1:200], N = 200, sigmasq = 1/model$invsigmasq[1])
+> }
+>
+> So my questions are:
+>    1. Is there a way to store a matrix output from a user-defined function in a local variable in nimble code?
+>    2. How to define a separate deterministic variable and use that variable as the parameter (from the first error)?
+>
+> Thank you!
+>
+> Lu
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/ef98c0cc-4b9d-47ae-a528-7fa109dd70fc%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/ef98c0cc-4b9d-47ae-a528-7fa109dd70fc%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uffb2aff965d4e11b at groups.google.com  Tue Nov 15 20:34:09 2016
+From: uffb2aff965d4e11b at groups.google.com (Lu Zhang)
+Date: Tue, 15 Nov 2016 20:34:09 +0000
+Subject: Re: How to create local variable in nimble code
+Message-ID: <Gjos-G8vC9o.s80GnH7RBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+References: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Gjos-G8vC9o/m/s80GnH7RBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,
+
+    Cool! Thank you very much for your timely reply. I will try in my code.
+
+Best,
+
+Lu
+
+On Tuesday, November 15, 2016 at 11:49:12 AM UTC-8, pdevalpine wrote:
+> Hi Lu,
+>
+> Thanks for the query. I see two small issues with your code, one of which you fixed but then the second one tripped you up.
+>
+> Your fix to do this:
+> > Covm[1:N, 1:N] <-  CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq)
+> >   w[1:N] ~ dmnorm( meanv[1:N], cov = Covm[1:N, 1:N])
+> is the correct idea.
+>
+> But I think the next problem arose because you need to declare a type for all arguments to the run function in CovMat, even if they are scalars.  I think you’ll want phi = double(), N = integer(), sigmasq = double().  Note that double() and double(0) are equivalent.  Your declaration for dist looks good.
+>
+> For those interested in why the call the CovMat can’t be written directly as the cov argument: it is because nimble’s processing of BUGS code does not do as much size processing as one would like, but we must be sure that what is provided for cov is valid and one way to do that is to limit it to only a variable name with index ranges.  We’ll be able to do better when we find some time in the future, but even so there will be tricky cases because for BUGS code we must determine the sizes of all objects in order to build the model correctly.
+>
+> Perry
+>
+>
+> > On Nov 15, 2016, at 11:37 AM, Lu Zhang <ny...@g.ucla.edu> wrote:
+> >
+> > Hello,
+> >
+> >      I am working on the implementation of a hierarchical spatial model in nimble.  To get the posterior simulations of the spatial residual, I need to update covariance matrix in a multivariate normal distribution. The function for generating covariance matrix is
+> >
+> > CovMat <- nimbleFunction(
+> >   run = function(phi, dist = double(2), N, sigmasq) {
+> >
+> >     # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+> >
+> >     CovM <- matrix(0, ncol = N, nrow = N)
+> >
+> >     for (j in 1:N){
+> >       for (k in 1:N){
+> >         CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])
+> >       }
+> >     }
+> >
+> >     returnType(double(2))
+> >     return(CovM[1:N, 1:N])
+> >   }
+> > )
+> >
+> >
+> > When I called this function directly in my nimble code:
+> > FullGPCode <- nimbleCode({
+> >
+> >   w[1:N] ~ dmnorm( meanv[1:N], cov = CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq))
+> >
+> >   for (i in 1:N){
+> >     y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+> >   }
+> >
+> >   # Hyperparameters:
+> >   phi ~ dgamma(ap, rate = bp)                    # 1/range
+> >   invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+> >   invtausq ~ dgamma(at, rate = bt)               # nugguts
+> >   beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> > }
+> > )
+> >
+> > I got this error:
+> > Error in checkMultivarExpr() :
+> >   Error with parameter 'cov' of distribution 'dmnorm': multivariate parameters cannot be expressions; please define the expression as a separate deterministic variable and use that variable as the parameter.
+> >
+> > Then I tried to use a local variable "Covm" to store the updated covariance matrix and then call in my multivariate normal distribution:
+> > FullGPCode <- nimbleCode({
+> >
+> >   Covm[1:N, 1:N] <-  CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq)
+> >   w[1:N] ~ dmnorm( meanv[1:N], cov = Covm[1:N, 1:N])
+> >
+> >   for (i in 1:N){
+> >     y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+> >   }
+> >
+> >   # Hyperparameters:
+> >   phi ~ dgamma(ap, rate = bp)                    # 1/range
+> >   invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+> >   invtausq ~ dgamma(at, rate = bt)               # nugguts
+> >   beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> > }
+> > )
+> >
+> >
+> > I got this error when I tried to compile the code
+> > compiling... this may take a minute. On some systems there may be some compiler warnings that can be safely ignored.
+> > Error in x[[1]] : object of type 'symbol' is not subsettable
+> > Error: There is some problem at the setSizes processing step for this code:
+> >  {
+> >     model$Covm[1:200, 1:200] <<- CovMat(phi = model$phi[1], dist = model$D[1:200, 1:200], N = 200, sigmasq = 1/model$invsigmasq[1])
+> > }
+> >
+> > So my questions are:
+> >    1. Is there a way to store a matrix output from a user-defined function in a local variable in nimble code?
+> >    2. How to define a separate deterministic variable and use that variable as the parameter (from the first error)?
+> >
+> > Thank you!
+> >
+> > Lu
+> >
+> >
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/ef98c0cc-4b9d-47ae-a528-7fa109dd70fc%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/ef98c0cc-4b9d-47ae-a528-7fa109dd70fc%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From ud0d6d503f5acae62 at groups.google.com  Tue Nov 15 22:52:44 2016
+From: ud0d6d503f5acae62 at groups.google.com (unknown)
+Date: Tue, 15 Nov 2016 22:52:44 +0000
+Subject: 
+Message-ID: <Gjos-G8vC9o.lALdcA7ZBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+References: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Gjos-G8vC9o/m/lALdcA7ZBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From uffb2aff965d4e11b at groups.google.com  Tue Nov 15 23:06:34 2016
+From: uffb2aff965d4e11b at groups.google.com (Lu Zhang)
+Date: Tue, 15 Nov 2016 23:06:34 +0000
+Subject: Re: How to create local variable in nimble code
+Message-ID: <Gjos-G8vC9o.CnHU2M_ZBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <Gjos-G8vC9o.s80GnH7RBwAJ@nimble-users.groups.google.com>
+References: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com> <Gjos-G8vC9o.s80GnH7RBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Gjos-G8vC9o/m/CnHU2M_ZBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tuesday, November 15, 2016 at 11:37:23 AM UTC-8, Lu Zhang wrote:
+> Hello,
+>
+>      I am working on the implementation of a hierarchical spatial model in nimble.  To get the posterior simulations of the spatial residual, I need to update covariance matrix in a multivariate normal distribution. The function for generating covariance matrix is
+>
+> CovMat <- nimbleFunction(
+>   run = function(phi, dist = double(2), N, sigmasq) {
+>
+>     # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+>
+>     CovM <- matrix(0, ncol = N, nrow = N)
+>
+>     for (j in 1:N){
+>       for (k in 1:N){
+>         CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])
+>       }
+>     }
+>
+>     returnType(double(2))
+>     return(CovM[1:N, 1:N])
+>   }
+> )
+>
+>
+> When I called this function directly in my nimble code:
+> FullGPCode <- nimbleCode({
+>
+>   w[1:N] ~ dmnorm( meanv[1:N], cov = CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq))
+>
+>   for (i in 1:N){
+>     y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+>   }
+>
+>   # Hyperparameters:
+>   phi ~ dgamma(ap, rate = bp)                    # 1/range
+>   invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+>   invtausq ~ dgamma(at, rate = bt)               # nugguts
+>   beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> }
+> )
+>
+> I got this error:
+> Error in checkMultivarExpr() :
+>   Error with parameter 'cov' of distribution 'dmnorm': multivariate parameters cannot be expressions; please define the expression as a separate deterministic variable and use that variable as the parameter.
+>
+> Then I tried to use a local variable "Covm" to store the updated covariance matrix and then call in my multivariate normal distribution:
+> FullGPCode <- nimbleCode({
+>
+>   Covm[1:N, 1:N] <-  CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq)
+>   w[1:N] ~ dmnorm( meanv[1:N], cov = Covm[1:N, 1:N])
+>
+>   for (i in 1:N){
+>     y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+>   }
+>
+>   # Hyperparameters:
+>   phi ~ dgamma(ap, rate = bp)                    # 1/range
+>   invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+>   invtausq ~ dgamma(at, rate = bt)               # nugguts
+>   beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> }
+> )
+>
+>
+> I got this error when I tried to compile the code
+> compiling... this may take a minute. On some systems there may be some compiler warnings that can be safely ignored.
+> Error in x[[1]] : object of type 'symbol' is not subsettable
+> Error: There is some problem at the setSizes processing step for this code:
+>  {
+>     model$Covm[1:200, 1:200] <<- CovMat(phi = model$phi[1], dist = model$D[1:200, 1:200], N = 200, sigmasq = 1/model$invsigmasq[1])
+> }
+>
+> So my questions are:
+>    1. Is there a way to store a matrix output from a user-defined function in a local variable in nimble code?
+>    2. How to define a separate deterministic variable and use that variable as the parameter (from the first error)?
+>
+> Thank you!
+>
+> Lu
+>
+
+Update:
+>  Thank you for Perry's help. Now I can compile my code. However, the simulations I got behave very weird. This is the plot of the samples for w[1]. It did not update. And the estimators of phi and sigmasq are almost 0.
+>
+>  <https://lh3.googleusercontent.com/-USgcA4c77dM/WCuM6uCGGTI/AAAAAAAAAbg/GClJTYycvgETAFisa8CrYCpNppoMNNtFQCLcB/s1600/w1.png>
+
+The simulations of the intercept and slope are good. So I think my code may fail to pass the correct covariance matrix when generating the MCMC chain. So would anyone help me finding the bug in my code?
+The following is my code:
+
+library("nimble")
+
+CovMat <- nimbleFunction(
+  run = function(phi = double(), dist = double(2), N = integer(),
+                 sigmasq = double()) {
+
+    # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+
+    CovM <- matrix(NA, ncol = N, nrow = N)
+
+    for (j in 1:N){
+      for (k in 1:N){
+        CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])
+      }
+    }
+
+    returnType(double(2))
+    return(CovM[1:N, 1:N])
+  }
+)
+
+FullGPCode <- nimbleCode({
+
+    # This is the part I think fails to work properly:
+    Covm[1:N, 1:N] <- CovMat(phi, D[1:N, 1:N], N, (1 / invsigmasq))
+    w[1:N] ~ dmnorm(meanv[1:N], cov = Covm[1:N, 1:N])
+
+    for (i in 1:N){
+      y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+    }
+
+    # Hyperparameters: parameters in blue do not get correct simulation
+
+    phi ~ dgamma(ap, rate = bp)                    # 1/range
+    invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+    invtausq ~ dgamma(at, rate = bt)               # nugguts
+
+    beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2, 1:2])   # regression coefficients
+  }
+)
+
+Constants <- list(N = n, P = 2, ap = 12, bp = 1, as = 2 , bs = 1,
+                  at = 2, bt = 0.1, mu_b = c( 1 , 5 ),
+                  V_b = matrix (c(100, 0, 0, 10000), nrow = 2 , ncol = 2),
+                  D = D[1:n, 1:n], meanv = rep(0, n))
+
+## list specifying model data
+Data <- list(y = y, x = X)
+
+## list specifying initial values
+Inits <- list(invsigmasq = 2, invtausq = 5,
+              beta = c(5.0, 1.0), phi = 5, w = rep(0.01, n))
+
+## build the R model object
+FullGP_build <- nimbleModel(code = FullGPCode, name = 'FullGP',
+                          constants = Constants, data = Data, inits = Inits)
+
+CFullGP <- compileNimble(FullGP_build)
+
+###########################################
+##### MCMC configuration and building #####
+###########################################
+
+## generate the default MCMC configuration
+FullGP_conf <- configureMCMC(FullGP_build, print = T)
+FullGP_conf$addMonitors(c('invsigmasq', 'invtausq', 'beta','phi', 'w'))
+
+## check the samplers assigned by default MCMC configuration
+FullGP_conf$printSamplers()
+
+## double-check our monitors, and thinning interval
+FullGP_conf$getMonitors()
+
+## build the executable R MCMC function
+build_mcmc_FullGP <- buildMCMC(FullGP_conf)
+
+###################################
+##### compile to C++, and run #####
+###################################
+
+## compile the the model
+CFullGPMCMC <- compileNimble(build_mcmc_FullGP, project = FullGP_build)
+
+## run the default MCMC function
+niter <- 5000
+set.seed(0)
+t<-proc.time()
+CFullGPMCMC$run(niter)
+proc.time() - t
+
+Fsamples <- as.matrix(CFullGPMCMC$mvSamples)
+
+Thank you!
+
+Lu
+
+From udd632bd3bbcdd7e9 at groups.google.com  Wed Nov 16 00:17:53 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Wed, 16 Nov 2016 00:17:53 +0000
+Subject: Re: How to create local variable in nimble code
+Message-ID: <Gjos-G8vC9o.udO3M7TdBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <Gjos-G8vC9o.CnHU2M_ZBwAJ@nimble-users.groups.google.com>
+References: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com> <Gjos-G8vC9o.CnHU2M_ZBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Gjos-G8vC9o/m/udO3M7TdBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Lu,
+
+Can you send an example that is fully reproducible, with a value of n and generation of data if possible?
+
+If I follow, w[1:N] is a vector random effect. By default it will be sampled by a block sampler (I don’t think conjugacy with the y[i] would be determined in this case), and adaptation of a block sampler can sometimes not work well.  A couple of suggestions would be:
+
+You could add univariate samplers for scalar elements of w.  You could do that like this:
+
+for(node in FullGP_build$expandNodeNames(‘w’, returnScalarComponents = TRUE))
+  FullGP_conf$addSampler(target = node, type = ‘RW’)
+
+Alternatively, there is an argument to configureMCMC called multivariateNodesAsScalars.  If you set that to TRUE, the configuration will not use the block sampler and will use univariate samplers instead.
+
+Another question is whether you are providing reasonable initial values.  That could matter.
+
+Also I noticed that you shouldn't really need the CovMat function.  It should work to do
+
+Covm[1:N, 1:N] <- sigmsq * exp(-phi * dist[1:N, 1:N])
+
+directly in the BUGS code.
+
+Perry
+
+> On Nov 15, 2016, at 3:06 PM, Lu Zhang <ny...@g.ucla.edu> wrote:
+>
+
+>
+>
+> On Tuesday, November 15, 2016 at 11:37:23 AM UTC-8, Lu Zhang wrote:
+> > Hello,
+> >
+> >      I am working on the implementation of a hierarchical spatial model in nimble.  To get the posterior simulations of the spatial residual, I need to update covariance matrix in a multivariate normal distribution. The function for generating covariance matrix is
+> >
+> > CovMat <- nimbleFunction(
+> >   run = function(phi, dist = double(2), N, sigmasq) {
+> >
+> >     # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+> >
+> >     CovM <- matrix(0, ncol = N, nrow = N)
+> >
+> >     for (j in 1:N){      for (k in 1:N){        CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])       }    }
+> >
+> >     returnType(double(2))    return(CovM[1:N, 1:N])  }
+> > )
+> >
+> >
+> > When I called this function directly in my nimble code:
+> > FullGPCode <- nimbleCode({
+> >
+> >   w[1:N] ~ dmnorm( meanv[1:N], cov = CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq))
+> >
+> >   for (i in 1:N){    y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))  }
+> >
+> >   # Hyperparameters:  phi ~ dgamma(ap, rate = bp)                    # 1/range  invsigmasq ~ dgamma(as, rate = bs)             # partial sill  invtausq ~ dgamma(at, rate = bt)               # nugguts  beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> > }
+> > )
+> >
+> > I got this error:
+> > Error in checkMultivarExpr() :
+> >   Error with parameter 'cov' of distribution 'dmnorm': multivariate parameters cannot be expressions; please define the expression as a separate deterministic variable and use that variable as the parameter.
+> >
+> > Then I tried to use a local variable "Covm" to store the updated covariance matrix and then call in my multivariate normal distribution:
+> > FullGPCode <- nimbleCode({
+> >
+> >   Covm[1:N, 1:N] <-  CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq)
+> >   w[1:N] ~ dmnorm( meanv[1:N], cov = Covm[1:N, 1:N])
+> >
+> >   for (i in 1:N){    y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))  }
+> >
+> >   # Hyperparameters:  phi ~ dgamma(ap, rate = bp)                    # 1/range  invsigmasq ~ dgamma(as, rate = bs)             # partial sill  invtausq ~ dgamma(at, rate = bt)               # nugguts  beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> > }
+> > )
+> >
+> >
+> > I got this error when I tried to compile the code
+> > compiling... this may take a minute. On some systems there may be some compiler warnings that can be safely ignored.
+> > Error in x[[1]] : object of type 'symbol' is not subsettable
+> > Error: There is some problem at the setSizes processing step for this code:
+> >  {
+> >     model$Covm[1:200, 1:200] <<- CovMat(phi = model$phi[1], dist = model$D[1:200, 1:200], N = 200, sigmasq = 1/model$invsigmasq[1])
+> > }
+> >
+> > So my questions are:
+> >    1. Is there a way to store a matrix output from a user-defined function in a local variable in nimble code?
+> >    2. How to define a separate deterministic variable and use that variable as the parameter (from the first error)?
+> >
+> > Thank you!
+> >
+> > Lu
+> >
+> Update:
+> >  Thank you for Perry's help. Now I can compile my code. However, the simulations I got behave very weird. This is the plot of the samples for w[1]. It did not update. And the estimators of phi and sigmasq are almost 0.
+> >
+> >  <https://lh3.googleusercontent.com/-USgcA4c77dM/WCuM6uCGGTI/AAAAAAAAAbg/GClJTYycvgETAFisa8CrYCpNppoMNNtFQCLcB/s1600/w1.png>
+>
+> The simulations of the intercept and slope are good. So I think my code may fail to pass the correct covariance matrix when generating the MCMC chain. So would anyone help me finding the bug in my code?
+> The following is my code:
+>
+> library("nimble")
+>
+> CovMat <- nimbleFunction(
+>   run = function(phi = double(), dist = double(2), N = integer(),
+>                  sigmasq = double()) {
+>
+>     # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+>
+>     CovM <- matrix(NA, ncol = N, nrow = N)
+>
+>     for (j in 1:N){
+>       for (k in 1:N){
+>         CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])
+>       }
+>     }
+>
+>     returnType(double(2))
+>     return(CovM[1:N, 1:N])
+>   }
+> )
+>
+> FullGPCode <- nimbleCode({
+>
+>     # This is the part I think fails to work properly:
+>     Covm[1:N, 1:N] <- CovMat(phi, D[1:N, 1:N], N, (1 / invsigmasq))
+>     w[1:N] ~ dmnorm(meanv[1:N], cov = Covm[1:N, 1:N])
+>
+>     for (i in 1:N){
+>       y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+>     }
+>
+>     # Hyperparameters: parameters in blue do not get correct simulation
+>     phi ~ dgamma(ap, rate = bp)                    # 1/range
+>     invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+>     invtausq ~ dgamma(at, rate = bt)               # nugguts
+>     beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2, 1:2])   # regression coefficients
+>   }
+> )
+>
+> Constants <- list(N = n, P = 2, ap = 12, bp = 1, as = 2 , bs = 1,
+>                   at = 2, bt = 0.1, mu_b = c( 1 , 5 ),
+>                   V_b = matrix (c(100, 0, 0, 10000), nrow = 2 , ncol = 2),
+>                   D = D[1:n, 1:n], meanv = rep(0, n))
+>
+> ## list specifying model data
+> Data <- list(y = y, x = X)
+>
+> ## list specifying initial values
+> Inits <- list(invsigmasq = 2, invtausq = 5,
+>               beta = c(5.0, 1.0), phi = 5, w = rep(0.01, n))
+>
+> ## build the R model object
+> FullGP_build <- nimbleModel(code = FullGPCode, name = 'FullGP',
+>                           constants = Constants, data = Data, inits = Inits)
+>
+> CFullGP <- compileNimble(FullGP_build)
+>
+> ###########################################
+> ##### MCMC configuration and building #####
+> ###########################################
+>
+> ## generate the default MCMC configuration
+> FullGP_conf <- configureMCMC(FullGP_build, print = T)
+> FullGP_conf$addMonitors(c('invsigmasq', 'invtausq', 'beta','phi', 'w'))
+>
+> ## check the samplers assigned by default MCMC configuration
+> FullGP_conf$printSamplers()
+>
+> ## double-check our monitors, and thinning interval
+> FullGP_conf$getMonitors()
+>
+> ## build the executable R MCMC function
+> build_mcmc_FullGP <- buildMCMC(FullGP_conf)
+>
+> ###################################
+> ##### compile to C++, and run #####
+> ###################################
+>
+> ## compile the the model
+> CFullGPMCMC <- compileNimble(build_mcmc_FullGP, project = FullGP_build)
+>
+> ## run the default MCMC function
+> niter <- 5000
+> set.seed(0)
+> t<-proc.time()
+> CFullGPMCMC$run(niter)
+> proc.time() - t
+>
+> Fsamples <- as.matrix(CFullGPMCMC$mvSamples)
+>
+> Thank you!
+>
+> Lu
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/cbab2cb9-05f5-4065-9519-f7f9dd182182%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/cbab2cb9-05f5-4065-9519-f7f9dd182182%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From uffb2aff965d4e11b at groups.google.com  Wed Nov 16 01:49:04 2016
+From: uffb2aff965d4e11b at groups.google.com (Lu Zhang)
+Date: Wed, 16 Nov 2016 01:49:04 +0000
+Subject: Re: How to create local variable in nimble code
+Message-ID: <Gjos-G8vC9o.gURG8K3iBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+References: <Gjos-G8vC9o.VtescmXOBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Gjos-G8vC9o/m/gURG8K3iBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,
+
+    Thank you so much for your help. My code works pretty well after setting the multivariateNodesAsSaclers to be true in configureMCMC. I attached the zip file for all my code. There are three subfolders in my folder: data, projects, and results. You can generate and get the data in subfolder "data". In the folder "project", there are three files, the one I posted here is "FullGP.R". I also have questions from "nngp_gibbs.R". I may open a new topic about that. The third one (nngp.R) is still underdeveloped. I plan to write a user-defined density function in that one, but I am still confused by how to do that. And I put all simulation results in subfolder "results".
+Thank you very much!
+
+Best,
+
+Lu
+
+On Tuesday, November 15, 2016 at 4:17:53 PM UTC-8, pdevalpine wrote:
+> Hi Lu,
+>
+> Can you send an example that is fully reproducible, with a value of n and generation of data if possible?
+>
+> If I follow, w[1:N] is a vector random effect. By default it will be sampled by a block sampler (I don’t think conjugacy with the y[i] would be determined in this case), and adaptation of a block sampler can sometimes not work well.  A couple of suggestions would be:
+>
+> You could add univariate samplers for scalar elements of w.  You could do that like this:
+>
+> for(node in FullGP_build$expandNodeNames(‘w’, returnScalarComponents = TRUE))
+>   FullGP_conf$addSampler(target = node, type = ‘RW’)
+>
+> Alternatively, there is an argument to configureMCMC called multivariateNodesAsScalars.  If you set that to TRUE, the configuration will not use the block sampler and will use univariate samplers instead.
+>
+> Another question is whether you are providing reasonable initial values.  That could matter.
+>
+> Also I noticed that you shouldn't really need the CovMat function.  It should work to do
+>
+> Covm[1:N, 1:N] <- sigmsq * exp(-phi * dist[1:N, 1:N])
+>
+> directly in the BUGS code.
+>
+> Perry
+>
+>
+>
+>
+> > On Nov 15, 2016, at 3:06 PM, Lu Zhang <ny...@g.ucla.edu> wrote:
+> >
+> >
+> >
+> > On Tuesday, November 15, 2016 at 11:37:23 AM UTC-8, Lu Zhang wrote:
+> > > Hello,
+> > >
+> > >      I am working on the implementation of a hierarchical spatial model in nimble.  To get the posterior simulations of the spatial residual, I need to update covariance matrix in a multivariate normal distribution. The function for generating covariance matrix is
+> > >
+> > > CovMat <- nimbleFunction(
+> > >   run = function(phi, dist = double(2), N, sigmasq) {
+> > >
+> > >     # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+> > >
+> > >     CovM <- matrix(0, ncol = N, nrow = N)
+> > >
+> > >     for (j in 1:N){      for (k in 1:N){        CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])       }    }
+> > >
+> > >     returnType(double(2))    return(CovM[1:N, 1:N])  }
+> > > )
+> > >
+> > >
+> > > When I called this function directly in my nimble code:
+> > > FullGPCode <- nimbleCode({
+> > >
+> > >   w[1:N] ~ dmnorm( meanv[1:N], cov = CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq))
+> > >
+> > >   for (i in 1:N){    y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))  }
+> > >
+> > >   # Hyperparameters:  phi ~ dgamma(ap, rate = bp)                    # 1/range  invsigmasq ~ dgamma(as, rate = bs)             # partial sill  invtausq ~ dgamma(at, rate = bt)               # nugguts  beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> > > }
+> > > )
+> > >
+> > > I got this error:
+> > > Error in checkMultivarExpr() :
+> > >   Error with parameter 'cov' of distribution 'dmnorm': multivariate parameters cannot be expressions; please define the expression as a separate deterministic variable and use that variable as the parameter.
+> > >
+> > > Then I tried to use a local variable "Covm" to store the updated covariance matrix and then call in my multivariate normal distribution:
+> > > FullGPCode <- nimbleCode({
+> > >
+> > >   Covm[1:N, 1:N] <-  CovMat(phi, D[1:N, 1:N], N, 1 / invsigmasq)
+> > >   w[1:N] ~ dmnorm( meanv[1:N], cov = Covm[1:N, 1:N])
+> > >
+> > >   for (i in 1:N){    y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))  }
+> > >
+> > >   # Hyperparameters:  phi ~ dgamma(ap, rate = bp)                    # 1/range  invsigmasq ~ dgamma(as, rate = bs)             # partial sill  invtausq ~ dgamma(at, rate = bt)               # nugguts  beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2 , 1:2])  # regression coefficients
+> > > }
+> > > )
+> > >
+> > >
+> > > I got this error when I tried to compile the code
+> > > compiling... this may take a minute. On some systems there may be some compiler warnings that can be safely ignored.
+> > > Error in x[[1]] : object of type 'symbol' is not subsettable
+> > > Error: There is some problem at the setSizes processing step for this code:
+> > >  {
+> > >     model$Covm[1:200, 1:200] <<- CovMat(phi = model$phi[1], dist = model$D[1:200, 1:200], N = 200, sigmasq = 1/model$invsigmasq[1])
+> > > }
+> > >
+> > > So my questions are:
+> > >    1. Is there a way to store a matrix output from a user-defined function in a local variable in nimble code?
+> > >    2. How to define a separate deterministic variable and use that variable as the parameter (from the first error)?
+> > >
+> > > Thank you!
+> > >
+> > > Lu
+> > >
+> > Update:
+> > >  Thank you for Perry's help. Now I can compile my code. However, the simulations I got behave very weird. This is the plot of the samples for w[1]. It did not update. And the estimators of phi and sigmasq are almost 0.
+> > >
+> > >  <https://lh3.googleusercontent.com/-USgcA4c77dM/WCuM6uCGGTI/AAAAAAAAAbg/GClJTYycvgETAFisa8CrYCpNppoMNNtFQCLcB/s1600/w1.png>
+> >
+> > The simulations of the intercept and slope are good. So I think my code may fail to pass the correct covariance matrix when generating the MCMC chain. So would anyone help me finding the bug in my code?
+> > The following is my code:
+> >
+> > library("nimble")
+> >
+> > CovMat <- nimbleFunction(
+> >   run = function(phi = double(), dist = double(2), N = integer(),
+> >                  sigmasq = double()) {
+> >
+> >     # function for getting covariance matrix: sigmasq*exp(-phi*dist)
+> >
+> >     CovM <- matrix(NA, ncol = N, nrow = N)
+> >
+> >     for (j in 1:N){
+> >       for (k in 1:N){
+> >         CovM[j, k] <- sigmasq * exp(-phi * dist[j, k])
+> >       }
+> >     }
+> >
+> >     returnType(double(2))
+> >     return(CovM[1:N, 1:N])
+> >   }
+> > )
+> >
+> > FullGPCode <- nimbleCode({
+> >
+> >     # This is the part I think fails to work properly:
+> >     Covm[1:N, 1:N] <- CovMat(phi, D[1:N, 1:N], N, (1 / invsigmasq))
+> >     w[1:N] ~ dmnorm(meanv[1:N], cov = Covm[1:N, 1:N])
+> >
+> >     for (i in 1:N){
+> >       y[i] ~ dnorm(inprod(x[i, 1:2], beta[1:2]) + w[i], sd = sqrt(1 / invtausq))
+> >     }
+> >
+> >     # Hyperparameters: parameters in blue do not get correct simulation
+> >     phi ~ dgamma(ap, rate = bp)                    # 1/range
+> >     invsigmasq ~ dgamma(as, rate = bs)             # partial sill
+> >     invtausq ~ dgamma(at, rate = bt)               # nugguts
+> >     beta[1:2] ~ dmnorm(mu_b[1:2], V_b[1:2, 1:2])   # regression coefficients
+> >   }
+> > )
+> >
+> > Constants <- list(N = n, P = 2, ap = 12, bp = 1, as = 2 , bs = 1,
+> >                   at = 2, bt = 0.1, mu_b = c( 1 , 5 ),
+> >                   V_b = matrix (c(100, 0, 0, 10000), nrow = 2 , ncol = 2),
+> >                   D = D[1:n, 1:n], meanv = rep(0, n))
+> >
+> > ## list specifying model data
+> > Data <- list(y = y, x = X)
+> >
+> > ## list specifying initial values
+> > Inits <- list(invsigmasq = 2, invtausq = 5,
+> >               beta = c(5.0, 1.0), phi = 5, w = rep(0.01, n))
+> >
+> > ## build the R model object
+> > FullGP_build <- nimbleModel(code = FullGPCode, name = 'FullGP',
+> >                           constants = Constants, data = Data, inits = Inits)
+> >
+> > CFullGP <- compileNimble(FullGP_build)
+> >
+> > ###########################################
+> > ##### MCMC configuration and building #####
+> > ###########################################
+> >
+> > ## generate the default MCMC configuration
+> > FullGP_conf <- configureMCMC(FullGP_build, print = T)
+> > FullGP_conf$addMonitors(c('invsigmasq', 'invtausq', 'beta','phi', 'w'))
+> >
+> > ## check the samplers assigned by default MCMC configuration
+> > FullGP_conf$printSamplers()
+> >
+> > ## double-check our monitors, and thinning interval
+> > FullGP_conf$getMonitors()
+> >
+> > ## build the executable R MCMC function
+> > build_mcmc_FullGP <- buildMCMC(FullGP_conf)
+> >
+> > ###################################
+> > ##### compile to C++, and run #####
+> > ###################################
+> >
+> > ## compile the the model
+> > CFullGPMCMC <- compileNimble(build_mcmc_FullGP, project = FullGP_build)
+> >
+> > ## run the default MCMC function
+> > niter <- 5000
+> > set.seed(0)
+> > t<-proc.time()
+> > CFullGPMCMC$run(niter)
+> > proc.time() - t
+> >
+> > Fsamples <- as.matrix(CFullGPMCMC$mvSamples)
+> >
+> > Thank you!
+> >
+> > Lu
+> >
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/cbab2cb9-05f5-4065-9519-f7f9dd182182%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/cbab2cb9-05f5-4065-9519-f7f9dd182182%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u614b5e0181ba03ae at groups.google.com  Tue Nov 22 15:12:27 2016
+From: u614b5e0181ba03ae at groups.google.com (Fengqing Chao)
+Date: Tue, 22 Nov 2016 15:12:27 +0000
+Subject: How to save posterior iterations portion by portion?
+Message-ID: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rPRMQYCSqhg/m/TkX9YQDmCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+May I know if there's an equivalent function in nimble to save the chain of iteration portion and keep on producing more iterations? Like the jags function "update()"? In jags, I have something like below:
+## the jags model first
+mod <- jags(data, parameters.to.save, model.file, n.chains, n.iter)
+model.update <- mod
+save(model.update)
+
+  #--- update MCMC ----------
+    for (i in 2:N.STEPS) {
+
+      model.update <- update(model.update,
+                             parameters.to.save, n.iter)
+      save(model.update)
+    }#end of i loop (steps)
+
+The code above updates MCMC and save some iterations at multiple times.
+
+Thanks.
+Fengqing
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Tue Nov 22 15:44:48 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Tue, 22 Nov 2016 15:44:48 +0000
+Subject: Re: How to save posterior iterations portion by portion?
+Message-ID: <rPRMQYCSqhg.5bOXS8TnCQAJ@nimble-users.groups.google.com>
+In-Reply-To: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com>
+References: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rPRMQYCSqhg/m/5bOXS8TnCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes, assuming you have a compiled MCMC algorithm called "Cmcmc", you can continue running it to produce more iterations using the argument "reset = FALSE".  For example:
+
+> Cmcmc$run(10000)   ## run for initial 10,000 iterations
+> samples <- as.matrix(Cmcmc$mvSamples)   ## extract matrix of first 10,000 samples
+>
+> Cmcmc$run(50000, reset=FALSE)      ## continue running the MCMC for an additional 50,000 iterations
+> samples60 <- as.matrix(Cmcmc$mvSamples)   ## extract matrix of all 60,000 samples
+>
+
+Hope that helps!
+
+On Tue, Nov 22, 2016 at 10:12 AM, Fengqing Chao <pinwhee...@gmail.com> wrote:
+
+> Hi all,
+> May I know if there's an equivalent function in nimble to save the chain of iteration portion and keep on producing more iterations? Like the jags function "update()"? In jags, I have something like below:
+> ## the jags model first
+> mod <- jags(data, parameters.to.save, model.file, n.chains, n.iter)
+> model.update <- mod
+> save(model.update)
+>
+>   #--- update MCMC ----------
+>     for (i in 2:N.STEPS) {
+>
+>       model.update <- update(model.update,
+>                              parameters.to.save, n.iter)
+>       save(model.update)
+>     }#end of i loop (steps)
+>
+> The code above updates MCMC and save some iterations at multiple times.
+>
+> Thanks.
+> Fengqing
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/6039ef23-89af-4e1d-9602-edff07e2a725%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6039ef23-89af-4e1d-9602-edff07e2a725%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ud0d6d503f5acae62 at groups.google.com  Wed Nov 23 04:11:59 2016
+From: ud0d6d503f5acae62 at groups.google.com (unknown)
+Date: Wed, 23 Nov 2016 04:11:59 +0000
+Subject: 
+Message-ID: <rPRMQYCSqhg.odz8TYoQCgAJ@nimble-users.groups.google.com>
+In-Reply-To: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com>
+References: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rPRMQYCSqhg/m/odz8TYoQCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From ud0d6d503f5acae62 at groups.google.com  Wed Nov 23 04:22:38 2016
+From: ud0d6d503f5acae62 at groups.google.com (unknown)
+Date: Wed, 23 Nov 2016 04:22:38 +0000
+Subject: 
+Message-ID: <rPRMQYCSqhg.dC1LHh8RCgAJ@nimble-users.groups.google.com>
+In-Reply-To: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com>
+References: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rPRMQYCSqhg/m/dC1LHh8RCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u614b5e0181ba03ae at groups.google.com  Wed Nov 23 06:47:37 2016
+From: u614b5e0181ba03ae at groups.google.com (Fengqing Chao)
+Date: Wed, 23 Nov 2016 06:47:37 +0000
+Subject: Re: How to save posterior iterations portion by portion?
+Message-ID: <rPRMQYCSqhg.rddmiQgZCgAJ@nimble-users.groups.google.com>
+In-Reply-To: <rPRMQYCSqhg.5bOXS8TnCQAJ@nimble-users.groups.google.com>
+References: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com> <rPRMQYCSqhg.5bOXS8TnCQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rPRMQYCSqhg/m/rddmiQgZCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Daniel,
+Thanks for your help!
+
+It seems to me that the Cmcmc will become bigger and bigger when I continue to run more iterations. Sometimes I need a very long burnin for my model to get converge. The machine will run out of space/memory to continue the run since Cmcmc will become too big. Is there a way to get by this?
+
+I need at lease 1 million iterations to get convergent, with about 5k parameters. I'm not sure when my model will converge. So I need to let the mcmc run for 2 or 3 millions and monitor the iterations from time to time. I'm wondering if nimble can discard the past iterations (to free up the space) after I save each portion of iterations and keep on running the mcmc (like what jags did as shown in the code in my 1st post)?
+
+Thanks!
+
+Fengqing
+
+On Tuesday, November 22, 2016 at 11:44:48 PM UTC+8, Daniel Turek wrote:
+
+> Yes, assuming you have a compiled MCMC algorithm called "Cmcmc", you can continue running it to produce more iterations using the argument "reset = FALSE".  For example:
+>
+> > Cmcmc$run(10000)   ## run for initial 10,000 iterations
+> > samples <- as.matrix(Cmcmc$mvSamples)   ## extract matrix of first 10,000 samples
+> >
+> > Cmcmc$run(50000, reset=FALSE)      ## continue running the MCMC for an additional 50,000 iterations
+> > samples60 <- as.matrix(Cmcmc$mvSamples)   ## extract matrix of all 60,000 samples
+> >
+>
+> Hope that helps!
+>
+>
+>
+
+> On Tue, Nov 22, 2016 at 10:12 AM, Fengqing Chao <pinwhee...@gmail.com> wrote:
+
+> > Hi all,
+> > May I know if there's an equivalent function in nimble to save the chain of iteration portion and keep on producing more iterations? Like the jags function "update()"? In jags, I have something like below:
+> > ## the jags model first
+> > mod <- jags(data, parameters.to.save, model.file, n.chains, n.iter)
+> > model.update <- mod
+> > save(model.update)
+> >
+> >   #--- update MCMC ----------
+> >     for (i in 2:N.STEPS) {
+> >
+> >       model.update <- update(model.update,
+> >                              parameters.to.save, n.iter)
+> >       save(model.update)
+> >     }#end of i loop (steps)
+> >
+> > The code above updates MCMC and save some iterations at multiple times.
+> >
+> > Thanks.
+> > Fengqing
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/6039ef23-89af-4e1d-9602-edff07e2a725%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6039ef23-89af-4e1d-9602-edff07e2a725%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Wed Nov 23 14:42:53 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Wed, 23 Nov 2016 14:42:53 +0000
+Subject: Re: How to save posterior iterations portion by portion?
+Message-ID: <rPRMQYCSqhg.RF60FvgyCgAJ@nimble-users.groups.google.com>
+In-Reply-To: <rPRMQYCSqhg.rddmiQgZCgAJ@nimble-users.groups.google.com>
+References: <rPRMQYCSqhg.TkX9YQDmCQAJ@nimble-users.groups.google.com> <rPRMQYCSqhg.rddmiQgZCgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rPRMQYCSqhg/m/RF60FvgyCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Fengquing, there's no immediate muilt-in mechanism to do what you're asking: to stop recording samples, then start recording samples at a later point.   The best built-in approach would be to use the option for thinning the samples, which would only record every 100th or 1000th sample (the frequency is up to you).  To specify the MCMC to only record every 1000th sample (of all the parameters), you would set the thinning interval using the MCMC configuration object as:
+
+> conf$setThin(1000)
+
+Then proceed to build the MCMC algorithm from the conf object, compile it, and run it:
+
+> Rmcmc <- buildMCMC(conf)
+> Cmcmc <- compileNimble(Rmcmc, ...)
+> Cmcmc$run(...)
+
+There are other options for what you're trying to do, which would require some custom NIMBLE code, but could certainly be done.  I'll followup with you about other possibilities, too.
+
+Keep in touch,
+Daniel
+
+On Wed, Nov 23, 2016 at 1:47 AM, Fengqing Chao <pinwhee...@gmail.com> wrote:
+
+> Hi Daniel,
+> Thanks for your help!
+>
+> It seems to me that the Cmcmc will become bigger and bigger when I continue to run more iterations. Sometimes I need a very long burnin for my model to get converge. The machine will run out of space/memory to continue the run since Cmcmc will become too big. Is there a way to get by this?
+>
+>
+> I need at lease 1 million iterations to get convergent, with about 5k parameters. I'm not sure when my model will converge. So I need to let the mcmc run for 2 or 3 millions and monitor the iterations from time to time. I'm wondering if nimble can discard the past iterations (to free up the space) after I save each portion of iterations and keep on running the mcmc (like what jags did as shown in the code in my 1st post)?
+>
+>
+> Thanks!
+>
+> Fengqing
+>
+> On Tuesday, November 22, 2016 at 11:44:48 PM UTC+8, Daniel Turek wrote:
+> > Yes, assuming you have a compiled MCMC algorithm called "Cmcmc", you can continue running it to produce more iterations using the argument "reset = FALSE".  For example:
+> >
+> > > Cmcmc$run(10000)   ## run for initial 10,000 iterations
+> > > samples <- as.matrix(Cmcmc$mvSamples)   ## extract matrix of first 10,000 samples
+> > >
+> > > Cmcmc$run(50000, reset=FALSE)      ## continue running the MCMC for an additional 50,000 iterations
+> > > samples60 <- as.matrix(Cmcmc$mvSamples)   ## extract matrix of all 60,000 samples
+> > >
+> >
+> > Hope that helps!
+> >
+> >
+> >
+> >
+> > On Tue, Nov 22, 2016 at 10:12 AM, Fengqing Chao <pinwhee...@gmail.com> wrote:
+> > > Hi all,
+> > > May I know if there's an equivalent function in nimble to save the chain of iteration portion and keep on producing more iterations? Like the jags function "update()"? In jags, I have something like below:
+> > > ## the jags model first
+> > > mod <- jags(data, parameters.to.save, model.file, n.chains, n.iter)
+> > > model.update <- mod
+> > > save(model.update)
+> > >
+> > >   #--- update MCMC ----------
+> > >     for (i in 2:N.STEPS) {
+> > >
+> > >       model.update <- update(model.update,
+> > >                              parameters.to.save, n.iter)
+> > >       save(model.update)
+> > >     }#end of i loop (steps)
+> > >
+> > > The code above updates MCMC and save some iterations at multiple times.
+> > >
+> > > Thanks.
+> > > Fengqing
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/6039ef23-89af-4e1d-9602-edff07e2a725%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6039ef23-89af-4e1d-9602-edff07e2a725%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/9fb7fd4f-5737-469e-b7c6-f25a823113b0%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9fb7fd4f-5737-469e-b7c6-f25a823113b0%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Thu Nov 24 02:08:27 2016
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Thu, 24 Nov 2016 02:08:27 +0000
+Subject: version 0.6-2 of NIMBLE released
+Message-ID: <BifibkrjFzI.FPeTWGFYCgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/BifibkrjFzI/m/FPeTWGFYCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear nimble-users and nimble-announce,
+
+We're pleased to announce that we've released version 0.6-2 of NIMBLE
+on CRAN and at
+R-nimble.org.
+
+Version of 0.6-2 is a minor release, but it has some nice features
+that may be of use to various users.
+
+Highlights include:
+- user-defined distributions can be used in BUGS code (after defining
+the density and simulation functions as nimbleFunctions) without
+needing to call the registerDistributions() function (unless one wants
+to specify alternative parameterizations, distribution range or that
+the distribution is discrete),
+- users can now specify the use of conjugate (Gibbs) samplers for
+nodes in a model,
+- NIMBLE will now check the run code of nimbleFunctions for functions
+(in particular R functions) that are not part of the DSL and will not
+compile,
+- there is a new getBound() functionality to find the lower and upper
+bounds of a node either from R or in DSL code,
+- there is added functionality to get distributional information about
+a node in a model or information about a distribution based on the
+name of the density function; these may be useful in setup code for
+algorithms, and
+- multinomial and categorical distributions now allow ‘probs’
+arguments that do not sum to one (these will be internally
+normalized).
+
+More details on the NIMBLE web page and the NEWS file of the package.
+
+- Chris Paciorek for the NIMBLE Development Team
+
+From u6d020fc5d7c9ee0a at groups.google.com  Sat Nov 26 20:31:04 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Sat, 26 Nov 2016 20:31:04 +0000
+Subject: Negative Probability Given to Rank Sample
+Message-ID: <rYec8VYPMpY.xlDKt7UxCwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rYec8VYPMpY/m/xlDKt7UxCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Nimble Users,
+
+I am running into some issues using the Liu West Filter, which perhaps is due to how I'm specifying my model.  I'm not 100% sure.  Perhaps there is an initialization step I need to run first?
+
+When I run the Filter I am getting back "Negative Probability Given to Rank Sample." Below is the code I am running (with simulated data).   Any information or tips would be much appreciated.
+
+Thanks,
+
+Colin
+
+library(nimble)
+
+## Simulate Data#
+set.seed(10)
+t<-1:(365)
+v<-rnorm(365,sd=0.5)
+seasonal<-sin(2*pi*t/365) + cos(pi*2*t/365)
+y<- seasonal + v
+plot(y,type="p")
+
+#Create Constant W, G and F matrices to pass to NIMBLE
+W<-diag(2)
+F<-matrix(c(1,0), nrow = 1, ncol = 2)
+#G matrix; can generalize this later
+G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+
+smosCode <- nimbleCode({
+  #Initial Values for State: x0 ~ Normal(c(0,0),diag(1000))
+  m0[1]<-0
+  m0[2]<-0
+  C0[1:2,1:2]<-1000*W[1:2,1:2]
+  x0[1:2]~dmnorm(m0[1:2],C0[1:2,1:2])
+
+  #initial values
+  m1[1:2,1]<-G[1:2,1:2]%*%x0[1:2]
+  C1[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+  x[1:2,1]~dmnorm(m1[1:2,1],C1[1:2,1:2])
+  y[1]~dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv)
+
+  #Model
+  for (t in 2:T){
+    mu[1:2,t]<-G[1:2,1:2]%*%x[1:2,t-1]
+    sigs[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+    x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+    y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+  }
+
+  #Priors
+  sigmaSquaredInvv~dgamma(5,20)
+  sigmaSquaredInvw~dgamma(5,20)
+})
+
+smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+                       inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+
+smosLiuWestFilter<-buildLiuWestFilter(model=smosModel,nodes='x',params=c('sigmaSquaredInvv','sigmaSquaredInvw'))
+csmosLiuWestFilter <- compileNimble(smosModel, smosLiuWestFilter)
+csmosLiuWestFilter[[2]]$run(10000)
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Sun Nov 27 17:13:36 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Sun, 27 Nov 2016 17:13:36 +0000
+Subject: Re: Negative Probability Given to Rank Sample
+Message-ID: <rYec8VYPMpY.UKkNz4N1CwAJ@nimble-users.groups.google.com>
+In-Reply-To: <rYec8VYPMpY.xlDKt7UxCwAJ@nimble-users.groups.google.com>
+References: <rYec8VYPMpY.xlDKt7UxCwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rYec8VYPMpY/m/UKkNz4N1CwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Colin, thanks for your interest in NIMBLE, and great that you're using the new suite of SMC algorithms.
+
+I'm not an expert with these, but I did take a look into your error.  I believe (hopefully) that it just boils down to incorrect parameterization of the multivariate normal distributions (dmnorm).  The default parameterization for the dmnorm() distribution takes the second parameter as a *precision* matrix, so as your model is written, the prior on x0 (for example) has precison=1000, and variance=1/1000 for each element.  I suspect you meant for these to be covariance matrices for each dmnorm term, and the small variances you were using were leading to numerical problems when propagating the particles.
+
+Changing each dmnorm(...) to instead specify a covariance matrix (by naming the second parameter cov=...) cleans up the problem, and the algorithm runs fine -- and I believe gives realistic estimates for each variance term, if I'm following the algorithm correctly.
+
+Anyway, give it a go.  I've copied the (very simply) modified model code below.  Good luck!
+
+Daniel
+
+smosCode <- nimbleCode({
+    ##Initial Values for State: x0 ~ Normal(c(0,0),diag(1000))
+
+    m0[1]<-0
+    m0[2]<-0
+    C0[1:2,1:2]<-1000*W[1:2,1:2]
+
+    ##x0[1:2]~dmnorm(m0[1:2],C0[1:2,1:2])
+    x0[1:2]~dmnorm(m0[1:2],cov=C0[1:2,1:2])              ## using covariance
+    ##initial values
+
+    m1[1:2,1]<-G[1:2,1:2]%*%x0[1:2]
+    C1[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+
+    ##x[1:2,1]~dmnorm(m1[1:2,1],C1[1:2,1:2])
+    x[1:2,1]~dmnorm(m1[1:2,1],cov=C1[1:2,1:2])           ## using covariance
+
+    y[1]~dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv)
+
+    ##Model
+
+    for (t in 2:T){
+        mu[1:2,t]<-G[1:2,1:2]%*%x[1:2,t-1]
+        sigs[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+
+        ##x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+        x[1:2,t] ~ dmnorm(mu[1:2,t],cov=sigs[1:2,1:2])   ## using covariance
+
+        y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+    }
+
+    ##Priors
+    sigmaSquaredInvv~dgamma(5,20)
+    sigmaSquaredInvw~dgamma(5,20)
+})
+
+On Sat, Nov 26, 2016 at 3:31 PM, Colin <clewi...@gmail.com> wrote:
+
+> Dear Nimble Users,
+>
+> I am running into some issues using the Liu West Filter, which perhaps is due to how I'm specifying my model.  I'm not 100% sure.  Perhaps there is an initialization step I need to run first?
+>
+> When I run the Filter I am getting back "Negative Probability Given to Rank Sample." Below is the code I am running (with simulated data).   Any information or tips would be much appreciated.
+>
+> Thanks,
+>
+> Colin
+>
+>
+> library(nimble)
+>
+> ## Simulate Data#
+> set.seed(10)
+> t<-1:(365)
+> v<-rnorm(365,sd=0.5)
+> seasonal<-sin(2*pi*t/365) + cos(pi*2*t/365)
+> y<- seasonal + v
+> plot(y,type="p")
+>
+>
+>
+> #Create Constant W, G and F matrices to pass to NIMBLE
+> W<-diag(2)
+> F<-matrix(c(1,0), nrow = 1, ncol = 2)
+> #G matrix; can generalize this later
+> G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+>
+> smosCode <- nimbleCode({
+>   #Initial Values for State: x0 ~ Normal(c(0,0),diag(1000))
+>   m0[1]<-0
+>   m0[2]<-0
+>   C0[1:2,1:2]<-1000*W[1:2,1:2]
+>   x0[1:2]~dmnorm(m0[1:2],C0[1:2,1:2])
+>
+>   #initial values
+>   m1[1:2,1]<-G[1:2,1:2]%*%x0[1:2]
+>   C1[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+>   x[1:2,1]~dmnorm(m1[1:2,1],C1[1:2,1:2])
+>   y[1]~dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv)
+>
+>   #Model
+>   for (t in 2:T){
+>     mu[1:2,t]<-G[1:2,1:2]%*%x[1:2,t-1]
+>     sigs[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+>     x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+>     y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+>   }
+>
+>   #Priors
+>   sigmaSquaredInvv~dgamma(5,20)
+>   sigmaSquaredInvw~dgamma(5,20)
+> })
+>
+>
+> smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+>                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+>
+>
+>
+> smosLiuWestFilter<-buildLiuWestFilter(model=smosModel,nodes='x',params=c('sigmaSquaredInvv','sigmaSquaredInvw'))
+> csmosLiuWestFilter <- compileNimble(smosModel, smosLiuWestFilter)
+> csmosLiuWestFilter[[2]]$run(10000)
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/c667ca95-5574-4a4c-823c-3b720bdfb266%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/c667ca95-5574-4a4c-823c-3b720bdfb266%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Tue Nov 29 00:55:09 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Tue, 29 Nov 2016 00:55:09 +0000
+Subject: Re: Negative Probability Given to Rank Sample
+Message-ID: <rYec8VYPMpY.wmCTLkjdCwAJ@nimble-users.groups.google.com>
+In-Reply-To: <rYec8VYPMpY.UKkNz4N1CwAJ@nimble-users.groups.google.com>
+References: <rYec8VYPMpY.xlDKt7UxCwAJ@nimble-users.groups.google.com> <rYec8VYPMpY.UKkNz4N1CwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rYec8VYPMpY/m/wmCTLkjdCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, Daniel!  I think you are right.  I actually want everything in terms of precision, because of conjugacy with the gamma priors on the variance terms.  I will switch that first one over to precision and give it a go.
+
+Cheers,
+
+Colin
+
+On Sunday, November 27, 2016 at 11:13:36 AM UTC-6, Daniel Turek wrote:
+
+> Colin, thanks for your interest in NIMBLE, and great that you're using the new suite of SMC algorithms.
+>
+> I'm not an expert with these, but I did take a look into your error.  I believe (hopefully) that it just boils down to incorrect parameterization of the multivariate normal distributions (dmnorm).  The default parameterization for the dmnorm() distribution takes the second parameter as a *precision* matrix, so as your model is written, the prior on x0 (for example) has precison=1000, and variance=1/1000 for each element.  I suspect you meant for these to be covariance matrices for each dmnorm term, and the small variances you were using were leading to numerical problems when propagating the particles.
+>
+> Changing each dmnorm(...) to instead specify a covariance matrix (by naming the second parameter cov=...) cleans up the problem, and the algorithm runs fine -- and I believe gives realistic estimates for each variance term, if I'm following the algorithm correctly.
+>
+> Anyway, give it a go.  I've copied the (very simply) modified model code below.  Good luck!
+>
+> Daniel
+>
+>
+> smosCode <- nimbleCode({
+>     ##Initial Values for State: x0 ~ Normal(c(0,0),diag(1000))
+>     m0[1]<-0
+>     m0[2]<-0
+>     C0[1:2,1:2]<-1000*W[1:2,1:2]
+>     ##x0[1:2]~dmnorm(m0[1:2],C0[1:2,1:2])
+>     x0[1:2]~dmnorm(m0[1:2],cov=C0[1:2,1:2])              ## using covariance
+>     ##initial values
+>     m1[1:2,1]<-G[1:2,1:2]%*%x0[1:2]
+>     C1[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+>     ##x[1:2,1]~dmnorm(m1[1:2,1],C1[1:2,1:2])
+>     x[1:2,1]~dmnorm(m1[1:2,1],cov=C1[1:2,1:2])           ## using covariance
+>     y[1]~dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv)
+>     ##Model
+>     for (t in 2:T){
+>         mu[1:2,t]<-G[1:2,1:2]%*%x[1:2,t-1]
+>         sigs[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+>         ##x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+>         x[1:2,t] ~ dmnorm(mu[1:2,t],cov=sigs[1:2,1:2])   ## using covariance
+>         y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+>     }
+>     ##Priors
+>     sigmaSquaredInvv~dgamma(5,20)
+>     sigmaSquaredInvw~dgamma(5,20)
+> })
+>
+>
+
+> On Sat, Nov 26, 2016 at 3:31 PM, Colin <clewi...@gmail.com> wrote:
+
+> > Dear Nimble Users,
+> >
+> > I am running into some issues using the Liu West Filter, which perhaps is due to how I'm specifying my model.  I'm not 100% sure.  Perhaps there is an initialization step I need to run first?
+> >
+> > When I run the Filter I am getting back "Negative Probability Given to Rank Sample." Below is the code I am running (with simulated data).   Any information or tips would be much appreciated.
+> >
+> > Thanks,
+> >
+> > Colin
+> >
+> >
+> > library(nimble)
+> >
+> > ## Simulate Data#
+> > set.seed(10)
+> > t<-1:(365)
+> > v<-rnorm(365,sd=0.5)
+> > seasonal<-sin(2*pi*t/365) + cos(pi*2*t/365)
+> > y<- seasonal + v
+> > plot(y,type="p")
+> >
+> >
+> >
+> > #Create Constant W, G and F matrices to pass to NIMBLE
+> > W<-diag(2)
+> > F<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > #G matrix; can generalize this later
+> > G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> >
+> > smosCode <- nimbleCode({
+> >   #Initial Values for State: x0 ~ Normal(c(0,0),diag(1000))
+> >   m0[1]<-0
+> >   m0[2]<-0
+> >   C0[1:2,1:2]<-1000*W[1:2,1:2]
+> >   x0[1:2]~dmnorm(m0[1:2],C0[1:2,1:2])
+> >
+> >   #initial values
+> >   m1[1:2,1]<-G[1:2,1:2]%*%x0[1:2]
+> >   C1[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+> >   x[1:2,1]~dmnorm(m1[1:2,1],C1[1:2,1:2])
+> >   y[1]~dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv)
+> >
+> >   #Model
+> >   for (t in 2:T){
+> >     mu[1:2,t]<-G[1:2,1:2]%*%x[1:2,t-1]
+> >     sigs[1:2,1:2]<-sigmaSquaredInvw*W[1:2,1:2]
+> >     x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+> >     y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+> >   }
+> >
+> >   #Priors
+> >   sigmaSquaredInvv~dgamma(5,20)
+> >   sigmaSquaredInvw~dgamma(5,20)
+> > })
+> >
+> >
+> > smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+> >                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> >
+> >
+> >
+> > smosLiuWestFilter<-buildLiuWestFilter(model=smosModel,nodes='x',params=c('sigmaSquaredInvv','sigmaSquaredInvw'))
+> > csmosLiuWestFilter <- compileNimble(smosModel, smosLiuWestFilter)
+> > csmosLiuWestFilter[[2]]$run(10000)
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/c667ca95-5574-4a4c-823c-3b720bdfb266%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/c667ca95-5574-4a4c-823c-3b720bdfb266%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Wed Nov 30 20:59:56 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Wed, 30 Nov 2016 20:59:56 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.6bQmVZttDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.uQ04fqARBQAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com> <pA-7JObwwhA.uQ04fqARBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/6bQmVZttDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Daniel,
+
+I have a quick follow up question about the best way to set up the latent nodes in a NIMBLE model step.  I am at the point where I am trying to use NimCopy to copy over simulated nodes from a ModelValues object to the model.  It looks like NIMBLE only allows you to copy by row.  So if a state is multivariate the columns will correspond to additional parameters.
+
+I am still working on the same model we discussed in above thread.  But the way the states are set up is the columns correspond to the latent time points, rather than the rows.
+
+This creates an issue when I create a modelValues object, e.g.,  modvals = modelValues(smosModel, m = 1) as it creates a 2 x 365 matrix, so you can't iterate over rows when running NimCopy.   It doesn't seem like NIMBLE allows you to take the transpose of ModelValues objects.  I have also tried to use the transpose function (t) in the model code to get the latent nodes to be 365 x 2, but that doesn't seem to work either.  I was curious if you had a suggestion that would make sense in order to use NIMBLE ModelValue objects most effectively.
+
+Thank you,
+
+Colin
+
+#Create Constant W, G and F matrices to pass to NIMBLE
+W<-diag(2)
+F<-matrix(c(1,0), nrow = 1, ncol = 2)
+G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+
+smosCode <- nimbleCode({
+
+#Initial Values for States: x0 ~ Normal(c(0,0),diag(1/1000)) for precision
+  m0[1] <- 0
+  m0[2] <- 0
+  C0[1:2,1:2] <- (1/1000)*W[1:2,1:2]
+  x0[1:2] ~ dmnorm(m0[1:2],C0[1:2,1:2])
+
+  #initial values
+  m1[1:2,1] <- G[1:2,1:2]%*%x0[1:2]
+  C1[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+  x[1:2,1] ~ dmnorm(m1[1:2,1],C1[1:2,1:2]) #precision matrix
+  y[1] ~ dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv) #precision 1/var
+
+  #Model
+  for (t in 2:T){
+
+    mu[1:2,t] <- G[1:2,1:2]%*%x[1:2,t-1]
+    sigs[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+    x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+    y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+  }
+
+  sigmaSquaredInvv ~ dgamma(5,20) #in terms of shape and rate; prior on precision V
+  sigmaSquaredInvw ~ dgamma(5,20) #in terms of shape and rate; prior on precision W
+})
+
+smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+                       inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+
+On Sunday, November 6, 2016 at 3:35:38 PM UTC-6, Daniel Turek wrote:
+
+> Looks like I was beaten to the punch here.  At least no one can say that the NIMBLE team is slow to respond.
+
+> On Sun, Nov 6, 2016 at 4:34 PM, Daniel Turek <db...@williams.edu> wrote:
+
+> > Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+> >
+> > You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+> >
+> > It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+> >
+> > If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+> >
+> > Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+> >
+> > If the matrix elements might vary, then define them one at a time, e.g.:
+> > A[1,1] <- [some expression of other elements]
+> > A[1,2] <- [some expression of other elements]
+> > etc...
+> >
+> > No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+> > c0[1] <- 0
+> > c0[2] <- 0
+> > then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+> > Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+> >
+> > Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+> > m<-G%*%x0
+> > defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+> > m[1:2, 1]
+> >
+> > That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+> >
+> > A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+> >
+> > Thanks,
+> > Daniel
+> > NIMBLE development team
+> >
+
+> > On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com> wrote:
+
+> > > Hello,
+> > >
+> > > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> > >
+> > > Thank you,
+> > >
+> > > Colin
+> > >
+> > > testCode <- nimbleCode({
+> > >   #Identity matrix
+> > >   W<-identityMatrix(d = 2)
+> > >
+> > >   #F matrix
+> > >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > >
+> > >   #G Transition matrix
+> > >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > >
+> > >   #initial values
+> > >   m<-G%*%x0
+> > >   var0<-sigmaSquaredInvw*W
+> > >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> > >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+> > >
+> > >   #Model
+> > >   for (t in 2:T){
+> > >     mu<-G%*%x[1:2,t-1]
+> > >     sigs<-sigmaSquaredInvw*W
+> > >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> > >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> > >   }
+> > >
+> > >   #Initial Values for States
+> > >   c0<-c(0,0)
+> > >   m0<-sigmaSquaredInvw*W
+> > >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> > >
+> > >   #Priors
+> > >   sigmaSquaredInvv~dgamma(5,20)
+> > >   sigmaSquaredInvw~dgamma(5,200)
+> > > })
+> > >
+> > > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> > >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > >
+
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> > >
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Wed Nov 30 22:33:17 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Wed, 30 Nov 2016 22:33:17 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.cciOd7NyDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.6bQmVZttDAAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com> <pA-7JObwwhA.6bQmVZttDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/cciOd7NyDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Colin,
+
+I think the confusion here is the notion of “row” in a modelValues object.  What we mean is a complete set of states, not a row of a particular variable in nimble that might happen to be a matrix.  For modelValues purposes, you can think of all model variables as being flattened, like having their dimension attribute removed in R.
+
+So it should work to use
+copy(from = modvals, row = 1, to = smosModel, nodes = c(‘mu’,’sigs’))
+
+Note copy is a synonym for nimCopy inside a nimbleFunction.
+
+Also note you can omit the nodes argument and by default it will copy all variables.
+
+Let us know if it gives you more trouble.
+
+Perry
+
+> On Nov 30, 2016, at 12:59 PM, Colin <clewi...@gmail.com> wrote:
+>
+
+> Hi Daniel,
+>
+> I have a quick follow up question about the best way to set up the latent nodes in a NIMBLE model step.  I am at the point where I am trying to use NimCopy to copy over simulated nodes from a ModelValues object to the model.  It looks like NIMBLE only allows you to copy by row.  So if a state is multivariate the columns will correspond to additional parameters.
+>
+> I am still working on the same model we discussed in above thread.  But the way the states are set up is the columns correspond to the latent time points, rather than the rows.
+>
+> This creates an issue when I create a modelValues object, e.g.,  modvals = modelValues(smosModel, m = 1) as it creates a 2 x 365 matrix, so you can't iterate over rows when running NimCopy.   It doesn't seem like NIMBLE allows you to take the transpose of ModelValues objects.  I have also tried to use the transpose function (t) in the model code to get the latent nodes to be 365 x 2, but that doesn't seem to work either.  I was curious if you had a suggestion that would make sense in order to use NIMBLE ModelValue objects most effectively.
+>
+> Thank you,
+>
+> Colin
+>
+>
+>
+>
+>
+> #Create Constant W, G and F matrices to pass to NIMBLE
+> W<-diag(2)
+> F<-matrix(c(1,0), nrow = 1, ncol = 2)
+> G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+>
+> smosCode <- nimbleCode({
+>
+> #Initial Values for States: x0 ~ Normal(c(0,0),diag(1/1000)) for precision
+>   m0[1] <- 0
+>   m0[2] <- 0
+>   C0[1:2,1:2] <- (1/1000)*W[1:2,1:2]
+>   x0[1:2] ~ dmnorm(m0[1:2],C0[1:2,1:2])
+>
+>   #initial values
+>   m1[1:2,1] <- G[1:2,1:2]%*%x0[1:2]
+>   C1[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+>   x[1:2,1] ~ dmnorm(m1[1:2,1],C1[1:2,1:2]) #precision matrix
+>   y[1] ~ dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv) #precision 1/var
+>
+>   #Model
+>   for (t in 2:T){
+>     mu[1:2,t] <- G[1:2,1:2]%*%x[1:2,t-1]
+>     sigs[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+>     x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+>     y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+>   }
+>
+>
+>   sigmaSquaredInvv ~ dgamma(5,20) #in terms of shape and rate; prior on precision V
+>   sigmaSquaredInvw ~ dgamma(5,20) #in terms of shape and rate; prior on precision W
+> })
+>
+> smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+>                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+>
+>
+> On Sunday, November 6, 2016 at 3:35:38 PM UTC-6, Daniel Turek wrote:
+> > Looks like I was beaten to the punch here.  At least no one can say that the NIMBLE team is slow to respond.
+> >
+> > On Sun, Nov 6, 2016 at 4:34 PM, Daniel Turek <db...@williams.edu> wrote:
+> > > Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+> > >
+> > > You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+> > >
+> > > It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+> > >
+> > > If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+> > >
+> > > Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+> > >
+> > > If the matrix elements might vary, then define them one at a time, e.g.:
+> > > A[1,1] <- [some expression of other elements]
+> > > A[1,2] <- [some expression of other elements]
+> > > etc...
+> > >
+> > > No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+> > > c0[1] <- 0
+> > > c0[2] <- 0
+> > > then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+> > > Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+> > >
+> > > Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+> > > m<-G%*%x0
+> > > defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+> > > m[1:2, 1]
+> > >
+> > > That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+> > >
+> > > A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+> > >
+> > > Thanks,
+> > > Daniel
+> > > NIMBLE development team
+> > >
+> > >
+> > > On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com> wrote:
+> > > > Hello,
+> > > >
+> > > > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> > > >
+> > > > Thank you,
+> > > >
+> > > > Colin
+> > > >
+> > > > testCode <- nimbleCode({
+> > > >   #Identity matrix
+> > > >   W<-identityMatrix(d = 2)
+> > > >
+> > > >   #F matrix
+> > > >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > >
+> > > >   #G Transition matrix
+> > > >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > >
+> > > >   #initial values
+> > > >   m<-G%*%x0
+> > > >   var0<-sigmaSquaredInvw*W
+> > > >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> > > >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+> > > >
+> > > >   #Model
+> > > >   for (t in 2:T){
+> > > >     mu<-G%*%x[1:2,t-1]
+> > > >     sigs<-sigmaSquaredInvw*W
+> > > >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> > > >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> > > >   }
+> > > >
+> > > >   #Initial Values for States
+> > > >   c0<-c(0,0)
+> > > >   m0<-sigmaSquaredInvw*W
+> > > >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> > > >
+> > > >   #Priors
+> > > >   sigmaSquaredInvv~dgamma(5,20)
+> > > >   sigmaSquaredInvw~dgamma(5,200)
+> > > > })
+> > > >
+> > > > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> > > >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To post to this group, send email to nimble...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> >
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+

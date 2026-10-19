@@ -1,0 +1,256 @@
+From ubebd85531a67ef86 at groups.google.com  Tue Sep  6 14:59:37 2016
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Tue, 06 Sep 2016 14:59:37 +0000
+Subject: Re: Accessing logProb_Y for each mcmc samples
+Message-ID: <ooUwVeFdnQs.zN2blpWRBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <ooUwVeFdnQs.RiIsU03qBAAJ@nimble-users.groups.google.com>
+References: <ooUwVeFdnQs.RiIsU03qBAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ooUwVeFdnQs/m/zN2blpWRBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+A further question regarding this example...
+
+Daniel's posted code generates Samples2 with dimensions 100 x 53 - i.e. it generates LogProb outputs for 53 nodes. Nice!
+
+Is an alternative possible where a 100 x 1 output is generated such that the single output is the total LogProb associated with the ensemble of stochastic nodes, i.e. the value that would be returned (in this example) from CM1_CPG_nimble$getLogProb()  ?
+
+Or is the only possibility at pressent to calculate these values once the MCMC has finished?
+
+From ubad39b108b65612c at groups.google.com  Thu Sep 15 16:14:30 2016
+From: ubad39b108b65612c at groups.google.com (mdri...@lbl.gov)
+Date: Thu, 15 Sep 2016 16:14:30 +0000
+Subject: compileNimble error: "Failed to create the shared library"
+Message-ID: <Xml1566gkqw.sXlflZR3BAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Xml1566gkqw/m/sXlflZR3BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+[Note: I've spoken with Chris Paciorek about this offline; he will post a response.]
+
+I've written a nimbleFunction for a user-defined distribution (a multivariate Gaussian with non-full rank precision), but when I try to compile the model code, I get a "Failed to create the shared library" error. Here's the code:
+
+# MV Gaussian with non-full-rank precision
+
+# Q is an intrinsic CAR precision matrix (MxM) of rank M-1
+# Qevecs and Qevals are the eigenvectors/eigenvalues of Q
+dmnorm_mdr <- nimbleFunction( # density function
+  run = function( x = double(1), mn = double(1), Q = double(2),
+                  Qevecs = double(2), Qevals = double(1),
+                  tausq = double(0, default = 1),
+                  log = integer(0, default = 0)) {
+
+    returnType(double(0))
+
+    N <- length(Qevals)
+    logDet <- -0.5*(N-1)*log(tausq) + 0.5*sum(log(Qevals[1:(N-1)]))
+    logExp <- -0.5*(1/tausq)*t(x - mn)%*%Q%*%(x - mn)
+    if(log){ return( -0.5*(N-1)*log(2*3.141593) + logDet + logExp ) }
+    else{ return(exp( -0.5*(N-1)*log(2*3.141593) + logDet + logExp )) }
+})
+
+rmnorm_mdr <- nimbleFunction( # generate samples from the distribution
+  run = function( n = integer(0, default = 1), mn = double(1), Q = double(2),
+                  Qevecs = double(2), Qevals = double(1),
+                  tausq = double(0, default = 1) ) {
+
+    returnType(double(1))
+    if(n != 1) print("rmnorm_mdr only allows n = 1; using n = 1.")
+
+    N <- length(Qevals)
+    z <- rnorm( n = 1, mean = 0, sd = sqrt(tausq/Qevals[1]) )
+    y <- z*Qevecs[,1]
+    for( i in 2:(N-1)){
+      z <- rnorm( n = 1, mean = 0, sd = sqrt(tausq/Qevals[i]) )
+      y <- y + z*Qevecs[,i]
+    }
+    x <- y + mn
+    return(x)
+})
+
+# Register
+registerDistributions( list(dmnorm_mdr = list(
+  BUGSdist = "dmnorm_mdr(mn, Q, Qevecs, Qevals, tausq)",
+  types = c("value = double(1)", "mn = double(1)", "Q = double(2)",
+            "Qevecs = double(2)", "Qevals = double(1)" ) )))
+
+# Create the model
+logit_CAR_code <- nimbleCode({
+  # likelihood
+  for(i in 1:M)
+    z[i] ~ dbinom(size = N, prob = expit(logit_p[i]))
+  # latent process
+  logit_p[1:M] ~ dmnorm_mdr( mn = mn[1:M], Q = Q[1:M, 1:M],
+                             Qevecs = Qevecs[1:M, 1:M],
+                             Qevals = Qevals[1:M], tausq = tausq )
+  # process structure
+  mn[1:M] <- ones[1:M]*mu
+  # hyperparameters
+  mu ~ dnorm(0, sd = 100)
+  tausq ~ dunif(0, 100)
+})
+logit_CAR_model <- nimbleModel(
+  code = logit_CAR_code,
+  constants = list(M = M, ones = rep(1,M) ),
+  inits = list(mu = 0, tausq = 1, logit_p = rep(0,M) ),
+  data = list(z = z, Q = Q, Qevals = Q.evals, Qevecs = Q.evecs, N = N)
+)
+
+compl_logit_CAR_model <- compileNimble( logit_CAR_model )
+# Error: Failed to create the shared library
+
+Thanks-
+Mark
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Thu Sep 15 22:02:40 2016
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Thu, 15 Sep 2016 22:02:40 +0000
+Subject: Re: compileNimble error: "Failed to create the shared library"
+Message-ID: <Xml1566gkqw.Y0e0hZSKBAAJ@nimble-users.groups.google.com>
+In-Reply-To: <Xml1566gkqw.sXlflZR3BAAJ@nimble-users.groups.google.com>
+References: <Xml1566gkqw.sXlflZR3BAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/Xml1566gkqw/m/Y0e0hZSKBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, Mark. A couple things here:
+
+1) As of version 6.0 (now on CRAN but not yet on our website as we're
+about to go directly to 0.6-1 to fix some logistical issues with 0.6
+on CRAN), we are by default suppressing messages from the C++
+compiler, so you're not seeing the compiler errors that are occurring
+in this case. To see the messages one can do:
+nimbleOptions(showCompilerOutput = TRUE)
+and then run
+compileNimble(dmnorm_mdr)
+
+2)  Basically what happens is that NIMBLE tries to compile dmnorm_mdr
+(in the process of using the user-defined distribution in your model)
+and it has this problem:
+
+g++ -I/usr/share/R/include -DNDEBUG  -DEIGEN_MPL2_ONLY=1
+-I"/accounts/gen/vis/paciorek/R/x86_64-pc-linux-gnu-library/3.2/nimble/include"
+-Wno-misleading-indentation -Wno-ignored-attributes
+-Wno-deprecated-declarations     -fpic  -g -O2 -fstack-protector
+--param=ssp-buffer-size=4 -Wformat -Werror=format-security
+-D_FORTIFY_SOURCE=2 -g  -c P_2_code_nfCode.cpp -o P_2_code_nfCode.o
+P_2_code_nfCode.cpp: In function ‘double rcFun_4(NimArr<1, double>&,
+NimArr<1, double>&, NimArr<2, double>&, NimArr<2, double>&, NimArr<1,
+double>&, double, int)’:
+P_2_code_nfCode.cpp:404:59: error: no match for ‘operator+’ (operand
+types are ‘double’ and ‘NimArr<2, double>’)
+  return(((-(0.5) * (N - 1)) * log(2 * 3.141593) + logDet) + logExp);
+
+                 ^
+
+The issue is that logExp is a 1x1 matrix because it is the result of
+matrix computations. But then the your code tries to add that 1x1
+matrix to a scalar value. It turns out that it's hard to cleanly
+handle cases where higher-dimensional objects are manipulated via
+linear algebra calculations and the effective result is a lower
+dimensional object, so NIMBLE is finicky about dimensions. And
+unfortunately, we're not catching the issue and issuing an error
+message. We have some discussion of all this (albeit implicitly) in
+Section 9.5.11 of the manual.
+
+In any event, once the issue is recognized, the simple solution is to use
+logExp[1,1] in place of logExp when you want to do scalar calculations.
+Or you could set logExp to be scalar to start with by doing this:
+ logExp <- (-0.5*(1/tausq)*t(x - mn)%*%Q%*%(x - mn))[1,1]
+
+On Thu, Sep 15, 2016 at 9:14 AM,  <mdri...@lbl.gov> wrote:
+> [Note: I've spoken with Chris Paciorek about this offline; he will post a
+> response.]
+>
+> I've written a nimbleFunction for a user-defined distribution (a
+> multivariate Gaussian with non-full rank precision), but when I try to
+> compile the model code, I get a "Failed to create the shared library" error.
+> Here's the code:
+>
+> # MV Gaussian with non-full-rank precision
+>
+> # Q is an intrinsic CAR precision matrix (MxM) of rank M-1
+> # Qevecs and Qevals are the eigenvectors/eigenvalues of Q
+> dmnorm_mdr <- nimbleFunction( # density function
+>   run = function( x = double(1), mn = double(1), Q = double(2),
+>                   Qevecs = double(2), Qevals = double(1),
+>                   tausq = double(0, default = 1),
+>                   log = integer(0, default = 0)) {
+>
+>     returnType(double(0))
+>
+>     N <- length(Qevals)
+>     logDet <- -0.5*(N-1)*log(tausq) + 0.5*sum(log(Qevals[1:(N-1)]))
+>     logExp <- -0.5*(1/tausq)*t(x - mn)%*%Q%*%(x - mn)
+>     if(log){ return( -0.5*(N-1)*log(2*3.141593) + logDet + logExp ) }
+>     else{ return(exp( -0.5*(N-1)*log(2*3.141593) + logDet + logExp )) }
+> })
+>
+> rmnorm_mdr <- nimbleFunction( # generate samples from the distribution
+>   run = function( n = integer(0, default = 1), mn = double(1), Q =
+> double(2),
+>                   Qevecs = double(2), Qevals = double(1),
+>                   tausq = double(0, default = 1) ) {
+>
+>     returnType(double(1))
+>     if(n != 1) print("rmnorm_mdr only allows n = 1; using n = 1.")
+>
+>     N <- length(Qevals)
+>     z <- rnorm( n = 1, mean = 0, sd = sqrt(tausq/Qevals[1]) )
+>     y <- z*Qevecs[,1]
+>     for( i in 2:(N-1)){
+>       z <- rnorm( n = 1, mean = 0, sd = sqrt(tausq/Qevals[i]) )
+>       y <- y + z*Qevecs[,i]
+>     }
+>     x <- y + mn
+>     return(x)
+> })
+>
+> # Register
+> registerDistributions( list(dmnorm_mdr = list(
+>   BUGSdist = "dmnorm_mdr(mn, Q, Qevecs, Qevals, tausq)",
+>   types = c("value = double(1)", "mn = double(1)", "Q = double(2)",
+>             "Qevecs = double(2)", "Qevals = double(1)" ) )))
+>
+> # Create the model
+> logit_CAR_code <- nimbleCode({
+>   # likelihood
+>   for(i in 1:M)
+>     z[i] ~ dbinom(size = N, prob = expit(logit_p[i]))
+>   # latent process
+>   logit_p[1:M] ~ dmnorm_mdr( mn = mn[1:M], Q = Q[1:M, 1:M],
+>                              Qevecs = Qevecs[1:M, 1:M],
+>                              Qevals = Qevals[1:M], tausq = tausq )
+>   # process structure
+>   mn[1:M] <- ones[1:M]*mu
+>   # hyperparameters
+>   mu ~ dnorm(0, sd = 100)
+>   tausq ~ dunif(0, 100)
+> })
+> logit_CAR_model <- nimbleModel(
+>   code = logit_CAR_code,
+>   constants = list(M = M, ones = rep(1,M) ),
+>   inits = list(mu = 0, tausq = 1, logit_p = rep(0,M) ),
+>   data = list(z = z, Q = Q, Qevals = Q.evals, Qevecs = Q.evecs, N = N)
+> )
+>
+> compl_logit_CAR_model <- compileNimble( logit_CAR_model )
+> # Error: Failed to create the shared library
+>
+> Thanks-
+> Mark
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/nimble-users/df8b03dd-5d8e-48b4-8e6d-85beeb220865%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+

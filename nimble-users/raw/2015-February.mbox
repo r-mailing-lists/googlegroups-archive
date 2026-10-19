@@ -1,0 +1,631 @@
+From u29059a3f229c1c88 at groups.google.com  Sun Feb  1 13:56:18 2015
+From: u29059a3f229c1c88 at groups.google.com (Andrew Tredennick)
+Date: Sun, 01 Feb 2015 13:56:18 +0000
+Subject: 'symbol' not subsettable error; due to subsetting by index?
+Message-ID: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/RnSlccIo5p4/m/KZiw-vuBLI0J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi All,
+
+I am attempting to use nimble for an analysis of plant abundance through time and over space. The dataset is large (5x5km remote sensing image; so ~28,000 pixels observed over 27 years). So, for the spatial component I am using a dimension reduction strategy. However, nimble appears to not like my approach. Specifically, when I try to subset a parameter by a unique ID in space I get the error: "Error in x$targetNodeExpr[[iDim + 2]] : object of type 'symbol' is not subsettable". Below is a reproducible example that throws the same error at the 'nimbleModel' stage. In this example, each 'x' can be considered to be observed twice (once in each of two years) and so indexed for the spatial term 'eta'. 'eta', in turn, comes from an expansion of the modeled terms 'alpha' by the expansion matrix 'K'. I think the problem is coming from my indexing of 'eta' in the process model, but I could be wrong. Thank you in advance for any insight!
+
+Cheers,
+Andrew
+
+####
+#### REPRODUCIBLE EXAMPLE
+####
+library(nimble)
+
+x <- rpois(20, 15)
+y <- rpois(20, 1.5+0.8*x)
+K <- rexp(20,1)
+knots <- 4
+id <- rep(seq(1,10), 2)
+
+constants <- list(nObs = 20,
+                  nKnots = knots,
+                  x = x,
+                  K = K,
+                  id = id)
+data <- list(y = y)
+inits <- list(intMu=0, betaMu=0, alpha=rep(0,Knots))
+
+ast <- nimbleCode({
+  for(i in 1:nObs){
+    y[i] ~ dpois(lambda[i])
+    lambda[i] <- exp(intMu + betaMu*x[i] + eta[id[i],1])
+  }
+  eta <- K%*%asCol(alpha)
+  for(j in 1:nKnots){
+    alpha[j] ~ dnorm(0,tau)
+  }
+  intMu ~ dnorm(0,1e-6)
+  betaMu ~ dnorm(0,1e-6)
+  tau ~ dgamma(1,0.01)
+})
+
+#### THIS CHUNK THROWS THE ERROR
+Rmodel <- nimbleModel(code = ast,
+                      constants = constants,
+                      data = data,
+                      inits = inits)
+#### ERROR HERE
+
+mcmcspec <- configureMCMC(Rmodel, print=TRUE, thin=1)
+Rmcmc <- buildMCMC(mcmcspec)
+Cmodel <- compileNimble(Rmodel)
+Cmcmc <- compileNimble(Rmcmc, project = Cmodel)
+Cmcmc$run(100)
+
+From u99aa11b224ba9e9e at groups.google.com  Sun Feb  1 21:52:58 2015
+From: u99aa11b224ba9e9e at groups.google.com (Daniel Turek)
+Date: Sun, 01 Feb 2015 21:52:58 +0000
+Subject: Re: 'symbol' not subsettable error; due to subsetting by index?
+Message-ID: <RnSlccIo5p4.e9DWs13gkTEJ@nimble-users.groups.google.com>
+In-Reply-To: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+References: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/RnSlccIo5p4/m/e9DWs13gkTEJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Andrew, thanks for your interest in NIMBLE!  We'll be curious to hear how it works out for you, so I hope we can get your model running soon.  I'll admit upfront I have not taken the time to fully process the structure of the full model you're trying to run.  But I can point out a few errors in usage, which fixing may get you up & running.
+
+First, one type-o, I imagine just introduced when you copied / modified your code to provide a reproducible example.  The code you emailed has:
+
+inits <- list(intMu=0, betaMu=0, alpha=rep(0,Knots))
+
+There's no variable 'Knots'.  I assume you meant the lower case version:
+inits <- list(intMu=0, betaMu=0, alpha=rep(0,knots)),
+which is defined.
+
+I believe your problems are coming from incorrect usage of vectors vs. arrays, or essentially indexing, as you pointed out.  Let me explain what's happening behind the scenes, and maybe you can correct the input and/or model specification.
+
+'alpha' is being defined as a length-4 vector in your for-loop.  That's all fine, just bear in mind that 'alpha' is a *vector*, not a matrix.
+
+'K' is specified as a length-20 vector.  Likewise, another vector.
+
+In the line:
+eta <- K%*%asCol(alpha)
+you cast 'alpha' as a *column matrix*.  That is, asCol(alpha) represents a 4x1 column matrix.  This 4x1 matrix is then used in matrix multiplication against a length-20 vector.  It's important to explain, we have tried to make NIMBLE processing mimic that of R, to the extent possible.  So NIMBLE will try to "promote" the length-20 vector (K) into a matrix, such that it can be used for matrix multiplication.  However, either way it promotes it (into a 20x1 matrix, or a 1x20 matrix), it's not conformable for multiplication by a 4x1 matrix.  That's probably the root of your problem.
+
+For using matrix multiplication, I would suggest either making certain the both arguments to %*% are in fact matricies, or equivalently, row- or column-matrices which result from applying either asRow() or asCol() to vectors.  Then we can be certain the dimensions match, and the appropriate matrix multiplication takes place.  Does that make sense?
+
+One more trick I'll mention, once A and B are conformable matricies, you can either allow the multiplication to take place, then end up indexing the resulting matrix (as you've done):
+eta <- A %*% B  ## eta is a matrix
+...
+.... + eta[ id[i], 1]   ## index eta as a matrix
+Or, perhaps more simply, you can directly subset the result of the matrix multiplication, which will automatically demote the resulting matrix into a vector, then eta can later be indexed as the vector it actually is:
+eta <- (A %*% B)[ 1:10, 1]    ## now eta is a vector.... the value 10 should probably be something else
+...
+... + eta[ id[i] ]   ## eta is indexed as a vector
+
+Does this make sense?  Let me know if not.  And I'm sorry I didn't take the time to fully understand your model, but I thought I'd take a minute to explain these nuances of NIMBLE.  Perhaps you'll be up & running before the Superbowl starts  =)
+
+Cheers,
+Daniel
+NIMBLE Development Team
+
+On Sun, Feb 1, 2015 at 5:56 AM, Andrew Tredennick <atre...@gmail.com> wrote:
+
+> Hi All,
+>
+> I am attempting to use nimble for an analysis of plant abundance through time and over space. The dataset is large (5x5km remote sensing image; so ~28,000 pixels observed over 27 years). So, for the spatial component I am using a dimension reduction strategy. However, nimble appears to not like my approach. Specifically, when I try to subset a parameter by a unique ID in space I get the error: "Error in x$targetNodeExpr[[iDim + 2]] : object of type 'symbol' is not subsettable". Below is a reproducible example that throws the same error at the 'nimbleModel' stage. In this example, each 'x' can be considered to be observed twice (once in each of two years) and so indexed for the spatial term 'eta'. 'eta', in turn, comes from an expansion of the modeled terms 'alpha' by the expansion matrix 'K'. I think the problem is coming from my indexing of 'eta' in the process model, but I could be wrong. Thank you in advance for any insight!
+>
+> Cheers,
+> Andrew
+>
+> ####
+> #### REPRODUCIBLE EXAMPLE
+> ####
+> library(nimble)
+>
+> x <- rpois(20, 15)
+> y <- rpois(20, 1.5+0.8*x)
+> K <- rexp(20,1)
+> knots <- 4
+> id <- rep(seq(1,10), 2)
+>
+> constants <- list(nObs = 20,
+>                   nKnots = knots,
+>                   x = x,
+>                   K = K,
+>                   id = id)
+> data <- list(y = y)
+> inits <- list(intMu=0, betaMu=0, alpha=rep(0,Knots))
+>
+> ast <- nimbleCode({
+>   for(i in 1:nObs){
+>     y[i] ~ dpois(lambda[i])
+>     lambda[i] <- exp(intMu + betaMu*x[i] + eta[id[i],1])
+>   }
+>   eta <- K%*%asCol(alpha)
+>   for(j in 1:nKnots){
+>     alpha[j] ~ dnorm(0,tau)
+>   }
+>   intMu ~ dnorm(0,1e-6)
+>   betaMu ~ dnorm(0,1e-6)
+>   tau ~ dgamma(1,0.01)
+> })
+>
+> #### THIS CHUNK THROWS THE ERROR
+> Rmodel <- nimbleModel(code = ast,
+>                       constants = constants,
+>                       data = data,
+>                       inits = inits)
+> #### ERROR HERE
+>
+> mcmcspec <- configureMCMC(Rmodel, print=TRUE, thin=1)
+> Rmcmc <- buildMCMC(mcmcspec)
+> Cmodel <- compileNimble(Rmodel)
+> Cmcmc <- compileNimble(Rmcmc, project = Cmodel)
+> Cmcmc$run(100)
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Sun Feb  1 22:16:35 2015
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Sun, 01 Feb 2015 22:16:35 +0000
+Subject: Re: 'symbol' not subsettable error; due to subsetting by index?
+Message-ID: <RnSlccIo5p4.sV8gyKulqpkJ@nimble-users.groups.google.com>
+In-Reply-To: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+References: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/RnSlccIo5p4/m/sV8gyKulqpkJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Andrew,
+
+Many thanks for this question and clear code.  A few things are going on here.  Substitution of non-scalar constant elements doesn't work, so you'll have to take K out of constants and treat it as data at a later step.
+
+Then as Daniel pointed out the heart of the issue is in having NIMBLE get the dimensionality and sizes correct from eta <- K%*%asCol(alpha).  It appears you want eta to be a matrix, so perhaps you wanted eta <- K %*% asRow(alpha), so that eta would have length(K) rows and nKnots columns? I'll go with that to give you a solution / workaround.
+
+Please try:
+eta[1:10, 1:nKnots] <- K[1:10] %*% asRow(alpha1[1:nKnots])
+
+A brief explanation: In a nimbleFunction, eta <- K %*% asRow(alpha) should work fine because the nimble compiler sorts out dimensionality and sizes.  We do compile the BUGS lines via the nimble compiler, but prior to doing so there is some processing to determine dimensionality and sizes of everything in a way needed to set up the model variables.  At the moment that is not fully integrated with the nimble compiler and instead requires the helping hand of explicit indexing, as shown above.  Using the dimensions argument to nimbleModel might also work, but I suggest the explicit indexing.  In the future it should be possible to use length(K) instead of putting in 10 directly, but at the moment that's a missing detail.  You could define a variable for that length if you want.  (Also as Daniel noted  your inits list couldn't find Knots).
+
+I was able to compile the model with the above change.
+
+Glad to see this application.  I should mention that the current release will be slow in building and compiling a model of this size and the corresponding MCMC, although the run times should be reasonable.  We are working on some substantial speedups in the building and compiling steps.
+
+Please let us know how it goes.
+
+Perry
+
+On Feb 1, 2015, at 5:56 AM, Andrew Tredennick wrote:
+
+> Hi All,
+>
+> I am attempting to use nimble for an analysis of plant abundance through time and over space. The dataset is large (5x5km remote sensing image; so ~28,000 pixels observed over 27 years). So, for the spatial component I am using a dimension reduction strategy. However, nimble appears to not like my approach. Specifically, when I try to subset a parameter by a unique ID in space I get the error: "Error in x$targetNodeExpr[[iDim + 2]] : object of type 'symbol' is not subsettable". Below is a reproducible example that throws the same error at the 'nimbleModel' stage. In this example, each 'x' can be considered to be observed twice (once in each of two years) and so indexed for the spatial term 'eta'. 'eta', in turn, comes from an expansion of the modeled terms 'alpha' by the expansion matrix 'K'. I think the problem is coming from my indexing of 'eta' in the process model, but I could be wrong. Thank you in advance for any insight!
+>
+> Cheers,
+> Andrew
+>
+> ####
+> #### REPRODUCIBLE EXAMPLE
+> ####
+> library(nimble)
+>
+> x <- rpois(20, 15)
+> y <- rpois(20, 1.5+0.8*x)
+> K <- rexp(20,1)
+> knots <- 4
+> id <- rep(seq(1,10), 2)
+>
+> constants <- list(nObs = 20,
+>                   nKnots = knots,
+>                   x = x,
+>                   K = K,
+>                   id = id)
+> data <- list(y = y)
+> inits <- list(intMu=0, betaMu=0, alpha=rep(0,Knots))
+>
+> ast <- nimbleCode({
+>   for(i in 1:nObs){
+>     y[i] ~ dpois(lambda[i])
+>     lambda[i] <- exp(intMu + betaMu*x[i] + eta[id[i],1])
+>   }
+>   eta <- K%*%asCol(alpha)
+>   for(j in 1:nKnots){
+>     alpha[j] ~ dnorm(0,tau)
+>   }
+>   intMu ~ dnorm(0,1e-6)
+>   betaMu ~ dnorm(0,1e-6)
+>   tau ~ dgamma(1,0.01)
+> })
+>
+> #### THIS CHUNK THROWS THE ERROR
+> Rmodel <- nimbleModel(code = ast,
+>                       constants = constants,
+>                       data = data,
+>                       inits = inits)
+> #### ERROR HERE
+>
+> mcmcspec <- configureMCMC(Rmodel, print=TRUE, thin=1)
+> Rmcmc <- buildMCMC(mcmcspec)
+> Cmodel <- compileNimble(Rmodel)
+> Cmcmc <- compileNimble(Rmcmc, project = Cmodel)
+> Cmcmc$run(100)
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Sun Feb  1 23:21:59 2015
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Sun, 01 Feb 2015 23:21:59 +0000
+Subject: Re: 'symbol' not subsettable error; due to subsetting by index?
+Message-ID: <RnSlccIo5p4.C2ITPzF3jWoJ@nimble-users.groups.google.com>
+In-Reply-To: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+References: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/RnSlccIo5p4/m/C2ITPzF3jWoJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Correction to my previous reply:
+
+You can provide a constants entry for vector replacement, i.e.  for K.  I was seeing an error from that, but that was before I put in the explicit indexing.
+
+Perry
+
+On Feb 1, 2015, at 5:56 AM, Andrew Tredennick wrote:
+
+> Hi All,
+>
+> I am attempting to use nimble for an analysis of plant abundance through time and over space. The dataset is large (5x5km remote sensing image; so ~28,000 pixels observed over 27 years). So, for the spatial component I am using a dimension reduction strategy. However, nimble appears to not like my approach. Specifically, when I try to subset a parameter by a unique ID in space I get the error: "Error in x$targetNodeExpr[[iDim + 2]] : object of type 'symbol' is not subsettable". Below is a reproducible example that throws the same error at the 'nimbleModel' stage. In this example, each 'x' can be considered to be observed twice (once in each of two years) and so indexed for the spatial term 'eta'. 'eta', in turn, comes from an expansion of the modeled terms 'alpha' by the expansion matrix 'K'. I think the problem is coming from my indexing of 'eta' in the process model, but I could be wrong. Thank you in advance for any insight!
+>
+> Cheers,
+> Andrew
+>
+> ####
+> #### REPRODUCIBLE EXAMPLE
+> ####
+> library(nimble)
+>
+> x <- rpois(20, 15)
+> y <- rpois(20, 1.5+0.8*x)
+> K <- rexp(20,1)
+> knots <- 4
+> id <- rep(seq(1,10), 2)
+>
+> constants <- list(nObs = 20,
+>                   nKnots = knots,
+>                   x = x,
+>                   K = K,
+>                   id = id)
+> data <- list(y = y)
+> inits <- list(intMu=0, betaMu=0, alpha=rep(0,Knots))
+>
+> ast <- nimbleCode({
+>   for(i in 1:nObs){
+>     y[i] ~ dpois(lambda[i])
+>     lambda[i] <- exp(intMu + betaMu*x[i] + eta[id[i],1])
+>   }
+>   eta <- K%*%asCol(alpha)
+>   for(j in 1:nKnots){
+>     alpha[j] ~ dnorm(0,tau)
+>   }
+>   intMu ~ dnorm(0,1e-6)
+>   betaMu ~ dnorm(0,1e-6)
+>   tau ~ dgamma(1,0.01)
+> })
+>
+> #### THIS CHUNK THROWS THE ERROR
+> Rmodel <- nimbleModel(code = ast,
+>                       constants = constants,
+>                       data = data,
+>                       inits = inits)
+> #### ERROR HERE
+>
+> mcmcspec <- configureMCMC(Rmodel, print=TRUE, thin=1)
+> Rmcmc <- buildMCMC(mcmcspec)
+> Cmodel <- compileNimble(Rmodel)
+> Cmcmc <- compileNimble(Rmcmc, project = Cmodel)
+> Cmcmc$run(100)
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u29059a3f229c1c88 at groups.google.com  Mon Feb  2 03:51:57 2015
+From: u29059a3f229c1c88 at groups.google.com (Andrew Tredennick)
+Date: Mon, 02 Feb 2015 03:51:57 +0000
+Subject: Re: 'symbol' not subsettable error; due to subsetting by index?
+Message-ID: <RnSlccIo5p4.B-ztHAsMpzMJ@nimble-users.groups.google.com>
+In-Reply-To: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+References: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/RnSlccIo5p4/m/B-ztHAsMpzMJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry and Dave,
+
+Thanks for your quick responses, and on a Sunday! It does indeed seem that I was playing too fast and loose with my indexes. I got the following code work , which I think is in the spirit of your suggestions (i.e., explicit indexing and setting of node dimensions). I also see in my original code that K was a 20x1 vector when it should have been a 10x4 matrix. Sorry about that. The code I got to work is below. Thanks again, and I'll let you all know how it goes.
+
+Best,
+Andrew
+
+#### Example
+
+library(nimble)
+
+x <- rpois(20, 15)
+y <- rpois(20, 1.5+0.8*x)
+
+K <- matrix(rexp(10,1), 10, 4)
+
+knots <- 4
+id <- rep(seq(1,10), 2)
+
+constants <- list(nObs = 20,
+                  nKnots = knots,
+                  x = x,
+                  K = K,
+                  id = id)
+data <- list(y = y)
+
+inits <- list(intMu=0, betaMu=0, alpha=rep(0,knots))
+
+ast <- nimbleCode({
+  for(i in 1:nObs){
+    y[i] ~ dpois(lambda[i])
+
+    lambda[i] <- exp(intMu + betaMu*x[i] + eta[id[i]])
+  }
+  eta[] <- K[ , ]%*%alpha[]
+
+  for(j in 1:nKnots){
+      alpha[j] ~ dnorm(0,tau)
+  }
+  intMu ~ dnorm(0,1e-6)
+  betaMu ~ dnorm(0,1e-6)
+  tau ~ dgamma(1,0.01)
+})
+
+Rmodel <- nimbleModel(code = ast,
+                      constants = constants,
+                      data = data,
+
+                      inits = inits,
+                      dimensions = list(eta = 10,
+                                        K = c(10,4),
+                                        alpha = 4))
+
+On Sunday, February 1, 2015 at 4:21:59 PM UTC-7, pdevalpine wrote:
+> Correction to my previous reply:
+>
+> You can provide a constants entry for vector replacement, i.e.  for K.  I was seeing an error from that, but that was before I put in the explicit indexing.
+>
+> Perry
+>
+> On Feb 1, 2015, at 5:56 AM, Andrew Tredennick wrote:
+>
+> > Hi All,
+> >
+> > I am attempting to use nimble for an analysis of plant abundance through time and over space. The dataset is large (5x5km remote sensing image; so ~28,000 pixels observed over 27 years). So, for the spatial component I am using a dimension reduction strategy. However, nimble appears to not like my approach. Specifically, when I try to subset a parameter by a unique ID in space I get the error: "Error in x$targetNodeExpr[[iDim + 2]] : object of type 'symbol' is not subsettable". Below is a reproducible example that throws the same error at the 'nimbleModel' stage. In this example, each 'x' can be considered to be observed twice (once in each of two years) and so indexed for the spatial term 'eta'. 'eta', in turn, comes from an expansion of the modeled terms 'alpha' by the expansion matrix 'K'. I think the problem is coming from my indexing of 'eta' in the process model, but I could be wrong. Thank you in advance for any insight!
+> >
+> > Cheers,
+> > Andrew
+> >
+> > ####
+> > #### REPRODUCIBLE EXAMPLE
+> > ####
+> > library(nimble)
+> >
+> > x <- rpois(20, 15)
+> > y <- rpois(20, 1.5+0.8*x)
+> > K <- rexp(20,1)
+> > knots <- 4
+> > id <- rep(seq(1,10), 2)
+> >
+> > constants <- list(nObs = 20,
+> >                   nKnots = knots,
+> >                   x = x,
+> >                   K = K,
+> >                   id = id)
+> > data <- list(y = y)
+> > inits <- list(intMu=0, betaMu=0, alpha=rep(0,Knots))
+> >
+> > ast <- nimbleCode({
+> >   for(i in 1:nObs){
+> >     y[i] ~ dpois(lambda[i])
+> >     lambda[i] <- exp(intMu + betaMu*x[i] + eta[id[i],1])
+> >   }
+> >   eta <- K%*%asCol(alpha)
+> >   for(j in 1:nKnots){
+> >     alpha[j] ~ dnorm(0,tau)
+> >   }
+> >   intMu ~ dnorm(0,1e-6)
+> >   betaMu ~ dnorm(0,1e-6)
+> >   tau ~ dgamma(1,0.01)
+> > })
+> >
+> > #### THIS CHUNK THROWS THE ERROR
+> > Rmodel <- nimbleModel(code = ast,
+> >                       constants = constants,
+> >                       data = data,
+> >                       inits = inits)
+> > #### ERROR HERE
+> >
+> > mcmcspec <- configureMCMC(Rmodel, print=TRUE, thin=1)
+> > Rmcmc <- buildMCMC(mcmcspec)
+> > Cmodel <- compileNimble(Rmodel)
+> > Cmcmc <- compileNimble(Rmcmc, project = Cmodel)
+> > Cmcmc$run(100)
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u5946e0ea47653d8a at groups.google.com  Mon Feb  2 05:05:49 2015
+From: u5946e0ea47653d8a at groups.google.com (Daniel Turek)
+Date: Mon, 02 Feb 2015 05:05:49 +0000
+Subject: Re: 'symbol' not subsettable error; due to subsetting by index?
+Message-ID: <RnSlccIo5p4.Fl_AFY-U1KUJ@nimble-users.groups.google.com>
+In-Reply-To: <RnSlccIo5p4.B-ztHAsMpzMJ@nimble-users.groups.google.com>
+References: <RnSlccIo5p4.KZiw-vuBLI0J@nimble-users.groups.google.com> <RnSlccIo5p4.B-ztHAsMpzMJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/RnSlccIo5p4/m/Fl_AFY-U1KUJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Very good!  I'm glad we could resolve the problem quickly.
+
+Cheers,
+-- Daniel --
+
+On Sun, Feb 1, 2015 at 7:51 PM, Andrew Tredennick <atre...@gmail.com> wrote:
+
+> Hi Perry and Dave,
+>
+> Thanks for your quick responses, and on a Sunday! It does indeed seem that I was playing too fast and loose with my indexes. I got the following code work , which I think is in the spirit of your suggestions (i.e., explicit indexing and setting of node dimensions). I also see in my original code that K was a 20x1 vector when it should have been a 10x4 matrix. Sorry about that. The code I got to work is below. Thanks again, and I'll let you all know how it goes.
+>
+> Best,
+> Andrew
+>
+> #### Example
+> library(nimble)
+>
+> x <- rpois(20, 15)
+> y <- rpois(20, 1.5+0.8*x)
+> K <- matrix(rexp(10,1), 10, 4)
+> knots <- 4
+> id <- rep(seq(1,10), 2)
+>
+> constants <- list(nObs = 20,
+>                   nKnots = knots,
+>                   x = x,
+>                   K = K,
+>                   id = id)
+> data <- list(y = y)
+> inits <- list(intMu=0, betaMu=0, alpha=rep(0,knots))
+>
+> ast <- nimbleCode({
+>   for(i in 1:nObs){
+>     y[i] ~ dpois(lambda[i])
+>     lambda[i] <- exp(intMu + betaMu*x[i] + eta[id[i]])
+>   }
+>   eta[] <- K[ , ]%*%alpha[]
+>   for(j in 1:nKnots){
+>       alpha[j] ~ dnorm(0,tau)
+>   }
+>   intMu ~ dnorm(0,1e-6)
+>   betaMu ~ dnorm(0,1e-6)
+>   tau ~ dgamma(1,0.01)
+> })
+>
+> Rmodel <- nimbleModel(code = ast,
+>                       constants = constants,
+>                       data = data,
+>                       inits = inits,
+>                       dimensions = list(eta = 10,
+>                                         K = c(10,4),
+>                                         alpha = 4))
+>
+>
+>
+>
+> On Sunday, February 1, 2015 at 4:21:59 PM UTC-7, pdevalpine wrote:
+> > Correction to my previous reply:
+> >
+> > You can provide a constants entry for vector replacement, i.e.  for K.  I was seeing an error from that, but that was before I put in the explicit indexing.
+> >
+> > Perry
+> >
+> > On Feb 1, 2015, at 5:56 AM, Andrew Tredennick wrote:
+> >
+> > > Hi All,
+> > >
+> > > I am attempting to use nimble for an analysis of plant abundance through time and over space. The dataset is large (5x5km remote sensing image; so ~28,000 pixels observed over 27 years). So, for the spatial component I am using a dimension reduction strategy. However, nimble appears to not like my approach. Specifically, when I try to subset a parameter by a unique ID in space I get the error: "Error in x$targetNodeExpr[[iDim + 2]] : object of type 'symbol' is not subsettable". Below is a reproducible example that throws the same error at the 'nimbleModel' stage. In this example, each 'x' can be considered to be observed twice (once in each of two years) and so indexed for the spatial term 'eta'. 'eta', in turn, comes from an expansion of the modeled terms 'alpha' by the expansion matrix 'K'. I think the problem is coming from my indexing of 'eta' in the process model, but I could be wrong. Thank you in advance for any insight!
+> > >
+> > > Cheers,
+> > > Andrew
+> > >
+> > > ####
+> > > #### REPRODUCIBLE EXAMPLE
+> > > ####
+> > > library(nimble)
+> > >
+> > > x <- rpois(20, 15)
+> > > y <- rpois(20, 1.5+0.8*x)
+> > > K <- rexp(20,1)
+> > > knots <- 4
+> > > id <- rep(seq(1,10), 2)
+> > >
+> > > constants <- list(nObs = 20,
+> > >                   nKnots = knots,
+> > >                   x = x,
+> > >                   K = K,
+> > >                   id = id)
+> > > data <- list(y = y)
+> > > inits <- list(intMu=0, betaMu=0, alpha=rep(0,Knots))
+> > >
+> > > ast <- nimbleCode({
+> > >   for(i in 1:nObs){
+> > >     y[i] ~ dpois(lambda[i])
+> > >     lambda[i] <- exp(intMu + betaMu*x[i] + eta[id[i],1])
+> > >   }
+> > >   eta <- K%*%asCol(alpha)
+> > >   for(j in 1:nKnots){
+> > >     alpha[j] ~ dnorm(0,tau)
+> > >   }
+> > >   intMu ~ dnorm(0,1e-6)
+> > >   betaMu ~ dnorm(0,1e-6)
+> > >   tau ~ dgamma(1,0.01)
+> > > })
+> > >
+> > > #### THIS CHUNK THROWS THE ERROR
+> > > Rmodel <- nimbleModel(code = ast,
+> > >                       constants = constants,
+> > >                       data = data,
+> > >                       inits = inits)
+> > > #### ERROR HERE
+> > >
+> > > mcmcspec <- configureMCMC(Rmodel, print=TRUE, thin=1)
+> > > Rmcmc <- buildMCMC(mcmcspec)
+> > > Cmodel <- compileNimble(Rmodel)
+> > > Cmcmc <- compileNimble(Rmcmc, project = Cmodel)
+> > > Cmcmc$run(100)
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/3a1d1158-ff16-4b40-a0e8-a1420ef7fd76%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/996e5fc7-eb5e-403c-8d7a-12e30d4875d5%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/996e5fc7-eb5e-403c-8d7a-12e30d4875d5%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+

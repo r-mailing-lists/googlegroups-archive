@@ -1,0 +1,1623 @@
+From u8df77a1c1b1da14e at groups.google.com  Mon Mar 27 20:25:55 2017
+From: u8df77a1c1b1da14e at groups.google.com (Glenn Stauffer)
+Date: Mon, 27 Mar 2017 20:25:55 +0000
+Subject: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/OICPbWHRAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+
+Thanks
+
+### CODE ###
+library(nimble)
+
+pumpCode <- nimbleCode({
+for (i in 1:N){
+theta[i] ~ dgamma(alpha,beta)
+lambda[i] <- theta[i]*t[i]
+x[i] ~ dpois(lambda[i])
+}
+alpha ~ dexp(1.0)
+beta ~ dgamma(0.1,1.0)
+})
+
+parameters <- c("alpha","beta")
+nsim <- 20
+
+pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+
+results <- array(NA,dim=c(length(parameters),5,nsim))
+    dimnames(results) <- list(parameters,
+        c("Lower90","Median","Upper90","Mean","SD"))
+
+st <- Sys.time()
+for(s in 1:nsim){
+    stsim <- Sys.time()
+    # make the nimble model object, configure and create the MCMC algorithm, and run model
+        pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+                data = pumpData, inits = pumpInits)
+        Cpump <- compileNimble(pump)
+        pumpConf <- configureMCMC(pump, thin=2)
+        pumpMCMC <- buildMCMC(pumpConf)
+        CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+        out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+    # summarize results
+    usam <- do.call(rbind,out)
+    # store results
+    results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+                            apply(usam,2,mean),
+                            apply(usam,2,sd))
+    end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+    rm(list=ls()[grep("str.",ls())])
+    {cat("###############################################","\n")
+     cat("Memory size:",memory.size(),"\n")
+     cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+     cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+}
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Tue Mar 28 14:40:36 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Tue, 28 Mar 2017 14:40:36 +0000
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.3e2tCR4NAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/3e2tCR4NAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Glenn,
+
+Indeed, rebuilding the model and MCMC and recompiling many times results in
+a build-up of memory use (as well as linking in many DLLs (.so files) that
+can also eventually cause problems). This is on our radar screen, but we
+have some new features we're focused on developing before we focus on the
+memory usage.
+
+In your setting, I suspect you can simply build the model and MCMC and
+compile once. Then in each iteration of the simulation, you can insert new
+values (if simulating from the prior, this would be done by calling
+simulate()) into the model and rerun the MCMC.  When you rerun the MCMC,
+you'll want to reset it so that you don't retain the old samples nor the
+old MCMC adaptation information.  Please see Section 7.3 of the user manual
+regarding how to reset the MCMC.
+
+Let us know if you'd like more information or run into further problems.
+
+-Chris
+
+On Mon, Mar 27, 2017 at 1:25 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+> Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+>
+> Thanks
+>
+> ### CODE ###
+> library(nimble)
+>
+> pumpCode <- nimbleCode({
+> for (i in 1:N){
+> theta[i] ~ dgamma(alpha,beta)
+> lambda[i] <- theta[i]*t[i]
+> x[i] ~ dpois(lambda[i])
+> }
+> alpha ~ dexp(1.0)
+> beta ~ dgamma(0.1,1.0)
+> })
+>
+> parameters <- c("alpha","beta")
+> nsim <- 20
+>
+> pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+> pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+> pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+>
+> results <- array(NA,dim=c(length(parameters),5,nsim))
+>     dimnames(results) <- list(parameters,
+>         c("Lower90","Median","Upper90","Mean","SD"))
+>
+> st <- Sys.time()
+> for(s in 1:nsim){
+>     stsim <- Sys.time()
+>     # make the nimble model object, configure and create the MCMC algorithm, and run model
+>         pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+>                 data = pumpData, inits = pumpInits)
+>         Cpump <- compileNimble(pump)
+>         pumpConf <- configureMCMC(pump, thin=2)
+>         pumpMCMC <- buildMCMC(pumpConf)
+>         CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+>         out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+>     # summarize results
+>     usam <- do.call(rbind,out)
+>     # store results
+>     results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+>                             apply(usam,2,mean),
+>                             apply(usam,2,sd))
+>     end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+>     rm(list=ls()[grep("str.",ls())])
+>     {cat("###############################################","\n")
+>      cat("Memory size:",memory.size(),"\n")
+>      cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+>      cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+> }
+>
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Tue Mar 28 16:31:02 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Tue, 28 Mar 2017 16:31:02 +0000
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.i1jB5yQTAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.3e2tCR4NAgAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com> <gjboxyAlRb0.3e2tCR4NAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/i1jB5yQTAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Oh, also, I should mention that if you want to simulate into nodes that are flagged as data nodes, you'll need to use
+simulate(includeData = TRUE).  By default we protect data nodes from being simulated into since in a data analysis setting one would not change the data values.
+
+On Tue, Mar 28, 2017 at 7:40 AM, Chris Paciorek <christophe...@gmail.com> wrote:
+> Hi Glenn,
+>
+> Indeed, rebuilding the model and MCMC and recompiling many times results in
+> a build-up of memory use (as well as linking in many DLLs (.so files) that
+> can also eventually cause problems). This is on our radar screen, but we
+> have some new features we're focused on developing before we focus on the
+> memory usage.
+>
+> In your setting, I suspect you can simply build the model and MCMC and
+> compile once. Then in each iteration of the simulation, you can insert new
+> values (if simulating from the prior, this would be done by calling
+> simulate()) into the model and rerun the MCMC.  When you rerun the MCMC,
+> you'll want to reset it so that you don't retain the old samples nor the
+> old MCMC adaptation information.  Please see Section 7.3 of the user manual
+> regarding how to reset the MCMC.
+>
+> Let us know if you'd like more information or run into further problems.
+>
+> -Chris
+>
+> On Mon, Mar 27, 2017 at 1:25 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+> > I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+> > Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+> >
+> > Thanks
+> >
+> > ### CODE ###
+> > library(nimble)
+> >
+> > pumpCode <- nimbleCode({
+> > for (i in 1:N){
+> > theta[i] ~ dgamma(alpha,beta)
+> > lambda[i] <- theta[i]*t[i]
+> > x[i] ~ dpois(lambda[i])
+> > }
+> > alpha ~ dexp(1.0)
+> > beta ~ dgamma(0.1,1.0)
+> > })
+> >
+> > parameters <- c("alpha","beta")
+> > nsim <- 20
+> >
+> > pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+> > pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+> > pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+> >
+> > results <- array(NA,dim=c(length(parameters),5,nsim))
+> >     dimnames(results) <- list(parameters,
+> >         c("Lower90","Median","Upper90","Mean","SD"))
+> >
+> > st <- Sys.time()
+> > for(s in 1:nsim){
+> >     stsim <- Sys.time()
+> >     # make the nimble model object, configure and create the MCMC algorithm, and run model
+> >         pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+> >                 data = pumpData, inits = pumpInits)
+> >         Cpump <- compileNimble(pump)
+> >         pumpConf <- configureMCMC(pump, thin=2)
+> >         pumpMCMC <- buildMCMC(pumpConf)
+> >         CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+> >         out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+> >     # summarize results
+> >     usam <- do.call(rbind,out)
+> >     # store results
+> >     results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+> >                             apply(usam,2,mean),
+> >                             apply(usam,2,sd))
+> >     end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+> >     rm(list=ls()[grep("str.",ls())])
+> >     {cat("###############################################","\n")
+> >      cat("Memory size:",memory.size(),"\n")
+> >      cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+> >      cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+> > }
+> >
+> >
+> >
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u8df77a1c1b1da14e at groups.google.com  Tue Mar 28 21:41:04 2017
+From: u8df77a1c1b1da14e at groups.google.com (Glenn Stauffer)
+Date: Tue, 28 Mar 2017 21:41:04 +0000
+Subject: RE: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.RUBzzA8kAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.i1jB5yQTAgAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com> <gjboxyAlRb0.i1jB5yQTAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/RUBzzA8kAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Chris,
+
+I am not sure I understand. Are you saying that if I build and compile a model and MCMC function, then in my simulation loop I simply need to place the line “Cmod$setData(newData)”, where newData are some data I generate (not simulated from the model itself), and then I do not need to recompile the model nor recreate or recompile the MCMC function?  When I do simply set data like that, I sometimes get a repeated warning (“warning: problem initializing stochastic node, logProb less than -1e12”) and the posteriors seem to simply reflect the priors (with the pump example I don’t get the warning, but the posteriors don’t seem correct). I guess don’t understand how the previously compiled MCMC relates back to the previously compiled model, which now has newly inserted data.
+
+As to your other point about resetting the MCMC, I could do Cmcmc$run(10000, reset=TRUE), but if I use the runMCMC function it resets automatically, right? (i.e., reset=FALSE is not available)
+
+Glenn
+
+From: Chris Paciorek [mailto:christophe...@gmail.com]
+Sent: Tuesday, March 28, 2017 11:31 AM
+To: Glenn Stauffer
+Cc: nimble-users
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+
+Oh, also, I should mention that if you want to simulate into nodes that are flagged as data nodes, you'll need to use
+
+simulate(includeData = TRUE).  By default we protect data nodes from being simulated into since in a data analysis setting one would not change the data values.
+
+On Tue, Mar 28, 2017 at 7:40 AM, Chris Paciorek <christophe...@gmail.com> wrote:
+
+Hi Glenn,
+
+Indeed, rebuilding the model and MCMC and recompiling many times results in
+a build-up of memory use (as well as linking in many DLLs (.so files) that
+can also eventually cause problems). This is on our radar screen, but we
+have some new features we're focused on developing before we focus on the
+memory usage.
+
+In your setting, I suspect you can simply build the model and MCMC and
+compile once. Then in each iteration of the simulation, you can insert new
+values (if simulating from the prior, this would be done by calling
+simulate()) into the model and rerun the MCMC.  When you rerun the MCMC,
+you'll want to reset it so that you don't retain the old samples nor the
+old MCMC adaptation information.  Please see Section 7.3 of the user manual
+regarding how to reset the MCMC.
+
+Let us know if you'd like more information or run into further problems.
+
+-Chris
+
+On Mon, Mar 27, 2017 at 1:25 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+> Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+>
+> Thanks
+>
+> ### CODE ###
+> library(nimble)
+>
+> pumpCode <- nimbleCode({
+> for (i in 1:N){
+> theta[i] ~ dgamma(alpha,beta)
+> lambda[i] <- theta[i]*t[i]
+> x[i] ~ dpois(lambda[i])
+> }
+> alpha ~ dexp(1.0)
+> beta ~ dgamma(0.1,1.0)
+> })
+>
+> parameters <- c("alpha","beta")
+> nsim <- 20
+>
+> pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+> pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+> pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+>
+> results <- array(NA,dim=c(length(parameters),5,nsim))
+>     dimnames(results) <- list(parameters,
+>         c("Lower90","Median","Upper90","Mean","SD"))
+>
+> st <- Sys.time()
+> for(s in 1:nsim){
+>     stsim <- Sys.time()
+>     # make the nimble model object, configure and create the MCMC algorithm, and run model
+>         pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+>                 data = pumpData, inits = pumpInits)
+>         Cpump <- compileNimble(pump)
+>         pumpConf <- configureMCMC(pump, thin=2)
+>         pumpMCMC <- buildMCMC(pumpConf)
+>         CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+>         out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+>     # summarize results
+>     usam <- do.call(rbind,out)
+>     # store results
+>     results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+>                             apply(usam,2,mean),
+>                             apply(usam,2,sd))
+>     end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+>     rm(list=ls()[grep("str.",ls())])
+>     {cat("###############################################","\n")
+>      cat("Memory size:",memory.size(),"\n")
+>      cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+>      cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+> }
+>
+>
+>
+>
+
+> --
+
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Wed Mar 29 00:18:50 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Wed, 29 Mar 2017 00:18:50 +0000
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.PWeN5KssAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.RUBzzA8kAgAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com> <gjboxyAlRb0.RUBzzA8kAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/PWeN5KssAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes, it should be the case that you can change the data values (but not which nodes are treated as data as that changes the structure of the MCMC) and then use the same model and the same MCMC without recreating or recompiling them. The MCMC as an algorithm is set up based on the model structure and then operates on the model based on the values in the model -- it doesn't need to change just because you change the values sitting in the model.
+
+I just tested this on a very simple example and it seemed to go fine.
+ code=nimbleCode({
+ y ~ dnorm(mu, sd=.1)
+ mu ~ dnorm(0, sd = 4)
+ })
+m = nimbleModel(code, data = list(y=1))
+cm = compileNimble(m)
+mcmc = buildMCMC(m)
+cmcmc = compileNimble(mcmc,project=m)
+out1 = runMCMC(cmcmc,iter=500)  # posterior mean is near 1
+cm$setData(list(y = -2))
+out2 = runMCMC(cmcmc,iter=500)  # posterior mean is near -2
+
+I'm not sure what the issue with the posteriors seeming strange for you. Perhaps take a look at the example above and see if that helps show what we might be doing differently.
+
+The warning about logProb < -1e-12 would occur if a node does not have an initial value and when NIMBLE simulates into that node, the log probability density is very small. It's possible the simulated initial values are bad starting values (perhaps you have a very flat prior for some parameters?) and you may well want to set your own initial values for all the parameters (or at least all the top level / hyper parameters).
+
+Right, if using runMCMC() then it resets automatically.
+
+Feel free to write back if that doesn't clear things up.
+
+-chris
+
+On Tue, Mar 28, 2017 at 2:41 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> Thanks Chris,
+>
+>
+>
+> I am not sure I understand. Are you saying that if I build and compile a model and MCMC function, then in my simulation loop I simply need to place the line “Cmod$setData(newData)”, where newData are some data I generate (not simulated from the model itself), and then I do not need to recompile the model nor recreate or recompile the MCMC function?  When I do simply set data like that, I sometimes get a repeated warning (“warning: problem initializing stochastic node, logProb less than -1e12”) and the posteriors seem to simply reflect the priors (with the pump example I don’t get the warning, but the posteriors don’t seem correct). I guess don’t understand how the previously compiled MCMC relates back to the previously compiled model, which now has newly inserted data.
+>
+>
+>
+> As to your other point about resetting the MCMC, I could do Cmcmc$run(10000, reset=TRUE), but if I use the runMCMC function it resets automatically, right? (i.e., reset=FALSE is not available)
+>
+>
+>
+> Glenn
+>
+>
+>
+>
+>
+> From: Chris Paciorek [mailto:chr...@gmail.com]
+> Sent: Tuesday, March 28, 2017 11:31 AM
+> To: Glenn Stauffer
+> Cc: nimble-users
+> Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+>
+>
+>
+> Oh, also, I should mention that if you want to simulate into nodes that are flagged as data nodes, you'll need to use
+>
+> simulate(includeData = TRUE).  By default we protect data nodes from being simulated into since in a data analysis setting one would not change the data values.
+
+> On Tue, Mar 28, 2017 at 7:40 AM, Chris Paciorek <chr...@gmail.com> wrote:
+>
+> Hi Glenn,
+>
+> Indeed, rebuilding the model and MCMC and recompiling many times results in
+> a build-up of memory use (as well as linking in many DLLs (.so files) that
+> can also eventually cause problems). This is on our radar screen, but we
+> have some new features we're focused on developing before we focus on the
+> memory usage.
+>
+> In your setting, I suspect you can simply build the model and MCMC and
+> compile once. Then in each iteration of the simulation, you can insert new
+> values (if simulating from the prior, this would be done by calling
+> simulate()) into the model and rerun the MCMC.  When you rerun the MCMC,
+> you'll want to reset it so that you don't retain the old samples nor the
+> old MCMC adaptation information.  Please see Section 7.3 of the user manual
+> regarding how to reset the MCMC.
+>
+> Let us know if you'd like more information or run into further problems.
+>
+> -Chris
+
+> On Mon, Mar 27, 2017 at 1:25 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> > I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+> > Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+> >
+> > Thanks
+> >
+> > ### CODE ###
+> > library(nimble)
+> >
+> > pumpCode <- nimbleCode({
+> > for (i in 1:N){
+> > theta[i] ~ dgamma(alpha,beta)
+> > lambda[i] <- theta[i]*t[i]
+> > x[i] ~ dpois(lambda[i])
+> > }
+> > alpha ~ dexp(1.0)
+> > beta ~ dgamma(0.1,1.0)
+> > })
+> >
+> > parameters <- c("alpha","beta")
+> > nsim <- 20
+> >
+> > pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+> > pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+> > pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+> >
+> > results <- array(NA,dim=c(length(parameters),5,nsim))
+> >     dimnames(results) <- list(parameters,
+> >         c("Lower90","Median","Upper90","Mean","SD"))
+> >
+> > st <- Sys.time()
+> > for(s in 1:nsim){
+> >     stsim <- Sys.time()
+> >     # make the nimble model object, configure and create the MCMC algorithm, and run model
+> >         pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+> >                 data = pumpData, inits = pumpInits)
+> >         Cpump <- compileNimble(pump)
+> >         pumpConf <- configureMCMC(pump, thin=2)
+> >         pumpMCMC <- buildMCMC(pumpConf)
+> >         CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+> >         out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+> >     # summarize results
+> >     usam <- do.call(rbind,out)
+> >     # store results
+> >     results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+> >                             apply(usam,2,mean),
+> >                             apply(usam,2,sd))
+> >     end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+> >     rm(list=ls()[grep("str.",ls())])
+> >     {cat("###############################################","\n")
+> >      cat("Memory size:",memory.size(),"\n")
+> >      cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+> >      cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+> > }
+> >
+> >
+> >
+> >
+
+> > --
+
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Wed Mar 29 00:51:15 2017
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Wed, 29 Mar 2017 00:51:15 +0000
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.6FKewXAuAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.PWeN5KssAgAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com> <gjboxyAlRb0.PWeN5KssAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/6FKewXAuAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Another option instead of the setData line is simply:
+
+cm$y <- -2
+
+The model objects (compiled or uncompiled) provide natural R-like access to variables.
+
+Actually it is slightly preferable to cm$setData because as Chris pointed out you wouldn’t want to change which nodes are flagged as data or not unless you are going to rebuild and recompile.
+
+> On Mar 28, 2017, at 5:18 PM, Chris Paciorek <christophe...@gmail.com> wrote:
+>
+
+> Yes, it should be the case that you can change the data values (but not which nodes are treated as data as that changes the structure of the MCMC) and then use the same model and the same MCMC without recreating or recompiling them. The MCMC as an algorithm is set up based on the model structure and then operates on the model based on the values in the model -- it doesn't need to change just because you change the values sitting in the model.
+>
+> I just tested this on a very simple example and it seemed to go fine.
+>  code=nimbleCode({
+>  y ~ dnorm(mu, sd=.1)
+>  mu ~ dnorm(0, sd = 4)
+>  })
+> m = nimbleModel(code, data = list(y=1))
+> cm = compileNimble(m)
+> mcmc = buildMCMC(m)
+> cmcmc = compileNimble(mcmc,project=m)
+> out1 = runMCMC(cmcmc,iter=500)  # posterior mean is near 1
+> cm$setData(list(y = -2))
+> out2 = runMCMC(cmcmc,iter=500)  # posterior mean is near -2
+>
+> I'm not sure what the issue with the posteriors seeming strange for you. Perhaps take a look at the example above and see if that helps show what we might be doing differently.
+>
+> The warning about logProb < -1e-12 would occur if a node does not have an initial value and when NIMBLE simulates into that node, the log probability density is very small. It's possible the simulated initial values are bad starting values (perhaps you have a very flat prior for some parameters?) and you may well want to set your own initial values for all the parameters (or at least all the top level / hyper parameters).
+>
+> Right, if using runMCMC() then it resets automatically.
+>
+> Feel free to write back if that doesn't clear things up.
+>
+> -chris
+>
+> On Tue, Mar 28, 2017 at 2:41 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+> >
+> > Thanks Chris,
+> >
+> >
+> >
+> > I am not sure I understand. Are you saying that if I build and compile a model and MCMC function, then in my simulation loop I simply need to place the line “Cmod$setData(newData)”, where newData are some data I generate (not simulated from the model itself), and then I do not need to recompile the model nor recreate or recompile the MCMC function?  When I do simply set data like that, I sometimes get a repeated warning (“warning: problem initializing stochastic node, logProb less than -1e12”) and the posteriors seem to simply reflect the priors (with the pump example I don’t get the warning, but the posteriors don’t seem correct). I guess don’t understand how the previously compiled MCMC relates back to the previously compiled model, which now has newly inserted data.
+> >
+> >
+> >
+> > As to your other point about resetting the MCMC, I could do Cmcmc$run(10000, reset=TRUE), but if I use the runMCMC function it resets automatically, right? (i.e., reset=FALSE is not available)
+> >
+> >
+> >
+> > Glenn
+> >
+> >
+> >
+> >
+> >
+> > From: Chris Paciorek [mailto:chr...@gmail.com]
+> > Sent: Tuesday, March 28, 2017 11:31 AM
+> > To: Glenn Stauffer
+> > Cc: nimble-users
+> > Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+> >
+> >
+> >
+> > Oh, also, I should mention that if you want to simulate into nodes that are flagged as data nodes, you'll need to use
+> >
+> > simulate(includeData = TRUE).  By default we protect data nodes from being simulated into since in a data analysis setting one would not change the data values.
+> >
+> >
+> >
+> > On Tue, Mar 28, 2017 at 7:40 AM, Chris Paciorek <chr...@gmail.com> wrote:
+> >
+> > Hi Glenn,
+> >
+> > Indeed, rebuilding the model and MCMC and recompiling many times results in
+> > a build-up of memory use (as well as linking in many DLLs (.so files) that
+> > can also eventually cause problems). This is on our radar screen, but we
+> > have some new features we're focused on developing before we focus on the
+> > memory usage.
+> >
+> > In your setting, I suspect you can simply build the model and MCMC and
+> > compile once. Then in each iteration of the simulation, you can insert new
+> > values (if simulating from the prior, this would be done by calling
+> > simulate()) into the model and rerun the MCMC.  When you rerun the MCMC,
+> > you'll want to reset it so that you don't retain the old samples nor the
+> > old MCMC adaptation information.  Please see Section 7.3 of the user manual
+> > regarding how to reset the MCMC.
+> >
+> > Let us know if you'd like more information or run into further problems.
+> >
+> > -Chris
+> >
+> >
+> >
+> > On Mon, Mar 27, 2017 at 1:25 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+> > >
+> > > I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+> > > Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+> > >
+> > > Thanks
+> > >
+> > > ### CODE ###
+> > > library(nimble)
+> > >
+> > > pumpCode <- nimbleCode({
+> > > for (i in 1:N){
+> > > theta[i] ~ dgamma(alpha,beta)
+> > > lambda[i] <- theta[i]*t[i]
+> > > x[i] ~ dpois(lambda[i])
+> > > }
+> > > alpha ~ dexp(1.0)
+> > > beta ~ dgamma(0.1,1.0)
+> > > })
+> > >
+> > > parameters <- c("alpha","beta")
+> > > nsim <- 20
+> > >
+> > > pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+> > > pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+> > > pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+> > >
+> > > results <- array(NA,dim=c(length(parameters),5,nsim))
+> > >     dimnames(results) <- list(parameters,
+> > >         c("Lower90","Median","Upper90","Mean","SD"))
+> > >
+> > > st <- Sys.time()
+> > > for(s in 1:nsim){
+> > >     stsim <- Sys.time()
+> > >     # make the nimble model object, configure and create the MCMC algorithm, and run model
+> > >         pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+> > >                 data = pumpData, inits = pumpInits)
+> > >         Cpump <- compileNimble(pump)
+> > >         pumpConf <- configureMCMC(pump, thin=2)
+> > >         pumpMCMC <- buildMCMC(pumpConf)
+> > >         CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+> > >         out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+> > >     # summarize results
+> > >     usam <- do.call(rbind,out)
+> > >     # store results
+> > >     results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+> > >                             apply(usam,2,mean),
+> > >                             apply(usam,2,sd))
+> > >     end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+> > >     rm(list=ls()[grep("str.",ls())])
+> > >     {cat("###############################################","\n")
+> > >      cat("Memory size:",memory.size(),"\n")
+> > >      cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+> > >      cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+> > > }
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> >
+>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoBNJC24uwnAZ2r2NCxxq05xj1Mq1OY%2BjnAMt%3D2Ab-Beg%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoBNJC24uwnAZ2r2NCxxq05xj1Mq1OY%2BjnAMt%3D2Ab-Beg%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u8df77a1c1b1da14e at groups.google.com  Wed Mar 29 17:37:33 2017
+From: u8df77a1c1b1da14e at groups.google.com (Glenn Stauffer)
+Date: Wed, 29 Mar 2017 17:37:33 +0000
+Subject: RE: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.tx05klplAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.PWeN5KssAgAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com> <gjboxyAlRb0.PWeN5KssAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/tx05klplAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Chris and Perry,
+
+Thanks again for the help. Your example does work as expected. The only thing I was doing differently was omitting the data statement when the model was defined (so the model was compiled with NAs rather than data), then setting data prior to the call to runMCMC. Doing so does lead to the behavior I described, even in your example (see code below). Not sure if it is supposed to work that way, but in any case it seems that as long I include data (anything with the right name and dimension) in the call to nimbleModel, then I can compile and subsequently change the data and all looks OK.
+
+Glenn
+
+code=nimbleCode({
+
+y ~ dnorm(mu, sd=.1)
+
+mu ~ dnorm(0, sd = 4)
+
+})
+
+m = nimbleModel(code)                                               # this doesn’t seem to work
+
+#m = nimbleModel(code,data=list(y=5))               # this does seem to work
+
+cm = compileNimble(m)
+
+mcmc = buildMCMC(m)
+
+cmcmc = compileNimble(mcmc,project=m)
+
+cm$setData(list(y = 1))
+
+out1 = runMCMC(cmcmc,niter=10000)  # posterior mean is near 1
+
+cm$setData(list(y = -2))
+
+out2 = runMCMC(cmcmc,niter=10000)  # posterior mean is near -2
+
+x11(8,4);par(mfrow=c(1,2));hist(out1);hist(out2)
+
+From: Perry de Valpine [mailto:pdeva...@berkeley.edu]
+Sent: Tuesday, March 28, 2017 7:51 PM
+To: Chris Paciorek
+Cc: Glenn Stauffer; nimble-users
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+
+Another option instead of the setData line is simply:
+
+cm$y <- -2
+
+The model objects (compiled or uncompiled) provide natural R-like access to variables.
+
+Actually it is slightly preferable to cm$setData because as Chris pointed out you wouldn’t want to change which nodes are flagged as data or not unless you are going to rebuild and recompile.
+
+> On Mar 28, 2017, at 5:18 PM, Chris Paciorek <christophe...@gmail.com> wrote:
+>
+>
+
+> Yes, it should be the case that you can change the data values (but not which nodes are treated as data as that changes the structure of the MCMC) and then use the same model and the same MCMC without recreating or recompiling them. The MCMC as an algorithm is set up based on the model structure and then operates on the model based on the values in the model -- it doesn't need to change just because you change the values sitting in the model.
+>
+>
+>
+> I just tested this on a very simple example and it seemed to go fine.
+>
+>  code=nimbleCode({
+>
+>  y ~ dnorm(mu, sd=.1)
+>
+>  mu ~ dnorm(0, sd = 4)
+>
+>  })
+>
+> m = nimbleModel(code, data = list(y=1))
+>
+> cm = compileNimble(m)
+>
+> mcmc = buildMCMC(m)
+>
+> cmcmc = compileNimble(mcmc,project=m)
+>
+> out1 = runMCMC(cmcmc,iter=500)  # posterior mean is near 1
+>
+> cm$setData(list(y = -2))
+>
+> out2 = runMCMC(cmcmc,iter=500)  # posterior mean is near -2
+>
+>
+>
+> I'm not sure what the issue with the posteriors seeming strange for you. Perhaps take a look at the example above and see if that helps show what we might be doing differently.
+>
+>
+>
+> The warning about logProb < -1e-12 would occur if a node does not have an initial value and when NIMBLE simulates into that node, the log probability density is very small. It's possible the simulated initial values are bad starting values (perhaps you have a very flat prior for some parameters?) and you may well want to set your own initial values for all the parameters (or at least all the top level / hyper parameters).
+>
+>
+>
+> Right, if using runMCMC() then it resets automatically.
+>
+>
+>
+> Feel free to write back if that doesn't clear things up.
+>
+>
+>
+> -chris
+
+> On Tue, Mar 28, 2017 at 2:41 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> Thanks Chris,
+>
+>
+>
+> I am not sure I understand. Are you saying that if I build and compile a model and MCMC function, then in my simulation loop I simply need to place the line “Cmod$setData(newData)”, where newData are some data I generate (not simulated from the model itself), and then I do not need to recompile the model nor recreate or recompile the MCMC function?  When I do simply set data like that, I sometimes get a repeated warning (“warning: problem initializing stochastic node, logProb less than -1e12”) and the posteriors seem to simply reflect the priors (with the pump example I don’t get the warning, but the posteriors don’t seem correct). I guess don’t understand how the previously compiled MCMC relates back to the previously compiled model, which now has newly inserted data.
+>
+>
+>
+> As to your other point about resetting the MCMC, I could do Cmcmc$run(10000, reset=TRUE), but if I use the runMCMC function it resets automatically, right? (i.e., reset=FALSE is not available)
+>
+>
+>
+> Glenn
+>
+>
+>
+>
+>
+> From: Chris Paciorek [mailto:christophe...@gmail.com]
+> Sent: Tuesday, March 28, 2017 11:31 AM
+> To: Glenn Stauffer
+> Cc: nimble-users
+> Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+>
+>
+>
+> Oh, also, I should mention that if you want to simulate into nodes that are flagged as data nodes, you'll need to use
+>
+> simulate(includeData = TRUE).  By default we protect data nodes from being simulated into since in a data analysis setting one would not change the data values.
+
+> On Tue, Mar 28, 2017 at 7:40 AM, Chris Paciorek <christophe...@gmail.com> wrote:
+>
+> Hi Glenn,
+>
+> Indeed, rebuilding the model and MCMC and recompiling many times results in
+> a build-up of memory use (as well as linking in many DLLs (.so files) that
+> can also eventually cause problems). This is on our radar screen, but we
+> have some new features we're focused on developing before we focus on the
+> memory usage.
+>
+> In your setting, I suspect you can simply build the model and MCMC and
+> compile once. Then in each iteration of the simulation, you can insert new
+> values (if simulating from the prior, this would be done by calling
+> simulate()) into the model and rerun the MCMC.  When you rerun the MCMC,
+> you'll want to reset it so that you don't retain the old samples nor the
+> old MCMC adaptation information.  Please see Section 7.3 of the user manual
+> regarding how to reset the MCMC.
+>
+> Let us know if you'd like more information or run into further problems.
+>
+> -Chris
+
+> On Mon, Mar 27, 2017 at 1:25 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> > I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+> > Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+> >
+> > Thanks
+> >
+> > ### CODE ###
+> > library(nimble)
+> >
+> > pumpCode <- nimbleCode({
+> > for (i in 1:N){
+> > theta[i] ~ dgamma(alpha,beta)
+> > lambda[i] <- theta[i]*t[i]
+> > x[i] ~ dpois(lambda[i])
+> > }
+> > alpha ~ dexp(1.0)
+> > beta ~ dgamma(0.1,1.0)
+> > })
+> >
+> > parameters <- c("alpha","beta")
+> > nsim <- 20
+> >
+> > pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+> > pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+> > pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+> >
+> > results <- array(NA,dim=c(length(parameters),5,nsim))
+> >     dimnames(results) <- list(parameters,
+> >         c("Lower90","Median","Upper90","Mean","SD"))
+> >
+> > st <- Sys.time()
+> > for(s in 1:nsim){
+> >     stsim <- Sys.time()
+> >     # make the nimble model object, configure and create the MCMC algorithm, and run model
+> >         pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+> >                 data = pumpData, inits = pumpInits)
+> >         Cpump <- compileNimble(pump)
+> >         pumpConf <- configureMCMC(pump, thin=2)
+> >         pumpMCMC <- buildMCMC(pumpConf)
+> >         CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+> >         out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+> >     # summarize results
+> >     usam <- do.call(rbind,out)
+> >     # store results
+> >     results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+> >                             apply(usam,2,mean),
+> >                             apply(usam,2,sd))
+> >     end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+> >     rm(list=ls()[grep("str.",ls())])
+> >     {cat("###############################################","\n")
+> >      cat("Memory size:",memory.size(),"\n")
+> >      cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+> >      cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+> > }
+> >
+> >
+> >
+> >
+
+> > --
+
+> >
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoBNJC24uwnAZ2r2NCxxq05xj1Mq1OY%2BjnAMt%3D2Ab-Beg%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoBNJC24uwnAZ2r2NCxxq05xj1Mq1OY%2BjnAMt%3D2Ab-Beg%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Wed Mar 29 19:46:48 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Wed, 29 Mar 2017 19:46:48 +0000
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.7XELDWhsAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.tx05klplAgAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com> <gjboxyAlRb0.tx05klplAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/7XELDWhsAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Glenn, that explains things.
+
+In creating the MCMC we put a sampler on all stochastic nodes that are not flagged as data. This means that if you don't set data before calling buildMCMC (or configureMCMC if one does that before buildMCMC), then samplers will be assigned to what will become the data nodes but NIMBLE does not yet know to interpret as data nodes.
+
+I'd have to look more carefully to see what happens in terms of the sampling if you do setData on nodes that are already set up to be sampled in the MCMC, but presumably that explains why your posteriors looked like your priors or were screwy in other ways.
+
+On Wed, Mar 29, 2017 at 10:37 AM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> Chris and Perry,
+>
+> Thanks again for the help. Your example does work as expected. The only thing I was doing differently was omitting the data statement when the model was defined (so the model was compiled with NAs rather than data), then setting data prior to the call to runMCMC. Doing so does lead to the behavior I described, even in your example (see code below). Not sure if it is supposed to work that way, but in any case it seems that as long I include data (anything with the right name and dimension) in the call to nimbleModel, then I can compile and subsequently change the data and all looks OK.
+>
+> Glenn
+>
+>
+>
+> code=nimbleCode({
+>
+> y ~ dnorm(mu, sd=.1)
+>
+> mu ~ dnorm(0, sd = 4)
+>
+> })
+>
+> m = nimbleModel(code)                                               # this doesn’t seem to work
+>
+> #m = nimbleModel(code,data=list(y=5))               # this does seem to work
+>
+> cm = compileNimble(m)
+>
+> mcmc = buildMCMC(m)
+>
+> cmcmc = compileNimble(mcmc,project=m)
+>
+> cm$setData(list(y = 1))
+>
+> out1 = runMCMC(cmcmc,niter=10000)  # posterior mean is near 1
+>
+> cm$setData(list(y = -2))
+>
+> out2 = runMCMC(cmcmc,niter=10000)  # posterior mean is near -2
+>
+> x11(8,4);par(mfrow=c(1,2));hist(out1);hist(out2)
+>
+>
+>
+> From: Perry de Valpine [mailto:pde...@berkeley.edu]
+> Sent: Tuesday, March 28, 2017 7:51 PM
+> To: Chris Paciorek
+> Cc: Glenn Stauffer; nimble-users
+>
+> Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+>
+
+>
+>
+> Another option instead of the setData line is simply:
+>
+>
+>
+> cm$y <- -2
+>
+>
+>
+> The model objects (compiled or uncompiled) provide natural R-like access to variables.
+>
+>
+>
+> Actually it is slightly preferable to cm$setData because as Chris pointed out you wouldn’t want to change which nodes are flagged as data or not unless you are going to rebuild and recompile.
+>
+>
+>
+>
+>
+>
+
+> > On Mar 28, 2017, at 5:18 PM, Chris Paciorek <chr...@gmail.com> wrote:
+> >
+> >
+
+> > Yes, it should be the case that you can change the data values (but not which nodes are treated as data as that changes the structure of the MCMC) and then use the same model and the same MCMC without recreating or recompiling them. The MCMC as an algorithm is set up based on the model structure and then operates on the model based on the values in the model -- it doesn't need to change just because you change the values sitting in the model.
+> >
+> >
+> >
+> > I just tested this on a very simple example and it seemed to go fine.
+> >
+> >  code=nimbleCode({
+> >
+> >  y ~ dnorm(mu, sd=.1)
+> >
+> >  mu ~ dnorm(0, sd = 4)
+> >
+> >  })
+> >
+> > m = nimbleModel(code, data = list(y=1))
+> >
+> > cm = compileNimble(m)
+> >
+> > mcmc = buildMCMC(m)
+> >
+> > cmcmc = compileNimble(mcmc,project=m)
+> >
+> > out1 = runMCMC(cmcmc,iter=500)  # posterior mean is near 1
+> >
+> > cm$setData(list(y = -2))
+> >
+> > out2 = runMCMC(cmcmc,iter=500)  # posterior mean is near -2
+> >
+> >
+> >
+> > I'm not sure what the issue with the posteriors seeming strange for you. Perhaps take a look at the example above and see if that helps show what we might be doing differently.
+> >
+> >
+> >
+> > The warning about logProb < -1e-12 would occur if a node does not have an initial value and when NIMBLE simulates into that node, the log probability density is very small. It's possible the simulated initial values are bad starting values (perhaps you have a very flat prior for some parameters?) and you may well want to set your own initial values for all the parameters (or at least all the top level / hyper parameters).
+> >
+> >
+> >
+> > Right, if using runMCMC() then it resets automatically.
+> >
+> >
+> >
+> > Feel free to write back if that doesn't clear things up.
+> >
+> >
+> >
+> > -chris
+
+> > On Tue, Mar 28, 2017 at 2:41 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> > Thanks Chris,
+> >
+> >
+> >
+> > I am not sure I understand. Are you saying that if I build and compile a model and MCMC function, then in my simulation loop I simply need to place the line “Cmod$setData(newData)”, where newData are some data I generate (not simulated from the model itself), and then I do not need to recompile the model nor recreate or recompile the MCMC function?  When I do simply set data like that, I sometimes get a repeated warning (“warning: problem initializing stochastic node, logProb less than -1e12”) and the posteriors seem to simply reflect the priors (with the pump example I don’t get the warning, but the posteriors don’t seem correct). I guess don’t understand how the previously compiled MCMC relates back to the previously compiled model, which now has newly inserted data.
+> >
+> >
+> >
+> > As to your other point about resetting the MCMC, I could do Cmcmc$run(10000, reset=TRUE), but if I use the runMCMC function it resets automatically, right? (i.e., reset=FALSE is not available)
+> >
+> >
+> >
+> > Glenn
+> >
+> >
+> >
+> >
+> >
+> > From: Chris Paciorek [mailto:chr...@gmail.com]
+> > Sent: Tuesday, March 28, 2017 11:31 AM
+> > To: Glenn Stauffer
+> > Cc: nimble-users
+> > Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+> >
+> >
+> >
+> > Oh, also, I should mention that if you want to simulate into nodes that are flagged as data nodes, you'll need to use
+> >
+> > simulate(includeData = TRUE).  By default we protect data nodes from being simulated into since in a data analysis setting one would not change the data values.
+
+> > On Tue, Mar 28, 2017 at 7:40 AM, Chris Paciorek <chr...@gmail.com> wrote:
+> >
+> > Hi Glenn,
+> >
+> > Indeed, rebuilding the model and MCMC and recompiling many times results in
+> > a build-up of memory use (as well as linking in many DLLs (.so files) that
+> > can also eventually cause problems). This is on our radar screen, but we
+> > have some new features we're focused on developing before we focus on the
+> > memory usage.
+> >
+> > In your setting, I suspect you can simply build the model and MCMC and
+> > compile once. Then in each iteration of the simulation, you can insert new
+> > values (if simulating from the prior, this would be done by calling
+> > simulate()) into the model and rerun the MCMC.  When you rerun the MCMC,
+> > you'll want to reset it so that you don't retain the old samples nor the
+> > old MCMC adaptation information.  Please see Section 7.3 of the user manual
+> > regarding how to reset the MCMC.
+> >
+> > Let us know if you'd like more information or run into further problems.
+> >
+> > -Chris
+
+> > On Mon, Mar 27, 2017 at 1:25 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+
+> > > I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+> > > Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+> > >
+> > > Thanks
+> > >
+> > > ### CODE ###
+> > > library(nimble)
+> > >
+> > > pumpCode <- nimbleCode({
+> > > for (i in 1:N){
+> > > theta[i] ~ dgamma(alpha,beta)
+> > > lambda[i] <- theta[i]*t[i]
+> > > x[i] ~ dpois(lambda[i])
+> > > }
+> > > alpha ~ dexp(1.0)
+> > > beta ~ dgamma(0.1,1.0)
+> > > })
+> > >
+> > > parameters <- c("alpha","beta")
+> > > nsim <- 20
+> > >
+> > > pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+> > > pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+> > > pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+> > >
+> > > results <- array(NA,dim=c(length(parameters),5,nsim))
+> > >     dimnames(results) <- list(parameters,
+> > >         c("Lower90","Median","Upper90","Mean","SD"))
+> > >
+> > > st <- Sys.time()
+> > > for(s in 1:nsim){
+> > >     stsim <- Sys.time()
+> > >     # make the nimble model object, configure and create the MCMC algorithm, and run model
+> > >         pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+> > >                 data = pumpData, inits = pumpInits)
+> > >         Cpump <- compileNimble(pump)
+> > >         pumpConf <- configureMCMC(pump, thin=2)
+> > >         pumpMCMC <- buildMCMC(pumpConf)
+> > >         CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+> > >         out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+> > >     # summarize results
+> > >     usam <- do.call(rbind,out)
+> > >     # store results
+> > >     results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+> > >                             apply(usam,2,mean),
+> > >                             apply(usam,2,sd))
+> > >     end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+> > >     rm(list=ls()[grep("str.",ls())])
+> > >     {cat("###############################################","\n")
+> > >      cat("Memory size:",memory.size(),"\n")
+> > >      cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+> > >      cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+> > > }
+> > >
+> > >
+> > >
+> > >
+
+> > > --
+
+> > >
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > > To post to this group, send email to nimble-users@googlegroups.com.
+
+> > >
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > To post to this group, send email to nimble-users@googlegroups.com.
+
+> >
+> > To view this discussion on the web visit
+
+> > https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoBNJC24uwnAZ2r2NCxxq05xj1Mq1OY%2BjnAMt%3D2Ab-Beg%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoBNJC24uwnAZ2r2NCxxq05xj1Mq1OY%2BjnAMt%3D2Ab-Beg%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Thu Mar 30 06:11:10 2017
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Thu, 30 Mar 2017 06:11:10 +0000
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.cOKhkHqOAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.7XELDWhsAgAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com> <gjboxyAlRb0.7XELDWhsAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/cOKhkHqOAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Sorry to only be seeing this thread now!  Glenn, I'm very happy to hear about your use of the MCMC functions, and we're happy to help support.
+
+To answer (what seems to be) the only lingering question:
+If you don't set any data into the model, then build an MCMC, and compile both model and MCMC, and *then* set data into the model, then the MCMC algorithm will already have samplers assigned to what are now data nodes in the model.  Therefore, the MCMC will treat these as posterior predictive nodes (trailing stochastic nodes), and will sample them and give a posterior predictive distribution.  However, this "posterior" predictive distribution will only be reflective of the top-level priors, since there will actually be no fixed "data" being conditioned upon.  Furthermore, the MCMC would not be recording samples for these trailing end nodes, so you wouldn't actually see that their values are changing, anyway (unless you added monitors to them, to record the samples, using addMonitors() method).
+
+Anyway, yes, your best best is to set the data at the time of model building (nimbleModel(..., data=...)), then build and compile the MCMC.  Then you can re-use the same compiled MCMC algorithm, changing initial values, and the fixed (within an MCMC run) data values between executions of the MCMC algorithm, if you wish.  Either cm$y <- [new data values], or mc$setData(list(y = [new data values])) will work just fine.
+
+Keep us posted, Glenn.
+
+Cheers,
+Daniel
+
+On Wed, Mar 29, 2017 at 9:46 PM, Chris Paciorek <christophe...@gmail.com> wrote:
+
+> Hi Glenn, that explains things.
+>
+> In creating the MCMC we put a sampler on all stochastic nodes that are not flagged as data. This means that if you don't set data before calling buildMCMC (or configureMCMC if one does that before buildMCMC), then samplers will be assigned to what will become the data nodes but NIMBLE does not yet know to interpret as data nodes.
+>
+> I'd have to look more carefully to see what happens in terms of the sampling if you do setData on nodes that are already set up to be sampled in the MCMC, but presumably that explains why your posteriors looked like your priors or were screwy in other ways.
+>
+>
+>
+
+>
+> On Wed, Mar 29, 2017 at 10:37 AM, Glenn Stauffer <gesta...@gmail.com> wrote:
+> >
+> > Chris and Perry,
+> >
+> > Thanks again for the help. Your example does work as expected. The only thing I was doing differently was omitting the data statement when the model was defined (so the model was compiled with NAs rather than data), then setting data prior to the call to runMCMC. Doing so does lead to the behavior I described, even in your example (see code below). Not sure if it is supposed to work that way, but in any case it seems that as long I include data (anything with the right name and dimension) in the call to nimbleModel, then I can compile and subsequently change the data and all looks OK.
+> >
+> > Glenn
+> >
+> >
+> >
+> > code=nimbleCode({
+> >
+> > y ~ dnorm(mu, sd=.1)
+> >
+> > mu ~ dnorm(0, sd = 4)
+> >
+> > })
+> >
+> > m = nimbleModel(code)                                               # this doesn’t seem to work
+> >
+> > #m = nimbleModel(code,data=list(y=5))               # this does seem to work
+> >
+> > cm = compileNimble(m)
+> >
+> > mcmc = buildMCMC(m)
+> >
+> > cmcmc = compileNimble(mcmc,project=m)
+> >
+> > cm$setData(list(y = 1))
+> >
+> > out1 = runMCMC(cmcmc,niter=10000)  # posterior mean is near 1
+> >
+> > cm$setData(list(y = -2))
+> >
+> > out2 = runMCMC(cmcmc,niter=10000)  # posterior mean is near -2
+> >
+> > x11(8,4);par(mfrow=c(1,2));hist(out1);hist(out2)
+> >
+> >
+> >
+> > From: Perry de Valpine [mailto:pdeva...@berkeley.edu]
+> > Sent: Tuesday, March 28, 2017 7:51 PM
+> > To: Chris Paciorek
+> > Cc: Glenn Stauffer; nimble-users
+> >
+> > Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+> >
+> >
+> >
+> > Another option instead of the setData line is simply:
+> >
+> >
+> >
+> > cm$y <- -2
+> >
+> >
+> >
+> > The model objects (compiled or uncompiled) provide natural R-like access to variables.
+> >
+> >
+> >
+> > Actually it is slightly preferable to cm$setData because as Chris pointed out you wouldn’t want to change which nodes are flagged as data or not unless you are going to rebuild and recompile.
+> >
+> >
+> >
+> >
+> >
+> >
+> > >
+> > > On Mar 28, 2017, at 5:18 PM, Chris Paciorek <christophe...@gmail.com> wrote:
+> > >
+> > >
+> > >
+> > > Yes, it should be the case that you can change the data values (but not which nodes are treated as data as that changes the structure of the MCMC) and then use the same model and the same MCMC without recreating or recompiling them. The MCMC as an algorithm is set up based on the model structure and then operates on the model based on the values in the model -- it doesn't need to change just because you change the values sitting in the model.
+> > >
+> > >
+> > >
+> > > I just tested this on a very simple example and it seemed to go fine.
+> > >
+> > >  code=nimbleCode({
+> > >
+> > >  y ~ dnorm(mu, sd=.1)
+> > >
+> > >  mu ~ dnorm(0, sd = 4)
+> > >
+> > >  })
+> > >
+> > > m = nimbleModel(code, data = list(y=1))
+> > >
+> > > cm = compileNimble(m)
+> > >
+> > > mcmc = buildMCMC(m)
+> > >
+> > > cmcmc = compileNimble(mcmc,project=m)
+> > >
+> > > out1 = runMCMC(cmcmc,iter=500)  # posterior mean is near 1
+> > >
+> > > cm$setData(list(y = -2))
+> > >
+> > > out2 = runMCMC(cmcmc,iter=500)  # posterior mean is near -2
+> > >
+> > >
+> > >
+> > > I'm not sure what the issue with the posteriors seeming strange for you. Perhaps take a look at the example above and see if that helps show what we might be doing differently.
+> > >
+> > >
+> > >
+> > > The warning about logProb < -1e-12 would occur if a node does not have an initial value and when NIMBLE simulates into that node, the log probability density is very small. It's possible the simulated initial values are bad starting values (perhaps you have a very flat prior for some parameters?) and you may well want to set your own initial values for all the parameters (or at least all the top level / hyper parameters).
+> > >
+> > >
+> > >
+> > > Right, if using runMCMC() then it resets automatically.
+> > >
+> > >
+> > >
+> > > Feel free to write back if that doesn't clear things up.
+> > >
+> > >
+> > >
+> > > -chris
+> > >
+> > >
+> > >
+> > > On Tue, Mar 28, 2017 at 2:41 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+> > >
+> > > Thanks Chris,
+> > >
+> > >
+> > >
+> > > I am not sure I understand. Are you saying that if I build and compile a model and MCMC function, then in my simulation loop I simply need to place the line “Cmod$setData(newData)”, where newData are some data I generate (not simulated from the model itself), and then I do not need to recompile the model nor recreate or recompile the MCMC function?  When I do simply set data like that, I sometimes get a repeated warning (“warning: problem initializing stochastic node, logProb less than -1e12”) and the posteriors seem to simply reflect the priors (with the pump example I don’t get the warning, but the posteriors don’t seem correct). I guess don’t understand how the previously compiled MCMC relates back to the previously compiled model, which now has newly inserted data.
+> > >
+> > >
+> > >
+> > > As to your other point about resetting the MCMC, I could do Cmcmc$run(10000, reset=TRUE), but if I use the runMCMC function it resets automatically, right? (i.e., reset=FALSE is not available)
+> > >
+> > >
+> > >
+> > > Glenn
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > From: Chris Paciorek [mailto:chr...@gmail.com]
+> > > Sent: Tuesday, March 28, 2017 11:31 AM
+> > > To: Glenn Stauffer
+> > > Cc: nimble-users
+> > > Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+> > >
+> > >
+> > >
+> > > Oh, also, I should mention that if you want to simulate into nodes that are flagged as data nodes, you'll need to use
+> > >
+> > > simulate(includeData = TRUE).  By default we protect data nodes from being simulated into since in a data analysis setting one would not change the data values.
+> > >
+> > >
+> > >
+> > > On Tue, Mar 28, 2017 at 7:40 AM, Chris Paciorek <christophe...@gmail.com> wrote:
+> > >
+> > > Hi Glenn,
+> > >
+> > > Indeed, rebuilding the model and MCMC and recompiling many times results in
+> > > a build-up of memory use (as well as linking in many DLLs (.so files) that
+> > > can also eventually cause problems). This is on our radar screen, but we
+> > > have some new features we're focused on developing before we focus on the
+> > > memory usage.
+> > >
+> > > In your setting, I suspect you can simply build the model and MCMC and
+> > > compile once. Then in each iteration of the simulation, you can insert new
+> > > values (if simulating from the prior, this would be done by calling
+> > > simulate()) into the model and rerun the MCMC.  When you rerun the MCMC,
+> > > you'll want to reset it so that you don't retain the old samples nor the
+> > > old MCMC adaptation information.  Please see Section 7.3 of the user manual
+> > > regarding how to reset the MCMC.
+> > >
+> > > Let us know if you'd like more information or run into further problems.
+> > >
+> > > -Chris
+> > >
+> > >
+> > >
+> > > On Mon, Mar 27, 2017 at 1:25 PM, Glenn Stauffer <gesta...@gmail.com> wrote:
+> > > >
+> > > > I am new to nimble, but am interested in using it for some simulation studies because in some simple tests it seemed faster than JAGS. But I've run into a problem that I am not even sure is a nimble problem or an R problem - I apologize if it's a simple R issue. Here it is. After each call to "nimbleModel", several R objects (all beginning with "str.") are added to the workspace, and after many simulations the workspace really begins to bog down. This is true even if I remove all those objects after every iteration. How can I prevent this gradual accumulation of memory hogging by R?
+> > > > Below is a toy example based on the pump illustration in the nimble manual (albeit always using the same dataset in every simulation). What I am noting is that the returned value for "memory.size()" keeps growing, sometimes by a little bit, and sometimes by bigger jumps.
+> > > >
+> > > > Thanks
+> > > >
+> > > > ### CODE ###
+> > > > library(nimble)
+> > > >
+> > > > pumpCode <- nimbleCode({
+> > > > for (i in 1:N){
+> > > > theta[i] ~ dgamma(alpha,beta)
+> > > > lambda[i] <- theta[i]*t[i]
+> > > > x[i] ~ dpois(lambda[i])
+> > > > }
+> > > > alpha ~ dexp(1.0)
+> > > > beta ~ dgamma(0.1,1.0)
+> > > > })
+> > > >
+> > > > parameters <- c("alpha","beta")
+> > > > nsim <- 20
+> > > >
+> > > > pumpConsts <- list(N = 10,t = c(94.3, 15.7, 62.9, 126, 5.24,31.4, 1.05, 1.05, 2.1, 10.5))
+> > > > pumpData <- list(x = c(5, 1, 5, 14, 3, 19, 1, 1, 4, 22))
+> > > > pumpInits <- list(alpha = 1, beta = 1,theta = rep(0.1, pumpConsts$N))
+> > > >
+> > > > results <- array(NA,dim=c(length(parameters),5,nsim))
+> > > >     dimnames(results) <- list(parameters,
+> > > >         c("Lower90","Median","Upper90","Mean","SD"))
+> > > >
+> > > > st <- Sys.time()
+> > > > for(s in 1:nsim){
+> > > >     stsim <- Sys.time()
+> > > >     # make the nimble model object, configure and create the MCMC algorithm, and run model
+> > > >         pump <- nimbleModel(code = pumpCode, name = 'pump', constants = pumpConsts,
+> > > >                 data = pumpData, inits = pumpInits)
+> > > >         Cpump <- compileNimble(pump)
+> > > >         pumpConf <- configureMCMC(pump, thin=2)
+> > > >         pumpMCMC <- buildMCMC(pumpConf)
+> > > >         CpumpMCMC <- compileNimble(pumpMCMC, project = pump)
+> > > >         out <- runMCMC(CpumpMCMC,niter=800,nburnin=100,nchains=3,inits=pumpInits)
+> > > >     # summarize results
+> > > >     usam <- do.call(rbind,out)
+> > > >     # store results
+> > > >     results[,,s] <- cbind(t(apply(usam,2,quantile,c(0.05,0.5,0.95))),
+> > > >                             apply(usam,2,mean),
+> > > >                             apply(usam,2,sd))
+> > > >     end.time = Sys.time(); elapsed.time = round(difftime(end.time, stsim, units='mins'), dig = 2)
+> > > >     rm(list=ls()[grep("str.",ls())])
+> > > >     {cat("###############################################","\n")
+> > > >      cat("Memory size:",memory.size(),"\n")
+> > > >      cat("        Sim: ",s,"\n");cat("        duration: ",elapsed.time,"minutes","\n")
+> > > >      cat("        Total elapsed:",round(difftime(Sys.time(),st,units = "hours"),2),"hours","\n")}
+> > > > }
+> > > >
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > > > To post to this group, send email to nimble-users@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/50c8481b-dfbc-43d4-9e29-5dfaa244194d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > >
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > > To post to this group, send email to nimble-users@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoBNJC24uwnAZ2r2NCxxq05xj1Mq1OY%2BjnAMt%3D2Ab-Beg%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoBNJC24uwnAZ2r2NCxxq05xj1Mq1OY%2BjnAMt%3D2Ab-Beg%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoKU6-1qJOCavfhe1XsOfN_S5e3PhBkQJVV6jw-uNR1rw%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LoKU6-1qJOCavfhe1XsOfN_S5e3PhBkQJVV6jw-uNR1rw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u8df77a1c1b1da14e at groups.google.com  Thu Mar 30 13:02:42 2017
+From: u8df77a1c1b1da14e at groups.google.com (Glenn Stauffer)
+Date: Thu, 30 Mar 2017 13:02:42 +0000
+Subject: RE: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.FOfebu-kAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/FOfebu-kAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Daniel,
+
+Thanks for chiming in. I think that makes sense, and I’m beginning to get a better handle now on the build-compile-run process. Now, maybe my next step is to get the chains to run in parallel!
+
+Glenn
+
+From udd632bd3bbcdd7e9 at groups.google.com  Thu Mar 30 14:25:05 2017
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Thu, 30 Mar 2017 14:25:05 +0000
+Subject: Re: R workspace cogs up after repeated data simulation/analysis iterations
+Message-ID: <gjboxyAlRb0.g7tkdm6pAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <gjboxyAlRb0.FOfebu-kAgAJ@nimble-users.groups.google.com>
+References: <gjboxyAlRb0.OICPbWHRAQAJ@nimble-users.groups.google.com> <gjboxyAlRb0.FOfebu-kAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/gjboxyAlRb0/m/g7tkdm6pAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Funny you should bring that up.
+
+I’d like to warn folks that running mclapply to try to run several chains of a compiled NIMBLE MCMC will not do what you hope for.  Each thread will end up using the same compiled algorithm and model, so they will interfere with each other and not be correct.  We’ll work on something better, but for now the recommendation is to include building and compiling the model and MCMC inside of the function being handed to mclapply.  That way each thread will have its own copy of a NIMBLE model and algorithms.
+
+Perry
+
+> On Mar 30, 2017, at 6:02 AM, Glenn Stauffer <gesta...@gmail.com> wrote:
+>
+> Daniel,
+>
+> Thanks for chiming in. I think that makes sense, and I’m beginning to get a better handle now on the build-compile-run process. Now, maybe my next step is to get the chains to run in parallel!
+>
+> Glenn
+

@@ -1,0 +1,1888 @@
+From u4074ca87a2bb60c5 at groups.google.com  Wed Nov  1 14:00:51 2017
+From: u4074ca87a2bb60c5 at groups.google.com (G. Bronson)
+Date: Wed, 01 Nov 2017 14:00:51 +0000
+Subject: Random effects in Nimble
+Message-ID: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/C0NxuRxgApI/m/2zxeaZtuBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Good morning Nimble team,
+
+I am new to Bayesian modelling and trying to learn the ropes with Nimble using the built-in R dataset "CO2". Briefly, this dataset describes CO2 uptake as a function of concentration (continuous) and treatment (chilled or non-chilled). The experiment took place in 2 locations ("Type"), with 6 plants at each location ("Plant"), and 7 observations per plant. The design is perfectly balanced (2*6*7 = 84 observtions total).
+
+I have had success comparing frequentist and Bayesian models until I attempted to add random effects. This is the GLMM equivalent of the model I am trying to run:
+
+co2_glm <- lmer(uptake ~ conc + Treatment + (1|Type), data = up, REML = FALSE)
+
+So, I am trying to add a random effect for intercept for each of the 2 values of type. (I am ignoring "plant" for now)
+
+The model builds and compiles in Nimble without error, but throws the following error when I attempt to use configureMCMC or buildMCMC:
+
+Error in parse(text = targetNode)[[1]][3:length(expr)] :
+  object of type 'symbol' is not subsettable
+
+## Load libraries ##
+library(nimble)
+library(lme4) # For GLMM
+
+### Plant CO2 Uptake Data ###
+
+# Copy dataset
+up <- CO2
+
+# Centre continuous variable
+up$conc <- up$conc - mean(up$conc) # CO2 concentration
+
+# Convert treatment to a dummy variable (1 = chilled, 0 = nonchilled)
+up$Treatment.chilled <- ifelse(up$Treatment == "chilled", 1, 0)
+
+# Convert group identities to integer
+up$Type.num <- as.integer(up$Type)
+up$Plant.num <- as.integer(substr(up$Plant, 3, 3))
+
+### Plant CO2 Uptake - CONCENTRATION AND TREATMENT, RANDOM EFFECT FOR LOCATION BUT IGNORING PLANT IDENTITY ###
+
+## Run standard GLMM ##
+co2_glm <- lmer(uptake ~ conc + Treatment + (1|Type), data = up, REML = FALSE) # Maximum likelihood because random effects are nested and balanced
+summary(co2_glm)
+
+## Set up Bayesian model ##
+code <- nimbleCode({
+
+  # N observations
+  for (i in 1:N) {
+      uptake[i] ~ dnorm(mean = predicted.uptake[i], sd = sigma_error)
+      predicted.uptake[i] <- alpha_grand + alpha_type[Type[i]] + beta1 * conc[i] + beta2 * Treatment[i]
+  }
+  for (j in 1:J) {
+   alpha_type[j] ~ dnorm(0, tau_type)
+  }
+
+  # Priors
+  alpha_grand ~ dnorm(mean = 0, sd = 1000)
+  tau_type ~ dgamma(shape = 0.01, rate = 0.01)
+  beta1 ~ dnorm(mean = 0, sd = 1000)
+  beta2 ~ dnorm(mean = 0, sd = 1000)
+  sigma_error ~ dunif(min = 0, max = 1000)
+
+})
+
+## Define constants, data, and initial values ##
+
+# Constants
+N <- nrow(up) # Number of observations
+J <- as.integer(max(unique(up$Type.num))) # Number of type
+constants <- list(N = N, J = J)
+
+# Data
+data <- list(
+  uptake = up$uptake,
+  conc = up$conc,
+  Treatment = up$Treatment.chilled,
+  Type = up$Type.num
+)
+
+inits <- list(
+  alpha_grand = co2_glm@beta[1],
+  beta1 = co2_glm@beta[2],
+  beta2 = co2_glm@beta[3],
+  sigma_error = 1,
+  tau_type = 0.01,
+  alpha_type = vector(mode = "numeric", length = J)
+)
+for (j in 1:J) {
+  inits$alpha_type[j] = co2_glm@u[j]
+}
+
+## Define Nimble model ##
+nimbleOptions(allowDynamicIndexing = TRUE) # Allow dynamic indexing
+co2_mod <- nimbleModel(name = "co2_mod", code = code, constants = constants, data = data, inits = inits, check = TRUE)
+
+## Compile model ##
+co2_mod_c <- compileNimble(co2_mod)
+
+## Build and compile MCMC ##
+co2_mcmc_config <- configureMCMC(co2_mod, print = TRUE) # Print detected conjugate relationships & default RW Metropolis sampler
+co2_mcmc <- buildMCMC(co2_mod)
+co2_mcmc_c <- compileNimble(co2_mcmc, project = co2_mod)
+
+---
+
+Eventually, I hope to build a model using the complete nested random effect structure (accounting for "type" and "plant") equivalent to the following GLMM:
+
+co2_glm <- lmer(uptake ~ conc + Treatment + (1|Type/Plant), data = up, REML = FALSE)
+
+But first I must figure out how to work with a single level of random effects in Nimble.
+
+Many thanks,
+
+George
+
+From u4074ca87a2bb60c5 at groups.google.com  Wed Nov  1 15:50:08 2017
+From: u4074ca87a2bb60c5 at groups.google.com (G. Bronson)
+Date: Wed, 01 Nov 2017 15:50:08 +0000
+Subject: Re: Random effects in Nimble
+Message-ID: <C0NxuRxgApI.LPUGC5J0BQAJ@nimble-users.groups.google.com>
+In-Reply-To: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com>
+References: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/C0NxuRxgApI/m/LPUGC5J0BQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+As suggested in another thread, I upgraded to the latest development version and my model now appears to run in the configuration given above. Thus, the issue may have been a bug in 0.6.6 with dynamic indexing that was subsequently fixed in the development version.
+
+Best,
+
+George
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Wed Nov  1 17:59:40 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Wed, 01 Nov 2017 17:59:40 +0000
+Subject: Re: Random effects in Nimble
+Message-ID: <C0NxuRxgApI.AHv5Px20BQAJ@nimble-users.groups.google.com>
+In-Reply-To: <C0NxuRxgApI.LPUGC5J0BQAJ@nimble-users.groups.google.com>
+References: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com> <C0NxuRxgApI.LPUGC5J0BQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/C0NxuRxgApI/m/AHv5Px20BQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi George,
+
+Yes that error was due to a bug we caught a month or two ago and fixed in the development version. It should be fixed in the CRAN version in a few days once we have the new 0.6-7 release up.
+
+One other comment on your example - in the model code you showed, Type is fixed and is not a parameter in the model. So if you put "Type" into 'constants' rather than into 'data', NIMBLE will carry out the MCMC more efficiently because it will recognize that Type never changes and so certain quantities in the MCMC don't need to be recalculated. That said, if your real model has a prior on Type, then you'd want to initialize Type via 'inits'.
+
+chris
+
+On Wed, Nov 1, 2017 at 8:50 AM, G. Bronson <glados.ther...@gmail.com> wrote:
+
+> As suggested in another thread, I upgraded to the latest development version and my model now appears to run in the configuration given above. Thus, the issue may have been a bug in 0.6.6 with dynamic indexing that was subsequently fixed in the development version.
+>
+> Best,
+>
+> George
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/eac6cd2b-697b-4bb4-a12a-8e27c390f7e2%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/eac6cd2b-697b-4bb4-a12a-8e27c390f7e2%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u4074ca87a2bb60c5 at groups.google.com  Wed Nov  1 22:30:20 2017
+From: u4074ca87a2bb60c5 at groups.google.com (G. Bronson)
+Date: Wed, 01 Nov 2017 22:30:20 +0000
+Subject: Re: Random effects in Nimble
+Message-ID: <C0NxuRxgApI.IzGHceLCBQAJ@nimble-users.groups.google.com>
+In-Reply-To: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com>
+References: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/C0NxuRxgApI/m/IzGHceLCBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you for the helpful advice, Chris. With that issue dealt with, I am now attempting to create the nested random effect model (with "Plant" nested under "Type" to refer to the 7 observations for each of the 6 plants for each of the 2 types) I alluded to originally.
+
+Although it applies to JAGS, I have followed the advice in this post: https://stackoverflow.com/questions/40841554/nested-random-effect-in-jags-winbugs
+
+However, the structure they use seems to create an error in Nimble.
+
+## Load libraries ##
+library(nimble)
+library(lme4) # For GLMM
+
+### Plant CO2 Uptake Data ###
+
+# Copy dataset
+up <- CO2
+
+# Centre continuous variable
+up$conc <- up$conc - mean(up$conc) # CO2 concentration
+
+# Convert treatment to a dummy variable (1 = chilled, 0 = nonchilled)
+up$Treatment.chilled <- ifelse(up$Treatment == "chilled", 1, 0)
+
+# Convert group identities to integer
+up$Type.num <- as.integer(up$Type)
+
+up$Plant.num <- as.integer(up$Plant)
+
+## Run standard GLMM ##
+
+co2_glm <- lmer(uptake ~ conc + Treatment + (1|Type/Plant), data = up, REML = FALSE) # Maximum likelihood because random effects are nested and balanced
+
+summary(co2_glm)
+
+## Set up Bayesian model ##
+code <- nimbleCode({
+
+  # Nested random effects
+
+  for (i in 1:N) {
+
+    alpha_type[Type[i]] ~ dnorm(0, tau_type)
+    alpha_plant[Plant[i]] ~ dnorm(alpha_type[Type[i]], tau_plant)
+
+  }
+
+  # N observations
+  for (i in 1:N) {
+    uptake[i] ~ dnorm(mean = predicted.uptake[i], sd = sigma_error)
+
+    predicted.uptake[i] <- alpha_grand + alpha_plant[Plant[i]] + beta1 * conc[i] + beta2 * Treatment[i]
+
+  }
+
+  # Priors
+  alpha_grand ~ dnorm(mean = 0, sd = 1000)
+  tau_type ~ dgamma(shape = 0.01, rate = 0.01)
+
+  tau_plant ~ dgamma(shape = 0.01, rate = 0.01)
+
+  beta1 ~ dnorm(mean = 0, sd = 1000)
+  beta2 ~ dnorm(mean = 0, sd = 1000)
+  sigma_error ~ dunif(min = 0, max = 1000)
+
+})
+
+## Define constants, data, and initial values ##
+
+# Constants
+N <- nrow(up) # Number of observations
+
+constants <- list(N = N, Type = up$Type.num, Plant = up$Plant.num)
+J <- length(unique(up$Type.num))
+K <- length(unique(up$Plant.num))
+
+# Data
+data <- list(
+  uptake = up$uptake,
+  conc = up$conc,
+  Treatment = up$Treatment.chilled
+
+)
+
+inits <- list(
+  alpha_grand = co2_glm@beta[1],
+  beta1 = co2_glm@beta[2],
+  beta2 = co2_glm@beta[3],
+  sigma_error = 1,
+
+  tau_type = 1,
+  tau_plant = 1,
+  alpha_type = vector(mode = "numeric", length = J),
+  alpha_plant = vector(mode = "numeric", length = K)
+)
+
+## Define Nimble model ##
+nimbleOptions(allowDynamicIndexing = TRUE) # Allow dynamic indexing
+co2_mod <- nimbleModel(name = "co2_mod", code = code, constants = constants, data = data, inits = inits, check = TRUE)
+
+--
+Upon trying to define the model, I receive the following error:
+
+defining model...
+Error: There are multiple definitions for nodes:alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2]
+
+While it is true that the for loop defines alpha_type and alpha_plant multiple times, the definitions should be identical, and the syntax apparently works in other systems. Is this syntax not implemented in Nimble or do I have an error in my script? Either way, I am looking for the best way to define nested random effects like this in Nimble.
+
+Thank you again for your time and your patience,
+
+George
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Thu Nov  2 00:38:58 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Thu, 02 Nov 2017 00:38:58 +0000
+Subject: Re: Random effects in Nimble
+Message-ID: <C0NxuRxgApI.4haDUufJBQAJ@nimble-users.groups.google.com>
+In-Reply-To: <C0NxuRxgApI.IzGHceLCBQAJ@nimble-users.groups.google.com>
+References: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com> <C0NxuRxgApI.IzGHceLCBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/C0NxuRxgApI/m/4haDUufJBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi George,
+
+It looks like this is a difference between how NIMBLE processes the BUGS model code and how JAGS does it. To run this in NIMBLE, you'll need to define the distribution for each alpha_type and alpha_plant element only once.
+
+Check to make sure I've got the nested indexing correct, but it looks to me like the following should work in NIMBLE - simply add a vector that maps from plant to type and then define each alpha_type and alpha_plant random effects only once.
+
+constants$plant_to_type <- rep(1:2, each = 6)
+
+code <- nimbleCode({
+for(j in 1:2)
+
+    alpha_type[j] ~ dnorm(0, tau_type)
+
+for(k in 1:12)
+    alpha_plant[k] ~ dnorm(alpha_type[plant_to_type[k]], tau_plant)
+# remainder of model code...
+})
+
+Chris
+
+On Wed, Nov 1, 2017 at 3:30 PM, G. Bronson <glados.ther...@gmail.com> wrote:
+
+> Thank you for the helpful advice, Chris. With that issue dealt with, I am now attempting to create the nested random effect model (with "Plant" nested under "Type" to refer to the 7 observations for each of the 6 plants for each of the 2 types) I alluded to originally.
+>
+> Although it applies to JAGS, I have followed the advice in this post: https://stackoverflow.com/questions/40841554/nested-random-effect-in-jags-winbugs
+>
+> However, the structure they use seems to create an error in Nimble.
+>
+> ## Load libraries ##
+> library(nimble)
+> library(lme4) # For GLMM
+>
+> ### Plant CO2 Uptake Data ###
+>
+> # Copy dataset
+> up <- CO2
+>
+> # Centre continuous variable
+> up$conc <- up$conc - mean(up$conc) # CO2 concentration
+>
+> # Convert treatment to a dummy variable (1 = chilled, 0 = nonchilled)
+> up$Treatment.chilled <- ifelse(up$Treatment == "chilled", 1, 0)
+>
+> # Convert group identities to integer
+> up$Type.num <- as.integer(up$Type)
+> up$Plant.num <- as.integer(up$Plant)
+>
+> ## Run standard GLMM ##
+> co2_glm <- lmer(uptake ~ conc + Treatment + (1|Type/Plant), data = up, REML = FALSE) # Maximum likelihood because random effects are nested and balanced
+> summary(co2_glm)
+>
+> ## Set up Bayesian model ##
+> code <- nimbleCode({
+>
+>   # Nested random effects
+>   for (i in 1:N) {
+>     alpha_type[Type[i]] ~ dnorm(0, tau_type)
+>     alpha_plant[Plant[i]] ~ dnorm(alpha_type[Type[i]], tau_plant)
+>   }
+>
+>   # N observations
+>   for (i in 1:N) {
+>     uptake[i] ~ dnorm(mean = predicted.uptake[i], sd = sigma_error)
+>     predicted.uptake[i] <- alpha_grand + alpha_plant[Plant[i]] + beta1 * conc[i] + beta2 * Treatment[i]
+>   }
+>
+>   # Priors
+>   alpha_grand ~ dnorm(mean = 0, sd = 1000)
+>   tau_type ~ dgamma(shape = 0.01, rate = 0.01)
+>   tau_plant ~ dgamma(shape = 0.01, rate = 0.01)
+>   beta1 ~ dnorm(mean = 0, sd = 1000)
+>   beta2 ~ dnorm(mean = 0, sd = 1000)
+>   sigma_error ~ dunif(min = 0, max = 1000)
+>
+> })
+>
+> ## Define constants, data, and initial values ##
+>
+> # Constants
+> N <- nrow(up) # Number of observations
+> constants <- list(N = N, Type = up$Type.num, Plant = up$Plant.num)
+> J <- length(unique(up$Type.num))
+> K <- length(unique(up$Plant.num))
+>
+> # Data
+> data <- list(
+>   uptake = up$uptake,
+>   conc = up$conc,
+>   Treatment = up$Treatment.chilled
+> )
+>
+> inits <- list(
+>   alpha_grand = co2_glm@beta[1],
+>   beta1 = co2_glm@beta[2],
+>   beta2 = co2_glm@beta[3],
+>   sigma_error = 1,
+>   tau_type = 1,
+>   tau_plant = 1,
+>   alpha_type = vector(mode = "numeric", length = J),
+>   alpha_plant = vector(mode = "numeric", length = K)
+> )
+>
+> ## Define Nimble model ##
+> nimbleOptions(allowDynamicIndexing = TRUE) # Allow dynamic indexing
+> co2_mod <- nimbleModel(name = "co2_mod", code = code, constants = constants, data = data, inits = inits, check = TRUE)
+>
+> --
+> Upon trying to define the model, I receive the following error:
+>
+> defining model...
+> Error: There are multiple definitions for nodes:alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[1],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2],alpha_type[2]
+>
+> While it is true that the for loop defines alpha_type and alpha_plant multiple times, the definitions should be identical, and the syntax apparently works in other systems. Is this syntax not implemented in Nimble or do I have an error in my script? Either way, I am looking for the best way to define nested random effects like this in Nimble.
+>
+> Thank you again for your time and your patience,
+>
+> George
+
+> --
+
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f043566f-4f87-47b7-8b04-5efa4ffaa7ab%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f043566f-4f87-47b7-8b04-5efa4ffaa7ab%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u4074ca87a2bb60c5 at groups.google.com  Fri Nov  3 22:43:01 2017
+From: u4074ca87a2bb60c5 at groups.google.com (G. Bronson)
+Date: Fri, 03 Nov 2017 22:43:01 +0000
+Subject: Re: Random effects in Nimble
+Message-ID: <C0NxuRxgApI.JuQG_0IoBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com>
+References: <C0NxuRxgApI.2zxeaZtuBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/C0NxuRxgApI/m/JuQG_0IoBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, Chris. It works perfectly!
+
+George
+
+From u249ba2bf0beed132 at groups.google.com  Mon Nov  6 16:36:22 2017
+From: u249ba2bf0beed132 at groups.google.com (John Tipton)
+Date: Mon, 06 Nov 2017 16:36:22 +0000
+Subject: Using posterior samples as prior in new model
+Message-ID: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/N3GfPSCkQHM/m/J--PnP7_BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Nimble Devs,
+
+First, thanks for the great package. I find NIMBLE to be very useful and flexible.
+
+I have been working on a problem with the goal of a complete accounting for uncertainty. The data arise in a way such that a "cut" distribution is needed (i.e. in the posterior the posterior conditional for variable B depends on variable A but the posterior conditional for A does not depend on B).
+
+I can fit this model without fully accounting for uncertainty by first fitting the model for A and using the posterior mean of A (A_bar) to sample from [B|A_bar]. If I were to code this model by hand, I would first run the MCMC for A (without B) and get L posterior draws of A. Then, the pseudocode for MCMC iteration (k) out of K when sampling B is
+
+1. Sample A^(k) from the first stage model fit posterior independent of the current MCMC state
+    - A^(k) is a random sample from {A^(1), ..., A^(L)} ( In R: A <- A_posterior[sample(1:L, 1)])
+
+2. Update B^(k) using A^(k)
+    - B ~ [B| A^(k)]
+
+Is there a way to do this in NIMBLE by passing the posterior of A as data and then using the sample function in R? For example, the non-working MWE
+
+## Nimble Model
+library(nimble)
+code <-  nimbleCode({
+  mu <- mu_post[sample(sample_vec, 1)]
+  for (i in 1:N) {
+    y[i] ~ dnorm(mu, sigma)
+  }
+  sigma ~ dunif(0, 100)
+})
+
+## simulated data
+N<- 100
+y <- rnorm(N, 2, 3)
+
+## "first state model fit"
+L <- 1000
+mu_post <- rnorm(L, 2, 0.01)
+
+dat.fit <- list(y=y, mu_post=mu_post)
+constants.fit <- list(sample_vec=1:L, N=N, L=L)
+dimensions.fit <- list(mu_post=L)
+
+model_fit <- nimbleModel(code, data=dat.fit, constants=constants.fit,
+                         dimensions=dimensions.fit,
+                         check=TRUE)
+
+From udd632bd3bbcdd7e9 at groups.google.com  Mon Nov  6 17:38:09 2017
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Mon, 06 Nov 2017 17:38:09 +0000
+Subject: Re: Using posterior samples as prior in new model
+Message-ID: <N3GfPSCkQHM.G_Lphtc7BwAJ@nimble-users.groups.google.com>
+In-Reply-To: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+References: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/N3GfPSCkQHM/m/G_Lphtc7BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi John,
+
+I'd like to clarify what you are trying to do.
+
+Do you want the posterior of A to be sampled as a prior for mu in model B?
+
+Perry
+
+On Mon, Nov 6, 2017 at 8:36 AM, John Tipton <jtip...@gmail.com> wrote:
+
+> Hi Nimble Devs,
+>
+> First, thanks for the great package. I find NIMBLE to be very useful and flexible.
+>
+> I have been working on a problem with the goal of a complete accounting for uncertainty. The data arise in a way such that a "cut" distribution is needed (i.e. in the posterior the posterior conditional for variable B depends on variable A but the posterior conditional for A does not depend on B).
+>
+> I can fit this model without fully accounting for uncertainty by first fitting the model for A and using the posterior mean of A (A_bar) to sample from [B|A_bar]. If I were to code this model by hand, I would first run the MCMC for A (without B) and get L posterior draws of A. Then, the pseudocode for MCMC iteration (k) out of K when sampling B is
+>
+> 1. Sample A^(k) from the first stage model fit posterior independent of the current MCMC state
+>     - A^(k) is a random sample from {A^(1), ..., A^(L)} ( In R: A <- A_posterior[sample(1:L, 1)])
+>
+> 2. Update B^(k) using A^(k)
+>     - B ~ [B| A^(k)]
+>
+> Is there a way to do this in NIMBLE by passing the posterior of A as data and then using the sample function in R? For example, the non-working MWE
+>
+>
+> ## Nimble Model
+> library(nimble)
+> code <-  nimbleCode({
+>   mu <- mu_post[sample(sample_vec, 1)]
+>   for (i in 1:N) {
+>     y[i] ~ dnorm(mu, sigma)
+>   }
+>   sigma ~ dunif(0, 100)
+> })
+>
+>
+> ## simulated data
+> N<- 100
+> y <- rnorm(N, 2, 3)
+>
+> ## "first state model fit"
+> L <- 1000
+> mu_post <- rnorm(L, 2, 0.01)
+>
+> dat.fit <- list(y=y, mu_post=mu_post)
+> constants.fit <- list(sample_vec=1:L, N=N, L=L)
+> dimensions.fit <- list(mu_post=L)
+>
+> model_fit <- nimbleModel(code, data=dat.fit, constants=constants.fit,
+>                          dimensions=dimensions.fit,
+>                          check=TRUE)
+>
+>
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/9879f447-3338-411f-8d71-aa9f990494de%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9879f447-3338-411f-8d71-aa9f990494de%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u249ba2bf0beed132 at groups.google.com  Mon Nov  6 17:43:43 2017
+From: u249ba2bf0beed132 at groups.google.com (John Tipton)
+Date: Mon, 06 Nov 2017 17:43:43 +0000
+Subject: Re: Using posterior samples as prior in new model
+Message-ID: <N3GfPSCkQHM.ybgktKsDBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+References: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/N3GfPSCkQHM/m/ybgktKsDBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,
+
+That's almost correct. I'd like to estimate mu in the first model, then use the posterior distribution (assumed known and independent of sigma) to estimate sigma in the second model.
+
+On Monday, November 6, 2017 at 11:38:09 AM UTC-6, pdevalpine wrote:
+
+> Hi John,
+>
+> I'd like to clarify what you are trying to do.
+>
+> Do you want the posterior of A to be sampled as a prior for mu in model B?
+>
+> Perry
+
+> On Mon, Nov 6, 2017 at 8:36 AM, John Tipton <jtip...@gmail.com> wrote:
+
+> > Hi Nimble Devs,
+> >
+> > First, thanks for the great package. I find NIMBLE to be very useful and flexible.
+> >
+> > I have been working on a problem with the goal of a complete accounting for uncertainty. The data arise in a way such that a "cut" distribution is needed (i.e. in the posterior the posterior conditional for variable B depends on variable A but the posterior conditional for A does not depend on B).
+> >
+> > I can fit this model without fully accounting for uncertainty by first fitting the model for A and using the posterior mean of A (A_bar) to sample from [B|A_bar]. If I were to code this model by hand, I would first run the MCMC for A (without B) and get L posterior draws of A. Then, the pseudocode for MCMC iteration (k) out of K when sampling B is
+> >
+> > 1. Sample A^(k) from the first stage model fit posterior independent of the current MCMC state
+> >     - A^(k) is a random sample from {A^(1), ..., A^(L)} ( In R: A <- A_posterior[sample(1:L, 1)])
+> >
+> > 2. Update B^(k) using A^(k)
+> >     - B ~ [B| A^(k)]
+> >
+> > Is there a way to do this in NIMBLE by passing the posterior of A as data and then using the sample function in R? For example, the non-working MWE
+> >
+> >
+> > ## Nimble Model
+> > library(nimble)
+> > code <-  nimbleCode({
+> >   mu <- mu_post[sample(sample_vec, 1)]
+> >   for (i in 1:N) {
+> >     y[i] ~ dnorm(mu, sigma)
+> >   }
+> >   sigma ~ dunif(0, 100)
+> > })
+> >
+> >
+> > ## simulated data
+> > N<- 100
+> > y <- rnorm(N, 2, 3)
+> >
+> > ## "first state model fit"
+> > L <- 1000
+> > mu_post <- rnorm(L, 2, 0.01)
+> >
+> > dat.fit <- list(y=y, mu_post=mu_post)
+> > constants.fit <- list(sample_vec=1:L, N=N, L=L)
+> > dimensions.fit <- list(mu_post=L)
+> >
+> > model_fit <- nimbleModel(code, data=dat.fit, constants=constants.fit,
+> >                          dimensions=dimensions.fit,
+> >                          check=TRUE)
+> >
+> >
+> >
+> >
+> >
+> >
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/9879f447-3338-411f-8d71-aa9f990494de%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9879f447-3338-411f-8d71-aa9f990494de%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Mon Nov  6 17:57:54 2017
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Mon, 06 Nov 2017 17:57:54 +0000
+Subject: Re: Using posterior samples as prior in new model
+Message-ID: <N3GfPSCkQHM.9jN3dus8BwAJ@nimble-users.groups.google.com>
+In-Reply-To: <N3GfPSCkQHM.ybgktKsDBwAJ@nimble-users.groups.google.com>
+References: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com> <N3GfPSCkQHM.ybgktKsDBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/N3GfPSCkQHM/m/9jN3dus8BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ok.  What I'm trying to clarify is "use the posterior distribution... to estimate sigma in the second model."
+
+I know you're non-working MWE is intended as a sketch to convey the idea, but I'm not sure what "mu <- mu_post[sample(sample_vec, 1)]" is supposed to mean.  BUGS is a declarative model language.  A deterministic node normally doesn't do something stochastic (although there's nothing in nimble preventing it), and it won't be recomputed unless its parent nodes change, which apparently won't happen after sample_vec is set once.  If what you want is that in the model for sigma (which you call B in the generic description), mu follows the posterior of the first model, you might be looking for
+
+mu ~ dcat(mu_post[1:L], uniform_probs[1:L])
+
+where uniform_probs are all set to 1/L.
+
+Note that you can build both models and then set the data in the second model at a later step.  Unlike BUGS and JAGS, you don't need to provide the data at the outset.
+
+If the sampling of mu is inefficient, one could make a new sampler, say that draws from nearby values of mu in mu_post.
+
+Let me know if that helps or if the real problem is different.
+
+Perry
+
+On Mon, Nov 6, 2017 at 9:43 AM, John Tipton <jtip...@gmail.com> wrote:
+
+> Hi Perry,
+>
+> That's almost correct. I'd like to estimate mu in the first model, then use the posterior distribution (assumed known and independent of sigma) to estimate sigma in the second model.
+>
+>
+>
+> On Monday, November 6, 2017 at 11:38:09 AM UTC-6, pdevalpine wrote:
+> > Hi John,
+> >
+> > I'd like to clarify what you are trying to do.
+> >
+> > Do you want the posterior of A to be sampled as a prior for mu in model B?
+> >
+> > Perry
+> >
+> >
+> > On Mon, Nov 6, 2017 at 8:36 AM, John Tipton <jtip...@gmail.com> wrote:
+> > > Hi Nimble Devs,
+> > >
+> > > First, thanks for the great package. I find NIMBLE to be very useful and flexible.
+> > >
+> > > I have been working on a problem with the goal of a complete accounting for uncertainty. The data arise in a way such that a "cut" distribution is needed (i.e. in the posterior the posterior conditional for variable B depends on variable A but the posterior conditional for A does not depend on B).
+> > >
+> > > I can fit this model without fully accounting for uncertainty by first fitting the model for A and using the posterior mean of A (A_bar) to sample from [B|A_bar]. If I were to code this model by hand, I would first run the MCMC for A (without B) and get L posterior draws of A. Then, the pseudocode for MCMC iteration (k) out of K when sampling B is
+> > >
+> > > 1. Sample A^(k) from the first stage model fit posterior independent of the current MCMC state
+> > >     - A^(k) is a random sample from {A^(1), ..., A^(L)} ( In R: A <- A_posterior[sample(1:L, 1)])
+> > >
+> > > 2. Update B^(k) using A^(k)
+> > >     - B ~ [B| A^(k)]
+> > >
+> > > Is there a way to do this in NIMBLE by passing the posterior of A as data and then using the sample function in R? For example, the non-working MWE
+> > >
+> > >
+> > > ## Nimble Model
+> > > library(nimble)
+> > > code <-  nimbleCode({
+> > >   mu <- mu_post[sample(sample_vec, 1)]
+> > >   for (i in 1:N) {
+> > >     y[i] ~ dnorm(mu, sigma)
+> > >   }
+> > >   sigma ~ dunif(0, 100)
+> > > })
+> > >
+> > >
+> > > ## simulated data
+> > > N<- 100
+> > > y <- rnorm(N, 2, 3)
+> > >
+> > > ## "first state model fit"
+> > > L <- 1000
+> > > mu_post <- rnorm(L, 2, 0.01)
+> > >
+> > > dat.fit <- list(y=y, mu_post=mu_post)
+> > > constants.fit <- list(sample_vec=1:L, N=N, L=L)
+> > > dimensions.fit <- list(mu_post=L)
+> > >
+> > > model_fit <- nimbleModel(code, data=dat.fit, constants=constants.fit,
+> > >                          dimensions=dimensions.fit,
+> > >                          check=TRUE)
+> > >
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/9879f447-3338-411f-8d71-aa9f990494de%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9879f447-3338-411f-8d71-aa9f990494de%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/9e6739f6-1bc8-4c6c-8721-ad427116c005%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9e6739f6-1bc8-4c6c-8721-ad427116c005%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u249ba2bf0beed132 at groups.google.com  Mon Nov  6 18:18:29 2017
+From: u249ba2bf0beed132 at groups.google.com (John Tipton)
+Date: Mon, 06 Nov 2017 18:18:29 +0000
+Subject: Re: Using posterior samples as prior in new model
+Message-ID: <N3GfPSCkQHM.vfeMPpEFBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+References: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/N3GfPSCkQHM/m/vfeMPpEFBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Perry,
+
+That's getting close to what I want, but in what you propose, the distribution of mu will be updated in model 2 using the distribution of sigma. I only want to account for the uncertainty about mu from model 1 without the estimate from mu being influenced from the data.
+
+What I was trying to convey with the syntax
+
+mu <- mu_post[(sample_vec, 1)]
+
+is that, for each MCMC iteration in model 2, a draw of mu from the posterior of model 1 would be selected. Then, using this draw, the distribution of sigma could be updated.
+
+What I can do now is  replace the above statement with
+
+mu <- mean(mu_post)
+
+and sample sigma using the mean of the posterior of mu as known. Doing so, I don't account for the parameter uncertainty from model 1. My goal is to propogate this uncertainty forward without allowing the distribution of mu to be influenced in model 2. This is similar in idea to
+
+Plummer, M. (2015). Cuts in Bayesian graphical models. Statistics and Computing, 25(1), 37-43.
+
+where I don't want the inference of sigma to "contaminate" my inference in mu.
+
+On Monday, November 6, 2017 at 11:57:54 AM UTC-6, pdevalpine wrote:
+
+> Ok.  What I'm trying to clarify is "use the posterior distribution... to estimate sigma in the second model."
+>
+> I know you're non-working MWE is intended as a sketch to convey the idea, but I'm not sure what "mu <- mu_post[sample(sample_vec, 1)]" is supposed to mean.  BUGS is a declarative model language.  A deterministic node normally doesn't do something stochastic (although there's nothing in nimble preventing it), and it won't be recomputed unless its parent nodes change, which apparently won't happen after sample_vec is set once.  If what you want is that in the model for sigma (which you call B in the generic description), mu follows the posterior of the first model, you might be looking for
+>
+> mu ~ dcat(mu_post[1:L], uniform_probs[1:L])
+>
+> where uniform_probs are all set to 1/L.
+>
+> Note that you can build both models and then set the data in the second model at a later step.  Unlike BUGS and JAGS, you don't need to provide the data at the outset.
+>
+> If the sampling of mu is inefficient, one could make a new sampler, say that draws from nearby values of mu in mu_post.
+>
+> Let me know if that helps or if the real problem is different.
+>
+
+> Perry
+>
+
+> On Mon, Nov 6, 2017 at 9:43 AM, John Tipton <jtip...@gmail.com> wrote:
+
+> > Hi Perry,
+> >
+> > That's almost correct. I'd like to estimate mu in the first model, then use the posterior distribution (assumed known and independent of sigma) to estimate sigma in the second model.
+> >
+> >
+> >
+> > On Monday, November 6, 2017 at 11:38:09 AM UTC-6, pdevalpine wrote:
+> > > Hi John,
+> > >
+> > > I'd like to clarify what you are trying to do.
+> > >
+> > > Do you want the posterior of A to be sampled as a prior for mu in model B?
+> > >
+> > > Perry
+> > >
+> > >
+> > > On Mon, Nov 6, 2017 at 8:36 AM, John Tipton <jtip...@gmail.com> wrote:
+> > > > Hi Nimble Devs,
+> > > >
+> > > > First, thanks for the great package. I find NIMBLE to be very useful and flexible.
+> > > >
+> > > > I have been working on a problem with the goal of a complete accounting for uncertainty. The data arise in a way such that a "cut" distribution is needed (i.e. in the posterior the posterior conditional for variable B depends on variable A but the posterior conditional for A does not depend on B).
+> > > >
+> > > > I can fit this model without fully accounting for uncertainty by first fitting the model for A and using the posterior mean of A (A_bar) to sample from [B|A_bar]. If I were to code this model by hand, I would first run the MCMC for A (without B) and get L posterior draws of A. Then, the pseudocode for MCMC iteration (k) out of K when sampling B is
+> > > >
+> > > > 1. Sample A^(k) from the first stage model fit posterior independent of the current MCMC state
+> > > >     - A^(k) is a random sample from {A^(1), ..., A^(L)} ( In R: A <- A_posterior[sample(1:L, 1)])
+> > > >
+> > > > 2. Update B^(k) using A^(k)
+> > > >     - B ~ [B| A^(k)]
+> > > >
+> > > > Is there a way to do this in NIMBLE by passing the posterior of A as data and then using the sample function in R? For example, the non-working MWE
+> > > >
+> > > >
+> > > > ## Nimble Model
+> > > > library(nimble)
+> > > > code <-  nimbleCode({
+> > > >   mu <- mu_post[sample(sample_vec, 1)]
+> > > >   for (i in 1:N) {
+> > > >     y[i] ~ dnorm(mu, sigma)
+> > > >   }
+> > > >   sigma ~ dunif(0, 100)
+> > > > })
+> > > >
+> > > >
+> > > > ## simulated data
+> > > > N<- 100
+> > > > y <- rnorm(N, 2, 3)
+> > > >
+> > > > ## "first state model fit"
+> > > > L <- 1000
+> > > > mu_post <- rnorm(L, 2, 0.01)
+> > > >
+> > > > dat.fit <- list(y=y, mu_post=mu_post)
+> > > > constants.fit <- list(sample_vec=1:L, N=N, L=L)
+> > > > dimensions.fit <- list(mu_post=L)
+> > > >
+> > > > model_fit <- nimbleModel(code, data=dat.fit, constants=constants.fit,
+> > > >                          dimensions=dimensions.fit,
+> > > >                          check=TRUE)
+> > > >
+> > > >
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To post to this group, send email to nimble...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/9879f447-3338-411f-8d71-aa9f990494de%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9879f447-3338-411f-8d71-aa9f990494de%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/9e6739f6-1bc8-4c6c-8721-ad427116c005%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/9e6739f6-1bc8-4c6c-8721-ad427116c005%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+
+From ubebd85531a67ef86 at groups.google.com  Tue Nov  7 08:30:59 2017
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Tue, 07 Nov 2017 08:30:59 +0000
+Subject: Re: Using posterior samples as prior in new model
+Message-ID: <N3GfPSCkQHM.tIcDhxY0BwAJ@nimble-users.groups.google.com>
+In-Reply-To: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+References: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/N3GfPSCkQHM/m/tIcDhxY0BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi John
+
+I've done something similar before in R using my own implementation of the IA2RMS algorithm
+http://oa.upm.es/36432/1/INVE_MEM_2014_194086.pdf
+
+I don't have nimble code for the IA2RMS, but, if that algorithm was written for nimble, it would be relatively easy to set up a sequence of samplers that would respect the cut constraint.
+
+Best
+David
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Tue Nov  7 15:42:03 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Tue, 07 Nov 2017 15:42:03 +0000
+Subject: Re: Using posterior samples as prior in new model
+Message-ID: <N3GfPSCkQHM.n1N7EBaEBwAJ@nimble-users.groups.google.com>
+In-Reply-To: <N3GfPSCkQHM.tIcDhxY0BwAJ@nimble-users.groups.google.com>
+References: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com> <N3GfPSCkQHM.tIcDhxY0BwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/N3GfPSCkQHM/m/n1N7EBaEBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi John,
+
+Martyn's paper suggests using multiple imputation (i.e., separate chains each based on a draw from the posterior for mu). But it sounds like you're trying to do something somewhat different - at each iteration, change the value of mu.  If you reimpute mu at a given iteration, your current sigma may not be a good value for that value of mu, so it's not clear to me that it's a good idea to do what (I think) you are trying to do. Now if one knows the full conditional for [ sigma | mu, y] and can do a conjugate update, then it would be fine because each draw of sigma would be fully consistent with the value of mu that was used at that draw, but I'm not sure whether the model you showed in your post is the actual model of interest.
+
+chris
+
+On Tue, Nov 7, 2017 at 12:30 AM, 'David Pleydell' via nimble-users <nimble...@googlegroups.com> wrote:
+
+> Hi John
+>
+> I've done something similar before in R using my own implementation of the IA2RMS algorithm
+> http://oa.upm.es/36432/1/INVE_MEM_2014_194086.pdf
+>
+> I don't have nimble code for the IA2RMS, but, if that algorithm was written for nimble, it would be relatively easy to set up a sequence of samplers that would respect the cut constraint.
+>
+> Best
+> David
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/197e1821-693e-4b12-8c92-4bfc53abb8f2%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/197e1821-693e-4b12-8c92-4bfc53abb8f2%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Tue Nov  7 19:37:09 2017
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Tue, 07 Nov 2017 19:37:09 +0000
+Subject: Re: Using posterior samples as prior in new model
+Message-ID: <N3GfPSCkQHM.avvmQ_gzAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <N3GfPSCkQHM.n1N7EBaEBwAJ@nimble-users.groups.google.com>
+References: <N3GfPSCkQHM.J--PnP7_BgAJ@nimble-users.groups.google.com> <N3GfPSCkQHM.n1N7EBaEBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/N3GfPSCkQHM/m/avvmQ_gzAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I will comment on the nuts and bolts without regard to the statistical wisdom.
+
+I think you could use nimble's ability to customize samplers to achieve what you are describing.
+
+Specifically, you could make a sampler for mu that ignores stochastic dependencies when sampling a new value.  It would still need to update stochastic dependencies after a value is chosen.
+
+We could support you in implementing that, but first I suggest looking in the manual and package source code for guidance.  And also considering carefully if this is really what you want to do.
+
+Perry
+
+On Tue, Nov 7, 2017 at 7:41 AM, Chris Paciorek <christophe...@gmail.com> wrote:
+
+> Hi John,
+>
+> Martyn's paper suggests using multiple imputation (i.e., separate chains each based on a draw from the posterior for mu). But it sounds like you're trying to do something somewhat different - at each iteration, change the value of mu.  If you reimpute mu at a given iteration, your current sigma may not be a good value for that value of mu, so it's not clear to me that it's a good idea to do what (I think) you are trying to do. Now if one knows the full conditional for [ sigma | mu, y] and can do a conjugate update, then it would be fine because each draw of sigma would be fully consistent with the value of mu that was used at that draw, but I'm not sure whether the model you showed in your post is the actual model of interest.
+>
+> chris
+>
+> On Tue, Nov 7, 2017 at 12:30 AM, 'David Pleydell' via nimble-users <nimble...@googlegroups.com> wrote:
+> > Hi John
+> >
+> > I've done something similar before in R using my own implementation of the IA2RMS algorithm
+> > http://oa.upm.es/36432/1/INVE_MEM_2014_194086.pdf
+> >
+> > I don't have nimble code for the IA2RMS, but, if that algorithm was written for nimble, it would be relatively easy to set up a sequence of samplers that would respect the cut constraint.
+> >
+> > Best
+> > David
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/197e1821-693e-4b12-8c92-4bfc53abb8f2%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/197e1821-693e-4b12-8c92-4bfc53abb8f2%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LparTt2hSJvpNz8hZE24KpLF8hojECNe9tddAmGUBY%3DkQ%40mail.gmail.com <https://groups.google.com/d/msgid/nimble-users/CAG%3DM9LparTt2hSJvpNz8hZE24KpLF8hojECNe9tddAmGUBY%3DkQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u2567ef0395c70306 at groups.google.com  Thu Nov  9 03:17:57 2017
+From: u2567ef0395c70306 at groups.google.com (pcoll...@berkeley.edu)
+Date: Thu, 09 Nov 2017 03:17:57 +0000
+Subject: "problem creating switch function for getParam" error with custom distributions / functions(?)
+Message-ID: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/g766aXzf5ps/m/t7hLPvLWBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm a brand new user, checking out NIMBLE for some crude hidden population models. My first attempt at compiling a model with a couple of 'custom' distributions (hypergeometric, discrete uniform) and one custom function (log binomial coefficient calculator) has run up against an error which I cannot interpret. Upon compilation, sometime during the later subfunction calls, the program fails with error "problem creating switch function for getParam...". See attached R markdown for the code used and the exact text of the error.
+
+Any pointers on what the problem is? Thanks in advance.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Thu Nov  9 16:53:50 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Christopher Paciorek)
+Date: Thu, 09 Nov 2017 16:53:50 +0000
+Subject: Re: exchanges between chains in Nimble?
+Message-ID: <d9QxpgvSovE.E6JvGHgDCAAJ@nimble-users.groups.google.com>
+In-Reply-To: <d9QxpgvSovE.Uoxn1C3fAAAJ@nimble-users.groups.google.com>
+References: <d9QxpgvSovE.Uoxn1C3fAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/d9QxpgvSovE/m/E6JvGHgDCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi David,
+
+sorry about the delay in getting back to you on this. I just played around with your package and if you change
+
+where = getLoadingNamespace()
+
+to
+
+where = getNamespace("NimbleSnippets")
+
+for buildAPT() and your 4 samplers, your demo should run using the installed NimbleSnippets package.
+
+Basically, getLoadingNamespace() is not set up such that it can handle the situation of samplers being defined in a package separate from NIMBLE. Now that we have your test case, we'll see about modifying this to handle things gracefully, but in the interim, the above change should do the trick.
+
+chris
+
+On Thursday, October 12, 2017 at 7:13:02 PM UTC-7, Christopher Paciorek wrote:
+> Hi David,
+>
+> We definitely want to help you past any issues with building a package that depends on nimble. And this will be a good test case for us in terms of making sure this is straightforward for others. However, we're in the middle of working on the next release so it might be a bit before one of us can look at this.
+>
+> thanks,
+> Chris
+>
+> On Wed, Oct 11, 2017 at 8:48 AM, 'David Pleydell' via nimble-users <nimble...@googlegroups.com> wrote:
+> > > With those fixes in place the code works fine on 0.6-6
+> >
+> > That said, I have hit much harder issues trying to turn this collection of scripts into an R package.  My main motivation was just to improve/standardise the documentation. But I have hit a tricky (for me) NAMESPACE / searchpath issue.
+> >
+> > The code works fine when the functions have been called using source, but buildAPT fails if the functions have only been attached with library(NimbleSnippets)
+> >
+> > The error message is
+> > > Error in getClass(Class, where = topenv(parent.frame())) :
+> > >   “nfRefClass_R_GlobalEnv45” is not a defined class
+> >
+> > and it is generated inside the setup code of buildAPT at the line
+> > > samplerFunctions[[ist]] <- conf$samplerConfs[[ss]]$buildSampler(model=model, mvSaved=mvSaved)
+> >
+> > The code for this fledgling R package is here https://github.com/DRJP/nimble-snippets/tree/buggyNamespace
+> > And a script demonstrating the bug (and a hack with source) is here https://github.com/DRJP/nimble-snippets/blob/buggyNamespace/demo/APT_demo_DEBUG.R
+> >
+> > I am building and installing (on Linux) with
+> > R CMD build nimble-snippets
+> > R CMD INSTALL NimbleSnippets_1.0.1.tar.gz  ~/R/x86_64-pc-linux-gnu-library/3.2/
+> >
+> > What is confusing is that no matter whether the source hack has been applied or not, I always have the following
+> > > parent.env(environment(buildAPT))
+> > > <environment: namespace:nimble>
+> > so I am failling to see what is different in the searchpath between runs with and without calling the code with source.
+> >
+> > Any pointers (excuse the pun) in the right direction would be very welcome.
+> > David
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/53d00a79-ad2d-426d-b87d-ba6cbe34f193%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/53d00a79-ad2d-426d-b87d-ba6cbe34f193%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From udd632bd3bbcdd7e9 at groups.google.com  Thu Nov  9 19:20:09 2017
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Thu, 09 Nov 2017 19:20:09 +0000
+Subject: Re: "problem creating switch function for getParam" error with custom distributions / functions(?)
+Message-ID: <g766aXzf5ps.JNz7Gi0EAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+References: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/g766aXzf5ps/m/JNz7Gi0EAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for the reproducible example.
+
+Oops, it turns out there is a problem when parameters of a user-defined distribution are named "lower" or "upper".  If you rename those parameters, it works.  I'll file a github issue so we can fix that.
+
+In addition, dbin (aliased by dbinom) is an example of a distribution defined by BUGS with different default parameter order from R.  So you'll want:
+
+S1_ct[v,t] ~ dbinom(size = Q[v,t], prob = p_S1)
+
+There remains a problem with some initial values yielding NaNs from your nlchoose function (I suspect n-k+1 <= 0), which I leave to you to resolve.
+
+Perry
+
+On Wed, Nov 8, 2017 at 7:17 PM, <pcoll...@berkeley.edu> wrote:
+
+> I'm a brand new user, checking out NIMBLE for some crude hidden population models. My first attempt at compiling a model with a couple of 'custom' distributions (hypergeometric, discrete uniform) and one custom function (log binomial coefficient calculator) has run up against an error which I cannot interpret. Upon compilation, sometime during the later subfunction calls, the program fails with error "problem creating switch function for getParam...". See attached R markdown for the code used and the exact text of the error.
+>
+> Any pointers on what the problem is? Thanks in advance.
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/6c99706a-0c3d-4718-a624-486e61891847%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6c99706a-0c3d-4718-a624-486e61891847%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u2567ef0395c70306 at groups.google.com  Thu Nov  9 19:48:24 2017
+From: u2567ef0395c70306 at groups.google.com (pcoll...@berkeley.edu)
+Date: Thu, 09 Nov 2017 19:48:24 +0000
+Subject: Re: "problem creating switch function for getParam" error with custom distributions / functions(?)
+Message-ID: <g766aXzf5ps.WuczA9gTAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+References: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/g766aXzf5ps/m/WuczA9gTAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks much Perry. I somehow sussed out that the 'lower' 'upper' nomenclature was the problem as well. I'll tinker around to see if I can fix the NaN issues.
+
+On Thursday, November 9, 2017 at 11:20:09 AM UTC-8, pdevalpine wrote:
+
+> Thanks for the reproducible example.
+>
+> Oops, it turns out there is a problem when parameters of a user-defined distribution are named "lower" or "upper".  If you rename those parameters, it works.  I'll file a github issue so we can fix that.
+>
+> In addition, dbin (aliased by dbinom) is an example of a distribution defined by BUGS with different default parameter order from R.  So you'll want:
+>
+> S1_ct[v,t] ~ dbinom(size = Q[v,t], prob = p_S1)
+>
+> There remains a problem with some initial values yielding NaNs from your nlchoose function (I suspect n-k+1 <= 0), which I leave to you to resolve.
+>
+> Perry
+>
+
+> On Wed, Nov 8, 2017 at 7:17 PM, <pcoll...@berkeley.edu> wrote:
+
+> > I'm a brand new user, checking out NIMBLE for some crude hidden population models. My first attempt at compiling a model with a couple of 'custom' distributions (hypergeometric, discrete uniform) and one custom function (log binomial coefficient calculator) has run up against an error which I cannot interpret. Upon compilation, sometime during the later subfunction calls, the program fails with error "problem creating switch function for getParam...". See attached R markdown for the code used and the exact text of the error.
+> >
+> > Any pointers on what the problem is? Thanks in advance.
+> >
+> >
+> >
+> >
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/6c99706a-0c3d-4718-a624-486e61891847%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/6c99706a-0c3d-4718-a624-486e61891847%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u2567ef0395c70306 at groups.google.com  Thu Nov  9 20:47:24 2017
+From: u2567ef0395c70306 at groups.google.com (pcoll...@berkeley.edu)
+Date: Thu, 09 Nov 2017 20:47:24 +0000
+Subject: Re: "problem creating switch function for getParam" error with custom distributions / functions(?)
+Message-ID: <g766aXzf5ps.B0NGGhAXAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+References: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/g766aXzf5ps/m/B0NGGhAXAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think I've fixed the nlchoose function to deal with log(-#) errors (updated markdown files attached), but there's another cryptic error upon compilation. This time the error occurs within the
+
+for (i in whichUnits) {
+      ans[[i]] <- project$compileModel(units[[i]], control = control,
+        showCompilerOutput = showCompilerOutput)
+      if (names(units)[i] != "")
+        names(ans)[i] <- names(units)[i]
+    }
+
+chunk of the compileNimble() call, and seems to be a problem with taking the maximum of two S4 typed variables, but again what's going on is pretty opaque to me, so help would be greatly appreciated.
+
+Error in max(a1nDim, a2nDim) : invalid 'type' (S4) of argument
+
+From udd632bd3bbcdd7e9 at groups.google.com  Thu Nov  9 20:56:14 2017
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Thu, 09 Nov 2017 20:56:14 +0000
+Subject: Re: "problem creating switch function for getParam" error with custom distributions / functions(?)
+Message-ID: <g766aXzf5ps.JsYTbmsJAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <g766aXzf5ps.B0NGGhAXAAAJ@nimble-users.groups.google.com>
+References: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com> <g766aXzf5ps.B0NGGhAXAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/g766aXzf5ps/m/JsYTbmsJAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It looks like the problem is that nlchoose needs a returnType(double(0)) statement.
+
+I'll think about how we could trap that and provide a more useful message.
+
+On Thu, Nov 9, 2017 at 12:47 PM, <pcoll...@berkeley.edu> wrote:
+
+> I think I've fixed the nlchoose function to deal with log(-#) errors (updated markdown files attached), but there's another cryptic error upon compilation. This time the error occurs within the
+>
+> for (i in whichUnits) {
+>       ans[[i]] <- project$compileModel(units[[i]], control = control,
+>         showCompilerOutput = showCompilerOutput)
+>       if (names(units)[i] != "")
+>         names(ans)[i] <- names(units)[i]
+>     }
+>
+> chunk of the compileNimble() call, and seems to be a problem with taking the maximum of two S4 typed variables, but again what's going on is pretty opaque to me, so help would be greatly appreciated.
+>
+> Error in max(a1nDim, a2nDim) : invalid 'type' (S4) of argument
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/230cf073-5106-41e0-8ceb-5cbf334fb0fe%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/230cf073-5106-41e0-8ceb-5cbf334fb0fe%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u2567ef0395c70306 at groups.google.com  Thu Nov  9 20:59:23 2017
+From: u2567ef0395c70306 at groups.google.com (pcoll...@berkeley.edu)
+Date: Thu, 09 Nov 2017 20:59:23 +0000
+Subject: Re: "problem creating switch function for getParam" error with custom distributions / functions(?)
+Message-ID: <g766aXzf5ps.YQe8MpcJAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+References: <g766aXzf5ps.t7hLPvLWBwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/g766aXzf5ps/m/YQe8MpcJAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Great! That's done it.
+
+From u243d9dde5595d8e7 at groups.google.com  Tue Nov 14 17:43:41 2017
+From: u243d9dde5595d8e7 at groups.google.com (soledad...@gmail.com)
+Date: Tue, 14 Nov 2017 17:43:41 +0000
+Subject: Error when using nimbleRcall
+Message-ID: <S6BV16p3d_M.UHummPCVAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/S6BV16p3d_M/m/UHummPCVAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Nimble team,
+
+I’m want to fit an ODE model to data. To integrate the ODEs, I use the ode function from the ‘deSolve’ package in R.
+
+After reading the thread “Functions from other packages” (last update on August 28), it seemed to me that there is a way to wrap a given output generated by the ode solver into a nimble function in order to use it in a nimble model.
+
+When going through the worked example developed by Perry (August 8 message), I got an error message in the compilation step. In fact the error message comes from the nimble function named ‘nimbleDoSomethingInR’ that makes use of nimbleRcall. Both uncompiled and compiled versions give an error message that I don’t know how to interpret:
+
+> nimbleDoSomethingInR(x=2,y=3) ## Uncompiled version
+
+Error in NimArr_2_SEXP(x) : could not find function "NimArr_2_SEXP"
+
+> compileNimble(nimbleDoSomethingInR,showCompilerOutput = TRUE) ## When trying to compile
+
+compiling... this may take a minute. On some systems there may be some compiler warnings that can be safely ignored.
+
+Warning message:
+
+running command 'make -f "Makevars.win" -f "C:/PROGRA~1/R/etc/x64/Makeconf" -f "C:/PROGRA~1/R/share/make/winshlib.mk <http://winshlib.mk>" SHLIB_LDFLAGS='$(SHLIB_CXXLDFLAGS)' SHLIB_LD='$(SHLIB_CXXLD)' SHLIB="dynamicRegistrations_11_14_18_25_13.dll" WIN=64 TCLBIN=64 OBJECTS="dynamicRegistrations_11_14_18_25_13.o"' had status 127
+
+Error: Failed to create the shared library
+
+In addition: Warning message:
+
+running command 'C:/PROGRA~1/R/bin/x64/R CMD SHLIB dynamicRegistrations_11_14_18_25_13.cpp -o dynamicRegistrations_11_14_18_25_13.dll' had status 1
+
+So if you have any hint that helps me to understand and fix this error message (not even clear whether this this is related to my R/nimble installation..) to further explore the use of nimbleRcall with a toy ODE model, I would really appreciate your feedback.
+
+I’m working with the latest NIMBLE version (0.6-6) in Rstudio, R version 3.4.1.
+This is the link to the thread from which I took the worked example:
+https://groups.google.com/forum/#!topic/nimble-users/pSn6tCZBGy4
+
+Best,
+
+Soledad
+
+From u243d9dde5595d8e7 at groups.google.com  Tue Nov 14 19:09:48 2017
+From: u243d9dde5595d8e7 at groups.google.com (=?utf-8?q?Sol_Casta=C3=B1o?=)
+Date: Tue, 14 Nov 2017 19:09:48 +0000
+Subject: Re: Error when using nimbleRcall
+Message-ID: <S6BV16p3d_M.DhtQmyqeBQAJ@nimble-users.groups.google.com>
+In-Reply-To: <S6BV16p3d_M.UHummPCVAQAJ@nimble-users.groups.google.com>
+References: <S6BV16p3d_M.UHummPCVAQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/S6BV16p3d_M/m/DhtQmyqeBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> A small search sent me to the fact that my problem is due to the lack of a C/ C++ compiler (currently moving from Linux to Windows & Rstudio..).So fixing this to move forward into nimbleRcall and Nimble capabilities to fit ODE models.
+>
+> Best
+>
+> S.
+>
+
+> On 14 November 2017 at 18:43, <soledad...@gmail.com> wrote:
+
+> > Dear Nimble team,
+> >
+> > I’m want to fit an ODE model to data. To integrate the ODEs, I use the ode function from the ‘deSolve’ package in R.
+> >
+> > After reading the thread “Functions from other packages” (last update on August 28), it seemed to me that there is a way to wrap a given output generated by the ode solver into a nimble function in order to use it in a nimble model.
+> >
+> > When going through the worked example developed by Perry (August 8 message), I got an error message in the compilation step. In fact the error message comes from the nimble function named ‘nimbleDoSomethingInR’ that makes use of nimbleRcall. Both uncompiled and compiled versions give an error message that I don’t know how to interpret:
+> >
+> > > nimbleDoSomethingInR(x=2,y=3) ## Uncompiled version
+> >
+> > Error in NimArr_2_SEXP(x) : could not find function "NimArr_2_SEXP"
+> >
+> >
+> >
+> > > compileNimble(nimbleDoSomethingInR,showCompilerOutput = TRUE) ## When trying to compile
+> >
+> > compiling... this may take a minute. On some systems there may be some compiler warnings that can be safely ignored.
+> >
+> > Warning message:
+> >
+> > running command 'make -f "Makevars.win" -f "C:/PROGRA~1/R/etc/x64/Makeconf" -f "C:/PROGRA~1/R/share/make/winshlib.mk <http://winshlib.mk>" SHLIB_LDFLAGS='$(SHLIB_CXXLDFLAGS)' SHLIB_LD='$(SHLIB_CXXLD)' SHLIB="dynamicRegistrations_11_14_18_25_13.dll" WIN=64 TCLBIN=64 OBJECTS="dynamicRegistrations_11_14_18_25_13.o"' had status 127
+> >
+> > Error: Failed to create the shared library
+> >
+> > In addition: Warning message:
+> >
+> > running command 'C:/PROGRA~1/R/bin/x64/R CMD SHLIB dynamicRegistrations_11_14_18_25_13.cpp -o dynamicRegistrations_11_14_18_25_13.dll' had status 1
+> >
+> >
+> >
+> > So if you have any hint that helps me to understand and fix this error message (not even clear whether this this is related to my R/nimble installation..) to further explore the use of nimbleRcall with a toy ODE model, I would really appreciate your feedback.
+> >
+> >
+> > I’m working with the latest NIMBLE version (0.6-6) in Rstudio, R version 3.4.1.
+> > This is the link to the thread from which I took the worked example:
+> > https://groups.google.com/forum/#!topic/nimble-users/pSn6tCZBGy4
+> >
+> >
+> > Best,
+> >
+> > Soledad
+> >
+> >
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/8e4ec8dc-ecde-49cd-bc9f-2eedfdc92e45%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/8e4ec8dc-ecde-49cd-bc9f-2eedfdc92e45%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Soledad Castaño, PhD
+> Department of Epidemiology and Public Health
+> Swiss Tropical and Public Health Institute
+> Socinstrasse 57, Postfach,
+> CH-4002 Basel
+> Switzerland
+> Tel: +41 61 284 89 02
+> Fax: +41 61 284 81 05
+> Email: soledad...@unibas.ch  sol...@swisstph.ch
+
+From ubebd85531a67ef86 at groups.google.com  Wed Nov 15 10:27:30 2017
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Wed, 15 Nov 2017 10:27:30 +0000
+Subject: Re: exchanges between chains in Nimble?
+Message-ID: <d9QxpgvSovE.CeACn0g3AAAJ@nimble-users.groups.google.com>
+In-Reply-To: <d9QxpgvSovE.Uoxn1C3fAAAJ@nimble-users.groups.google.com>
+References: <d9QxpgvSovE.Uoxn1C3fAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/d9QxpgvSovE/m/CeACn0g3AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> where = getLoadingNamespace()
+>
+> to
+>
+> where = getNamespace("NimbleSnippets")
+>
+> for buildAPT() and your 4 samplers, your demo should run using the installed NimbleSnippets package.
+>
+> Basically, getLoadingNamespace() is not set up such that it can handle the situation of samplers being defined in a package separate from NIMBLE. Now that we have your test case, we'll see about modifying this to handle things gracefully, but in the interim, the above change should do the trick.
+
+Many thanks Chris for this valuable insight. Indeed this does work nicely. Great!!!
+
+There is however one small caveat. With this change in place I can no longer use roxygenize() to generate a NAMESPACE et al for an R package because roxygenize() returns the following error message
+>     Error in assignClassDef(Class, classDef, where) :
+>       class “nfRefClass_NimbleSnippets43” has a locked definition in package ‘NimbleSnippets’
+
+As a work around I can...
+1) switch to the original "where" statements
+2) run roxygenize()
+3) switch back to the correct "where" statements
+4) Run R CMD build, check and INSTALL
+This works and I have a couple of emacs macros to speed up switching the "where" statements.
+
+Version v1.0.1 of NimbleSnippets is now available here <https://zenodo.org/record/1049549>. It is now compatible with Nimble 0.6-6. Anyone downloading the source can now use it to build an R package.
+
+Best
+David
+
+From ubebd85531a67ef86 at groups.google.com  Wed Nov 15 10:51:21 2017
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Wed, 15 Nov 2017 10:51:21 +0000
+Subject: Adaptive parallel tempering in NIMBLE
+Message-ID: <K8RN_73p5-0.cQ2I25U4AAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/K8RN_73p5-0/m/cQ2I25U4AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This has already been discussed in the exchanges between chains in Nimble <https://groups.google.com/forum/#!topic/nimble-users/d9QxpgvSovE> thread - I'm just re-posting here for greater visibility.
+
+A set of nimble functions for adaptive parallel tempering are available in a small library called NimbleSnippets available here <https://doi.org/10.5281/zenodo.1049549>. The source code can be built into an R package and installed using
+cd path/to/nimble-snippets
+R CMD build nimble-snippets
+R CMD INSTALL NimbleSnippets_1.0.1.tar.gz
+
+Feel free to contact me if you have any difficulties, or successes, with the package.
+
+Best
+David
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Thu Nov 16 02:47:51 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Thu, 16 Nov 2017 02:47:51 +0000
+Subject: Re: exchanges between chains in Nimble?
+Message-ID: <d9QxpgvSovE.7v5wLb4FBgAJ@nimble-users.groups.google.com>
+In-Reply-To: <d9QxpgvSovE.CeACn0g3AAAJ@nimble-users.groups.google.com>
+References: <d9QxpgvSovE.Uoxn1C3fAAAJ@nimble-users.groups.google.com> <d9QxpgvSovE.CeACn0g3AAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/d9QxpgvSovE/m/7v5wLb4FBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi David,
+
+Subsequent to my email, I realized you can simply drop the "where" argument entirely. The default to the "where" argument will actually correctly determine the namespace of the package and will put the resulting nimbleFunctions in that namespace.
+
+If you drop the 'where',  I believe roxygenize will work out of the box.  I tried it on my machine and it created the Rd files without a hitch. Let us know if it doesn't work for you.
+
+Chris
+
+On Wed, Nov 15, 2017 at 2:27 AM, 'David Pleydell' via nimble-users <nimble...@googlegroups.com> wrote:
+
+> > where = getLoadingNamespace()
+> >
+> > to
+> >
+> > where = getNamespace("NimbleSnippets")
+> >
+> > for buildAPT() and your 4 samplers, your demo should run using the installed NimbleSnippets package.
+> >
+> > Basically, getLoadingNamespace() is not set up such that it can handle the situation of samplers being defined in a package separate from NIMBLE. Now that we have your test case, we'll see about modifying this to handle things gracefully, but in the interim, the above change should do the trick.
+>
+> Many thanks Chris for this valuable insight. Indeed this does work nicely. Great!!!
+>
+> There is however one small caveat. With this change in place I can no longer use roxygenize() to generate a NAMESPACE et al for an R package because roxygenize() returns the following error message
+> >     Error in assignClassDef(Class, classDef, where) :
+> >       class “nfRefClass_NimbleSnippets43” has a locked definition in package ‘NimbleSnippets’
+>
+> As a work around I can...
+> 1) switch to the original "where" statements
+> 2) run roxygenize()
+> 3) switch back to the correct "where" statements
+> 4) Run R CMD build, check and INSTALL
+> This works and I have a couple of emacs macros to speed up switching the "where" statements.
+>
+> Version v1.0.1 of NimbleSnippets is now available here <https://zenodo.org/record/1049549>. It is now compatible with Nimble 0.6-6. Anyone downloading the source can now use it to build an R package.
+>
+> Best
+> David
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/70c8f388-0760-417b-8ef1-297f36ab527d%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/70c8f388-0760-417b-8ef1-297f36ab527d%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From ubebd85531a67ef86 at groups.google.com  Fri Nov 17 10:07:41 2017
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Fri, 17 Nov 2017 10:07:41 +0000
+Subject: Re: exchanges between chains in Nimble?
+Message-ID: <d9QxpgvSovE.O32D1lzTAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <d9QxpgvSovE.Uoxn1C3fAAAJ@nimble-users.groups.google.com>
+References: <d9QxpgvSovE.Uoxn1C3fAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/d9QxpgvSovE/m/O32D1lzTAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Many thanks Chris!!
+
+This did and did not work. I hit up against something that looks similar to this issue on roxygen's github page https://github.com/klutometis/roxygen/issues/595
+
+In other words, roxygenize fails but devtools::document works.
+
+I'm on Ubuntu 16.04 LTS, with the repository version of R 3.2.3. I'm also running roxygen2 6.0.1, devtools 1.13.3 and nimble 0.6-6 from CRAN.
+
+roxygen2 6.0.1 was released before the fix mentioned on their github page. I don't mind waiting until the next release of roxygen2 (which is waiting for a new CRAN version of purrr) before testing this further.
+
+Final note, with roxygen 5.0.1 installed roxygenize works fine.
+
+Best
+David
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Nov 17 15:46:19 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Fri, 17 Nov 2017 15:46:19 +0000
+Subject: Re: exchanges between chains in Nimble?
+Message-ID: <d9QxpgvSovE.djuXyc1-BgAJ@nimble-users.groups.google.com>
+In-Reply-To: <d9QxpgvSovE.O32D1lzTAAAJ@nimble-users.groups.google.com>
+References: <d9QxpgvSovE.Uoxn1C3fAAAJ@nimble-users.groups.google.com> <d9QxpgvSovE.O32D1lzTAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/d9QxpgvSovE/m/djuXyc1-BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi David,
+
+Ok, looks like it's not a problem on the NIMBLE end of things.  I am using the older (5.0.1) roxygen also, as at some point a few months ago ran into what may have been a related problem though I don't have the info on it in front of me.
+
+In any case, if anyone in the future sees this and has a problem with roxygenizing a package that depends on Nimble and is using roxygen > 6.0.1, please weigh in on this thread.
+
+chris
+
+On Fri, Nov 17, 2017 at 2:07 AM, 'David Pleydell' via nimble-users <nimble...@googlegroups.com> wrote:
+
+> Many thanks Chris!!
+>
+> This did and did not work. I hit up against something that looks similar to this issue on roxygen's github page https://github.com/klutometis/roxygen/issues/595
+>
+> In other words, roxygenize fails but devtools::document works.
+>
+> I'm on Ubuntu 16.04 LTS, with the repository version of R 3.2.3. I'm also running roxygen2 6.0.1, devtools 1.13.3 and nimble 0.6-6 from CRAN.
+>
+> roxygen2 6.0.1 was released before the fix mentioned on their github page. I don't mind waiting until the next release of roxygen2 (which is waiting for a new CRAN version of purrr) before testing this further.
+>
+> Final note, with roxygen 5.0.1 installed roxygenize works fine.
+>
+> Best
+> David
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/1cdd4ade-33c8-4446-97f9-02899b5e6c3f%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/1cdd4ade-33c8-4446-97f9-02899b5e6c3f%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From ubc11fbb928eb77ff at groups.google.com  Wed Nov 22 17:54:43 2017
+From: ubc11fbb928eb77ff at groups.google.com (=?utf-8?q?Fr=C3=A9d=C3=A9ric_Gosselin?=)
+Date: Wed, 22 Nov 2017 17:54:43 +0000
+Subject: Problem with monitoring logProbs in some nimble versions
+Message-ID: <x4Cd2Dcr6ps.tQG5WqKaAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/x4Cd2Dcr6ps/m/tQG5WqKaAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+this is to report a problem with some Nimble versions under Windows that were directly installed from Nimble website through calls such as:
+
+install.packages("nimble", repos = "http://r-nimble.org", type = "source")
+
+we cannot monitor logProb variables.
+
+For example,
+
+ConfModel$addMonitors("logProb_Y1","logProb_Ycons1")
+
+gives me an error message after the buildMCMC command telling me that objects "logProb_Y1","logProb_Ycons1" do not exist.
+
+This problem does not seem to happen in other (older?) versions of Nimble.
+
+Do you know where this comes from and if there is a solution for this?
+
+Sincerely,
+
+Frédéric
+
+BTW: how can we know the version of Nimble? Is there a command line for this?
+
+From ubebd85531a67ef86 at groups.google.com  Thu Nov 23 10:55:54 2017
+From: ubebd85531a67ef86 at groups.google.com (David Pleydell)
+Date: Thu, 23 Nov 2017 10:55:54 +0000
+Subject: Re: Problem with monitoring logProbs in some nimble versions
+Message-ID: <x4Cd2Dcr6ps.mjc2SVzSAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <x4Cd2Dcr6ps.tQG5WqKaAAAJ@nimble-users.groups.google.com>
+References: <x4Cd2Dcr6ps.tQG5WqKaAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/x4Cd2Dcr6ps/m/mjc2SVzSAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> BTW: how can we know the version of Nimble? Is there a command line for this?
+
+Hi Frederic
+
+Regarding your final question, one option is to use help.start() and navigate to the index page of the Nimble package where the version number is displayed
+
+However, a better (richer) alternative is to use the R command sessionInfo() - this provides a good summary of the versions of all the various package etc in your current R session.
+
+Best
+David
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Sat Nov 25 01:20:48 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Sat, 25 Nov 2017 01:20:48 +0000
+Subject: NIMBLE version 0.6-8 released
+Message-ID: <rqyapla7Bbg.xGEPohRrBAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/rqyapla7Bbg/m/xGEPohRrBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+We’ve just released the newest version of NIMBLE on CRAN and on our website. Version 0.6-8 has a few new features, and more are on the way in the next few months.
+
+New features include:
+the proper Gaussian CAR (conditional autoregressive) model can now be used in BUGS code as dcar_proper, which behaves similarly to BUGS’ car.proper distribution;
+a new nimbleMCMC function that provides one-line invocation of NIMBLE’s MCMC engine, akin to usage of JAGS and WinBUGS through R;
+a new runCrossValidate function that will conduct k-fold cross-validation of NIMBLE models fit by MCMC;
+dynamic indexing in BUGS code is now allowed by default;
+and a variety of bug fixes and efficiency improvements.
+
+Please see the NEWS file in the installed package for more details.
+
+- Chris Paciorek for the NIMBLE Development Team
+
+From u4d992ac005b751e4 at groups.google.com  Wed Nov 29 09:40:51 2017
+From: u4d992ac005b751e4 at groups.google.com (ugoline godeau)
+Date: Wed, 29 Nov 2017 09:40:51 +0000
+Subject: Re: Problem with monitoring logProbs in some nimble versions
+Message-ID: <x4Cd2Dcr6ps.IwW6nqfDAgAJ@nimble-users.groups.google.com>
+In-Reply-To: <x4Cd2Dcr6ps.tQG5WqKaAAAJ@nimble-users.groups.google.com>
+References: <x4Cd2Dcr6ps.tQG5WqKaAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/x4Cd2Dcr6ps/m/IwW6nqfDAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+Just for info, I just did the update to 0.6-8 and I still have the problem.
+Last time I had to reinstall everything (Rtools, R and Nimble) and it worked but only for one week and then it's started to do the error again.
+So I haven't done it again because I know it will not last.
+Is there a solution ?
+Thank you in advance for your answeres
+Ugoline
+
+Le mercredi 22 novembre 2017 18:54:43 UTC+1, Frédéric Gosselin a écrit :
+> Hello,
+>
+> this is to report a problem with some Nimble versions under Windows that were directly installed from Nimble website through calls such as:
+>
+> install.packages("nimble", repos = "http://r-nimble.org", type = "source")
+>
+> we cannot monitor logProb variables.
+>
+>
+> For example,
+>
+>
+> ConfModel$addMonitors("logProb_Y1","logProb_Ycons1")
+>
+>
+> gives me an error message after the buildMCMC command telling me that objects "logProb_Y1","logProb_Ycons1" do not exist.
+>
+>
+> This problem does not seem to happen in other (older?) versions of Nimble.
+>
+>
+> Do you know where this comes from and if there is a solution for this?
+>
+>
+> Sincerely,
+>
+>
+> Frédéric
+>
+>
+> BTW: how can we know the version of Nimble? Is there a command line for this?
+
+From u4d992ac005b751e4 at groups.google.com  Wed Nov 29 09:54:03 2017
+From: u4d992ac005b751e4 at groups.google.com (ugoline godeau)
+Date: Wed, 29 Nov 2017 09:54:03 +0000
+Subject: using GPU for Nimble?
+Message-ID: <PmL2vEVJ2Qc.bkHLAWDEAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/PmL2vEVJ2Qc/m/bkHLAWDEAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello everyone,
+At the risk of asking a silly question, do some of you use the GPU instead of the CPU for their calculation, and is it possible on Nimble and more generally on R?
+If so, are the computation times really interesting?
+I read some stuff on it but it's not very clear to me. Indeed, my graphics card is an AMD Firepro, and I understand that this can obly be done with NVIDIA. Do you have any information to give me on the subject?
+I thank you in advance
+Ugoline
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Wed Nov 29 15:26:34 2017
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Wed, 29 Nov 2017 15:26:34 +0000
+Subject: Re: using GPU for Nimble?
+Message-ID: <PmL2vEVJ2Qc.UGnhj4buAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <PmL2vEVJ2Qc.bkHLAWDEAgAJ@nimble-users.groups.google.com>
+References: <PmL2vEVJ2Qc.bkHLAWDEAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/PmL2vEVJ2Qc/m/UGnhj4buAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ugoline,
+
+It's not possible to use a GPU with NIMBLE at the moment. We're exploring some possibilities in this area, so we're hoping it will be feasible in the future.
+
+In general in R there are some packages that allow you to transfer computation to the GPU -  see here under the GPU section: https://cran.r-project.org/web/views/HighPerformanceComputing.html.  Many of those probably do indeed require an NVIDIA card. You might also see the tensorflow package for R. This allows one to do computations through tensorflow, which supports computation on a GPU.
+
+-chris
+
+On Wed, Nov 29, 2017 at 1:54 AM, ugoline godeau <ugolin...@gmail.com> wrote:
+
+> Hello everyone,
+> At the risk of asking a silly question, do some of you use the GPU instead of the CPU for their calculation, and is it possible on Nimble and more generally on R?
+> If so, are the computation times really interesting?
+> I read some stuff on it but it's not very clear to me. Indeed, my graphics card is an AMD Firepro, and I understand that this can obly be done with NVIDIA. Do you have any information to give me on the subject?
+> I thank you in advance
+> Ugoline
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f726605e-5de3-4e55-8ced-93dda5b3bc5c%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f726605e-5de3-4e55-8ced-93dda5b3bc5c%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ubc11fbb928eb77ff at groups.google.com  Thu Nov 30 16:33:38 2017
+From: ubc11fbb928eb77ff at groups.google.com (=?utf-8?q?Fr=C3=A9d=C3=A9ric_Gosselin?=)
+Date: Thu, 30 Nov 2017 16:33:38 +0000
+Subject: Re: Problem with monitoring logProbs in some nimble versions
+Message-ID: <x4Cd2Dcr6ps.CgYEvsIoAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <x4Cd2Dcr6ps.tQG5WqKaAAAJ@nimble-users.groups.google.com>
+References: <x4Cd2Dcr6ps.tQG5WqKaAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/x4Cd2Dcr6ps/m/CgYEvsIoAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you David. sessionInfo() is great! So the Nimble version I am using is 0.6-7.
+
+Frédéric
+
+From u4d992ac005b751e4 at groups.google.com  Thu Nov 30 16:41:12 2017
+From: u4d992ac005b751e4 at groups.google.com (ugoline godeau)
+Date: Thu, 30 Nov 2017 16:41:12 +0000
+Subject: Re: using GPU for Nimble?
+Message-ID: <PmL2vEVJ2Qc.lNkYaSwpAwAJ@nimble-users.groups.google.com>
+In-Reply-To: <PmL2vEVJ2Qc.bkHLAWDEAgAJ@nimble-users.groups.google.com>
+References: <PmL2vEVJ2Qc.bkHLAWDEAgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/PmL2vEVJ2Qc/m/lNkYaSwpAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you for your quick answer. Exactly what I thought but I asked in case I was wrong.
+Ugoline
+
+Le mercredi 29 novembre 2017 16:26:34 UTC+1, Christopher Paciorek a écrit :
+
+> Hi Ugoline,
+>
+> It's not possible to use a GPU with NIMBLE at the moment. We're exploring some possibilities in this area, so we're hoping it will be feasible in the future.
+>
+> In general in R there are some packages that allow you to transfer computation to the GPU -  see here under the GPU section: https://cran.r-project.org/web/views/HighPerformanceComputing.html.  Many of those probably do indeed require an NVIDIA card. You might also see the tensorflow package for R. This allows one to do computations through tensorflow, which supports computation on a GPU.
+>
+> -chris
+
+> On Wed, Nov 29, 2017 at 1:54 AM, ugoline godeau <ugolin...@gmail.com> wrote:
+
+> > Hello everyone,
+> > At the risk of asking a silly question, do some of you use the GPU instead of the CPU for their calculation, and is it possible on Nimble and more generally on R?
+> > If so, are the computation times really interesting?
+> > I read some stuff on it but it's not very clear to me. Indeed, my graphics card is an AMD Firepro, and I understand that this can obly be done with NVIDIA. Do you have any information to give me on the subject?
+> > I thank you in advance
+> > Ugoline
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f726605e-5de3-4e55-8ced-93dda5b3bc5c%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f726605e-5de3-4e55-8ced-93dda5b3bc5c%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+

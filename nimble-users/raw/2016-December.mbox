@@ -1,0 +1,3628 @@
+From u6d020fc5d7c9ee0a at groups.google.com  Thu Dec  1 16:37:09 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Thu, 01 Dec 2016 16:37:09 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.hbyVy9itDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/hbyVy9itDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,
+
+Thanks for you reply, and for the clarification about how NIMBLE uses rows to denote a whole set of states from time T=1....N.  That illuminates additional problems I was encountering when trying to loop over a ModelValues object as you might with a list.  This makes me think my previous step might also not be perfectly congruous with NIMBLE ModelValue Objects.  Before I copy the states into the model, I have a function that performs FFBS to generate states from time T=0...365.
+
+As you can see in the code below, I am creating a model values object and then storing generated states in mvTheta as I loop over the time points.  I see now with NIMBLE this creates a ModelValues object of size 366. What I would like to do is then copy those 365 state variables (dropping the initial state 0) to a model object.  As you point out, however, when I run this code I only copy the first row of mvTheta rather than the whole set of 365.
+
+Do you think the best way to handle this is to loop over the Model Values object in the copy statement or somehow store all 365 states into a size 1 ModelValues object in my FFBS step? Sorry for the long post. If it would be helpful to attach my full R script, please me me know.
+
+Thanks again for you assistance,
+
+Colin
+
+modvals = modelValues(smosModel, m = 1)
+
+nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+
+FFBStep<-nimbleFunction(
+  setup=function(model,mvKF,nodes){
+    mvThetaConfig <- modelValuesConf(vars = c('ht', 'Ht', 'theta'),types=c('double','double','double'), sizes=list(ht = 2, Ht = c(2, 2), theta = c(1,2)))
+    mvTheta <- modelValues(mvThetaConfig)
+    nodes <- model$expandNodeNames(nodes,sort=TRUE)
+    timePoints <- length(nodes)
+    len <- timePoints+1
+  },
+  run=function(){
+    resize(mvTheta,timePoints+1)
+    #Simulate Theta T
+    Cho_T<-chol(mvKF['Ct',timePoints+1])
+    mvTheta['theta',timePoints+1] <<- rmnorm_chol(n=1,mvKF['mt',timePoints+1],Cho_T,prec_param = FALSE)
+    for (t in 1:365){
+      mvTheta['ht',len-t] <<- mvKF['mt',len-t]+mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%mvTheta['theta',len-t+1]-mvKF['at',len-t+1]
+      mvTheta['Ht',len-t] <<- mvKF['Ct',len-t]-mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%(model$G)%*%mvKF['Ct',len-t]
+      Chold <- mvTheta['Ht',len-t]
+      mvTheta['theta',len-t] <<- rmnorm_chol(n=1,mvTheta['ht',len-t],Chold,prec_param = FALSE)
+    }
+  }
+)
+
+On Wednesday, November 30, 2016 at 4:33:17 PM UTC-6, pdevalpine wrote:
+> Hi Colin,
+>
+> I think the confusion here is the notion of “row” in a modelValues object.  What we mean is a complete set of states, not a row of a particular variable in nimble that might happen to be a matrix.  For modelValues purposes, you can think of all model variables as being flattened, like having their dimension attribute removed in R.
+>
+> So it should work to use
+> copy(from = modvals, row = 1, to = smosModel, nodes = c(‘mu’,’sigs’))
+>
+> Note copy is a synonym for nimCopy inside a nimbleFunction.
+>
+> Also note you can omit the nodes argument and by default it will copy all variables.
+>
+> Let us know if it gives you more trouble.
+>
+> Perry
+>
+>
+>
+> > On Nov 30, 2016, at 12:59 PM, Colin <clewi...@gmail.com> wrote:
+> >
+> > Hi Daniel,
+> >
+> > I have a quick follow up question about the best way to set up the latent nodes in a NIMBLE model step.  I am at the point where I am trying to use NimCopy to copy over simulated nodes from a ModelValues object to the model.  It looks like NIMBLE only allows you to copy by row.  So if a state is multivariate the columns will correspond to additional parameters.
+> >
+> > I am still working on the same model we discussed in above thread.  But the way the states are set up is the columns correspond to the latent time points, rather than the rows.
+> >
+> > This creates an issue when I create a modelValues object, e.g.,  modvals = modelValues(smosModel, m = 1) as it creates a 2 x 365 matrix, so you can't iterate over rows when running NimCopy.   It doesn't seem like NIMBLE allows you to take the transpose of ModelValues objects.  I have also tried to use the transpose function (t) in the model code to get the latent nodes to be 365 x 2, but that doesn't seem to work either.  I was curious if you had a suggestion that would make sense in order to use NIMBLE ModelValue objects most effectively.
+> >
+> > Thank you,
+> >
+> > Colin
+> >
+> >
+> >
+> >
+> >
+> > #Create Constant W, G and F matrices to pass to NIMBLE
+> > W<-diag(2)
+> > F<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> >
+> > smosCode <- nimbleCode({
+> >
+> > #Initial Values for States: x0 ~ Normal(c(0,0),diag(1/1000)) for precision
+> >   m0[1] <- 0
+> >   m0[2] <- 0
+> >   C0[1:2,1:2] <- (1/1000)*W[1:2,1:2]
+> >   x0[1:2] ~ dmnorm(m0[1:2],C0[1:2,1:2])
+> >
+> >   #initial values
+> >   m1[1:2,1] <- G[1:2,1:2]%*%x0[1:2]
+> >   C1[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> >   x[1:2,1] ~ dmnorm(m1[1:2,1],C1[1:2,1:2]) #precision matrix
+> >   y[1] ~ dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv) #precision 1/var
+> >
+> >   #Model
+> >   for (t in 2:T){
+> >     mu[1:2,t] <- G[1:2,1:2]%*%x[1:2,t-1]
+> >     sigs[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> >     x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+> >     y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+> >   }
+> >
+> >
+> >   sigmaSquaredInvv ~ dgamma(5,20) #in terms of shape and rate; prior on precision V
+> >   sigmaSquaredInvw ~ dgamma(5,20) #in terms of shape and rate; prior on precision W
+> > })
+> >
+> > smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+> >                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> >
+> >
+> > On Sunday, November 6, 2016 at 3:35:38 PM UTC-6, Daniel Turek wrote:
+> > > Looks like I was beaten to the punch here.  At least no one can say that the NIMBLE team is slow to respond.
+> > >
+> > > On Sun, Nov 6, 2016 at 4:34 PM, Daniel Turek <db...@williams.edu> wrote:
+> > > > Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+> > > >
+> > > > You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+> > > >
+> > > > It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+> > > >
+> > > > If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+> > > >
+> > > > Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+> > > >
+> > > > If the matrix elements might vary, then define them one at a time, e.g.:
+> > > > A[1,1] <- [some expression of other elements]
+> > > > A[1,2] <- [some expression of other elements]
+> > > > etc...
+> > > >
+> > > > No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+> > > > c0[1] <- 0
+> > > > c0[2] <- 0
+> > > > then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+> > > > Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+> > > >
+> > > > Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+> > > > m<-G%*%x0
+> > > > defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+> > > > m[1:2, 1]
+> > > >
+> > > > That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+> > > >
+> > > > A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+> > > >
+> > > > Thanks,
+> > > > Daniel
+> > > > NIMBLE development team
+> > > >
+> > > >
+> > > > On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com> wrote:
+> > > > > Hello,
+> > > > >
+> > > > > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> > > > >
+> > > > > Thank you,
+> > > > >
+> > > > > Colin
+> > > > >
+> > > > > testCode <- nimbleCode({
+> > > > >   #Identity matrix
+> > > > >   W<-identityMatrix(d = 2)
+> > > > >
+> > > > >   #F matrix
+> > > > >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > > >
+> > > > >   #G Transition matrix
+> > > > >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > > >
+> > > > >   #initial values
+> > > > >   m<-G%*%x0
+> > > > >   var0<-sigmaSquaredInvw*W
+> > > > >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> > > > >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+> > > > >
+> > > > >   #Model
+> > > > >   for (t in 2:T){
+> > > > >     mu<-G%*%x[1:2,t-1]
+> > > > >     sigs<-sigmaSquaredInvw*W
+> > > > >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> > > > >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> > > > >   }
+> > > > >
+> > > > >   #Initial Values for States
+> > > > >   c0<-c(0,0)
+> > > > >   m0<-sigmaSquaredInvw*W
+> > > > >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> > > > >
+> > > > >   #Priors
+> > > > >   sigmaSquaredInvv~dgamma(5,20)
+> > > > >   sigmaSquaredInvw~dgamma(5,200)
+> > > > > })
+> > > > >
+> > > > > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> > > > >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > > >
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > > To post to this group, send email to nimble...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u0ef2647ddd7095d7 at groups.google.com  Thu Dec  1 17:08:50 2016
+From: u0ef2647ddd7095d7 at groups.google.com (nimble.stats)
+Date: Thu, 01 Dec 2016 17:08:50 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.6N3SZJOvDAAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.hbyVy9itDAAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com> <pA-7JObwwhA.hbyVy9itDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/6N3SZJOvDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think I see what you are saying.
+
+Although the way you’ve done it does flip the concepts a bit, it seems reasonable and valid.  (A related design issue for NIMBLE is when and how it would be useful to make a program work across many nodes that follow the same motif, such as many latent states in a state-space model, as opposed to always treating each node as distinct.  Thoughts welcome.)
+
+I think an alternative would be the following.  If I follow, ht is a 2x365 (or 365x2) matrix.
+
+You could assign into pieces of it using
+mvTheta[‘ht’,1][1:2, i] <- (…)
+
+and so on for the other variables.
+
+In a sense what I think you need here is a data structure that can hold ht, Ht and theta the way an R list would, rather than necessarily a modelValues object.  Such data structures will be in NIMBLE soon.
+
+Also I note that the argument chold to rmnorm_chol should be a Cholesky matrix.
+
+Perry
+
+> On Dec 1, 2016, at 8:37 AM, Colin <clewi...@gmail.com> wrote:
+>
+
+> Hi Perry,
+>
+> Thanks for you reply, and for the clarification about how NIMBLE uses rows to denote a whole set of states from time T=1....N.  That illuminates additional problems I was encountering when trying to loop over a ModelValues object as you might with a list.  This makes me think my previous step might also not be perfectly congruous with NIMBLE ModelValue Objects.  Before I copy the states into the model, I have a function that performs FFBS to generate states from time T=0...365.
+>
+> As you can see in the code below, I am creating a model values object and then storing generated states in mvTheta as I loop over the time points.  I see now with NIMBLE this creates a ModelValues object of size 366. What I would like to do is then copy those 365 state variables (dropping the initial state 0) to a model object.  As you point out, however, when I run this code I only copy the first row of mvTheta rather than the whole set of 365.
+>
+> Do you think the best way to handle this is to loop over the Model Values object in the copy statement or somehow store all 365 states into a size 1 ModelValues object in my FFBS step? Sorry for the long post. If it would be helpful to attach my full R script, please me me know.
+>
+> Thanks again for you assistance,
+>
+> Colin
+>
+> modvals = modelValues(smosModel, m = 1)
+> nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+>
+>
+>
+>
+>
+> FFBStep<-nimbleFunction(
+>   setup=function(model,mvKF,nodes){
+>     mvThetaConfig <- modelValuesConf(vars = c('ht', 'Ht', 'theta'),types=c('double','double','double'), sizes=list(ht = 2, Ht = c(2, 2), theta = c(1,2)))
+>     mvTheta <- modelValues(mvThetaConfig)
+>     nodes <- model$expandNodeNames(nodes,sort=TRUE)
+>     timePoints <- length(nodes)
+>     len <- timePoints+1
+>   },
+>   run=function(){
+>     resize(mvTheta,timePoints+1)
+>     #Simulate Theta T
+>     Cho_T<-chol(mvKF['Ct',timePoints+1])
+>     mvTheta['theta',timePoints+1] <<- rmnorm_chol(n=1,mvKF['mt',timePoints+1],Cho_T,prec_param = FALSE)
+>     for (t in 1:365){
+>       mvTheta['ht',len-t] <<- mvKF['mt',len-t]+mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%mvTheta['theta',len-t+1]-mvKF['at',len-t+1]
+>       mvTheta['Ht',len-t] <<- mvKF['Ct',len-t]-mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%(model$G)%*%mvKF['Ct',len-t]
+>       Chold <- mvTheta['Ht',len-t]
+>       mvTheta['theta',len-t] <<- rmnorm_chol(n=1,mvTheta['ht',len-t],Chold,prec_param = FALSE)
+>     }
+>   }
+> )
+>
+>
+>
+>
+>
+> On Wednesday, November 30, 2016 at 4:33:17 PM UTC-6, pdevalpine wrote:
+> > Hi Colin,
+> >
+> > I think the confusion here is the notion of “row” in a modelValues object.  What we mean is a complete set of states, not a row of a particular variable in nimble that might happen to be a matrix.  For modelValues purposes, you can think of all model variables as being flattened, like having their dimension attribute removed in R.
+> >
+> > So it should work to use
+> > copy(from = modvals, row = 1, to = smosModel, nodes = c(‘mu’,’sigs’))
+> >
+> > Note copy is a synonym for nimCopy inside a nimbleFunction.
+> >
+> > Also note you can omit the nodes argument and by default it will copy all variables.
+> >
+> > Let us know if it gives you more trouble.
+> >
+> > Perry
+> >
+> >
+> >
+> > > On Nov 30, 2016, at 12:59 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > >
+> > > Hi Daniel,
+> > >
+> > > I have a quick follow up question about the best way to set up the latent nodes in a NIMBLE model step.  I am at the point where I am trying to use NimCopy to copy over simulated nodes from a ModelValues object to the model.  It looks like NIMBLE only allows you to copy by row.  So if a state is multivariate the columns will correspond to additional parameters.
+> > >
+> > > I am still working on the same model we discussed in above thread.  But the way the states are set up is the columns correspond to the latent time points, rather than the rows.
+> > >
+> > > This creates an issue when I create a modelValues object, e.g.,  modvals = modelValues(smosModel, m = 1) as it creates a 2 x 365 matrix, so you can't iterate over rows when running NimCopy.   It doesn't seem like NIMBLE allows you to take the transpose of ModelValues objects.  I have also tried to use the transpose function (t) in the model code to get the latent nodes to be 365 x 2, but that doesn't seem to work either.  I was curious if you had a suggestion that would make sense in order to use NIMBLE ModelValue objects most effectively.
+> > >
+> > > Thank you,
+> > >
+> > > Colin
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > #Create Constant W, G and F matrices to pass to NIMBLE
+> > > W<-diag(2)
+> > > F<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > >
+> > > smosCode <- nimbleCode({
+> > >
+> > > #Initial Values for States: x0 ~ Normal(c(0,0),diag(1/1000)) for precision
+> > >   m0[1] <- 0
+> > >   m0[2] <- 0
+> > >   C0[1:2,1:2] <- (1/1000)*W[1:2,1:2]
+> > >   x0[1:2] ~ dmnorm(m0[1:2],C0[1:2,1:2])
+> > >
+> > >   #initial values
+> > >   m1[1:2,1] <- G[1:2,1:2]%*%x0[1:2]
+> > >   C1[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> > >   x[1:2,1] ~ dmnorm(m1[1:2,1],C1[1:2,1:2]) #precision matrix
+> > >   y[1] ~ dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv) #precision 1/var
+> > >
+> > >   #Model
+> > >   for (t in 2:T){
+> > >     mu[1:2,t] <- G[1:2,1:2]%*%x[1:2,t-1]
+> > >     sigs[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> > >     x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+> > >     y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+> > >   }
+> > >
+> > >
+> > >   sigmaSquaredInvv ~ dgamma(5,20) #in terms of shape and rate; prior on precision V
+> > >   sigmaSquaredInvw ~ dgamma(5,20) #in terms of shape and rate; prior on precision W
+> > > })
+> > >
+> > > smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+> > >                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > >
+> > >
+> > > On Sunday, November 6, 2016 at 3:35:38 PM UTC-6, Daniel Turek wrote:
+> > > > Looks like I was beaten to the punch here.  At least no one can say that the NIMBLE team is slow to respond.
+> > > >
+> > > > On Sun, Nov 6, 2016 at 4:34 PM, Daniel Turek <db...@williams.edu <http://williams.edu/>> wrote:
+> > > > > Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+> > > > >
+> > > > > You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+> > > > >
+> > > > > It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+> > > > >
+> > > > > If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+> > > > >
+> > > > > Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+> > > > >
+> > > > > If the matrix elements might vary, then define them one at a time, e.g.:
+> > > > > A[1,1] <- [some expression of other elements]
+> > > > > A[1,2] <- [some expression of other elements]
+> > > > > etc...
+> > > > >
+> > > > > No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+> > > > > c0[1] <- 0
+> > > > > c0[2] <- 0
+> > > > > then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+> > > > > Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+> > > > >
+> > > > > Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+> > > > > m<-G%*%x0
+> > > > > defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+> > > > > m[1:2, 1]
+> > > > >
+> > > > > That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+> > > > >
+> > > > > A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+> > > > >
+> > > > > Thanks,
+> > > > > Daniel
+> > > > > NIMBLE development team
+> > > > >
+> > > > >
+> > > > > On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > > > > Hello,
+> > > > > >
+> > > > > > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> > > > > >
+> > > > > > Thank you,
+> > > > > >
+> > > > > > Colin
+> > > > > >
+> > > > > > testCode <- nimbleCode({
+> > > > > >   #Identity matrix
+> > > > > >   W<-identityMatrix(d = 2)
+> > > > > >
+> > > > > >   #F matrix
+> > > > > >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > > > >
+> > > > > >   #G Transition matrix
+> > > > > >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > > > >
+> > > > > >   #initial values
+> > > > > >   m<-G%*%x0
+> > > > > >   var0<-sigmaSquaredInvw*W
+> > > > > >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> > > > > >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+> > > > > >
+> > > > > >   #Model
+> > > > > >   for (t in 2:T){
+> > > > > >     mu<-G%*%x[1:2,t-1]
+> > > > > >     sigs<-sigmaSquaredInvw*W
+> > > > > >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> > > > > >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> > > > > >   }
+> > > > > >
+> > > > > >   #Initial Values for States
+> > > > > >   c0<-c(0,0)
+> > > > > >   m0<-sigmaSquaredInvw*W
+> > > > > >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> > > > > >
+> > > > > >   #Priors
+> > > > > >   sigmaSquaredInvv~dgamma(5,20)
+> > > > > >   sigmaSquaredInvw~dgamma(5,200)
+> > > > > > })
+> > > > > >
+> > > > > > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> > > > > >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > > > >
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups. <http://googlegroups.com/>com <http://googlegroups.com/>.
+> > > > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > >
+> > > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/af18c2f5-7203-4bd2-a633-cddb163f9622%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/af18c2f5-7203-4bd2-a633-cddb163f9622%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u29ae35da1a53a211 at groups.google.com  Thu Dec  1 19:38:51 2016
+From: u29ae35da1a53a211 at groups.google.com (Vianey Leos)
+Date: Thu, 01 Dec 2016 19:38:51 +0000
+Subject: Fitting a basic 2-state HMM
+Message-ID: <ktLwEiVOwbQ.DH4LEcO3DAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ktLwEiVOwbQ/m/DH4LEcO3DAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I'm just getting started out with NIMBLE and am trying to get a 2-state HMM (with gamma state-dependent densities) up and running. I would like to eventually fit a more complex model using MCEM.
+
+So far, I can not get the nimbleModel to run without errors. Right now, I am seeing the following error:
+
+> Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+defining model...
+Detected phi as data within 'constants'.
+Error in genVarInfo3() :
+  There is a problem with some indexing in this line: p <- T[theta[i_minus_1], 1:2].
+One way this can happen is if you wanted to provide a vector of indices but did not include it in constants.
+
+And here's all of the code I am running (or rather attempting to run):
+
+## define HMM
+code <- nimbleCode({
+
+  a[1] ~ dnorm(-2, 1)
+  gam[1] <- exp(a[1])/(1+exp(a[1]))
+  a[2] ~ dnorm(-2, 1)
+  gam[2] <- exp(a[2])/(1+exp(a[2]))
+
+  T[1,1] <- 1-gam[1]
+  T[2,1] <- gam[2]
+  T[1,2] <- gam[1]
+  T[2,2] <- 1-gam[2]
+
+  phi <- c(.5, .5)
+  theta[1] ~ dcat(prob = phi)
+
+  for(i in 2:k) {
+    p <- T[theta[i-1],]
+    theta[i] ~ dcat(prob = p)
+  }
+
+  for (i in 1:k) {
+    y[i] ~ dgamma(shape=alp[theta[i]], rate=bet[theta[i]])
+  }
+
+  for(i in 1:2){
+    alp[i] ~ dgamma(1,1)
+    bet[i] ~ dgamma(1,1)
+  }
+
+})
+
+y <- rgamma(100, 1, 1)
+k <- 100
+
+alp <- numeric(2)
+bet <- numeric(2)
+
+## define model constants, data, and initial values
+constants <- list(k=k, phi=c(1/2,1/2))
+data <- list(y = y)
+inits <- list(theta=sample(x=c(1,2), size = 100, replace = T), a = rep(-2,2),
+              alp=c(1,1), bet=c(1,1))
+
+## create model object
+Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+
+If anyone could point me in the right direction, it'd be much appreciated! I have also tried to go through the R code from the Efficient MCMC Sampling for HHMMs paper but am not familiar with most of the models used in capture-recapture.
+
+Thank you,
+
+Vianey
+
+From udd632bd3bbcdd7e9 at groups.google.com  Thu Dec  1 19:41:30 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Thu, 01 Dec 2016 19:41:30 +0000
+Subject: Re: Fitting a basic 2-state HMM
+Message-ID: <ktLwEiVOwbQ.6mjcOOi3DAAJ@nimble-users.groups.google.com>
+In-Reply-To: <ktLwEiVOwbQ.DH4LEcO3DAAJ@nimble-users.groups.google.com>
+References: <ktLwEiVOwbQ.DH4LEcO3DAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ktLwEiVOwbQ/m/6mjcOOi3DAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Vianey,
+
+NIMBLE can not yet handle stochastic indices.  You have theta[i] as the index to alp, and theta[i] ~ dcat(p), so theta[i] is a stochastic index.
+
+Perry
+
+> On Dec 1, 2016, at 11:38 AM, Vianey Leos <viane...@gmail.com> wrote:
+>
+
+> Hi,
+>
+> I'm just getting started out with NIMBLE and am trying to get a 2-state HMM (with gamma state-dependent densities) up and running. I would like to eventually fit a more complex model using MCEM.
+>
+> So far, I can not get the nimbleModel to run without errors. Right now, I am seeing the following error:
+>
+> > Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+> defining model...
+> Detected phi as data within 'constants'.
+> Error in genVarInfo3() :
+>   There is a problem with some indexing in this line: p <- T[theta[i_minus_1], 1:2].
+> One way this can happen is if you wanted to provide a vector of indices but did not include it in constants.
+>
+> And here's all of the code I am running (or rather attempting to run):
+>
+> ## define HMM
+> code <- nimbleCode({
+>
+>   a[1] ~ dnorm(-2, 1)
+>   gam[1] <- exp(a[1])/(1+exp(a[1]))
+>   a[2] ~ dnorm(-2, 1)
+>   gam[2] <- exp(a[2])/(1+exp(a[2]))
+>
+>   T[1,1] <- 1-gam[1]
+>   T[2,1] <- gam[2]
+>   T[1,2] <- gam[1]
+>   T[2,2] <- 1-gam[2]
+>
+>   phi <- c(.5, .5)
+>   theta[1] ~ dcat(prob = phi)
+>
+>   for(i in 2:k) {
+>     p <- T[theta[i-1],]
+>     theta[i] ~ dcat(prob = p)
+>   }
+>
+>   for (i in 1:k) {
+>     y[i] ~ dgamma(shape=alp[theta[i]], rate=bet[theta[i]])
+>   }
+>
+>   for(i in 1:2){
+>     alp[i] ~ dgamma(1,1)
+>     bet[i] ~ dgamma(1,1)
+>   }
+>
+> })
+>
+>
+> y <- rgamma(100, 1, 1)
+> k <- 100
+>
+> alp <- numeric(2)
+> bet <- numeric(2)
+>
+> ## define model constants, data, and initial values
+> constants <- list(k=k, phi=c(1/2,1/2))
+> data <- list(y = y)
+> inits <- list(theta=sample(x=c(1,2), size = 100, replace = T), a = rep(-2,2),
+>               alp=c(1,1), bet=c(1,1))
+>
+> ## create model object
+> Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+>
+>
+> If anyone could point me in the right direction, it'd be much appreciated! I have also tried to go through the R code from the Efficient MCMC Sampling for HHMMs paper but am not familiar with most of the models used in capture-recapture.
+>
+> Thank you,
+>
+> Vianey
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/64b3784a-4aa0-473f-bfa7-914ca353db9a%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/64b3784a-4aa0-473f-bfa7-914ca353db9a%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Thu Dec  1 21:12:08 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Thu, 01 Dec 2016 21:12:08 +0000
+Subject: Re: Fitting a basic 2-state HMM
+Message-ID: <ktLwEiVOwbQ.NVQwW9q8DAAJ@nimble-users.groups.google.com>
+In-Reply-To: <ktLwEiVOwbQ.6mjcOOi3DAAJ@nimble-users.groups.google.com>
+References: <ktLwEiVOwbQ.DH4LEcO3DAAJ@nimble-users.groups.google.com> <ktLwEiVOwbQ.6mjcOOi3DAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ktLwEiVOwbQ/m/NVQwW9q8DAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Vianey, this approach I'm going to suggest is not the most computationally efficient, but it does work.
+
+Until we implement stochastic indexing (e.g., being able to index alp[] using the stochastic index theta[i], you can side-step the issue using:
+
+for (i in 1:k) {
+
+    shape_param[i] <- equals(theta[i],1)*alp[1] + equals(theta[i],2)*alp[2]
+    rate_param[i]  <- equals(theta[i],1)*bet[1] + equals(theta[i],2)*bet[2]
+    y[i] ~ dgamma(shape=shape_param[i], rate=rate_param[i])
+}
+
+Daniel
+
+On Thu, Dec 1, 2016 at 2:41 PM, Perry de Valpine <pdeva...@berkeley.edu> wrote:
+
+> Hi Vianey,
+>
+> NIMBLE can not yet handle stochastic indices.  You have theta[i] as the index to alp, and theta[i] ~ dcat(p), so theta[i] is a stochastic index.
+>
+> Perry
+
+> > On Dec 1, 2016, at 11:38 AM, Vianey Leos <viane...@gmail.com> wrote:
+> >
+
+> > Hi,
+> >
+> > I'm just getting started out with NIMBLE and am trying to get a 2-state HMM (with gamma state-dependent densities) up and running. I would like to eventually fit a more complex model using MCEM.
+> >
+> > So far, I can not get the nimbleModel to run without errors. Right now, I am seeing the following error:
+> >
+> > > Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+> > defining model...
+> > Detected phi as data within 'constants'.
+> > Error in genVarInfo3() :
+> >   There is a problem with some indexing in this line: p <- T[theta[i_minus_1], 1:2].
+> > One way this can happen is if you wanted to provide a vector of indices but did not include it in constants.
+> >
+> > And here's all of the code I am running (or rather attempting to run):
+> >
+> > ## define HMM
+> > code <- nimbleCode({
+> >
+> >   a[1] ~ dnorm(-2, 1)
+> >   gam[1] <- exp(a[1])/(1+exp(a[1]))
+> >   a[2] ~ dnorm(-2, 1)
+> >   gam[2] <- exp(a[2])/(1+exp(a[2]))
+> >
+> >   T[1,1] <- 1-gam[1]
+> >   T[2,1] <- gam[2]
+> >   T[1,2] <- gam[1]
+> >   T[2,2] <- 1-gam[2]
+> >
+> >   phi <- c(.5, .5)
+> >   theta[1] ~ dcat(prob = phi)
+> >
+> >   for(i in 2:k) {
+> >     p <- T[theta[i-1],]
+> >     theta[i] ~ dcat(prob = p)
+> >   }
+> >
+> >   for (i in 1:k) {
+> >     y[i] ~ dgamma(shape=alp[theta[i]], rate=bet[theta[i]])
+> >   }
+> >
+> >   for(i in 1:2){
+> >     alp[i] ~ dgamma(1,1)
+> >     bet[i] ~ dgamma(1,1)
+> >   }
+> >
+> > })
+> >
+> >
+> > y <- rgamma(100, 1, 1)
+> > k <- 100
+> >
+> > alp <- numeric(2)
+> > bet <- numeric(2)
+> >
+> > ## define model constants, data, and initial values
+> > constants <- list(k=k, phi=c(1/2,1/2))
+> > data <- list(y = y)
+> > inits <- list(theta=sample(x=c(1,2), size = 100, replace = T), a = rep(-2,2),
+> >               alp=c(1,1), bet=c(1,1))
+> >
+> > ## create model object
+> > Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+> >
+> >
+> > If anyone could point me in the right direction, it'd be much appreciated! I have also tried to go through the R code from the Efficient MCMC Sampling for HHMMs paper but am not familiar with most of the models used in capture-recapture.
+> >
+> > Thank you,
+> >
+> > Vianey
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/64b3784a-4aa0-473f-bfa7-914ca353db9a%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/64b3784a-4aa0-473f-bfa7-914ca353db9a%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/FA7CB105-FBA5-4A24-BD50-14AD1A3F055C%40berkeley.edu <https://groups.google.com/d/msgid/nimble-users/FA7CB105-FBA5-4A24-BD50-14AD1A3F055C%40berkeley.edu?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u29ae35da1a53a211 at groups.google.com  Mon Dec  5 02:02:18 2016
+From: u29ae35da1a53a211 at groups.google.com (Vianey Leos)
+Date: Mon, 05 Dec 2016 02:02:18 +0000
+Subject: Re: Fitting a basic 2-state HMM
+Message-ID: <ktLwEiVOwbQ.Wy_tp224DQAJ@nimble-users.groups.google.com>
+In-Reply-To: <ktLwEiVOwbQ.NVQwW9q8DAAJ@nimble-users.groups.google.com>
+References: <ktLwEiVOwbQ.DH4LEcO3DAAJ@nimble-users.groups.google.com> <ktLwEiVOwbQ.NVQwW9q8DAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ktLwEiVOwbQ/m/Wy_tp224DQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you! That seems to have done the trick.
+
+Vianey
+
+On Thursday, December 1, 2016 at 3:12:08 PM UTC-6, Daniel Turek wrote:
+
+> Vianey, this approach I'm going to suggest is not the most computationally efficient, but it does work.
+>
+> Until we implement stochastic indexing (e.g., being able to index alp[] using the stochastic index theta[i], you can side-step the issue using:
+>
+> for (i in 1:k) {
+>     shape_param[i] <- equals(theta[i],1)*alp[1] + equals(theta[i],2)*alp[2]
+>     rate_param[i]  <- equals(theta[i],1)*bet[1] + equals(theta[i],2)*bet[2]
+>     y[i] ~ dgamma(shape=shape_param[i], rate=rate_param[i])
+> }
+>
+>
+> Daniel
+>
+>
+
+> On Thu, Dec 1, 2016 at 2:41 PM, Perry de Valpine <pdeva...@berkeley.edu> wrote:
+
+> > Hi Vianey,
+> >
+> > NIMBLE can not yet handle stochastic indices.  You have theta[i] as the index to alp, and theta[i] ~ dcat(p), so theta[i] is a stochastic index.
+> >
+> > Perry
+
+> > > On Dec 1, 2016, at 11:38 AM, Vianey Leos <viane...@gmail.com> wrote:
+> > >
+
+> > > Hi,
+> > >
+> > > I'm just getting started out with NIMBLE and am trying to get a 2-state HMM (with gamma state-dependent densities) up and running. I would like to eventually fit a more complex model using MCEM.
+> > >
+> > > So far, I can not get the nimbleModel to run without errors. Right now, I am seeing the following error:
+> > >
+> > > > Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+> > > defining model...
+> > > Detected phi as data within 'constants'.
+> > > Error in genVarInfo3() :
+> > >   There is a problem with some indexing in this line: p <- T[theta[i_minus_1], 1:2].
+> > > One way this can happen is if you wanted to provide a vector of indices but did not include it in constants.
+> > >
+> > > And here's all of the code I am running (or rather attempting to run):
+> > >
+> > > ## define HMM
+> > > code <- nimbleCode({
+> > >
+> > >   a[1] ~ dnorm(-2, 1)
+> > >   gam[1] <- exp(a[1])/(1+exp(a[1]))
+> > >   a[2] ~ dnorm(-2, 1)
+> > >   gam[2] <- exp(a[2])/(1+exp(a[2]))
+> > >
+> > >   T[1,1] <- 1-gam[1]
+> > >   T[2,1] <- gam[2]
+> > >   T[1,2] <- gam[1]
+> > >   T[2,2] <- 1-gam[2]
+> > >
+> > >   phi <- c(.5, .5)
+> > >   theta[1] ~ dcat(prob = phi)
+> > >
+> > >   for(i in 2:k) {
+> > >     p <- T[theta[i-1],]
+> > >     theta[i] ~ dcat(prob = p)
+> > >   }
+> > >
+> > >   for (i in 1:k) {
+> > >     y[i] ~ dgamma(shape=alp[theta[i]], rate=bet[theta[i]])
+> > >   }
+> > >
+> > >   for(i in 1:2){
+> > >     alp[i] ~ dgamma(1,1)
+> > >     bet[i] ~ dgamma(1,1)
+> > >   }
+> > >
+> > > })
+> > >
+> > >
+> > > y <- rgamma(100, 1, 1)
+> > > k <- 100
+> > >
+> > > alp <- numeric(2)
+> > > bet <- numeric(2)
+> > >
+> > > ## define model constants, data, and initial values
+> > > constants <- list(k=k, phi=c(1/2,1/2))
+> > > data <- list(y = y)
+> > > inits <- list(theta=sample(x=c(1,2), size = 100, replace = T), a = rep(-2,2),
+> > >               alp=c(1,1), bet=c(1,1))
+> > >
+> > > ## create model object
+> > > Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+> > >
+> > >
+> > > If anyone could point me in the right direction, it'd be much appreciated! I have also tried to go through the R code from the Efficient MCMC Sampling for HHMMs paper but am not familiar with most of the models used in capture-recapture.
+> > >
+> > > Thank you,
+> > >
+> > > Vianey
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> > >
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/64b3784a-4aa0-473f-bfa7-914ca353db9a%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/64b3784a-4aa0-473f-bfa7-914ca353db9a%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+
+> >
+> > To post to this group, send email to nimble...@googlegroups.com.
+
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/FA7CB105-FBA5-4A24-BD50-14AD1A3F055C%40berkeley.edu <https://groups.google.com/d/msgid/nimble-users/FA7CB105-FBA5-4A24-BD50-14AD1A3F055C%40berkeley.edu?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+
+From uc9e9cbbfb3b043f0 at groups.google.com  Mon Dec  5 12:54:19 2016
+From: uc9e9cbbfb3b043f0 at groups.google.com (Daniel Turek)
+Date: Mon, 05 Dec 2016 12:54:19 +0000
+Subject: Re: Fitting a basic 2-state HMM
+Message-ID: <ktLwEiVOwbQ.rxkcCQLcDQAJ@nimble-users.groups.google.com>
+In-Reply-To: <ktLwEiVOwbQ.Wy_tp224DQAJ@nimble-users.groups.google.com>
+References: <ktLwEiVOwbQ.DH4LEcO3DAAJ@nimble-users.groups.google.com> <ktLwEiVOwbQ.Wy_tp224DQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ktLwEiVOwbQ/m/rxkcCQLcDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Great.  Keep in touch.
+
+On Sun, Dec 4, 2016 at 9:02 PM, Vianey Leos <viane...@gmail.com> wrote:
+
+> Thank you! That seems to have done the trick.
+>
+> Vianey
+>
+> On Thursday, December 1, 2016 at 3:12:08 PM UTC-6, Daniel Turek wrote:
+> > Vianey, this approach I'm going to suggest is not the most computationally efficient, but it does work.
+> >
+> > Until we implement stochastic indexing (e.g., being able to index alp[] using the stochastic index theta[i], you can side-step the issue using:
+> >
+> > for (i in 1:k) {
+> >     shape_param[i] <- equals(theta[i],1)*alp[1] + equals(theta[i],2)*alp[2]
+> >     rate_param[i]  <- equals(theta[i],1)*bet[1] + equals(theta[i],2)*bet[2]
+> >     y[i] ~ dgamma(shape=shape_param[i], rate=rate_param[i])
+> > }
+> >
+> >
+> > Daniel
+> >
+> >
+> >
+> > On Thu, Dec 1, 2016 at 2:41 PM, Perry de Valpine <pdeva...@berkeley.edu> wrote:
+> > > Hi Vianey,
+> > >
+> > > NIMBLE can not yet handle stochastic indices.  You have theta[i] as the index to alp, and theta[i] ~ dcat(p), so theta[i] is a stochastic index.
+> > >
+> > > Perry
+> > >
+> > > > On Dec 1, 2016, at 11:38 AM, Vianey Leos <viane...@gmail.com> wrote:
+> > > >
+> > > > Hi,
+> > > >
+> > > > I'm just getting started out with NIMBLE and am trying to get a 2-state HMM (with gamma state-dependent densities) up and running. I would like to eventually fit a more complex model using MCEM.
+> > > >
+> > > > So far, I can not get the nimbleModel to run without errors. Right now, I am seeing the following error:
+> > > >
+> > > > > Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+> > > > defining model...
+> > > > Detected phi as data within 'constants'.
+> > > > Error in genVarInfo3() :
+> > > >   There is a problem with some indexing in this line: p <- T[theta[i_minus_1], 1:2].
+> > > > One way this can happen is if you wanted to provide a vector of indices but did not include it in constants.
+> > > >
+> > > > And here's all of the code I am running (or rather attempting to run):
+> > > >
+> > > > ## define HMM
+> > > > code <- nimbleCode({
+> > > >
+> > > >   a[1] ~ dnorm(-2, 1)
+> > > >   gam[1] <- exp(a[1])/(1+exp(a[1]))
+> > > >   a[2] ~ dnorm(-2, 1)
+> > > >   gam[2] <- exp(a[2])/(1+exp(a[2]))
+> > > >
+> > > >   T[1,1] <- 1-gam[1]
+> > > >   T[2,1] <- gam[2]
+> > > >   T[1,2] <- gam[1]
+> > > >   T[2,2] <- 1-gam[2]
+> > > >
+> > > >   phi <- c(.5, .5)
+> > > >   theta[1] ~ dcat(prob = phi)
+> > > >
+> > > >   for(i in 2:k) {
+> > > >     p <- T[theta[i-1],]
+> > > >     theta[i] ~ dcat(prob = p)
+> > > >   }
+> > > >
+> > > >   for (i in 1:k) {
+> > > >     y[i] ~ dgamma(shape=alp[theta[i]], rate=bet[theta[i]])
+> > > >   }
+> > > >
+> > > >   for(i in 1:2){
+> > > >     alp[i] ~ dgamma(1,1)
+> > > >     bet[i] ~ dgamma(1,1)
+> > > >   }
+> > > >
+> > > > })
+> > > >
+> > > >
+> > > > y <- rgamma(100, 1, 1)
+> > > > k <- 100
+> > > >
+> > > > alp <- numeric(2)
+> > > > bet <- numeric(2)
+> > > >
+> > > > ## define model constants, data, and initial values
+> > > > constants <- list(k=k, phi=c(1/2,1/2))
+> > > > data <- list(y = y)
+> > > > inits <- list(theta=sample(x=c(1,2), size = 100, replace = T), a = rep(-2,2),
+> > > >               alp=c(1,1), bet=c(1,1))
+> > > >
+> > > > ## create model object
+> > > > Rmodel <- nimbleModel(code, constants, data, inits, check = FALSE, dimensions=list(T=c(2,2)))
+> > > >
+> > > >
+> > > > If anyone could point me in the right direction, it'd be much appreciated! I have also tried to go through the R code from the Efficient MCMC Sampling for HHMMs paper but am not familiar with most of the models used in capture-recapture.
+> > > >
+> > > > Thank you,
+> > > >
+> > > > Vianey
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > > To post to this group, send email to nimble...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/64b3784a-4aa0-473f-bfa7-914ca353db9a%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/64b3784a-4aa0-473f-bfa7-914ca353db9a%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/FA7CB105-FBA5-4A24-BD50-14AD1A3F055C%40berkeley.edu <https://groups.google.com/d/msgid/nimble-users/FA7CB105-FBA5-4A24-BD50-14AD1A3F055C%40berkeley.edu?utm_medium=email&utm_source=footer>.
+> > >
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/594c0fc7-fea5-47e0-9b18-2f57a5819534%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/594c0fc7-fea5-47e0-9b18-2f57a5819534%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u4d992ac005b751e4 at groups.google.com  Mon Dec  5 15:43:49 2016
+From: u4d992ac005b751e4 at groups.google.com (ugoline godeau)
+Date: Mon, 05 Dec 2016 15:43:49 +0000
+Subject: quantile function
+Message-ID: <V-snnx__njY.dgkj-UHlDQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/V-snnx__njY/m/dgkj-UHlDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+Sorry I just started with NIMBLE and don't know it very much yet.
+I am trying to built a model where one of my random effect must be picked in a quantile function and more precisly a qbeta function, but I can't find this function. Apparently there is one for the exponential distribution (qexp_nimble) or the the t distribution (qt_nonstandard) but I can't find one for the beta distribution (only the function dbeta).
+Is there a function available in Nimble ?
+Thank you in advance
+Ugoline GODEAU
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Mon Dec  5 16:00:35 2016
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Mon, 05 Dec 2016 16:00:35 +0000
+Subject: Re: quantile function
+Message-ID: <V-snnx__njY.n-1jVSzmDQAJ@nimble-users.groups.google.com>
+In-Reply-To: <V-snnx__njY.dgkj-UHlDQAJ@nimble-users.groups.google.com>
+References: <V-snnx__njY.dgkj-UHlDQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/V-snnx__njY/m/n-1jVSzmDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ugoline,
+
+Yes, this is definitely possible. For distributions for which R
+provides such functions, we use R's functions so that's why you don't
+see an explicit help(qbeta) that relates to NIMBLE.
+
+More details are (somewhat scattered) in Sections 5.2.3, 5.2.4, and
+9.5.21 of the NIMBLE manual.
+
+Here's a quick example:
+
+code <- nimbleCode({
+    x <- qbeta(input, a, b)
+})
+m <- nimbleModel(code, data = list(input = 0.5),
+                 constants = list(a = 1 , b =1))
+m$calculate()
+m$x
+
+On Mon, Dec 5, 2016 at 7:43 AM, ugoline godeau <ugolin...@gmail.com> wrote:
+> Hello,
+> Sorry I just started with NIMBLE and don't know it very much yet.
+> I am trying to built a model where one of my random effect must be picked in
+> a quantile function and more precisly a qbeta function, but I can't find
+> this function. Apparently there is one for the exponential distribution
+> (qexp_nimble) or the the t distribution (qt_nonstandard) but I can't find
+> one for the beta distribution (only the function dbeta).
+> Is there a function available in Nimble ?
+> Thank you in advance
+> Ugoline GODEAU
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/nimble-users/25c289e2-d88e-4cbf-97fb-38303893459f%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u4d992ac005b751e4 at groups.google.com  Mon Dec  5 16:18:32 2016
+From: u4d992ac005b751e4 at groups.google.com (ugoline godeau)
+Date: Mon, 05 Dec 2016 16:18:32 +0000
+Subject: Re: quantile function
+Message-ID: <V-snnx__njY.xrkrFSfnDQAJ@nimble-users.groups.google.com>
+In-Reply-To: <V-snnx__njY.dgkj-UHlDQAJ@nimble-users.groups.google.com>
+References: <V-snnx__njY.dgkj-UHlDQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/V-snnx__njY/m/xrkrFSfnDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you a lot
+I tried that but it didn't work. I think I may have made a mistake in the arguments (I only put 2) and because of the error message I thought that it was the function that was not good.
+Thank you again I will try to better understand the arguments in order to make it work.
+
+Le lundi 5 décembre 2016 17:00:35 UTC+1, Christopher Paciorek a écrit :
+> Hi Ugoline,
+>
+> Yes, this is definitely possible. For distributions for which R
+> provides such functions, we use R's functions so that's why you don't
+> see an explicit help(qbeta) that relates to NIMBLE.
+>
+> More details are (somewhat scattered) in Sections 5.2.3, 5.2.4, and
+> 9.5.21 of the NIMBLE manual.
+>
+> Here's a quick example:
+>
+> code <- nimbleCode({
+>     x <- qbeta(input, a, b)
+> })
+> m <- nimbleModel(code, data = list(input = 0.5),
+>                  constants = list(a = 1 , b =1))
+> m$calculate()
+> m$x
+>
+> On Mon, Dec 5, 2016 at 7:43 AM, ugoline godeau <ugolin...@gmail.com> wrote:
+> > Hello,
+> > Sorry I just started with NIMBLE and don't know it very much yet.
+> > I am trying to built a model where one of my random effect must be picked in
+> > a quantile function and more precisly a qbeta function, but I can't find
+> > this function. Apparently there is one for the exponential distribution
+> > (qexp_nimble) or the the t distribution (qt_nonstandard) but I can't find
+> > one for the beta distribution (only the function dbeta).
+> > Is there a function available in Nimble ?
+> > Thank you in advance
+> > Ugoline GODEAU
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msgid/nimble-users/25c289e2-d88e-4cbf-97fb-38303893459f%40googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Tue Dec  6 17:54:12 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Tue, 06 Dec 2016 17:54:12 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.YMg89_M6DgAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.6N3SZJOvDAAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com> <pA-7JObwwhA.6N3SZJOvDAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/YMg89_M6DgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,
+
+Thanks for your suggestion, and I'm glad to hear a NIMBLE version of List is in the works.   What I ended up doing is in the modelValuesConf, define the size of theta = c(2,366).  Then as you suggest, just update the first row, and leave the other 365 rows empty.  Note: had to resize the modelValues object to 366 rows to store the other values, ht (2x1) and Ht, which is a 2x2 matrix.
+
+Copying over the values of theta seems to work great using the code below.  One more quick question about how NIMBLE works is in regards to the copying.  The modelValues object is 2 x 365 because there is an initial state X0, which is its own variable.  However, the theta ModelValues object has 366 columns.  When I do the copying NIMBLE seems to automatically resize the modvals object and copies all 366 states.  Is there a way to drop the first state in the copying process?  Something akin to how in R you can put mvTheta[,-1] to drop the first column?
+
+Thanks again,
+
+Colin
+
+           modvals = modelValues(smosModel, m = 1)
+> nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+
+FFBStep<-nimbleFunction(
+  setup=function(model,mvKF,nodes){
+    mvThetaConfig <- modelValuesConf(vars = c('ht', 'Ht', 'theta'),types=c('double','double','double'), sizes=list(ht = 2, Ht = c(2, 2), theta=c(2,366)))
+
+    mvTheta <- modelValues(mvThetaConfig)
+    nodes <- model$expandNodeNames(nodes,sort=TRUE)
+    timePoints <- length(nodes)
+    len <- timePoints+1
+  },
+  run=function(){
+    resize(mvTheta,timePoints+1)
+    #Simulate Theta T
+    Cho_T<-chol(mvKF['Ct',timePoints+1])
+
+    mvTheta['theta',1][1:2,timePoints+1] <<- rmnorm_chol(n=1,mvKF['mt',timePoints+1],Cho_T,prec_param = FALSE)
+
+    for (t in 1:365){
+
+      mvTheta['ht',len-t] <<- mvKF['mt',len-t]+mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%mvTheta['theta',1][1:2,len-t+1]-mvKF['at',len-t+1]
+
+      mvTheta['Ht',len-t] <<- mvKF['Ct',len-t]-mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%(model$G)%*%mvKF['Ct',len-t]
+
+      Chold <- chol(mvTheta['Ht',len-t])
+      mvTheta['theta',1][1:2,len-t] <<- rmnorm_chol(n=1,mvTheta['ht',len-t],Chold,prec_param = FALSE)
+    }
+  }
+)
+
+On Thursday, December 1, 2016 at 11:08:50 AM UTC-6, nimble.stats wrote:
+> I think I see what you are saying.
+>
+> Although the way you’ve done it does flip the concepts a bit, it seems reasonable and valid.  (A related design issue for NIMBLE is when and how it would be useful to make a program work across many nodes that follow the same motif, such as many latent states in a state-space model, as opposed to always treating each node as distinct.  Thoughts welcome.)
+>
+> I think an alternative would be the following.  If I follow, ht is a 2x365 (or 365x2) matrix.
+>
+> You could assign into pieces of it using
+> mvTheta[‘ht’,1][1:2, i] <- (…)
+>
+> and so on for the other variables.
+>
+> In a sense what I think you need here is a data structure that can hold ht, Ht and theta the way an R list would, rather than necessarily a modelValues object.  Such data structures will be in NIMBLE soon.
+>
+> Also I note that the argument chold to rmnorm_chol should be a Cholesky matrix.
+>
+> Perry
+>
+>
+>
+> > On Dec 1, 2016, at 8:37 AM, Colin <clewi...@gmail.com> wrote:
+> >
+> > Hi Perry,
+> >
+> > Thanks for you reply, and for the clarification about how NIMBLE uses rows to denote a whole set of states from time T=1....N.  That illuminates additional problems I was encountering when trying to loop over a ModelValues object as you might with a list.  This makes me think my previous step might also not be perfectly congruous with NIMBLE ModelValue Objects.  Before I copy the states into the model, I have a function that performs FFBS to generate states from time T=0...365.
+> >
+> > As you can see in the code below, I am creating a model values object and then storing generated states in mvTheta as I loop over the time points.  I see now with NIMBLE this creates a ModelValues object of size 366. What I would like to do is then copy those 365 state variables (dropping the initial state 0) to a model object.  As you point out, however, when I run this code I only copy the first row of mvTheta rather than the whole set of 365.
+> >
+> > Do you think the best way to handle this is to loop over the Model Values object in the copy statement or somehow store all 365 states into a size 1 ModelValues object in my FFBS step? Sorry for the long post. If it would be helpful to attach my full R script, please me me know.
+> >
+> > Thanks again for you assistance,
+> >
+> > Colin
+> >
+> > modvals = modelValues(smosModel, m = 1)
+> > nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+> >
+> >
+> >
+> >
+> >
+> > FFBStep<-nimbleFunction(
+> >   setup=function(model,mvKF,nodes){
+> >     mvThetaConfig <- modelValuesConf(vars = c('ht', 'Ht', 'theta'),types=c('double','double','double'), sizes=list(ht = 2, Ht = c(2, 2), theta = c(1,2)))
+> >     mvTheta <- modelValues(mvThetaConfig)
+> >     nodes <- model$expandNodeNames(nodes,sort=TRUE)
+> >     timePoints <- length(nodes)
+> >     len <- timePoints+1
+> >   },
+> >   run=function(){
+> >     resize(mvTheta,timePoints+1)
+> >     #Simulate Theta T
+> >     Cho_T<-chol(mvKF['Ct',timePoints+1])
+> >     mvTheta['theta',timePoints+1] <<- rmnorm_chol(n=1,mvKF['mt',timePoints+1],Cho_T,prec_param = FALSE)
+> >     for (t in 1:365){
+> >       mvTheta['ht',len-t] <<- mvKF['mt',len-t]+mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%mvTheta['theta',len-t+1]-mvKF['at',len-t+1]
+> >       mvTheta['Ht',len-t] <<- mvKF['Ct',len-t]-mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%(model$G)%*%mvKF['Ct',len-t]
+> >       Chold <- mvTheta['Ht',len-t]
+> >       mvTheta['theta',len-t] <<- rmnorm_chol(n=1,mvTheta['ht',len-t],Chold,prec_param = FALSE)
+> >     }
+> >   }
+> > )
+> >
+modvals = modelValues(smosModel, m = 1)
+nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+> >
+> >
+> >
+> >
+> > On Wednesday, November 30, 2016 at 4:33:17 PM UTC-6, pdevalpine wrote:
+> > > Hi Colin,
+> > >
+> > > I think the confusion here is the notion of “row” in a modelValues object.  What we mean is a complete set of states, not a row of a particular variable in nimble that might happen to be a matrix.  For modelValues purposes, you can think of all model variables as being flattened, like having their dimension attribute removed in R.
+> > >
+> > > So it should work to use
+> > > copy(from = modvals, row = 1, to = smosModel, nodes = c(‘mu’,’sigs’))
+> > >
+> > > Note copy is a synonym for nimCopy inside a nimbleFunction.
+> > >
+> > > Also note you can omit the nodes argument and by default it will copy all variables.
+> > >
+> > > Let us know if it gives you more trouble.
+> > >
+> > > Perry
+> > >
+> > >
+> > >
+> > > > On Nov 30, 2016, at 12:59 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > >
+> > > > Hi Daniel,
+> > > >
+> > > > I have a quick follow up question about the best way to set up the latent nodes in a NIMBLE model step.  I am at the point where I am trying to use NimCopy to copy over simulated nodes from a ModelValues object to the model.  It looks like NIMBLE only allows you to copy by row.  So if a state is multivariate the columns will correspond to additional parameters.
+> > > >
+> > > > I am still working on the same model we discussed in above thread.  But the way the states are set up is the columns correspond to the latent time points, rather than the rows.
+> > > >
+> > > > This creates an issue when I create a modelValues object, e.g.,  modvals = modelValues(smosModel, m = 1) as it creates a 2 x 365 matrix, so you can't iterate over rows when running NimCopy.   It doesn't seem like NIMBLE allows you to take the transpose of ModelValues objects.  I have also tried to use the transpose function (t) in the model code to get the latent nodes to be 365 x 2, but that doesn't seem to work either.  I was curious if you had a suggestion that would make sense in order to use NIMBLE ModelValue objects most effectively.
+> > > >
+> > > > Thank you,
+> > > >
+> > > > Colin
+> > > >
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > #Create Constant W, G and F matrices to pass to NIMBLE
+> > > > W<-diag(2)
+> > > > F<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > > G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > >
+> > > > smosCode <- nimbleCode({
+> > > >
+> > > > #Initial Values for States: x0 ~ Normal(c(0,0),diag(1/1000)) for precision
+> > > >   m0[1] <- 0
+> > > >   m0[2] <- 0
+> > > >   C0[1:2,1:2] <- (1/1000)*W[1:2,1:2]
+> > > >   x0[1:2] ~ dmnorm(m0[1:2],C0[1:2,1:2])
+> > > >
+> > > >   #initial values
+> > > >   m1[1:2,1] <- G[1:2,1:2]%*%x0[1:2]
+> > > >   C1[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> > > >   x[1:2,1] ~ dmnorm(m1[1:2,1],C1[1:2,1:2]) #precision matrix
+> > > >   y[1] ~ dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv) #precision 1/var
+> > > >
+> > > >   #Model
+> > > >   for (t in 2:T){
+> > > >     mu[1:2,t] <- G[1:2,1:2]%*%x[1:2,t-1]
+> > > >     sigs[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> > > >     x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+> > > >     y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+> > > >   }
+> > > >
+> > > >
+> > > >   sigmaSquaredInvv ~ dgamma(5,20) #in terms of shape and rate; prior on precision V
+> > > >   sigmaSquaredInvw ~ dgamma(5,20) #in terms of shape and rate; prior on precision W
+> > > > })
+> > > >
+> > > > smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+> > > >                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > >
+> > > >
+> > > > On Sunday, November 6, 2016 at 3:35:38 PM UTC-6, Daniel Turek wrote:
+> > > > > Looks like I was beaten to the punch here.  At least no one can say that the NIMBLE team is slow to respond.
+> > > > >
+> > > > > On Sun, Nov 6, 2016 at 4:34 PM, Daniel Turek <db...@williams.edu <http://williams.edu/>> wrote:
+> > > > > > Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+> > > > > >
+> > > > > > You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+> > > > > >
+> > > > > > It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+> > > > > >
+> > > > > > If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+> > > > > >
+> > > > > > Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+> > > > > >
+> > > > > > If the matrix elements might vary, then define them one at a time, e.g.:
+> > > > > > A[1,1] <- [some expression of other elements]
+> > > > > > A[1,2] <- [some expression of other elements]
+> > > > > > etc...
+> > > > > >
+> > > > > > No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+> > > > > > c0[1] <- 0
+> > > > > > c0[2] <- 0
+> > > > > > then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+> > > > > > Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+> > > > > >
+> > > > > > Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+> > > > > > m<-G%*%x0
+> > > > > > defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+> > > > > > m[1:2, 1]
+> > > > > >
+> > > > > > That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+> > > > > >
+> > > > > > A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+> > > > > >
+> > > > > > Thanks,
+> > > > > > Daniel
+> > > > > > NIMBLE development team
+> > > > > >
+> > > > > >
+> > > > > > On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > > > > > Hello,
+> > > > > > >
+> > > > > > > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> > > > > > >
+> > > > > > > Thank you,
+> > > > > > >
+> > > > > > > Colin
+> > > > > > >
+> > > > > > > testCode <- nimbleCode({
+> > > > > > >   #Identity matrix
+> > > > > > >   W<-identityMatrix(d = 2)
+> > > > > > >
+> > > > > > >   #F matrix
+> > > > > > >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > > > > >
+> > > > > > >   #G Transition matrix
+> > > > > > >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > > > > >
+> > > > > > >   #initial values
+> > > > > > >   m<-G%*%x0
+> > > > > > >   var0<-sigmaSquaredInvw*W
+> > > > > > >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> > > > > > >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+> > > > > > >
+> > > > > > >   #Model
+> > > > > > >   for (t in 2:T){
+> > > > > > >     mu<-G%*%x[1:2,t-1]
+> > > > > > >     sigs<-sigmaSquaredInvw*W
+> > > > > > >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> > > > > > >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> > > > > > >   }
+> > > > > > >
+> > > > > > >   #Initial Values for States
+> > > > > > >   c0<-c(0,0)
+> > > > > > >   m0<-sigmaSquaredInvw*W
+> > > > > > >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> > > > > > >
+> > > > > > >   #Priors
+> > > > > > >   sigmaSquaredInvv~dgamma(5,20)
+> > > > > > >   sigmaSquaredInvw~dgamma(5,200)
+> > > > > > > })
+> > > > > > >
+> > > > > > > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> > > > > > >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > > > > >
+> > > > > > >
+> > > > > > > --
+> > > > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups. <http://googlegroups.com/>com <http://googlegroups.com/>.
+> > > > > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > > >
+> > > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/af18c2f5-7203-4bd2-a633-cddb163f9622%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/af18c2f5-7203-4bd2-a633-cddb163f9622%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From udd632bd3bbcdd7e9 at groups.google.com  Tue Dec  6 18:09:51 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Tue, 06 Dec 2016 18:09:51 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.pVQomM47DgAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.YMg89_M6DgAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com> <pA-7JObwwhA.YMg89_M6DgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/pVQomM47DgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You should be able to say
+
+nimCopy(…, nodes = ‘theta[1:2, 2:366]’, nodesTo = ‘x[1:2, 1:365]’, row = 1)
+
+Is that what you need?
+
+Also nimCopy is most useful when there are nodes from multiple variables to copy.  If you are customizing to particular nodes an alternative is simply:
+
+model[[‘theta’]][1:2, 2:366] <<- mvTheta[1, ‘x’][1:2, 1:365]
+
+No, negative indexing doesn’t work to drop a column or row.
+
+Perry
+
+> On Dec 6, 2016, at 9:54 AM, Colin <clewi...@gmail.com> wrote:
+>
+
+> Hi Perry,
+>
+> Thanks for your suggestion, and I'm glad to hear a NIMBLE version of List is in the works.   What I ended up doing is in the modelValuesConf, define the size of theta = c(2,366).  Then as you suggest, just update the first row, and leave the other 365 rows empty.  Note: had to resize the modelValues object to 366 rows to store the other values, ht (2x1) and Ht, which is a 2x2 matrix.
+>
+> Copying over the values of theta seems to work great using the code below.  One more quick question about how NIMBLE works is in regards to the copying.  The modelValues object is 2 x 365 because there is an initial state X0, which is its own variable.  However, the theta ModelValues object has 366 columns.  When I do the copying NIMBLE seems to automatically resize the modvals object and copies all 366 states.  Is there a way to drop the first state in the copying process?  Something akin to how in R you can put mvTheta[,-1] to drop the first column?
+>
+> Thanks again,
+>
+> Colin
+>
+>            modvals = modelValues(smosModel, m = 1)
+> > nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+>
+>
+> FFBStep<-nimbleFunction(
+>   setup=function(model,mvKF,nodes){
+>     mvThetaConfig <- modelValuesConf(vars = c('ht', 'Ht', 'theta'),types=c('double','double','double'), sizes=list(ht = 2, Ht = c(2, 2), theta=c(2,366)))
+>     mvTheta <- modelValues(mvThetaConfig)
+>     nodes <- model$expandNodeNames(nodes,sort=TRUE)
+>     timePoints <- length(nodes)
+>     len <- timePoints+1
+>   },
+>   run=function(){
+>     resize(mvTheta,timePoints+1)
+>     #Simulate Theta T
+>     Cho_T<-chol(mvKF['Ct',timePoints+1])
+>     mvTheta['theta',1][1:2,timePoints+1] <<- rmnorm_chol(n=1,mvKF['mt',timePoints+1],Cho_T,prec_param = FALSE)
+>     for (t in 1:365){
+>       mvTheta['ht',len-t] <<- mvKF['mt',len-t]+mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%mvTheta['theta',1][1:2,len-t+1]-mvKF['at',len-t+1]
+>       mvTheta['Ht',len-t] <<- mvKF['Ct',len-t]-mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%(model$G)%*%mvKF['Ct',len-t]
+>       Chold <- chol(mvTheta['Ht',len-t])
+>       mvTheta['theta',1][1:2,len-t] <<- rmnorm_chol(n=1,mvTheta['ht',len-t],Chold,prec_param = FALSE)
+>     }
+>   }
+> )
+>
+>
+> On Thursday, December 1, 2016 at 11:08:50 AM UTC-6, nimble.stats wrote:
+> > I think I see what you are saying.
+> >
+> > Although the way you’ve done it does flip the concepts a bit, it seems reasonable and valid.  (A related design issue for NIMBLE is when and how it would be useful to make a program work across many nodes that follow the same motif, such as many latent states in a state-space model, as opposed to always treating each node as distinct.  Thoughts welcome.)
+> >
+> > I think an alternative would be the following.  If I follow, ht is a 2x365 (or 365x2) matrix.
+> >
+> > You could assign into pieces of it using
+> > mvTheta[‘ht’,1][1:2, i] <- (…)
+> >
+> > and so on for the other variables.
+> >
+> > In a sense what I think you need here is a data structure that can hold ht, Ht and theta the way an R list would, rather than necessarily a modelValues object.  Such data structures will be in NIMBLE soon.
+> >
+> > Also I note that the argument chold to rmnorm_chol should be a Cholesky matrix.
+> >
+> > Perry
+> >
+> >
+> >
+> > > On Dec 1, 2016, at 8:37 AM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > >
+> > > Hi Perry,
+> > >
+> > > Thanks for you reply, and for the clarification about how NIMBLE uses rows to denote a whole set of states from time T=1....N.  That illuminates additional problems I was encountering when trying to loop over a ModelValues object as you might with a list.  This makes me think my previous step might also not be perfectly congruous with NIMBLE ModelValue Objects.  Before I copy the states into the model, I have a function that performs FFBS to generate states from time T=0...365.
+> > >
+> > > As you can see in the code below, I am creating a model values object and then storing generated states in mvTheta as I loop over the time points.  I see now with NIMBLE this creates a ModelValues object of size 366. What I would like to do is then copy those 365 state variables (dropping the initial state 0) to a model object.  As you point out, however, when I run this code I only copy the first row of mvTheta rather than the whole set of 365.
+> > >
+> > > Do you think the best way to handle this is to loop over the Model Values object in the copy statement or somehow store all 365 states into a size 1 ModelValues object in my FFBS step? Sorry for the long post. If it would be helpful to attach my full R script, please me me know.
+> > >
+> > > Thanks again for you assistance,
+> > >
+> > > Colin
+> > >
+> > > modvals = modelValues(smosModel, m = 1)
+> > > nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > FFBStep<-nimbleFunction(
+> > >   setup=function(model,mvKF,nodes){
+> > >     mvThetaConfig <- modelValuesConf(vars = c('ht', 'Ht', 'theta'),types=c('double','double','double'), sizes=list(ht = 2, Ht = c(2, 2), theta = c(1,2)))
+> > >     mvTheta <- modelValues(mvThetaConfig)
+> > >     nodes <- model$expandNodeNames(nodes,sort=TRUE)
+> > >     timePoints <- length(nodes)
+> > >     len <- timePoints+1
+> > >   },
+> > >   run=function(){
+> > >     resize(mvTheta,timePoints+1)
+> > >     #Simulate Theta T
+> > >     Cho_T<-chol(mvKF['Ct',timePoints+1])
+> > >     mvTheta['theta',timePoints+1] <<- rmnorm_chol(n=1,mvKF['mt',timePoints+1],Cho_T,prec_param = FALSE)
+> > >     for (t in 1:365){
+> > >       mvTheta['ht',len-t] <<- mvKF['mt',len-t]+mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%mvTheta['theta',len-t+1]-mvKF['at',len-t+1]
+> > >       mvTheta['Ht',len-t] <<- mvKF['Ct',len-t]-mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%(model$G)%*%mvKF['Ct',len-t]
+> > >       Chold <- mvTheta['Ht',len-t]
+> > >       mvTheta['theta',len-t] <<- rmnorm_chol(n=1,mvTheta['ht',len-t],Chold,prec_param = FALSE)
+> > >     }
+> > >   }
+> > > )
+> > >
+> modvals = modelValues(smosModel, m = 1)
+> nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+> > >
+> > >
+> > >
+> > >
+> > > On Wednesday, November 30, 2016 at 4:33:17 PM UTC-6, pdevalpine wrote:
+> > > > Hi Colin,
+> > > >
+> > > > I think the confusion here is the notion of “row” in a modelValues object.  What we mean is a complete set of states, not a row of a particular variable in nimble that might happen to be a matrix.  For modelValues purposes, you can think of all model variables as being flattened, like having their dimension attribute removed in R.
+> > > >
+> > > > So it should work to use
+> > > > copy(from = modvals, row = 1, to = smosModel, nodes = c(‘mu’,’sigs’))
+> > > >
+> > > > Note copy is a synonym for nimCopy inside a nimbleFunction.
+> > > >
+> > > > Also note you can omit the nodes argument and by default it will copy all variables.
+> > > >
+> > > > Let us know if it gives you more trouble.
+> > > >
+> > > > Perry
+> > > >
+> > > >
+> > > >
+> > > > > On Nov 30, 2016, at 12:59 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > > >
+> > > > > Hi Daniel,
+> > > > >
+> > > > > I have a quick follow up question about the best way to set up the latent nodes in a NIMBLE model step.  I am at the point where I am trying to use NimCopy to copy over simulated nodes from a ModelValues object to the model.  It looks like NIMBLE only allows you to copy by row.  So if a state is multivariate the columns will correspond to additional parameters.
+> > > > >
+> > > > > I am still working on the same model we discussed in above thread.  But the way the states are set up is the columns correspond to the latent time points, rather than the rows.
+> > > > >
+> > > > > This creates an issue when I create a modelValues object, e.g.,  modvals = modelValues(smosModel, m = 1) as it creates a 2 x 365 matrix, so you can't iterate over rows when running NimCopy.   It doesn't seem like NIMBLE allows you to take the transpose of ModelValues objects.  I have also tried to use the transpose function (t) in the model code to get the latent nodes to be 365 x 2, but that doesn't seem to work either.  I was curious if you had a suggestion that would make sense in order to use NIMBLE ModelValue objects most effectively.
+> > > > >
+> > > > > Thank you,
+> > > > >
+> > > > > Colin
+> > > > >
+> > > > >
+> > > > >
+> > > > >
+> > > > >
+> > > > > #Create Constant W, G and F matrices to pass to NIMBLE
+> > > > > W<-diag(2)
+> > > > > F<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > > > G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > > >
+> > > > > smosCode <- nimbleCode({
+> > > > >
+> > > > > #Initial Values for States: x0 ~ Normal(c(0,0),diag(1/1000)) for precision
+> > > > >   m0[1] <- 0
+> > > > >   m0[2] <- 0
+> > > > >   C0[1:2,1:2] <- (1/1000)*W[1:2,1:2]
+> > > > >   x0[1:2] ~ dmnorm(m0[1:2],C0[1:2,1:2])
+> > > > >
+> > > > >   #initial values
+> > > > >   m1[1:2,1] <- G[1:2,1:2]%*%x0[1:2]
+> > > > >   C1[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> > > > >   x[1:2,1] ~ dmnorm(m1[1:2,1],C1[1:2,1:2]) #precision matrix
+> > > > >   y[1] ~ dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv) #precision 1/var
+> > > > >
+> > > > >   #Model
+> > > > >   for (t in 2:T){
+> > > > >     mu[1:2,t] <- G[1:2,1:2]%*%x[1:2,t-1]
+> > > > >     sigs[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> > > > >     x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+> > > > >     y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+> > > > >   }
+> > > > >
+> > > > >
+> > > > >   sigmaSquaredInvv ~ dgamma(5,20) #in terms of shape and rate; prior on precision V
+> > > > >   sigmaSquaredInvw ~ dgamma(5,20) #in terms of shape and rate; prior on precision W
+> > > > > })
+> > > > >
+> > > > > smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+> > > > >                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > > >
+> > > > >
+> > > > > On Sunday, November 6, 2016 at 3:35:38 PM UTC-6, Daniel Turek wrote:
+> > > > > > Looks like I was beaten to the punch here.  At least no one can say that the NIMBLE team is slow to respond.
+> > > > > >
+> > > > > > On Sun, Nov 6, 2016 at 4:34 PM, Daniel Turek <db...@williams.edu <http://williams.edu/>> wrote:
+> > > > > > > Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+> > > > > > >
+> > > > > > > You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+> > > > > > >
+> > > > > > > It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+> > > > > > >
+> > > > > > > If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+> > > > > > >
+> > > > > > > Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+> > > > > > >
+> > > > > > > If the matrix elements might vary, then define them one at a time, e.g.:
+> > > > > > > A[1,1] <- [some expression of other elements]
+> > > > > > > A[1,2] <- [some expression of other elements]
+> > > > > > > etc...
+> > > > > > >
+> > > > > > > No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+> > > > > > > c0[1] <- 0
+> > > > > > > c0[2] <- 0
+> > > > > > > then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+> > > > > > > Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+> > > > > > >
+> > > > > > > Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+> > > > > > > m<-G%*%x0
+> > > > > > > defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+> > > > > > > m[1:2, 1]
+> > > > > > >
+> > > > > > > That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+> > > > > > >
+> > > > > > > A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+> > > > > > >
+> > > > > > > Thanks,
+> > > > > > > Daniel
+> > > > > > > NIMBLE development team
+> > > > > > >
+> > > > > > >
+> > > > > > > On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > > > > > > Hello,
+> > > > > > > >
+> > > > > > > > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> > > > > > > >
+> > > > > > > > Thank you,
+> > > > > > > >
+> > > > > > > > Colin
+> > > > > > > >
+> > > > > > > > testCode <- nimbleCode({
+> > > > > > > >   #Identity matrix
+> > > > > > > >   W<-identityMatrix(d = 2)
+> > > > > > > >
+> > > > > > > >   #F matrix
+> > > > > > > >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > > > > > >
+> > > > > > > >   #G Transition matrix
+> > > > > > > >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > > > > > >
+> > > > > > > >   #initial values
+> > > > > > > >   m<-G%*%x0
+> > > > > > > >   var0<-sigmaSquaredInvw*W
+> > > > > > > >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> > > > > > > >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+> > > > > > > >
+> > > > > > > >   #Model
+> > > > > > > >   for (t in 2:T){
+> > > > > > > >     mu<-G%*%x[1:2,t-1]
+> > > > > > > >     sigs<-sigmaSquaredInvw*W
+> > > > > > > >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> > > > > > > >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> > > > > > > >   }
+> > > > > > > >
+> > > > > > > >   #Initial Values for States
+> > > > > > > >   c0<-c(0,0)
+> > > > > > > >   m0<-sigmaSquaredInvw*W
+> > > > > > > >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> > > > > > > >
+> > > > > > > >   #Priors
+> > > > > > > >   sigmaSquaredInvv~dgamma(5,20)
+> > > > > > > >   sigmaSquaredInvw~dgamma(5,200)
+> > > > > > > > })
+> > > > > > > >
+> > > > > > > > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> > > > > > > >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > > > > > >
+> > > > > > > >
+> > > > > > > > --
+> > > > > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups. <http://googlegroups.com/>com <http://googlegroups.com/>.
+> > > > > > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > > > >
+> > > > > >
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > To post to this group, send email to nimble...@googlegroups. <http://googlegroups.com/>com <http://googlegroups.com/>.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/af18c2f5-7203-4bd2-a633-cddb163f9622%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/af18c2f5-7203-4bd2-a633-cddb163f9622%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f7014a23-050e-4c34-b136-a0612c43bed5%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f7014a23-050e-4c34-b136-a0612c43bed5%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Tue Dec  6 18:45:19 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Tue, 06 Dec 2016 18:45:19 +0000
+Subject: Re: Simple DLM in NIMBLE
+Message-ID: <pA-7JObwwhA.IAWFJb49DgAJ@nimble-users.groups.google.com>
+In-Reply-To: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+References: <pA-7JObwwhA.mBnumA4QBQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/pA-7JObwwhA/m/IAWFJb49DgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Perry,
+
+Yes, this is exactly what I was looking for.  Thank you!
+
+~Colin
+
+On Tuesday, December 6, 2016 at 12:09:51 PM UTC-6, pdevalpine wrote:
+> You should be able to say
+>
+> nimCopy(…, nodes = ‘theta[1:2, 2:366]’, nodesTo = ‘x[1:2, 1:365]’, row = 1)
+>
+> Is that what you need?
+>
+> Also nimCopy is most useful when there are nodes from multiple variables to copy.  If you are customizing to particular nodes an alternative is simply:
+>
+> model[[‘theta’]][1:2, 2:366] <<- mvTheta[1, ‘x’][1:2, 1:365]
+>
+> No, negative indexing doesn’t work to drop a column or row.
+>
+> Perry
+>
+>
+> > On Dec 6, 2016, at 9:54 AM, Colin <clewi...@gmail.com> wrote:
+> >
+> > Hi Perry,
+> >
+> > Thanks for your suggestion, and I'm glad to hear a NIMBLE version of List is in the works.   What I ended up doing is in the modelValuesConf, define the size of theta = c(2,366).  Then as you suggest, just update the first row, and leave the other 365 rows empty.  Note: had to resize the modelValues object to 366 rows to store the other values, ht (2x1) and Ht, which is a 2x2 matrix.
+> >
+> > Copying over the values of theta seems to work great using the code below.  One more quick question about how NIMBLE works is in regards to the copying.  The modelValues object is 2 x 365 because there is an initial state X0, which is its own variable.  However, the theta ModelValues object has 366 columns.  When I do the copying NIMBLE seems to automatically resize the modvals object and copies all 366 states.  Is there a way to drop the first state in the copying process?  Something akin to how in R you can put mvTheta[,-1] to drop the first column?
+> >
+> > Thanks again,
+> >
+> > Colin
+> >
+> >            modvals = modelValues(smosModel, m = 1)
+> > > nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+> >
+> >
+> > FFBStep<-nimbleFunction(
+> >   setup=function(model,mvKF,nodes){
+> >     mvThetaConfig <- modelValuesConf(vars = c('ht', 'Ht', 'theta'),types=c('double','double','double'), sizes=list(ht = 2, Ht = c(2, 2), theta=c(2,366)))
+> >     mvTheta <- modelValues(mvThetaConfig)
+> >     nodes <- model$expandNodeNames(nodes,sort=TRUE)
+> >     timePoints <- length(nodes)
+> >     len <- timePoints+1
+> >   },
+> >   run=function(){
+> >     resize(mvTheta,timePoints+1)
+> >     #Simulate Theta T
+> >     Cho_T<-chol(mvKF['Ct',timePoints+1])
+> >     mvTheta['theta',1][1:2,timePoints+1] <<- rmnorm_chol(n=1,mvKF['mt',timePoints+1],Cho_T,prec_param = FALSE)
+> >     for (t in 1:365){
+> >       mvTheta['ht',len-t] <<- mvKF['mt',len-t]+mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%mvTheta['theta',1][1:2,len-t+1]-mvKF['at',len-t+1]
+> >       mvTheta['Ht',len-t] <<- mvKF['Ct',len-t]-mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%(model$G)%*%mvKF['Ct',len-t]
+> >       Chold <- chol(mvTheta['Ht',len-t])
+> >       mvTheta['theta',1][1:2,len-t] <<- rmnorm_chol(n=1,mvTheta['ht',len-t],Chold,prec_param = FALSE)
+> >     }
+> >   }
+> > )
+> >
+> >
+> > On Thursday, December 1, 2016 at 11:08:50 AM UTC-6, nimble.stats wrote:
+> > > I think I see what you are saying.
+> > >
+> > > Although the way you’ve done it does flip the concepts a bit, it seems reasonable and valid.  (A related design issue for NIMBLE is when and how it would be useful to make a program work across many nodes that follow the same motif, such as many latent states in a state-space model, as opposed to always treating each node as distinct.  Thoughts welcome.)
+> > >
+> > > I think an alternative would be the following.  If I follow, ht is a 2x365 (or 365x2) matrix.
+> > >
+> > > You could assign into pieces of it using
+> > > mvTheta[‘ht’,1][1:2, i] <- (…)
+> > >
+> > > and so on for the other variables.
+> > >
+> > > In a sense what I think you need here is a data structure that can hold ht, Ht and theta the way an R list would, rather than necessarily a modelValues object.  Such data structures will be in NIMBLE soon.
+> > >
+> > > Also I note that the argument chold to rmnorm_chol should be a Cholesky matrix.
+> > >
+> > > Perry
+> > >
+> > >
+> > >
+> > > > On Dec 1, 2016, at 8:37 AM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > >
+> > > > Hi Perry,
+> > > >
+> > > > Thanks for you reply, and for the clarification about how NIMBLE uses rows to denote a whole set of states from time T=1....N.  That illuminates additional problems I was encountering when trying to loop over a ModelValues object as you might with a list.  This makes me think my previous step might also not be perfectly congruous with NIMBLE ModelValue Objects.  Before I copy the states into the model, I have a function that performs FFBS to generate states from time T=0...365.
+> > > >
+> > > > As you can see in the code below, I am creating a model values object and then storing generated states in mvTheta as I loop over the time points.  I see now with NIMBLE this creates a ModelValues object of size 366. What I would like to do is then copy those 365 state variables (dropping the initial state 0) to a model object.  As you point out, however, when I run this code I only copy the first row of mvTheta rather than the whole set of 365.
+> > > >
+> > > > Do you think the best way to handle this is to loop over the Model Values object in the copy statement or somehow store all 365 states into a size 1 ModelValues object in my FFBS step? Sorry for the long post. If it would be helpful to attach my full R script, please me me know.
+> > > >
+> > > > Thanks again for you assistance,
+> > > >
+> > > > Colin
+> > > >
+> > > > modvals = modelValues(smosModel, m = 1)
+> > > > nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+> > > >
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > FFBStep<-nimbleFunction(
+> > > >   setup=function(model,mvKF,nodes){
+> > > >     mvThetaConfig <- modelValuesConf(vars = c('ht', 'Ht', 'theta'),types=c('double','double','double'), sizes=list(ht = 2, Ht = c(2, 2), theta = c(1,2)))
+> > > >     mvTheta <- modelValues(mvThetaConfig)
+> > > >     nodes <- model$expandNodeNames(nodes,sort=TRUE)
+> > > >     timePoints <- length(nodes)
+> > > >     len <- timePoints+1
+> > > >   },
+> > > >   run=function(){
+> > > >     resize(mvTheta,timePoints+1)
+> > > >     #Simulate Theta T
+> > > >     Cho_T<-chol(mvKF['Ct',timePoints+1])
+> > > >     mvTheta['theta',timePoints+1] <<- rmnorm_chol(n=1,mvKF['mt',timePoints+1],Cho_T,prec_param = FALSE)
+> > > >     for (t in 1:365){
+> > > >       mvTheta['ht',len-t] <<- mvKF['mt',len-t]+mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%mvTheta['theta',len-t+1]-mvKF['at',len-t+1]
+> > > >       mvTheta['Ht',len-t] <<- mvKF['Ct',len-t]-mvKF['Ct',len-t]%*%t(model$G)%*%inverse(mvKF['Rt',len-t+1])%*%(model$G)%*%mvKF['Ct',len-t]
+> > > >       Chold <- mvTheta['Ht',len-t]
+> > > >       mvTheta['theta',len-t] <<- rmnorm_chol(n=1,mvTheta['ht',len-t],Chold,prec_param = FALSE)
+> > > >     }
+> > > >   }
+> > > > )
+> > > >
+> > modvals = modelValues(smosModel, m = 1)
+> > nimCopy(from=test2$mvTheta,to=modvals,nodes='theta',nodesTo='x',row=1)
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > On Wednesday, November 30, 2016 at 4:33:17 PM UTC-6, pdevalpine wrote:
+> > > > > Hi Colin,
+> > > > >
+> > > > > I think the confusion here is the notion of “row” in a modelValues object.  What we mean is a complete set of states, not a row of a particular variable in nimble that might happen to be a matrix.  For modelValues purposes, you can think of all model variables as being flattened, like having their dimension attribute removed in R.
+> > > > >
+> > > > > So it should work to use
+> > > > > copy(from = modvals, row = 1, to = smosModel, nodes = c(‘mu’,’sigs’))
+> > > > >
+> > > > > Note copy is a synonym for nimCopy inside a nimbleFunction.
+> > > > >
+> > > > > Also note you can omit the nodes argument and by default it will copy all variables.
+> > > > >
+> > > > > Let us know if it gives you more trouble.
+> > > > >
+> > > > > Perry
+> > > > >
+> > > > >
+> > > > >
+> > > > > > On Nov 30, 2016, at 12:59 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > > > >
+> > > > > > Hi Daniel,
+> > > > > >
+> > > > > > I have a quick follow up question about the best way to set up the latent nodes in a NIMBLE model step.  I am at the point where I am trying to use NimCopy to copy over simulated nodes from a ModelValues object to the model.  It looks like NIMBLE only allows you to copy by row.  So if a state is multivariate the columns will correspond to additional parameters.
+> > > > > >
+> > > > > > I am still working on the same model we discussed in above thread.  But the way the states are set up is the columns correspond to the latent time points, rather than the rows.
+> > > > > >
+> > > > > > This creates an issue when I create a modelValues object, e.g.,  modvals = modelValues(smosModel, m = 1) as it creates a 2 x 365 matrix, so you can't iterate over rows when running NimCopy.   It doesn't seem like NIMBLE allows you to take the transpose of ModelValues objects.  I have also tried to use the transpose function (t) in the model code to get the latent nodes to be 365 x 2, but that doesn't seem to work either.  I was curious if you had a suggestion that would make sense in order to use NIMBLE ModelValue objects most effectively.
+> > > > > >
+> > > > > > Thank you,
+> > > > > >
+> > > > > > Colin
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > #Create Constant W, G and F matrices to pass to NIMBLE
+> > > > > > W<-diag(2)
+> > > > > > F<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > > > > G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > > > >
+> > > > > > smosCode <- nimbleCode({
+> > > > > >
+> > > > > > #Initial Values for States: x0 ~ Normal(c(0,0),diag(1/1000)) for precision
+> > > > > >   m0[1] <- 0
+> > > > > >   m0[2] <- 0
+> > > > > >   C0[1:2,1:2] <- (1/1000)*W[1:2,1:2]
+> > > > > >   x0[1:2] ~ dmnorm(m0[1:2],C0[1:2,1:2])
+> > > > > >
+> > > > > >   #initial values
+> > > > > >   m1[1:2,1] <- G[1:2,1:2]%*%x0[1:2]
+> > > > > >   C1[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> > > > > >   x[1:2,1] ~ dmnorm(m1[1:2,1],C1[1:2,1:2]) #precision matrix
+> > > > > >   y[1] ~ dnorm(inprod(F[1,1:2],x[1:2,1]),sigmaSquaredInvv) #precision 1/var
+> > > > > >
+> > > > > >   #Model
+> > > > > >   for (t in 2:T){
+> > > > > >     mu[1:2,t] <- G[1:2,1:2]%*%x[1:2,t-1]
+> > > > > >     sigs[1:2,1:2] <- sigmaSquaredInvw*W[1:2,1:2]
+> > > > > >     x[1:2,t] ~ dmnorm(mu[1:2,t],sigs[1:2,1:2])
+> > > > > >     y[t] ~ dnorm(inprod(F[1,1:2],x[1:2,t]),sigmaSquaredInvv)
+> > > > > >   }
+> > > > > >
+> > > > > >
+> > > > > >   sigmaSquaredInvv ~ dgamma(5,20) #in terms of shape and rate; prior on precision V
+> > > > > >   sigmaSquaredInvw ~ dgamma(5,20) #in terms of shape and rate; prior on precision W
+> > > > > > })
+> > > > > >
+> > > > > > smosModel<-nimbleModel(code=smosCode,constants=list(T=365,pi=pi,G=G,W=W,F=F),data=list(y=y),
+> > > > > >                        inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > > > >
+> > > > > >
+> > > > > > On Sunday, November 6, 2016 at 3:35:38 PM UTC-6, Daniel Turek wrote:
+> > > > > > > Looks like I was beaten to the punch here.  At least no one can say that the NIMBLE team is slow to respond.
+> > > > > > >
+> > > > > > > On Sun, Nov 6, 2016 at 4:34 PM, Daniel Turek <db...@williams.edu <http://williams.edu/>> wrote:
+> > > > > > > > Colin, I can't fully debug or fix your code this moment, but thought a really quick reply with a few pointers might be helpful.
+> > > > > > > >
+> > > > > > > > You're mixing up some of the concepts of "BUGS code to define the model", which defines the hierarchical model structure, and is passed as an argument to the function nimbleCode(), with "NIMBLE DSL (domain specific language) code" which is used to specify statistical algorithms in the form of nimbleFunctions, and appears as an argument to the function nimbleFunction().
+> > > > > > > >
+> > > > > > > > It looks like you're trying to define a hierarchical model.  Here are a few things that you're doing wrong:
+> > > > > > > >
+> > > > > > > > If you use "pi", then you'll have to pass that in as a "constant" in the constants=list(pi = 3.14...).
+> > > > > > > >
+> > > > > > > > Can't use identityMatrix(), or matrix() in BUGS model code; only in the NIMBLE DSL (to define algorithms).  If those are fixed constant matrices, (as for W), then use W[1:2, 1:2] freely in the BUGS model code, but pass in the value of that constant matrix through the constants list constants = list(W =diag(2)).  Same goes for your other matrix, G.
+> > > > > > > >
+> > > > > > > > If the matrix elements might vary, then define them one at a time, e.g.:
+> > > > > > > > A[1,1] <- [some expression of other elements]
+> > > > > > > > A[1,2] <- [some expression of other elements]
+> > > > > > > > etc...
+> > > > > > > >
+> > > > > > > > No use of c(...) function allowed, not yet.  (feature soon to come).  Instead use either:
+> > > > > > > > c0[1] <- 0
+> > > > > > > > c0[2] <- 0
+> > > > > > > > then use c0[1:2], and c0[1], and c0[2] freely in the model code.
+> > > > > > > > Alternative to those two definitions above, is to pass in the constant list(c0 = c(0,0)).
+> > > > > > > >
+> > > > > > > > Unfortunately, your "m" term will get you into trouble here.  The definition you have:
+> > > > > > > > m<-G%*%x0
+> > > > > > > > defines "m" as a 2x1 matrix, not as a vector, since matrix multiplication produces a matrix.  So that's ok, but instead, use "m" in your code as:
+> > > > > > > > m[1:2, 1]
+> > > > > > > >
+> > > > > > > > That's all I see offhand.  Sorry I can't try making these changes right now, but let us know how it works.
+> > > > > > > >
+> > > > > > > > A quick favour to ask.  We'd love to make the User Manual so clear that these things are all apparent.  If you read the User Manual, and found parts of it confusing, or that led you to some wrong conclusions, can you please email us what section(s) or specific paragraph(s) were confusing, or misleading?  That would be really helpful for us to fix them up!
+> > > > > > > >
+> > > > > > > > Thanks,
+> > > > > > > > Daniel
+> > > > > > > > NIMBLE development team
+> > > > > > > >
+> > > > > > > >
+> > > > > > > > On Sun, Nov 6, 2016 at 4:06 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > > > > > > > Hello,
+> > > > > > > > >
+> > > > > > > > > I am new to NIMBLE, and also to BUGS coding.  I am trying to program a simple DLM model with one harmonic term to get up to speed with NIMBLE.  I am having some trouble with the indexing, and am getting dimension errors--e.g., "Error in var2vertexID[1:2, 1:2] : incorrect number of dimensions."  I have played around with different set ups, but can't seem to see what's wrong.  I have two latent states, and a 2x2 transition matrix, G.  Below is my code.   Perhaps there is an obvious answer to this, but I am not seeing it at the moment.  Any tips would be much appreciated.
+> > > > > > > > >
+> > > > > > > > > Thank you,
+> > > > > > > > >
+> > > > > > > > > Colin
+> > > > > > > > >
+> > > > > > > > > testCode <- nimbleCode({
+> > > > > > > > >   #Identity matrix
+> > > > > > > > >   W<-identityMatrix(d = 2)
+> > > > > > > > >
+> > > > > > > > >   #F matrix
+> > > > > > > > >   F1<-matrix(c(1,0), nrow = 1, ncol = 2)
+> > > > > > > > >
+> > > > > > > > >   #G Transition matrix
+> > > > > > > > >   G<-matrix(c(cos(2*pi/365),-sin(2*pi/365),sin(2*pi/365),cos(2*pi/365)),nrow=2,ncol=2)
+> > > > > > > > >
+> > > > > > > > >   #initial values
+> > > > > > > > >   m<-G%*%x0
+> > > > > > > > >   var0<-sigmaSquaredInvw*W
+> > > > > > > > >   x[1:2,1]~dmnorm(m[1:2],var0[1:2,1:2])
+> > > > > > > > >   y[1]~dnorm(F1%*%x[1:2,1],sigmaSquaredInvv)
+> > > > > > > > >
+> > > > > > > > >   #Model
+> > > > > > > > >   for (t in 2:T){
+> > > > > > > > >     mu<-G%*%x[1:2,t-1]
+> > > > > > > > >     sigs<-sigmaSquaredInvw*W
+> > > > > > > > >     x[1:2,t] ~ dmnorm(mu[1:2],sigs[1:2,1:2])
+> > > > > > > > >     y[t] ~ dnorm(F1%*%x[1:2,t],sigmaSquaredInvv)
+> > > > > > > > >   }
+> > > > > > > > >
+> > > > > > > > >   #Initial Values for States
+> > > > > > > > >   c0<-c(0,0)
+> > > > > > > > >   m0<-sigmaSquaredInvw*W
+> > > > > > > > >   x0~dmnorm(c0[1:2],m0[1:2,1:2])
+> > > > > > > > >
+> > > > > > > > >   #Priors
+> > > > > > > > >   sigmaSquaredInvv~dgamma(5,20)
+> > > > > > > > >   sigmaSquaredInvw~dgamma(5,200)
+> > > > > > > > > })
+> > > > > > > > >
+> > > > > > > > > smosModel<-nimbleModel(code=testCode,name='2harm',constants=list(T=2190,pi=pi),data=list(y=y1),
+> > > > > > > > >                         inits=list(sigmaSquaredInvv=1,sigmaSquaredInvw=1))
+> > > > > > > > >
+> > > > > > > > >
+> > > > > > > > > --
+> > > > > > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups. <http://googlegroups.com/>com <http://googlegroups.com/>.
+> > > > > > > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f945ecce-bee9-4767-bfe9-6b3ea22c65f4%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > > > > >
+> > > > > > >
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/89da077f-7bf4-4267-a817-f77373f60b9b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > > To post to this group, send email to nimble...@googlegroups. <http://googlegroups.com/>com <http://googlegroups.com/>.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/af18c2f5-7203-4bd2-a633-cddb163f9622%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/af18c2f5-7203-4bd2-a633-cddb163f9622%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/f7014a23-050e-4c34-b136-a0612c43bed5%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/f7014a23-050e-4c34-b136-a0612c43bed5%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u4d992ac005b751e4 at groups.google.com  Wed Dec  7 15:39:54 2016
+From: u4d992ac005b751e4 at groups.google.com (ugoline godeau)
+Date: Wed, 07 Dec 2016 15:39:54 +0000
+Subject: Error in model.frame.default
+Message-ID: <ElraVJ2XkvM.TxVfbjSCDgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ElraVJ2XkvM/m/TxVfbjSCDgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello Nimble users,
+
+That the second time in 2 days I need your help but I prefere to ask than to stay for 1 week with my error.
+
+I tried the exemple (pump) and it is working perfectly fine. But when I make my own model with more complicate data I have a problem. All is working fine, but when I ask for the results with summary(samplesList), I only have NAs and I have this error  :
+
+Error in model.frame.default(formula = x[, i] ~ z, drop.unused.levels = TRUE) :
+
+  les longueurs des variables diffèrent (trouvé pour 'z')
+
+(in english : variable lengths differ (found for 'z')
+
+The problem is that I don't use any z so it may be in Nimble code but I don't know were and what is z.
+
+Maybe I don't define well my datas and constants :
+
+In my data list there is : the explained variable (length 300)
+
+In my constants list there are :
+the explanatory variable (length 300)
+A hierachization variable (length 300 with 30 levels)
+The number of obervations (=300 length 1)
+sd of x  (length 1)
+the two quantiles (length 2)
+the number of level of my hierrachisation variable (=30, length 1)
+Another explanatory variable (length 300)
+
+Tell me if you need more informations but I am not allowed to share my datas and model because there are not published yet.
+
+Thank you in advance
+
+Ugoline
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Wed Dec  7 16:09:26 2016
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Wed, 07 Dec 2016 16:09:26 +0000
+Subject: Re: Error in model.frame.default
+Message-ID: <ElraVJ2XkvM.aMrZE9GDDgAJ@nimble-users.groups.google.com>
+In-Reply-To: <ElraVJ2XkvM.TxVfbjSCDgAJ@nimble-users.groups.google.com>
+References: <ElraVJ2XkvM.TxVfbjSCDgAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/ElraVJ2XkvM/m/aMrZE9GDDgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think we'll need a bit more detail on the code you are running.
+
+Could you tell us how you are creating 'samplesList'?
+
+More generally feel free to send the model code and code for how you
+are running the MCMC to nimble...@gmail.com so that we can help but
+without having the code be public.
+
+chris
+
+On Wed, Dec 7, 2016 at 8:05 AM, Chris Paciorek
+<paci...@stat.berkeley.edu> wrote:
+> I think we'll need a bit more detail on the code you are running.
+>
+> Could you tell us how you are creating 'samplesList'?
+>
+> More generally feel free to send the model code and code for how you
+> are running the MCMC to nimble...@gmail.com so that we can help but
+> without having the code be public.
+>
+> chris
+
+>
+> On Wed, Dec 7, 2016 at 7:39 AM, ugoline godeau <ugolin...@gmail.com> wrote:
+>> Hello Nimble users,
+>>
+>> That the second time in 2 days I need your help but I prefere to ask than to
+>> stay for 1 week with my error.
+>>
+>> I tried the exemple (pump) and it is working perfectly fine. But when I make
+>> my own model with more complicate data I have a problem. All is working
+>> fine, but when I ask for the results with summary(samplesList), I only have
+>> NAs and I have this error  :
+>>
+>> Error in model.frame.default(formula = x[, i] ~ z, drop.unused.levels =
+>> TRUE) :
+>>
+>>   les longueurs des variables diffèrent (trouvé pour 'z')
+>>
+>>
+>> (in english : variable lengths differ (found for 'z')
+>>
+>> The problem is that I don't use any z so it may be in Nimble code but I
+>> don't know were and what is z.
+>>
+>> Maybe I don't define well my datas and constants :
+>>
+>> In my data list there is : the explained variable (length 300)
+>>
+>> In my constants list there are :
+>> the explanatory variable (length 300)
+>> A hierachization variable (length 300 with 30 levels)
+>> The number of obervations (=300 length 1)
+>> sd of x  (length 1)
+>> the two quantiles (length 2)
+>> the number of level of my hierrachisation variable (=30, length 1)
+>> Another explanatory variable (length 300)
+>>
+>>
+>> Tell me if you need more informations but I am not allowed to share my datas
+>> and model because there are not published yet.
+>>
+>> Thank you in advance
+>>
+>> Ugoline
+>>
+>>
+>>
+
+>> --
+>> You received this message because you are subscribed to the Google Groups
+>> "nimble-users" group.
+>> To unsubscribe from this group and stop receiving emails from it, send an
+>> email to nimble-users...@googlegroups.com.
+>> To post to this group, send email to nimble...@googlegroups.com.
+>> To view this discussion on the web visit
+>> https://groups.google.com/d/msgid/nimble-users/24389d18-ca07-44f5-8bce-d92f78fc5646%40googlegroups.com.
+>> For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Fri Dec  9 22:38:01 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Fri, 09 Dec 2016 22:38:01 +0000
+Subject: Custom Sampler and mvSaved
+Message-ID: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/tUvj-_94Zig/m/xQXFfS42DwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Nimble Users,
+
+I am writing my own sampler and have a question about mvSaved.  My understanding is mvSaved stores every iteration of the targets and/or nodes of the MCMC sampler.  However, after running the sampler it seems to only store the final iteration.   In my example below, the targets are getting saved in mvSamples, but I am unable to find a place where each iteration of the latent nodes are stored.  My first solution was to add monitors to the MCMC object, but I received an error warning:   ‘addMonitors’ is not a valid field or method name for reference class “nfRefClass_nimble33”  Maybe this is the wrong approach?
+
+Below is my code for the sampler, and I am attaching a full version with simulated data.
+
+I am just curious if I need to add another line or command to save both the targets and latent states for each iteration of the sampler.
+
+Any information or suggestions would be much appreciated.
+
+Thanks,
+
+Colin
+
+sampler_Kalman <- nimbleFunction(
+  contains = sampler_BASE,
+  setup = function(model, mvSaved, target, control) {
+
+    ## set up numeric values
+
+    T <- length(model$x[1,])
+    T2 <- ctmiss(model$y)
+    a1 <- model$getParam('sigmaSquaredInvv', 'shape')
+    a2 <- model$getParam('sigmaSquaredInvw', 'shape')
+    b1 <- model$getParam('sigmaSquaredInvv', 'rate')
+    b2 <- model$getParam('sigmaSquaredInvw', 'rate')
+    sh1 <- a1+T2/2      #Posterior V shape, fixed bc conjugacy
+    sh2 <- a2+(T*2)/2   #Posterior W shape, fixed bc conjugacy
+
+    ## functions for kalman, ffbs, sse
+    filt <- KalmanStep(model,'x')
+    level <- FFBStep(model,filt$mvKF,'x')
+    y_sse <- see_y(model,level$mvTheta)
+    theta_sse <- see_st(model,level$mvTheta)
+  },
+  run = function() {
+    filt$run()
+    level$run()
+
+    #draw observation for precision 1, V
+    rate <- b1 + y_sse$run()/2
+    psi1 <- rgamma(1, sh1, rate=rate)
+
+    #draw observation for precision 2, W
+    rate <- b2 + theta_sse$run()/2
+    psi2 <- rgamma(1, sh2, rate=rate)
+
+    #Update model variance terms
+    model[[target[1]]] <<- psi1
+    model[[target[2]]] <<- psi2
+
+    #Update Latent States in Model; I think this means I only need initialization step once?
+    nimCopy(from=level$mvTheta,to=model,nodes='theta[1:2,2:366]',nodesTo='x[1:2,1:365]',row=1)
+
+    #model$calculate(dependnecies of latent nodes)
+
+    #Save states and variance terms to mvSaved
+    nimCopy(from = model, to = mvSaved, nodes='x', row = 1)
+    nimCopy(from = model, to = mvSaved, nodes = target, row=1)
+
+  },
+  methods = list(
+    reset = function () {}
+  )
+)
+
+#Run Sampler
+smosSpec <- configureMCMC(smosModel, print = TRUE)
+smosSpec$removeSamplers(c('x','sigmaSquaredInvv', 'sigmaSquaredInvw'),print = FALSE)
+smosSpec$addSampler(target = c('sigmaSquaredInvv','sigmaSquaredInvw'), type = 'sampler_Kalman')
+smosMCMC <- buildMCMC(smosSpec)
+
+#Run MCMC for 10 iterations
+
+smosMCMC$run(10)
+
+From udd632bd3bbcdd7e9 at groups.google.com  Fri Dec  9 22:44:26 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Fri, 09 Dec 2016 22:44:26 +0000
+Subject: Re: Custom Sampler and mvSaved
+Message-ID: <tUvj-_94Zig.e4ZXJ4g2DwAJ@nimble-users.groups.google.com>
+In-Reply-To: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com>
+References: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/tUvj-_94Zig/m/e4ZXJ4g2DwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Colin,
+
+The job of mvSaved is only to store the current state of the model, not the outputs from the chain.  Each sampler does not have to worry about storing outputs, only about ensuring that mvSaved is up to date when it exits.  The “MCMC” object created by buildMCMC, which manages execution of all the samplers, will manage storage of outputs in mvSamples. A sampler can assume that upon entry mvSaved has the same values for model variables and associated log probabilities as the model itself.  Upon exit the sampler must ensure that is again the case.  Hence if it has modified values in the model (by a proposal and some calculations), then if it accepts the proposal, it needs to copy from the model to mvSaved, but if it rejects the proposal, it needs to copy from mvSaved to the model.  The avoids needing to recalculate parts of the model simply to get it back into the correct state after rejecting a proposal.
+
+The step for adding monitors is to the the configuration (the smosSpec in your code), not the built MCMC (smosMCMC in your code).
+
+Let me know if anything doesn’t make sense.
+
+Perry
+
+> On Dec 9, 2016, at 2:38 PM, Colin <clewi...@gmail.com> wrote:
+>
+
+> Dear Nimble Users,
+>
+> I am writing my own sampler and have a question about mvSaved.  My understanding is mvSaved stores every iteration of the targets and/or nodes of the MCMC sampler.  However, after running the sampler it seems to only store the final iteration.   In my example below, the targets are getting saved in mvSamples, but I am unable to find a place where each iteration of the latent nodes are stored.  My first solution was to add monitors to the MCMC object, but I received an error warning:   ‘addMonitors’ is not a valid field or method name for reference class “nfRefClass_nimble33”  Maybe this is the wrong approach?
+>
+> Below is my code for the sampler, and I am attaching a full version with simulated data.
+>
+> I am just curious if I need to add another line or command to save both the targets and latent states for each iteration of the sampler.
+>
+> Any information or suggestions would be much appreciated.
+>
+> Thanks,
+>
+> Colin
+>
+>
+>
+> sampler_Kalman <- nimbleFunction(
+>   contains = sampler_BASE,
+>   setup = function(model, mvSaved, target, control) {
+>
+>
+>     ## set up numeric values
+>
+>     T <- length(model$x[1,])
+>     T2 <- ctmiss(model$y)
+>     a1 <- model$getParam('sigmaSquaredInvv', 'shape')
+>     a2 <- model$getParam('sigmaSquaredInvw', 'shape')
+>     b1 <- model$getParam('sigmaSquaredInvv', 'rate')
+>     b2 <- model$getParam('sigmaSquaredInvw', 'rate')
+>     sh1 <- a1+T2/2      #Posterior V shape, fixed bc conjugacy
+>     sh2 <- a2+(T*2)/2   #Posterior W shape, fixed bc conjugacy
+>
+>     ## functions for kalman, ffbs, sse
+>     filt <- KalmanStep(model,'x')
+>     level <- FFBStep(model,filt$mvKF,'x')
+>     y_sse <- see_y(model,level$mvTheta)
+>     theta_sse <- see_st(model,level$mvTheta)
+>   },
+>   run = function() {
+>     filt$run()
+>     level$run()
+>
+>     #draw observation for precision 1, V
+>     rate <- b1 + y_sse$run()/2
+>     psi1 <- rgamma(1, sh1, rate=rate)
+>
+>     #draw observation for precision 2, W
+>     rate <- b2 + theta_sse$run()/2
+>     psi2 <- rgamma(1, sh2, rate=rate)
+>
+>     #Update model variance terms
+>     model[[target[1]]] <<- psi1
+>     model[[target[2]]] <<- psi2
+>
+>
+>     #Update Latent States in Model; I think this means I only need initialization step once?
+>     nimCopy(from=level$mvTheta,to=model,nodes='theta[1:2,2:366]',nodesTo='x[1:2,1:365]',row=1)
+>
+>     #model$calculate(dependnecies of latent nodes)
+>
+>     #Save states and variance terms to mvSaved
+>     nimCopy(from = model, to = mvSaved, nodes='x', row = 1)
+>     nimCopy(from = model, to = mvSaved, nodes = target, row=1)
+>
+>   },
+>   methods = list(
+>     reset = function () {}
+>   )
+> )
+>
+>
+> #Run Sampler
+> smosSpec <- configureMCMC(smosModel, print = TRUE)
+> smosSpec$removeSamplers(c('x','sigmaSquaredInvv', 'sigmaSquaredInvw'),print = FALSE)
+> smosSpec$addSampler(target = c('sigmaSquaredInvv','sigmaSquaredInvw'), type = 'sampler_Kalman')
+> smosMCMC <- buildMCMC(smosSpec)
+>
+> #Run MCMC for 10 iterations
+>
+> smosMCMC$run(10)
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+> <KalmanFull.R>
+
+From u6d020fc5d7c9ee0a at groups.google.com  Fri Dec  9 23:31:48 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Fri, 09 Dec 2016 23:31:48 +0000
+Subject: Re: Custom Sampler and mvSaved
+Message-ID: <tUvj-_94Zig.u4jZ0h05DwAJ@nimble-users.groups.google.com>
+In-Reply-To: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com>
+References: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/tUvj-_94Zig/m/u4jZ0h05DwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,
+
+Thank you for the quick response.  This makes a lot more sense to have the distinction between saved vs. current model state variables: especially if we only are interested in saving a subset of the samples.   Is there a default for which variables and or nodes get saved in mvSamples?  It seems like for my model NIMBLE only saved the two targets and initial state value, x0, but not the full set of latent states.  Just curious if those variables were chosen as a function of how I specified the model and/or initialized the model?
+
+Cheers,
+
+Colin
+
+On Friday, December 9, 2016 at 4:44:26 PM UTC-6, pdevalpine wrote:
+> Hi Colin,
+>
+> The job of mvSaved is only to store the current state of the model, not the outputs from the chain.  Each sampler does not have to worry about storing outputs, only about ensuring that mvSaved is up to date when it exits.  The “MCMC” object created by buildMCMC, which manages execution of all the samplers, will manage storage of outputs in mvSamples. A sampler can assume that upon entry mvSaved has the same values for model variables and associated log probabilities as the model itself.  Upon exit the sampler must ensure that is again the case.  Hence if it has modified values in the model (by a proposal and some calculations), then if it accepts the proposal, it needs to copy from the model to mvSaved, but if it rejects the proposal, it needs to copy from mvSaved to the model.  The avoids needing to recalculate parts of the model simply to get it back into the correct state after rejecting a proposal.
+>
+> The step for adding monitors is to the the configuration (the smosSpec in your code), not the built MCMC (smosMCMC in your code).
+>
+> Let me know if anything doesn’t make sense.
+>
+> Perry
+>
+> > On Dec 9, 2016, at 2:38 PM, Colin <clewi...@gmail.com> wrote:
+> >
+> > Dear Nimble Users,
+> >
+> > I am writing my own sampler and have a question about mvSaved.  My understanding is mvSaved stores every iteration of the targets and/or nodes of the MCMC sampler.  However, after running the sampler it seems to only store the final iteration.   In my example below, the targets are getting saved in mvSamples, but I am unable to find a place where each iteration of the latent nodes are stored.  My first solution was to add monitors to the MCMC object, but I received an error warning:   ‘addMonitors’ is not a valid field or method name for reference class “nfRefClass_nimble33”  Maybe this is the wrong approach?
+> >
+> > Below is my code for the sampler, and I am attaching a full version with simulated data.
+> >
+> > I am just curious if I need to add another line or command to save both the targets and latent states for each iteration of the sampler.
+> >
+> > Any information or suggestions would be much appreciated.
+> >
+> > Thanks,
+> >
+> > Colin
+> >
+> >
+> >
+> > sampler_Kalman <- nimbleFunction(
+> >   contains = sampler_BASE,
+> >   setup = function(model, mvSaved, target, control) {
+> >
+> >
+> >     ## set up numeric values
+> >
+> >     T <- length(model$x[1,])
+> >     T2 <- ctmiss(model$y)
+> >     a1 <- model$getParam('sigmaSquaredInvv', 'shape')
+> >     a2 <- model$getParam('sigmaSquaredInvw', 'shape')
+> >     b1 <- model$getParam('sigmaSquaredInvv', 'rate')
+> >     b2 <- model$getParam('sigmaSquaredInvw', 'rate')
+> >     sh1 <- a1+T2/2      #Posterior V shape, fixed bc conjugacy
+> >     sh2 <- a2+(T*2)/2   #Posterior W shape, fixed bc conjugacy
+> >
+> >     ## functions for kalman, ffbs, sse
+> >     filt <- KalmanStep(model,'x')
+> >     level <- FFBStep(model,filt$mvKF,'x')
+> >     y_sse <- see_y(model,level$mvTheta)
+> >     theta_sse <- see_st(model,level$mvTheta)
+> >   },
+> >   run = function() {
+> >     filt$run()
+> >     level$run()
+> >
+> >     #draw observation for precision 1, V
+> >     rate <- b1 + y_sse$run()/2
+> >     psi1 <- rgamma(1, sh1, rate=rate)
+> >
+> >     #draw observation for precision 2, W
+> >     rate <- b2 + theta_sse$run()/2
+> >     psi2 <- rgamma(1, sh2, rate=rate)
+> >
+> >     #Update model variance terms
+> >     model[[target[1]]] <<- psi1
+> >     model[[target[2]]] <<- psi2
+> >
+> >
+> >     #Update Latent States in Model; I think this means I only need initialization step once?
+> >     nimCopy(from=level$mvTheta,to=model,nodes='theta[1:2,2:366]',nodesTo='x[1:2,1:365]',row=1)
+> >
+> >     #model$calculate(dependnecies of latent nodes)
+> >
+> >     #Save states and variance terms to mvSaved
+> >     nimCopy(from = model, to = mvSaved, nodes='x', row = 1)
+> >     nimCopy(from = model, to = mvSaved, nodes = target, row=1)
+> >
+> >   },
+> >   methods = list(
+> >     reset = function () {}
+> >   )
+> > )
+> >
+> >
+> > #Run Sampler
+> > smosSpec <- configureMCMC(smosModel, print = TRUE)
+> > smosSpec$removeSamplers(c('x','sigmaSquaredInvv', 'sigmaSquaredInvw'),print = FALSE)
+> > smosSpec$addSampler(target = c('sigmaSquaredInvv','sigmaSquaredInvw'), type = 'sampler_Kalman')
+> > smosMCMC <- buildMCMC(smosSpec)
+> >
+> > #Run MCMC for 10 iterations
+> >
+> > smosMCMC$run(10)
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+> > <KalmanFull.R>
+>
+
+From udd632bd3bbcdd7e9 at groups.google.com  Sat Dec 10 00:10:14 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Sat, 10 Dec 2016 00:10:14 +0000
+Subject: Re: Custom Sampler and mvSaved
+Message-ID: <tUvj-_94Zig.9ggu3jY7DwAJ@nimble-users.groups.google.com>
+In-Reply-To: <tUvj-_94Zig.u4jZ0h05DwAJ@nimble-users.groups.google.com>
+References: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com> <tUvj-_94Zig.u4jZ0h05DwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/tUvj-_94Zig/m/9ggu3jY7DwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+By default the MCMC will monitor the parameters (aka top-level nodes), not the latent states.
+
+You can also set the monitors when you call configureMCMC.
+
+Note there is also a second set of monitors, called monitors2, which can have a separate thinning interval.  This is handy when you want to monitor latent states but they are very large.
+
+Perry
+
+> On Dec 9, 2016, at 3:31 PM, Colin <clewi...@gmail.com> wrote:
+>
+
+> Hi Perry,
+>
+> Thank you for the quick response.  This makes a lot more sense to have the distinction between saved vs. current model state variables: especially if we only are interested in saving a subset of the samples.   Is there a default for which variables and or nodes get saved in mvSamples?  It seems like for my model NIMBLE only saved the two targets and initial state value, x0, but not the full set of latent states.  Just curious if those variables were chosen as a function of how I specified the model and/or initialized the model?
+>
+> Cheers,
+>
+> Colin
+>
+> On Friday, December 9, 2016 at 4:44:26 PM UTC-6, pdevalpine wrote:
+> > Hi Colin,
+> >
+> > The job of mvSaved is only to store the current state of the model, not the outputs from the chain.  Each sampler does not have to worry about storing outputs, only about ensuring that mvSaved is up to date when it exits.  The “MCMC” object created by buildMCMC, which manages execution of all the samplers, will manage storage of outputs in mvSamples. A sampler can assume that upon entry mvSaved has the same values for model variables and associated log probabilities as the model itself.  Upon exit the sampler must ensure that is again the case.  Hence if it has modified values in the model (by a proposal and some calculations), then if it accepts the proposal, it needs to copy from the model to mvSaved, but if it rejects the proposal, it needs to copy from mvSaved to the model.  The avoids needing to recalculate parts of the model simply to get it back into the correct state after rejecting a proposal.
+> >
+> > The step for adding monitors is to the the configuration (the smosSpec in your code), not the built MCMC (smosMCMC in your code).
+> >
+> > Let me know if anything doesn’t make sense.
+> >
+> > Perry
+> >
+> > > On Dec 9, 2016, at 2:38 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > >
+> > > Dear Nimble Users,
+> > >
+> > > I am writing my own sampler and have a question about mvSaved.  My understanding is mvSaved stores every iteration of the targets and/or nodes of the MCMC sampler.  However, after running the sampler it seems to only store the final iteration.   In my example below, the targets are getting saved in mvSamples, but I am unable to find a place where each iteration of the latent nodes are stored.  My first solution was to add monitors to the MCMC object, but I received an error warning:   ‘addMonitors’ is not a valid field or method name for reference class “nfRefClass_nimble33”  Maybe this is the wrong approach?
+> > >
+> > > Below is my code for the sampler, and I am attaching a full version with simulated data.
+> > >
+> > > I am just curious if I need to add another line or command to save both the targets and latent states for each iteration of the sampler.
+> > >
+> > > Any information or suggestions would be much appreciated.
+> > >
+> > > Thanks,
+> > >
+> > > Colin
+> > >
+> > >
+> > >
+> > > sampler_Kalman <- nimbleFunction(
+> > >   contains = sampler_BASE,
+> > >   setup = function(model, mvSaved, target, control) {
+> > >
+> > >
+> > >     ## set up numeric values
+> > >
+> > >     T <- length(model$x[1,])
+> > >     T2 <- ctmiss(model$y)
+> > >     a1 <- model$getParam('sigmaSquaredInvv', 'shape')
+> > >     a2 <- model$getParam('sigmaSquaredInvw', 'shape')
+> > >     b1 <- model$getParam('sigmaSquaredInvv', 'rate')
+> > >     b2 <- model$getParam('sigmaSquaredInvw', 'rate')
+> > >     sh1 <- a1+T2/2      #Posterior V shape, fixed bc conjugacy
+> > >     sh2 <- a2+(T*2)/2   #Posterior W shape, fixed bc conjugacy
+> > >
+> > >     ## functions for kalman, ffbs, sse
+> > >     filt <- KalmanStep(model,'x')
+> > >     level <- FFBStep(model,filt$mvKF,'x')
+> > >     y_sse <- see_y(model,level$mvTheta)
+> > >     theta_sse <- see_st(model,level$mvTheta)
+> > >   },
+> > >   run = function() {
+> > >     filt$run()
+> > >     level$run()
+> > >
+> > >     #draw observation for precision 1, V
+> > >     rate <- b1 + y_sse$run()/2
+> > >     psi1 <- rgamma(1, sh1, rate=rate)
+> > >
+> > >     #draw observation for precision 2, W
+> > >     rate <- b2 + theta_sse$run()/2
+> > >     psi2 <- rgamma(1, sh2, rate=rate)
+> > >
+> > >     #Update model variance terms
+> > >     model[[target[1]]] <<- psi1
+> > >     model[[target[2]]] <<- psi2
+> > >
+> > >
+> > >     #Update Latent States in Model; I think this means I only need initialization step once?
+> > >     nimCopy(from=level$mvTheta,to=model,nodes='theta[1:2,2:366]',nodesTo='x[1:2,1:365]',row=1)
+> > >
+> > >     #model$calculate(dependnecies of latent nodes)
+> > >
+> > >     #Save states and variance terms to mvSaved
+> > >     nimCopy(from = model, to = mvSaved, nodes='x', row = 1)
+> > >     nimCopy(from = model, to = mvSaved, nodes = target, row=1)
+> > >
+> > >   },
+> > >   methods = list(
+> > >     reset = function () {}
+> > >   )
+> > > )
+> > >
+> > >
+> > > #Run Sampler
+> > > smosSpec <- configureMCMC(smosModel, print = TRUE)
+> > > smosSpec$removeSamplers(c('x','sigmaSquaredInvv', 'sigmaSquaredInvw'),print = FALSE)
+> > > smosSpec$addSampler(target = c('sigmaSquaredInvv','sigmaSquaredInvw'), type = 'sampler_Kalman')
+> > > smosMCMC <- buildMCMC(smosSpec)
+> > >
+> > > #Run MCMC for 10 iterations
+> > >
+> > > smosMCMC$run(10)
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> > > <KalmanFull.R>
+> >
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/eb49b51e-a3b7-4dd7-b6a3-682cd8d29cbe%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/eb49b51e-a3b7-4dd7-b6a3-682cd8d29cbe%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u27debeac26f66a0b at groups.google.com  Wed Dec 14 16:24:31 2016
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez)
+Date: Wed, 14 Dec 2016 16:24:31 +0000
+Subject: maximal number of DLLs reached
+Message-ID: <-eoYs__eg0o.TMAmw7OqEAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/-eoYs__eg0o/m/TMAmw7OqEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi All,
+
+I'm trying to make a simulation in nimble with 100 iterations of the same code using a loop, but after 40-45 iterations R crash, and I get "maximal number of DLLs reached". Can DLLs be unloaded programatically, without restarting R?
+
+Thank you,
+Jose
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Thu Dec 15 20:57:05 2016
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Thu, 15 Dec 2016 20:57:05 +0000
+Subject: Re: maximal number of DLLs reached
+Message-ID: <-eoYs__eg0o.TvZgbBILAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <-eoYs__eg0o.TMAmw7OqEAAJ@nimble-users.groups.google.com>
+References: <-eoYs__eg0o.TMAmw7OqEAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/-eoYs__eg0o/m/TvZgbBILAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi Jose, the following should work on Mac or Linux, but may have some
+problems Windows (it might work but then trigger an error when you
+close R in Windows).
+
+Suppose that you have an uncompiled model or nimbleFunction, called
+'obj', and a compiled version of that called 'Cobj'.
+
+Simply do:
+nimble:::clearCompiled(obj)
+
+That should remove the DLLs associated with the project associated
+with 'obj' and 'Cobj'.
+
+Chris
+
+On Wed, Dec 14, 2016 at 8:24 AM, Jose Jimenez <jose.j...@uclm.es> wrote:
+> Hi All,
+>
+> I'm trying to make a simulation in nimble with 100 iterations of the same
+> code using a loop, but after 40-45 iterations R crash, and I get "maximal
+> number of DLLs reached". Can DLLs be unloaded programatically, without
+> restarting R?
+>
+> Thank you,
+> Jose
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/nimble-users/287fcea6-42c8-4b8c-935d-4899cfb1070c%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u27debeac26f66a0b at groups.google.com  Thu Dec 15 21:20:00 2016
+From: u27debeac26f66a0b at groups.google.com (JOSE JIMENEZ GARCIA-HERRERA)
+Date: Thu, 15 Dec 2016 21:20:00 +0000
+Subject: Re: maximal number of DLLs reached
+Message-ID: <-eoYs__eg0o.ivWhiFIMAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <-eoYs__eg0o.TMAmw7OqEAAJ@nimble-users.groups.google.com>
+References: <-eoYs__eg0o.TMAmw7OqEAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/-eoYs__eg0o/m/ivWhiFIMAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Chris. It is working fine on Mac
+
+Best regards,
+Jose
+
+> El 15 dic 2016, a las 21:56, Chris Paciorek <christophe...@gmail.com> escribió:
+>
+> hi Jose, the following should work on Mac or Linux, but may have some
+> problems Windows (it might work but then trigger an error when you
+> close R in Windows).
+>
+> Suppose that you have an uncompiled model or nimbleFunction, called
+> 'obj', and a compiled version of that called 'Cobj'.
+>
+> Simply do:
+> nimble:::clearCompiled(obj)
+>
+> That should remove the DLLs associated with the project associated
+> with 'obj' and 'Cobj'.
+>
+> Chris
+>
+> On Wed, Dec 14, 2016 at 8:24 AM, Jose Jimenez <jose.j...@uclm.es> wrote:
+>> Hi All,
+>>
+>> I'm trying to make a simulation in nimble with 100 iterations of the same
+>> code using a loop, but after 40-45 iterations R crash, and I get "maximal
+>> number of DLLs reached". Can DLLs be unloaded programatically, without
+>> restarting R?
+>>
+>> Thank you,
+>> Jose
+>>
+>> --
+>> You received this message because you are subscribed to the Google Groups
+>> "nimble-users" group.
+>> To unsubscribe from this group and stop receiving emails from it, send an
+>> email to nimble-users...@googlegroups.com.
+>> To post to this group, send email to nimble...@googlegroups.com.
+>> To view this discussion on the web visit
+>> https://groups.google.com/d/msgid/nimble-users/287fcea6-42c8-4b8c-935d-4899cfb1070c%40googlegroups.com.
+>> For more options, visit https://groups.google.com/d/optout.
+
+From udd632bd3bbcdd7e9 at groups.google.com  Thu Dec 15 21:39:43 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Thu, 15 Dec 2016 21:39:43 +0000
+Subject: Re: maximal number of DLLs reached
+Message-ID: <-eoYs__eg0o.grZhHmYNAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <-eoYs__eg0o.ivWhiFIMAAAJ@nimble-users.groups.google.com>
+References: <-eoYs__eg0o.TMAmw7OqEAAJ@nimble-users.groups.google.com> <-eoYs__eg0o.ivWhiFIMAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/-eoYs__eg0o/m/grZhHmYNAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ah, Chris’ email made me realize that when I responded to Jose I neglected to cc nimble-users!  In case others are interested, here was my answer.  Jose did report to me that clearCompiled() crashed Windows but not OS X.  -Perry
+
+This has been a headache for us.  If you are running in Linux or OS X, you can use what is still an internal/development feature:
+
+nimble:::clearCompiled(Rmodel)
+
+where Rmodel is any part (model or nimbleFunction) of a nimble project (stuff that was compiled together, perhaps via the project argument to compileNimble).   This is not fully documented for users for a few reasons.  One is that it is new.  Another is that it doesn’t work safely on Windows.  And a third is that one still has to be careful: we’ve tried to make it completely safe but it is not fully tested.  In particular it is possible that if you have multiple R objects of the same nimble object, and you accidentally try to use one of them later, the system could crash.  It shouldn’t happen, but as mentioned it is not highly tested.  But for your purposes if you are writing a loop in which you compile and then want to clear at the end, go ahead and try it and it is likely to work.  Unfortunately Windows manages compiled and loaded stuff differently.  On Windows, in some cases what might happen is that the compiled objects will unload but the non-safeness will mean that R crashes upon exiting.  If you can live with that you can use it.  In any case it won’t cause harm to try it as long as you know it might be unstable and don’t have unsaved work in the R session.
+
+> On Dec 15, 2016, at 1:19 PM, JOSE JIMENEZ GARCIA-HERRERA <Jose.J...@uclm.es> wrote:
+>
+
+> Thank you Chris. It is working fine on Mac
+>
+> Best regards,
+> Jose
+>
+>
+> > El 15 dic 2016, a las 21:56, Chris Paciorek <christophe...@gmail.com> escribió:
+> >
+> > hi Jose, the following should work on Mac or Linux, but may have some
+> > problems Windows (it might work but then trigger an error when you
+> > close R in Windows).
+> >
+> > Suppose that you have an uncompiled model or nimbleFunction, called
+> > 'obj', and a compiled version of that called 'Cobj'.
+> >
+> > Simply do:
+> > nimble:::clearCompiled(obj)
+> >
+> > That should remove the DLLs associated with the project associated
+> > with 'obj' and 'Cobj'.
+> >
+> > Chris
+> >
+> > On Wed, Dec 14, 2016 at 8:24 AM, Jose Jimenez <jose.j...@uclm.es> wrote:
+> > > Hi All,
+> > >
+> > > I'm trying to make a simulation in nimble with 100 iterations of the same
+> > > code using a loop, but after 40-45 iterations R crash, and I get "maximal
+> > > number of DLLs reached". Can DLLs be unloaded programatically, without
+> > > restarting R?
+> > >
+> > > Thank you,
+> > > Jose
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups
+> > > "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an
+> > > email to nimble-users...@googlegroups.com.
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit
+> > > https://groups.google.com/d/msgid/nimble-users/287fcea6-42c8-4b8c-935d-4899cfb1070c%40googlegroups.com.
+> > > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/2B645E91-9B14-4854-BB77-B166BEDC2B1E%40uclm.es.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From u89df6cb36c324fe3 at groups.google.com  Fri Dec 16 02:05:12 2016
+From: u89df6cb36c324fe3 at groups.google.com (FH)
+Date: Fri, 16 Dec 2016 02:05:12 +0000
+Subject: Cumulative probit regression in nimble
+Message-ID: <yZFUaDCv3D4.35-N5eIbAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/yZFUaDCv3D4/m/35-N5eIbAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+I have been playing around recently with nimble (awesome package!) and was trying fit a kind of cumulative probit type model using it.  However when I tried the following code below (with attached example data), the model did not compile.
+
+library(nimble)
+load("test.RData")
+
+nimmod <- nimbleCode({
+  for(i in 1:n) {
+    u[i] ~ dnorm(0,1)
+    prob[i,1] <- phi(alpha[1]-u[i])
+    for(k in 2:(no.levels-1)) { prob[i,k] <- phi(alpha[k]-u[i]) - phi(alpha[k-1]-u[i]) }
+    prob[i,no.levels] <- 1-phi(alpha[no.levels-1]-u[i])
+    x[i] ~ dcat(prob[i,1:no.levels])
+    y[i] ~ dnorm(beta0 + u[i]*beta1, phi)
+  }
+
+  beta0 ~ dnorm(0,0.0001)
+  beta1 ~ dnorm(0,0.0001)
+  phi <- pow(sigma2, -1)
+  sigma2 ~ dunif(0, 100)
+  for(k in 1:(no.levels-1)) { alpha0[k] ~ dnorm(0,0.0001) }
+  alpha[1:(no.levels-1)] <- sort(alpha0)
+})
+
+nim.params <- c("beta0","beta1","sigma2","u", "alpha")
+nim.constants <- list(n = n, no.levels = length(unique(x)))
+nim.data <- list(x = x, y = y, n = n, no.levels = length(unique(x)))
+
+nimfit <- nimbleModel(code = nimmod, name = 'madness', constants = nim.constants, data = nim.data)
+
+and produced an error
+defining model...
+Error in getSymbolicParentNodesRecurse(code, constNames, indexNames, nimbleFunctionNames) :
+  R function 'sort' has arguments that cannot be evaluated; either the function must be a nimbleFunction or values for the following inputs must be specified as constants in the model: alpha0.
+
+Could you please let me know how I can get around the problem with sort? The model as is runs in JAGS without hiccups (provided you give it some starting values for alpha0).
+
+Thanks heaps.
+
+Regards,
+FH
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Dec 16 02:54:24 2016
+From: u5fa2a363d4ddd1d1 at groups.google.com (Chris Paciorek)
+Date: Fri, 16 Dec 2016 02:54:24 +0000
+Subject: Re: Cumulative probit regression in nimble
+Message-ID: <yZFUaDCv3D4.ii3aDZIeAAAJ@nimble-users.groups.google.com>
+In-Reply-To: <yZFUaDCv3D4.35-N5eIbAAAJ@nimble-users.groups.google.com>
+References: <yZFUaDCv3D4.35-N5eIbAAAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/yZFUaDCv3D4/m/ii3aDZIeAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Francis,
+
+sort() is a JAGS function that we never have gotten around to
+implementing in NIMBLE (see Table 5.4 of the User Manual).
+
+One option would be for you to write a user-defined nimbleFunction
+that implements sorting and then simply use it in your BUGS code.
+Of course sorting is a standard computer science/algorithms problem,
+and there is lots of work on efficient ways to do it, but for sorting
+a small vector like yours, something basic will probably be fine and
+not the bottleneck in your computation.
+
+chris
+
+On Thu, Dec 15, 2016 at 6:05 PM, FH <fhu...@gmail.com> wrote:
+> Dear all,
+>
+> I have been playing around recently with nimble (awesome package!) and was
+> trying fit a kind of cumulative probit type model using it.  However when I
+> tried the following code below (with attached example data), the model did
+> not compile.
+>
+> library(nimble)
+> load("test.RData")
+>
+> nimmod <- nimbleCode({
+>   for(i in 1:n) {
+>     u[i] ~ dnorm(0,1)
+>     prob[i,1] <- phi(alpha[1]-u[i])
+>     for(k in 2:(no.levels-1)) { prob[i,k] <- phi(alpha[k]-u[i]) -
+> phi(alpha[k-1]-u[i]) }
+>     prob[i,no.levels] <- 1-phi(alpha[no.levels-1]-u[i])
+>     x[i] ~ dcat(prob[i,1:no.levels])
+>     y[i] ~ dnorm(beta0 + u[i]*beta1, phi)
+>   }
+>
+>   beta0 ~ dnorm(0,0.0001)
+>   beta1 ~ dnorm(0,0.0001)
+>   phi <- pow(sigma2, -1)
+>   sigma2 ~ dunif(0, 100)
+>   for(k in 1:(no.levels-1)) { alpha0[k] ~ dnorm(0,0.0001) }
+>   alpha[1:(no.levels-1)] <- sort(alpha0)
+> })
+>
+>
+> nim.params <- c("beta0","beta1","sigma2","u", "alpha")
+> nim.constants <- list(n = n, no.levels = length(unique(x)))
+> nim.data <- list(x = x, y = y, n = n, no.levels = length(unique(x)))
+>
+> nimfit <- nimbleModel(code = nimmod, name = 'madness', constants =
+> nim.constants, data = nim.data)
+>
+> and produced an error
+>
+> defining model...
+> Error in getSymbolicParentNodesRecurse(code, constNames, indexNames,
+> nimbleFunctionNames) :
+>   R function 'sort' has arguments that cannot be evaluated; either the
+> function must be a nimbleFunction or values for the following inputs must be
+> specified as constants in the model: alpha0.
+>
+>
+> Could you please let me know how I can get around the problem with sort? The
+> model as is runs in JAGS without hiccups (provided you give it some starting
+> values for alpha0).
+>
+> Thanks heaps.
+>
+> Regards,
+> FH
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/nimble-users/ad0c9f6e-3547-4295-8eda-e0f15a8807fa%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Sat Dec 17 17:10:33 2016
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Sat, 17 Dec 2016 17:10:33 +0000
+Subject: Re: Custom Sampler and mvSaved
+Message-ID: <tUvj-_94Zig.uqfJzG4_EQAJ@nimble-users.groups.google.com>
+In-Reply-To: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com>
+References: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/tUvj-_94Zig/m/uqfJzG4_EQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Perry,
+
+Quick follow up question about the sampler function in NIMBLE.  I have a custom written sampler working fine in R, and it compiles in C++ without any errors.  However, when I run the C++ version all the saved target values and latent states returned are NaN.   I know with R the idea is you can use browser() and run pieces of the code to do debugging.  However, with the C++ I'm not sure how to fully diagnose the issue--especially since the compiling works fine.   I was wondering if you have any suggestions about how to go about diagnosing this incongruity between the two versions.  I am attaching the sampler code below if that is helpful.  Any suggestions would be much appreciated.
+
+Thanks,
+
+Colin
+
+  sampler_Kalman <- nimbleFunction(
+  contains = sampler_BASE,
+  setup = function(model, mvSaved, target, control) {
+
+    ## numeric value generation
+    nodes <- model$expandNodeNames('x')
+    T <- length(nodes)
+
+    a1 <- model$getParam('sigmaSquaredInvv', 'shape')
+    a2 <- model$getParam('sigmaSquaredInvw', 'shape')
+    b1 <- model$getParam('sigmaSquaredInvv', 'rate')
+    b2 <- model$getParam('sigmaSquaredInvw', 'rate')
+
+    sh1 <- a1 + T/2      #Posterior V shape, fixed bc conjugacy
+    sh2 <- a2 + (T*2)/2   #Posterior W shape, fixed bc conjugacy
+
+    ## functions for kalman, ffbs, sse
+    filt <- KalmanStep(model,'x')
+    level <- FFBStep(model,filt$mvKF,'x')
+    y_sse <- see_y(model,level$mvTheta)
+    theta_sse <- see_st(model,level$mvTheta)
+
+    #Stored States
+    mvThetaS <- level$mvTheta
+
+    #get Dependencies
+    paramDependencies <- model$getDependencies(target)
+  },
+  run = function() {
+    psis <- numeric(2) #store psi terms
+
+    filt$run()
+    level$run()
+
+    #draw observation for precision 1, V
+
+    rate1 <- b1 + y_sse$run()/2
+    psis[1] <- rgamma(1, sh1, rate = rate1[1,1])
+
+    #draw observation for precision 2, W
+
+    rate2 <- b2 + theta_sse$run()/2
+    psis[2] <- rgamma(1, sh2, rate = rate2[1,1])
+
+    #Update model states variance terms
+    values(model, target) <<- psis
+
+    #Update Latent States in Model
+
+    nimCopy(from=mvThetaS,to=model,nodes='theta[1:2,2:366]', nodesTo='x[1:2,1:365]',row=1)
+
+    model$calculate(paramDependencies)
+    model$calculate(nodes)
+
+  },
+  methods = list(
+    reset = function () {}
+  )
+)
+
+On Friday, December 9, 2016 at 6:10:14 PM UTC-6, pdevalpine wrote:
+> By default the MCMC will monitor the parameters (aka top-level nodes), not the latent states.
+>
+> You can also set the monitors when you call configureMCMC.
+>
+> Note there is also a second set of monitors, called monitors2, which can have a separate thinning interval.  This is handy when you want to monitor latent states but they are very large.
+>
+> Perry
+>
+> > On Dec 9, 2016, at 3:31 PM, Colin <clewi...@gmail.com> wrote:
+> >
+> > Hi Perry,
+> >
+> > Thank you for the quick response.  This makes a lot more sense to have the distinction between saved vs. current model state variables: especially if we only are interested in saving a subset of the samples.   Is there a default for which variables and or nodes get saved in mvSamples?  It seems like for my model NIMBLE only saved the two targets and initial state value, x0, but not the full set of latent states.  Just curious if those variables were chosen as a function of how I specified the model and/or initialized the model?
+> >
+> > Cheers,
+> >
+> > Colin
+> >
+> > On Friday, December 9, 2016 at 4:44:26 PM UTC-6, pdevalpine wrote:
+> > > Hi Colin,
+> > >
+> > > The job of mvSaved is only to store the current state of the model, not the outputs from the chain.  Each sampler does not have to worry about storing outputs, only about ensuring that mvSaved is up to date when it exits.  The “MCMC” object created by buildMCMC, which manages execution of all the samplers, will manage storage of outputs in mvSamples. A sampler can assume that upon entry mvSaved has the same values for model variables and associated log probabilities as the model itself.  Upon exit the sampler must ensure that is again the case.  Hence if it has modified values in the model (by a proposal and some calculations), then if it accepts the proposal, it needs to copy from the model to mvSaved, but if it rejects the proposal, it needs to copy from mvSaved to the model.  The avoids needing to recalculate parts of the model simply to get it back into the correct state after rejecting a proposal.
+> > >
+> > > The step for adding monitors is to the the configuration (the smosSpec in your code), not the built MCMC (smosMCMC in your code).
+> > >
+> > > Let me know if anything doesn’t make sense.
+> > >
+> > > Perry
+> > >
+> > > > On Dec 9, 2016, at 2:38 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > >
+> > > > Dear Nimble Users,
+> > > >
+> > > > I am writing my own sampler and have a question about mvSaved.  My understanding is mvSaved stores every iteration of the targets and/or nodes of the MCMC sampler.  However, after running the sampler it seems to only store the final iteration.   In my example below, the targets are getting saved in mvSamples, but I am unable to find a place where each iteration of the latent nodes are stored.  My first solution was to add monitors to the MCMC object, but I received an error warning:   ‘addMonitors’ is not a valid field or method name for reference class “nfRefClass_nimble33”  Maybe this is the wrong approach?
+> > > >
+> > > > Below is my code for the sampler, and I am attaching a full version with simulated data.
+> > > >
+> > > > I am just curious if I need to add another line or command to save both the targets and latent states for each iteration of the sampler.
+> > > >
+> > > > Any information or suggestions would be much appreciated.
+> > > >
+> > > > Thanks,
+> > > >
+> > > > Colin
+> > > >
+> > > >
+> > > >
+> > > > sampler_Kalman <- nimbleFunction(
+> > > >   contains = sampler_BASE,
+> > > >   setup = function(model, mvSaved, target, control) {
+> > > >
+> > > >
+> > > >     ## set up numeric values
+> > > >
+> > > >     T <- length(model$x[1,])
+> > > >     T2 <- ctmiss(model$y)
+> > > >     a1 <- model$getParam('sigmaSquaredInvv', 'shape')
+> > > >     a2 <- model$getParam('sigmaSquaredInvw', 'shape')
+> > > >     b1 <- model$getParam('sigmaSquaredInvv', 'rate')
+> > > >     b2 <- model$getParam('sigmaSquaredInvw', 'rate')
+> > > >     sh1 <- a1+T2/2      #Posterior V shape, fixed bc conjugacy
+> > > >     sh2 <- a2+(T*2)/2   #Posterior W shape, fixed bc conjugacy
+> > > >
+> > > >     ## functions for kalman, ffbs, sse
+> > > >     filt <- KalmanStep(model,'x')
+> > > >     level <- FFBStep(model,filt$mvKF,'x')
+> > > >     y_sse <- see_y(model,level$mvTheta)
+> > > >     theta_sse <- see_st(model,level$mvTheta)
+> > > >   },
+> > > >   run = function() {
+> > > >     filt$run()
+> > > >     level$run()
+> > > >
+> > > >     #draw observation for precision 1, V
+> > > >     rate <- b1 + y_sse$run()/2
+> > > >     psi1 <- rgamma(1, sh1, rate=rate)
+> > > >
+> > > >     #draw observation for precision 2, W
+> > > >     rate <- b2 + theta_sse$run()/2
+> > > >     psi2 <- rgamma(1, sh2, rate=rate)
+> > > >
+> > > >     #Update model variance terms
+> > > >     model[[target[1]]] <<- psi1
+> > > >     model[[target[2]]] <<- psi2
+> > > >
+> > > >
+> > > >     #Update Latent States in Model; I think this means I only need initialization step once?
+> > > >     nimCopy(from=level$mvTheta,to=model,nodes='theta[1:2,2:366]',nodesTo='x[1:2,1:365]',row=1)
+> > > >
+> > > >     #model$calculate(dependnecies of latent nodes)
+> > > >
+> > > >     #Save states and variance terms to mvSaved
+> > > >     nimCopy(from = model, to = mvSaved, nodes='x', row = 1)
+> > > >     nimCopy(from = model, to = mvSaved, nodes = target, row=1)
+> > > >
+> > > >   },
+> > > >   methods = list(
+> > > >     reset = function () {}
+> > > >   )
+> > > > )
+> > > >
+> > > >
+> > > > #Run Sampler
+> > > > smosSpec <- configureMCMC(smosModel, print = TRUE)
+> > > > smosSpec$removeSamplers(c('x','sigmaSquaredInvv', 'sigmaSquaredInvw'),print = FALSE)
+> > > > smosSpec$addSampler(target = c('sigmaSquaredInvv','sigmaSquaredInvw'), type = 'sampler_Kalman')
+> > > > smosMCMC <- buildMCMC(smosSpec)
+> > > >
+> > > > #Run MCMC for 10 iterations
+> > > >
+> > > > smosMCMC$run(10)
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > > > <KalmanFull.R>
+> > >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > To post to this group, send email to nimble...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/eb49b51e-a3b7-4dd7-b6a3-682cd8d29cbe%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/eb49b51e-a3b7-4dd7-b6a3-682cd8d29cbe%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From udd632bd3bbcdd7e9 at groups.google.com  Mon Dec 19 14:40:00 2016
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Mon, 19 Dec 2016 14:40:00 +0000
+Subject: Re: Custom Sampler and mvSaved
+Message-ID: <tUvj-_94Zig.PmX0Zh2fCgAJ@nimble-users.groups.google.com>
+In-Reply-To: <tUvj-_94Zig.uqfJzG4_EQAJ@nimble-users.groups.google.com>
+References: <tUvj-_94Zig.xQXFfS42DwAJ@nimble-users.groups.google.com> <tUvj-_94Zig.uqfJzG4_EQAJ@nimble-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/nimble-users/c/tUvj-_94Zig/m/PmX0Zh2fCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Colin,
+
+I am not sure what’s going wrong, so I can just give some speculation and suggestions.
+
+It looks like a1, a2, b1 and b2 are constants in the model, since they are set once in setup code and not again.  That would mean the model must be initialized with those values when the MCMC is built.  It sounds like that is not the problem but worth double-checking.
+
+The way you are using mvTheta to share variables among several nimbleFunctions should work.  We had a related bug recently (but not for modelValues) that made me double check if your arrangements work and they seem to be ok as far as I could check.  By the way, below I suggest a couple of different ways you could accomplish the sharing of theta.  Use of nimCopy will be less efficient than a direct copy if it is just for one variable (theta).
+
+A good way to check what is going on during compiled execution is with print.  e.g. print(mvThetaS[’theta’,1])
+
+One concern is I don’t see where you are keeping mvSaved up to date. The rule is that you can assume mvSaved is fully sync’ed with the model upon entry and you must ensure that is again the case upon exit.  So usually there is a nimCopy near the end of a sampler to update mvSaved (for an accepted move) or from mvSaved to the model (for a rejected move).  I guess you could be doing that in y_sse or theta_sse, but then it is suspicious that you are doing model$calculate after calling those functions.  model$calculate will update the state of log probabilities and deterministic nodes in the model, so it is suspicious to see it as the last thing done in a sampler.  That means it will put the model out of sync with mvSaved.
+
+Also I assume you are sure that calculating the nodes and then the dependencies of target provides a correct ordering based on the model structure.  To be more generic you could create one topologically sorted vector of nodes with model$topologicallySortNodes(c(nodes, paramDependencies)).   Or I wonder if model$getDependencies(c(target, ‘x’)) would be correct (but potentially different from what you have)?
+
+Here are two other possible ways to arrange for nimbleFunctions to share variables:
+
+##method 1: In compiled execution, numeric objects are passed by reference.  This makes behavior different from uncompiled execution.
+nf1 <- nimbleFunction(
+    setup = function() {
+        sharedX <- as.numeric(1:5)
+        mynf2 <- nf2()
+    },
+    run = function() {
+        print(sharedX)
+        mynf2$run(sharedX) ## if setup code is needed. could also give a return value.
+        print(sharedX)
+        nf3(sharedX)       ## if setup code is not needed. ditto.
+        print(sharedX)
+    })
+
+nf2 <- nimbleFunction(
+    setup = function() {},
+    run = function(x = double(1)) { ## x will be passed by reference
+        x <- x * 2
+    })
+
+nf3 <- nimbleFunction(
+    run = function(x = double(1)) { ## x will be passed by reference
+        x <- x + 100
+    })
+
+mynf1 <- nf1()
+mynf1$run() ## passed by copy in uncompiled execution
+
+cmynf1 <- compileNimble(mynf1)
+cmynf1$run() ## passed by reference in compiled execution
+
+## method 2: use a nimbleFunction with no functions as a data structure ( section 9.5.19 of user manual ).
+nf1 <- nimbleFunction(
+    setup = function() {
+        myDataNF <- dataNF()
+        initX <- as.numeric(1:2)
+        mynf2 <- nf2(myDataNF)
+    },
+    run = function() {
+        myDataNF$sharedX <- initX
+        print(myDataNF$sharedX)
+        mynf2$run()  ## could give a return value as well as modifying sharedX
+        print(myDataNF$sharedX)
+    })
+
+nf2 <- nimbleFunction(
+    setup = function(myDataNF) {},
+    run = function() {
+        myDataNF$sharedX <<- myDataNF$sharedX * 2
+    })
+
+dataNF <- nimbleFunction(
+    setup = function() {
+        sharedX <- numeric(2) ## make sure nimble knows it's a vector
+        setupOutputs(sharedX) ## ensure it is preserved through compilation since it doesn’t appear in methods
+    })
+
+mynf1 <- nf1()
+mynf1$run()
+cmynf1 <- compileNimble(mynf1)
+cmynf1$run()
+
+Hope that helps.
+Perry
+
+> On Dec 17, 2016, at 9:10 AM, Colin <clewi...@gmail.com> wrote:
+>
+
+> Hi Perry,
+>
+> Quick follow up question about the sampler function in NIMBLE.  I have a custom written sampler working fine in R, and it compiles in C++ without any errors.  However, when I run the C++ version all the saved target values and latent states returned are NaN.   I know with R the idea is you can use browser() and run pieces of the code to do debugging.  However, with the C++ I'm not sure how to fully diagnose the issue--especially since the compiling works fine.   I was wondering if you have any suggestions about how to go about diagnosing this incongruity between the two versions.  I am attaching the sampler code below if that is helpful.  Any suggestions would be much appreciated.
+>
+> Thanks,
+>
+> Colin
+>
+>
+>
+>
+>   sampler_Kalman <- nimbleFunction(
+>   contains = sampler_BASE,
+>   setup = function(model, mvSaved, target, control) {
+>
+>     ## numeric value generation
+>     nodes <- model$expandNodeNames('x')
+>     T <- length(nodes)
+>     a1 <- model$getParam('sigmaSquaredInvv', 'shape')
+>     a2 <- model$getParam('sigmaSquaredInvw', 'shape')
+>     b1 <- model$getParam('sigmaSquaredInvv', 'rate')
+>     b2 <- model$getParam('sigmaSquaredInvw', 'rate')
+>     sh1 <- a1 + T/2      #Posterior V shape, fixed bc conjugacy
+>     sh2 <- a2 + (T*2)/2   #Posterior W shape, fixed bc conjugacy
+>
+>     ## functions for kalman, ffbs, sse
+>     filt <- KalmanStep(model,'x')
+>     level <- FFBStep(model,filt$mvKF,'x')
+>     y_sse <- see_y(model,level$mvTheta)
+>     theta_sse <- see_st(model,level$mvTheta)
+>
+>     #Stored States
+>     mvThetaS <- level$mvTheta
+>
+>     #get Dependencies
+>     paramDependencies <- model$getDependencies(target)
+>   },
+>   run = function() {
+>     psis <- numeric(2) #store psi terms
+>
+>     filt$run()
+>     level$run()
+>
+>     #draw observation for precision 1, V
+>     rate1 <- b1 + y_sse$run()/2
+>     psis[1] <- rgamma(1, sh1, rate = rate1[1,1])
+>
+>     #draw observation for precision 2, W
+>     rate2 <- b2 + theta_sse$run()/2
+>     psis[2] <- rgamma(1, sh2, rate = rate2[1,1])
+>
+>     #Update model states variance terms
+>     values(model, target) <<- psis
+>
+>
+>     #Update Latent States in Model
+>     nimCopy(from=mvThetaS,to=model,nodes='theta[1:2,2:366]', nodesTo='x[1:2,1:365]',row=1)
+>
+>     model$calculate(paramDependencies)
+>     model$calculate(nodes)
+>
+>   },
+>   methods = list(
+>     reset = function () {}
+>   )
+> )
+>
+> On Friday, December 9, 2016 at 6:10:14 PM UTC-6, pdevalpine wrote:
+> > By default the MCMC will monitor the parameters (aka top-level nodes), not the latent states.
+> >
+> > You can also set the monitors when you call configureMCMC.
+> >
+> > Note there is also a second set of monitors, called monitors2, which can have a separate thinning interval.  This is handy when you want to monitor latent states but they are very large.
+> >
+> > Perry
+> >
+> > > On Dec 9, 2016, at 3:31 PM, Colin <clewi...@gmail.com> wrote:
+> > >
+> > > Hi Perry,
+> > >
+> > > Thank you for the quick response.  This makes a lot more sense to have the distinction between saved vs. current model state variables: especially if we only are interested in saving a subset of the samples.   Is there a default for which variables and or nodes get saved in mvSamples?  It seems like for my model NIMBLE only saved the two targets and initial state value, x0, but not the full set of latent states.  Just curious if those variables were chosen as a function of how I specified the model and/or initialized the model?
+> > >
+> > > Cheers,
+> > >
+> > > Colin
+> > >
+> > > On Friday, December 9, 2016 at 4:44:26 PM UTC-6, pdevalpine wrote:
+> > > > Hi Colin,
+> > > >
+> > > > The job of mvSaved is only to store the current state of the model, not the outputs from the chain.  Each sampler does not have to worry about storing outputs, only about ensuring that mvSaved is up to date when it exits.  The “MCMC” object created by buildMCMC, which manages execution of all the samplers, will manage storage of outputs in mvSamples. A sampler can assume that upon entry mvSaved has the same values for model variables and associated log probabilities as the model itself.  Upon exit the sampler must ensure that is again the case.  Hence if it has modified values in the model (by a proposal and some calculations), then if it accepts the proposal, it needs to copy from the model to mvSaved, but if it rejects the proposal, it needs to copy from mvSaved to the model.  The avoids needing to recalculate parts of the model simply to get it back into the correct state after rejecting a proposal.
+> > > >
+> > > > The step for adding monitors is to the the configuration (the smosSpec in your code), not the built MCMC (smosMCMC in your code).
+> > > >
+> > > > Let me know if anything doesn’t make sense.
+> > > >
+> > > > Perry
+> > > >
+> > > > > On Dec 9, 2016, at 2:38 PM, Colin <clewi...@gmail.com <http://gmail.com/>> wrote:
+> > > > >
+> > > > > Dear Nimble Users,
+> > > > >
+> > > > > I am writing my own sampler and have a question about mvSaved.  My understanding is mvSaved stores every iteration of the targets and/or nodes of the MCMC sampler.  However, after running the sampler it seems to only store the final iteration.   In my example below, the targets are getting saved in mvSamples, but I am unable to find a place where each iteration of the latent nodes are stored.  My first solution was to add monitors to the MCMC object, but I received an error warning:   ‘addMonitors’ is not a valid field or method name for reference class “nfRefClass_nimble33”  Maybe this is the wrong approach?
+> > > > >
+> > > > > Below is my code for the sampler, and I am attaching a full version with simulated data.
+> > > > >
+> > > > > I am just curious if I need to add another line or command to save both the targets and latent states for each iteration of the sampler.
+> > > > >
+> > > > > Any information or suggestions would be much appreciated.
+> > > > >
+> > > > > Thanks,
+> > > > >
+> > > > > Colin
+> > > > >
+> > > > >
+> > > > >
+> > > > > sampler_Kalman <- nimbleFunction(
+> > > > >   contains = sampler_BASE,
+> > > > >   setup = function(model, mvSaved, target, control) {
+> > > > >
+> > > > >
+> > > > >     ## set up numeric values
+> > > > >
+> > > > >     T <- length(model$x[1,])
+> > > > >     T2 <- ctmiss(model$y)
+> > > > >     a1 <- model$getParam('sigmaSquaredInvv', 'shape')
+> > > > >     a2 <- model$getParam('sigmaSquaredInvw', 'shape')
+> > > > >     b1 <- model$getParam('sigmaSquaredInvv', 'rate')
+> > > > >     b2 <- model$getParam('sigmaSquaredInvw', 'rate')
+> > > > >     sh1 <- a1+T2/2      #Posterior V shape, fixed bc conjugacy
+> > > > >     sh2 <- a2+(T*2)/2   #Posterior W shape, fixed bc conjugacy
+> > > > >
+> > > > >     ## functions for kalman, ffbs, sse
+> > > > >     filt <- KalmanStep(model,'x')
+> > > > >     level <- FFBStep(model,filt$mvKF,'x')
+> > > > >     y_sse <- see_y(model,level$mvTheta)
+> > > > >     theta_sse <- see_st(model,level$mvTheta)
+> > > > >   },
+> > > > >   run = function() {
+> > > > >     filt$run()
+> > > > >     level$run()
+> > > > >
+> > > > >     #draw observation for precision 1, V
+> > > > >     rate <- b1 + y_sse$run()/2
+> > > > >     psi1 <- rgamma(1, sh1, rate=rate)
+> > > > >
+> > > > >     #draw observation for precision 2, W
+> > > > >     rate <- b2 + theta_sse$run()/2
+> > > > >     psi2 <- rgamma(1, sh2, rate=rate)
+> > > > >
+> > > > >     #Update model variance terms
+> > > > >     model[[target[1]]] <<- psi1
+> > > > >     model[[target[2]]] <<- psi2
+> > > > >
+> > > > >
+> > > > >     #Update Latent States in Model; I think this means I only need initialization step once?
+> > > > >     nimCopy(from=level$mvTheta,to=model,nodes='theta[1:2,2:366]',nodesTo='x[1:2,1:365]',row=1)
+> > > > >
+> > > > >     #model$calculate(dependnecies of latent nodes)
+> > > > >
+> > > > >     #Save states and variance terms to mvSaved
+> > > > >     nimCopy(from = model, to = mvSaved, nodes='x', row = 1)
+> > > > >     nimCopy(from = model, to = mvSaved, nodes = target, row=1)
+> > > > >
+> > > > >   },
+> > > > >   methods = list(
+> > > > >     reset = function () {}
+> > > > >   )
+> > > > > )
+> > > > >
+> > > > >
+> > > > > #Run Sampler
+> > > > > smosSpec <- configureMCMC(smosModel, print = TRUE)
+> > > > > smosSpec$removeSamplers(c('x','sigmaSquaredInvv', 'sigmaSquaredInvw'),print = FALSE)
+> > > > > smosSpec$addSampler(target = c('sigmaSquaredInvv','sigmaSquaredInvw'), type = 'sampler_Kalman')
+> > > > > smosMCMC <- buildMCMC(smosSpec)
+> > > > >
+> > > > > #Run MCMC for 10 iterations
+> > > > >
+> > > > > smosMCMC$run(10)
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com <http://googlegroups.com/>.
+> > > > > To post to this group, send email to nimble...@googlegroups.com <http://googlegroups.com/>.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/81c5e0b6-25e4-4bcb-8039-7ac3a1188320%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > > <KalmanFull.R>
+> > > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> > > To post to this group, send email to nimble...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/eb49b51e-a3b7-4dd7-b6a3-682cd8d29cbe%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/eb49b51e-a3b7-4dd7-b6a3-682cd8d29cbe%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+>
+> --
+> You received this message because you are subscribed to the Google Groups "nimble-users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nimble-users...@googlegroups.com.
+> To post to this group, send email to nimble...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/nimble-users/c5062ef2-9488-4051-9a97-59c2853daf06%40googlegroups.com <https://groups.google.com/d/msgid/nimble-users/c5062ef2-9488-4051-9a97-59c2853daf06%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
