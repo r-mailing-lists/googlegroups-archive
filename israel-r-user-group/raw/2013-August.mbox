@@ -1,0 +1,2517 @@
+From ub8c77fa5305c80cb at groups.google.com  Sun Aug  4 07:12:40 2013
+From: ub8c77fa5305c80cb at groups.google.com (Assaf Mendelson)
+Date: Sun, 04 Aug 2013 07:12:40 +0000
+Subject: Improving performance
+Message-ID: <RVf4ItmRZSU.pOo6i49w-BQJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/RVf4ItmRZSU/m/pOo6i49w-BQJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I have a very large data.frame
+The data.frame contains ~800 rows and ~10K columns.
+
+I have a vector of functions which performs a cleaning, an example of such a function is:
+ret_func <- function (features_list) {
+        features_list[["f1]][features_list$NPACKETS_DIR_0 + features_list$NPACKETS_DIR_1 < num_packets] = NA;
+        return (features_list[["f1"]);
+    }
+
+I then called it by using:
+res = data.frame(lapply(feature_structures,function(g,d) { g(d) }, features_list ),stringsAsFactors=F)
+
+The problem with this is that it takes a really long time to calculate (Around 1 minute on my computer and I need to do this on lots of such data frames).
+
+So I decided to use Rcpp.
+What I did was change the function to look something like this:
+
+void min_packet_i_clean_func_int(DataFrame DL, String feature_name,int num_packets)
+{
+    IntegerVector feature_vec = DL[feature_name];
+    IntegerVector NPKTS_0 = DL["NPACKETS_DIR_0"];
+    IntegerVector NPKTS_1 = DL["NPACKETS_DIR_1"];
+    int n = feature_vec.size();
+    for(int n_row = 0; n_row < n; n_row++) {
+        int pkt = NPKTS_0[n_row] + NPKTS_1[n_row];
+        }
+        if(pkt < num_packets) {
+            feature_vec[n_row] = NA_INTEGER;
+        }
+    }
+}
+
+and then call it using:
+    for(f in feature_structures) {
+        f(res_env);
+    }
+
+This improved the performance by a factor of almost 1000!
+The problem is that i want the change to occur in place (i.e. don't copy the data but instead pass the data by reference and change it directly).
+This works properly for integer rows but fails for non integer rows. For non integer rows it works by value (i.e. it makes the change but creates a new version of the data which is both not what I wanted and takes longer).
+So I added a comperable function which is numeric based and one which is logical based. The problem is that I do not know how to check what type of row I am using.
+I thought of doing something like:
+type=class(feature_list[[feature_name]])
+func=switch(class,integer=func1, numerical=func2,logical=func3);
+func(feature_list,feature_name,num_packets);
+
+but that would mean doing a copy of the row. It is still a lot faster than before but it does have a cost.
+I was wondering if there is a way to do this better (either to find the class of the vector.
+
+Another problem that I saw is that if I do:
+features_list2=feature_list
+then call the function, both feature_lists change while if I do:
+features_list2=feature_list
+a=feature_list2[1,1];
+feature_list2[1,1]=NA
+feature_list2[1,1]=a
+then only feature_list changes.
+I assume this is because R performs a "copy on write" methodology, is there a better way to do this?
+
+From ub24c10731fdfceaf at groups.google.com  Sun Aug  4 07:19:10 2013
+From: ub24c10731fdfceaf at groups.google.com (Tal Galili)
+Date: Sun, 04 Aug 2013 07:19:10 +0000
+Subject: Re: [Israel RUG] Improving performance
+Message-ID: <RVf4ItmRZSU.98hx7iVj2bIJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <RVf4ItmRZSU.pOo6i49w-BQJ@israel-r-user-group.groups.google.com>
+References: <RVf4ItmRZSU.pOo6i49w-BQJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/RVf4ItmRZSU/m/98hx7iVj2bIJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I remember Rcpp offers functions for checking what type of variable you have.
+Did you look into that?
+(and then have the decision made within your C++ function)
+
+----------------Contact Details:-------------------------------------------------------
+Contact me: Tal.G...@gmail.com |
+Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+----------------------------------------------------------------------------------------------
+
+On Sun, Aug 4, 2013 at 10:12 AM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+
+> I have a very large data.frame
+> The data.frame contains ~800 rows and ~10K columns.
+>
+> I have a vector of functions which performs a cleaning, an example of such a function is:
+> ret_func <- function (features_list) {
+>         features_list[["f1]][features_list$NPACKETS_DIR_0 + features_list$NPACKETS_DIR_1 < num_packets] = NA;
+>         return (features_list[["f1"]);
+>     }
+>
+> I then called it by using:
+> res = data.frame(lapply(feature_structures,function(g,d) { g(d) }, features_list ),stringsAsFactors=F)
+>
+> The problem with this is that it takes a really long time to calculate (Around 1 minute on my computer and I need to do this on lots of such data frames).
+>
+> So I decided to use Rcpp.
+> What I did was change the function to look something like this:
+>
+>
+> void min_packet_i_clean_func_int(DataFrame DL, String feature_name,int num_packets)
+> {
+>     IntegerVector feature_vec = DL[feature_name];
+>     IntegerVector NPKTS_0 = DL["NPACKETS_DIR_0"];
+>     IntegerVector NPKTS_1 = DL["NPACKETS_DIR_1"];
+>     int n = feature_vec.size();
+>     for(int n_row = 0; n_row < n; n_row++) {
+>         int pkt = NPKTS_0[n_row] + NPKTS_1[n_row];
+>         }
+>         if(pkt < num_packets) {
+>             feature_vec[n_row] = NA_INTEGER;
+>         }
+>     }
+> }
+>
+> and then call it using:
+>     for(f in feature_structures) {
+>         f(res_env);
+>     }
+>
+> This improved the performance by a factor of almost 1000!
+> The problem is that i want the change to occur in place (i.e. don't copy the data but instead pass the data by reference and change it directly).
+> This works properly for integer rows but fails for non integer rows. For non integer rows it works by value (i.e. it makes the change but creates a new version of the data which is both not what I wanted and takes longer).
+> So I added a comperable function which is numeric based and one which is logical based. The problem is that I do not know how to check what type of row I am using.
+> I thought of doing something like:
+> type=class(feature_list[[feature_name]])
+> func=switch(class,integer=func1, numerical=func2,logical=func3);
+> func(feature_list,feature_name,num_packets);
+>
+> but that would mean doing a copy of the row. It is still a lot faster than before but it does have a cost.
+> I was wondering if there is a way to do this better (either to find the class of the vector.
+>
+> Another problem that I saw is that if I do:
+> features_list2=feature_list
+> then call the function, both feature_lists change while if I do:
+> features_list2=feature_list
+> a=feature_list2[1,1];
+> feature_list2[1,1]=NA
+> feature_list2[1,1]=a
+> then only feature_list changes.
+> I assume this is because R performs a "copy on write" methodology, is there a better way to do this?
+
+>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+
+From ub8c77fa5305c80cb at groups.google.com  Sun Aug  4 10:15:38 2013
+From: ub8c77fa5305c80cb at groups.google.com (Assaf Mendelson)
+Date: Sun, 04 Aug 2013 10:15:38 +0000
+Subject: Re: [Israel RUG] Improving performance
+Message-ID: <RVf4ItmRZSU.rWuB6vFzFVsJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <RVf4ItmRZSU.98hx7iVj2bIJ@israel-r-user-group.groups.google.com>
+References: <RVf4ItmRZSU.pOo6i49w-BQJ@israel-r-user-group.groups.google.com> <RVf4ItmRZSU.98hx7iVj2bIJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/RVf4ItmRZSU/m/rWuB6vFzFVsJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Can you direct me to these functions?
+I looked and could only find the "as" function to convert, which will explicitly causes the problem that was caused implicitly before.
+
+On Sunday, August 4, 2013 10:19:10 AM UTC+3, Tal Galili wrote:
+
+> I remember Rcpp offers functions for checking what type of variable you have.
+> Did you look into that?
+> (and then have the decision made within your C++ function)
+>
+>
+
+>
+>
+> ----------------Contact Details:-------------------------------------------------------
+> Contact me: Tal.G...@gmail.com |
+> Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> ----------------------------------------------------------------------------------------------
+>
+>
+>
+
+> On Sun, Aug 4, 2013 at 10:12 AM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+
+> > I have a very large data.frame
+> > The data.frame contains ~800 rows and ~10K columns.
+> >
+> > I have a vector of functions which performs a cleaning, an example of such a function is:
+> > ret_func <- function (features_list) {
+> >         features_list[["f1]][features_list$NPACKETS_DIR_0 + features_list$NPACKETS_DIR_1 < num_packets] = NA;
+> >         return (features_list[["f1"]);
+> >     }
+> >
+> > I then called it by using:
+> > res = data.frame(lapply(feature_structures,function(g,d) { g(d) }, features_list ),stringsAsFactors=F)
+> >
+> > The problem with this is that it takes a really long time to calculate (Around 1 minute on my computer and I need to do this on lots of such data frames).
+> >
+> > So I decided to use Rcpp.
+> > What I did was change the function to look something like this:
+> >
+> >
+> > void min_packet_i_clean_func_int(DataFrame DL, String feature_name,int num_packets)
+> > {
+> >     IntegerVector feature_vec = DL[feature_name];
+> >     IntegerVector NPKTS_0 = DL["NPACKETS_DIR_0"];
+> >     IntegerVector NPKTS_1 = DL["NPACKETS_DIR_1"];
+> >     int n = feature_vec.size();
+> >     for(int n_row = 0; n_row < n; n_row++) {
+> >         int pkt = NPKTS_0[n_row] + NPKTS_1[n_row];
+> >         }
+> >         if(pkt < num_packets) {
+> >             feature_vec[n_row] = NA_INTEGER;
+> >         }
+> >     }
+> > }
+> >
+> > and then call it using:
+> >     for(f in feature_structures) {
+> >         f(res_env);
+> >     }
+> >
+> > This improved the performance by a factor of almost 1000!
+> > The problem is that i want the change to occur in place (i.e. don't copy the data but instead pass the data by reference and change it directly).
+> > This works properly for integer rows but fails for non integer rows. For non integer rows it works by value (i.e. it makes the change but creates a new version of the data which is both not what I wanted and takes longer).
+> > So I added a comperable function which is numeric based and one which is logical based. The problem is that I do not know how to check what type of row I am using.
+> > I thought of doing something like:
+> > type=class(feature_list[[feature_name]])
+> > func=switch(class,integer=func1, numerical=func2,logical=func3);
+> > func(feature_list,feature_name,num_packets);
+> >
+> > but that would mean doing a copy of the row. It is still a lot faster than before but it does have a cost.
+> > I was wondering if there is a way to do this better (either to find the class of the vector.
+> >
+> > Another problem that I saw is that if I do:
+> > features_list2=feature_list
+> > then call the function, both feature_lists change while if I do:
+> > features_list2=feature_list
+> > a=feature_list2[1,1];
+> > feature_list2[1,1]=NA
+> > feature_list2[1,1]=a
+> > then only feature_list changes.
+> > I assume this is because R performs a "copy on write" methodology, is there a better way to do this?
+
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsub...@googlegroups.com.
+
+> >
+> > For more options, visit https://groups.google.com/groups/opt_out.
+> >
+> >
+
+From ub24c10731fdfceaf at groups.google.com  Sun Aug  4 13:41:43 2013
+From: ub24c10731fdfceaf at groups.google.com (Tal Galili)
+Date: Sun, 04 Aug 2013 13:41:43 +0000
+Subject: Re: [Israel RUG] Improving performance
+Message-ID: <RVf4ItmRZSU.MmNvwz0KYckJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <RVf4ItmRZSU.rWuB6vFzFVsJ@israel-r-user-group.groups.google.com>
+References: <RVf4ItmRZSU.pOo6i49w-BQJ@israel-r-user-group.groups.google.com> <RVf4ItmRZSU.rWuB6vFzFVsJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/RVf4ItmRZSU/m/MmNvwz0KYckJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+הפונקציה שאתה מחפש היא TYPEOF, ראה:
+http://gallery.rcpp.org/articles/rcpp-wrap-and-recurse/
+
+----------------Contact Details:-------------------------------------------------------
+Contact me: Tal.G...@gmail.com |
+Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+----------------------------------------------------------------------------------------------
+
+On Sun, Aug 4, 2013 at 1:15 PM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+
+> Can you direct me to these functions?
+> I looked and could only find the "as" function to convert, which will explicitly causes the problem that was caused implicitly before.
+>
+>
+> On Sunday, August 4, 2013 10:19:10 AM UTC+3, Tal Galili wrote:
+> > I remember Rcpp offers functions for checking what type of variable you have.
+> > Did you look into that?
+> > (and then have the decision made within your C++ function)
+> >
+> >
+> >
+> >
+> > ----------------Contact Details:-------------------------------------------------------
+> > Contact me: Tal.G...@gmail.com |
+> > Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> > ----------------------------------------------------------------------------------------------
+> >
+> >
+> >
+> > On Sun, Aug 4, 2013 at 10:12 AM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+> > > I have a very large data.frame
+> > > The data.frame contains ~800 rows and ~10K columns.
+> > >
+> > > I have a vector of functions which performs a cleaning, an example of such a function is:
+> > > ret_func <- function (features_list) {
+> > >         features_list[["f1]][features_list$NPACKETS_DIR_0 + features_list$NPACKETS_DIR_1 < num_packets] = NA;
+> > >         return (features_list[["f1"]);
+> > >     }
+> > >
+> > > I then called it by using:
+> > > res = data.frame(lapply(feature_structures,function(g,d) { g(d) }, features_list ),stringsAsFactors=F)
+> > >
+> > > The problem with this is that it takes a really long time to calculate (Around 1 minute on my computer and I need to do this on lots of such data frames).
+> > >
+> > > So I decided to use Rcpp.
+> > > What I did was change the function to look something like this:
+> > >
+> > >
+> > > void min_packet_i_clean_func_int(DataFrame DL, String feature_name,int num_packets)
+> > > {
+> > >     IntegerVector feature_vec = DL[feature_name];
+> > >     IntegerVector NPKTS_0 = DL["NPACKETS_DIR_0"];
+> > >     IntegerVector NPKTS_1 = DL["NPACKETS_DIR_1"];
+> > >     int n = feature_vec.size();
+> > >     for(int n_row = 0; n_row < n; n_row++) {
+> > >         int pkt = NPKTS_0[n_row] + NPKTS_1[n_row];
+> > >         }
+> > >         if(pkt < num_packets) {
+> > >             feature_vec[n_row] = NA_INTEGER;
+> > >         }
+> > >     }
+> > > }
+> > >
+> > > and then call it using:
+> > >     for(f in feature_structures) {
+> > >         f(res_env);
+> > >     }
+> > >
+> > > This improved the performance by a factor of almost 1000!
+> > > The problem is that i want the change to occur in place (i.e. don't copy the data but instead pass the data by reference and change it directly).
+> > > This works properly for integer rows but fails for non integer rows. For non integer rows it works by value (i.e. it makes the change but creates a new version of the data which is both not what I wanted and takes longer).
+> > > So I added a comperable function which is numeric based and one which is logical based. The problem is that I do not know how to check what type of row I am using.
+> > > I thought of doing something like:
+> > > type=class(feature_list[[feature_name]])
+> > > func=switch(class,integer=func1, numerical=func2,logical=func3);
+> > > func(feature_list,feature_name,num_packets);
+> > >
+> > > but that would mean doing a copy of the row. It is still a lot faster than before but it does have a cost.
+> > > I was wondering if there is a way to do this better (either to find the class of the vector.
+> > >
+> > > Another problem that I saw is that if I do:
+> > > features_list2=feature_list
+> > > then call the function, both feature_lists change while if I do:
+> > > features_list2=feature_list
+> > > a=feature_list2[1,1];
+> > > feature_list2[1,1]=NA
+> > > feature_list2[1,1]=a
+> > > then only feature_list changes.
+> > > I assume this is because R performs a "copy on write" methodology, is there a better way to do this?
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsub...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/groups/opt_out.
+> > >
+> > >
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+
+>
+> For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+
+From ub8c77fa5305c80cb at groups.google.com  Sun Aug  4 13:51:21 2013
+From: ub8c77fa5305c80cb at groups.google.com (Assaf Mendelson)
+Date: Sun, 04 Aug 2013 13:51:21 +0000
+Subject: Re: [Israel RUG] Improving performance
+Message-ID: <RVf4ItmRZSU.Z2qio_dIg5cJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <RVf4ItmRZSU.MmNvwz0KYckJ@israel-r-user-group.groups.google.com>
+References: <RVf4ItmRZSU.pOo6i49w-BQJ@israel-r-user-group.groups.google.com> <RVf4ItmRZSU.MmNvwz0KYckJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/RVf4ItmRZSU/m/Z2qio_dIg5cJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, this works.
+I still have a problem that R does a lazy copy on write. Is there a better way to make sure I don't overwrite other objects than to change the value before and back:
+
+features_list2=feature_list
+then call the function, both feature_lists change while if I do:
+
+features_list2=feature_list
+a=feature_list2[1,1];
+feature_list2[1,1]=NA
+feature_list2[1,1]=a
+then only feature_list changes.
+
+On Sunday, August 4, 2013 4:41:43 PM UTC+3, Tal Galili wrote:
+
+> הפונקציה שאתה מחפש היא TYPEOF, ראה:
+> http://gallery.rcpp.org/articles/rcpp-wrap-and-recurse/
+>
+
+>
+>
+> ----------------Contact Details:-------------------------------------------------------
+> Contact me: Tal.G...@gmail.com |
+> Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> ----------------------------------------------------------------------------------------------
+>
+>
+>
+
+> On Sun, Aug 4, 2013 at 1:15 PM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+
+> > Can you direct me to these functions?
+> > I looked and could only find the "as" function to convert, which will explicitly causes the problem that was caused implicitly before.
+> >
+> >
+> > On Sunday, August 4, 2013 10:19:10 AM UTC+3, Tal Galili wrote:
+
+> > > I remember Rcpp offers functions for checking what type of variable you have.
+> > > Did you look into that?
+> > > (and then have the decision made within your C++ function)
+> > >
+> > >
+
+> > >
+> > >
+> > > ----------------Contact Details:-------------------------------------------------------
+> > > Contact me: Tal.G...@gmail.com |
+> > > Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> > > ----------------------------------------------------------------------------------------------
+> > >
+
+> > > On Sun, Aug 4, 2013 at 10:12 AM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+
+> > > > I have a very large data.frame
+> > > > The data.frame contains ~800 rows and ~10K columns.
+> > > >
+> > > > I have a vector of functions which performs a cleaning, an example of such a function is:
+> > > > ret_func <- function (features_list) {
+> > > >         features_list[["f1]][features_list$NPACKETS_DIR_0 + features_list$NPACKETS_DIR_1 < num_packets] = NA;
+> > > >         return (features_list[["f1"]);
+> > > >     }
+> > > >
+> > > > I then called it by using:
+> > > > res = data.frame(lapply(feature_structures,function(g,d) { g(d) }, features_list ),stringsAsFactors=F)
+> > > >
+> > > > The problem with this is that it takes a really long time to calculate (Around 1 minute on my computer and I need to do this on lots of such data frames).
+> > > >
+> > > > So I decided to use Rcpp.
+> > > > What I did was change the function to look something like this:
+> > > >
+> > > >
+> > > > void min_packet_i_clean_func_int(DataFrame DL, String feature_name,int num_packets)
+> > > > {
+> > > >     IntegerVector feature_vec = DL[feature_name];
+> > > >     IntegerVector NPKTS_0 = DL["NPACKETS_DIR_0"];
+> > > >     IntegerVector NPKTS_1 = DL["NPACKETS_DIR_1"];
+> > > >     int n = feature_vec.size();
+> > > >     for(int n_row = 0; n_row < n; n_row++) {
+> > > >         int pkt = NPKTS_0[n_row] + NPKTS_1[n_row];
+> > > >         }
+> > > >         if(pkt < num_packets) {
+> > > >             feature_vec[n_row] = NA_INTEGER;
+> > > >         }
+> > > >     }
+> > > > }
+> > > >
+> > > > and then call it using:
+> > > >     for(f in feature_structures) {
+> > > >         f(res_env);
+> > > >     }
+> > > >
+> > > > This improved the performance by a factor of almost 1000!
+> > > > The problem is that i want the change to occur in place (i.e. don't copy the data but instead pass the data by reference and change it directly).
+> > > > This works properly for integer rows but fails for non integer rows. For non integer rows it works by value (i.e. it makes the change but creates a new version of the data which is both not what I wanted and takes longer).
+> > > > So I added a comperable function which is numeric based and one which is logical based. The problem is that I do not know how to check what type of row I am using.
+> > > > I thought of doing something like:
+> > > > type=class(feature_list[[feature_name]])
+> > > > func=switch(class,integer=func1, numerical=func2,logical=func3);
+> > > > func(feature_list,feature_name,num_packets);
+> > > >
+> > > > but that would mean doing a copy of the row. It is still a lot faster than before but it does have a cost.
+> > > > I was wondering if there is a way to do this better (either to find the class of the vector.
+> > > >
+> > > > Another problem that I saw is that if I do:
+> > > > features_list2=feature_list
+> > > > then call the function, both feature_lists change while if I do:
+> > > > features_list2=feature_list
+> > > > a=feature_list2[1,1];
+> > > > feature_list2[1,1]=NA
+> > > > feature_list2[1,1]=a
+> > > > then only feature_list changes.
+> > > > I assume this is because R performs a "copy on write" methodology, is there a better way to do this?
+
+> > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsubscribe...@googlegroups.com.
+
+> > > >
+> > > > For more options, visit https://groups.google.com/groups/opt_out.
+> > > >
+> > > >
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsub...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+> >
+> >
+
+From ub24c10731fdfceaf at groups.google.com  Sun Aug  4 13:56:05 2013
+From: ub24c10731fdfceaf at groups.google.com (Tal Galili)
+Date: Sun, 04 Aug 2013 13:56:05 +0000
+Subject: Re: [Israel RUG] Improving performance
+Message-ID: <RVf4ItmRZSU.VArnOeWl4joJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <RVf4ItmRZSU.Z2qio_dIg5cJ@israel-r-user-group.groups.google.com>
+References: <RVf4ItmRZSU.pOo6i49w-BQJ@israel-r-user-group.groups.google.com> <RVf4ItmRZSU.Z2qio_dIg5cJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/RVf4ItmRZSU/m/VArnOeWl4joJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think they have the .copy method for that:
+y = x.copy();
+Or something similar.
+
+p.s: please consider sharing your final code - I'm sure we could all learn from it.
+
+----------------Contact Details:-------------------------------------------------------
+Contact me: Tal.G...@gmail.com |
+Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+----------------------------------------------------------------------------------------------
+
+On Sun, Aug 4, 2013 at 4:51 PM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+
+> Thanks, this works.
+> I still have a problem that R does a lazy copy on write. Is there a better way to make sure I don't overwrite other objects than to change the value before and back:
+>
+> features_list2=feature_list
+> then call the function, both feature_lists change while if I do:
+> features_list2=feature_list
+> a=feature_list2[1,1];
+> feature_list2[1,1]=NA
+> feature_list2[1,1]=a
+> then only feature_list changes.
+>
+> On Sunday, August 4, 2013 4:41:43 PM UTC+3, Tal Galili wrote:
+> > הפונקציה שאתה מחפש היא TYPEOF, ראה:
+> > http://gallery.rcpp.org/articles/rcpp-wrap-and-recurse/
+> >
+> >
+> >
+> > ----------------Contact Details:-------------------------------------------------------
+> >
+> > Contact me: Tal.G...@gmail.com |
+> > Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> > ----------------------------------------------------------------------------------------------
+> >
+> >
+> >
+> > On Sun, Aug 4, 2013 at 1:15 PM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+> > > Can you direct me to these functions?
+> > > I looked and could only find the "as" function to convert, which will explicitly causes the problem that was caused implicitly before.
+> > >
+> > >
+> > > On Sunday, August 4, 2013 10:19:10 AM UTC+3, Tal Galili wrote:
+> > > > I remember Rcpp offers functions for checking what type of variable you have.
+> > > > Did you look into that?
+> > > > (and then have the decision made within your C++ function)
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > ----------------Contact Details:-------------------------------------------------------
+> > > > Contact me: Tal.G...@gmail.com |
+> > > > Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> > > > ----------------------------------------------------------------------------------------------
+> > > >
+> > > >
+> > > >
+> > > > On Sun, Aug 4, 2013 at 10:12 AM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+> > > > > I have a very large data.frame
+> > > > > The data.frame contains ~800 rows and ~10K columns.
+> > > > >
+> > > > > I have a vector of functions which performs a cleaning, an example of such a function is:
+> > > > > ret_func <- function (features_list) {
+> > > > >         features_list[["f1]][features_list$NPACKETS_DIR_0 + features_list$NPACKETS_DIR_1 < num_packets] = NA;
+> > > > >         return (features_list[["f1"]);
+> > > > >     }
+> > > > >
+> > > > > I then called it by using:
+> > > > > res = data.frame(lapply(feature_structures,function(g,d) { g(d) }, features_list ),stringsAsFactors=F)
+> > > > >
+> > > > > The problem with this is that it takes a really long time to calculate (Around 1 minute on my computer and I need to do this on lots of such data frames).
+> > > > >
+> > > > > So I decided to use Rcpp.
+> > > > > What I did was change the function to look something like this:
+> > > > >
+> > > > >
+> > > > > void min_packet_i_clean_func_int(DataFrame DL, String feature_name,int num_packets)
+> > > > > {
+> > > > >     IntegerVector feature_vec = DL[feature_name];
+> > > > >     IntegerVector NPKTS_0 = DL["NPACKETS_DIR_0"];
+> > > > >     IntegerVector NPKTS_1 = DL["NPACKETS_DIR_1"];
+> > > > >     int n = feature_vec.size();
+> > > > >     for(int n_row = 0; n_row < n; n_row++) {
+> > > > >         int pkt = NPKTS_0[n_row] + NPKTS_1[n_row];
+> > > > >         }
+> > > > >         if(pkt < num_packets) {
+> > > > >             feature_vec[n_row] = NA_INTEGER;
+> > > > >         }
+> > > > >     }
+> > > > > }
+> > > > >
+> > > > > and then call it using:
+> > > > >     for(f in feature_structures) {
+> > > > >         f(res_env);
+> > > > >     }
+> > > > >
+> > > > > This improved the performance by a factor of almost 1000!
+> > > > > The problem is that i want the change to occur in place (i.e. don't copy the data but instead pass the data by reference and change it directly).
+> > > > > This works properly for integer rows but fails for non integer rows. For non integer rows it works by value (i.e. it makes the change but creates a new version of the data which is both not what I wanted and takes longer).
+> > > > > So I added a comperable function which is numeric based and one which is logical based. The problem is that I do not know how to check what type of row I am using.
+> > > > > I thought of doing something like:
+> > > > > type=class(feature_list[[feature_name]])
+> > > > > func=switch(class,integer=func1, numerical=func2,logical=func3);
+> > > > > func(feature_list,feature_name,num_packets);
+> > > > >
+> > > > > but that would mean doing a copy of the row. It is still a lot faster than before but it does have a cost.
+> > > > > I was wondering if there is a way to do this better (either to find the class of the vector.
+> > > > >
+> > > > > Another problem that I saw is that if I do:
+> > > > > features_list2=feature_list
+> > > > > then call the function, both feature_lists change while if I do:
+> > > > > features_list2=feature_list
+> > > > > a=feature_list2[1,1];
+> > > > > feature_list2[1,1]=NA
+> > > > > feature_list2[1,1]=a
+> > > > > then only feature_list changes.
+> > > > > I assume this is because R performs a "copy on write" methodology, is there a better way to do this?
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsubscribe...@googlegroups.com.
+> > > > > For more options, visit https://groups.google.com/groups/opt_out.
+> > > > >
+> > > > >
+> > > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsub...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/groups/opt_out.
+> > >
+> > >
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+
+>
+> For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+
+From ub8c77fa5305c80cb at groups.google.com  Mon Aug  5 08:19:50 2013
+From: ub8c77fa5305c80cb at groups.google.com (Assaf Mendelson)
+Date: Mon, 05 Aug 2013 08:19:50 +0000
+Subject: Re: [Israel RUG] Improving performance
+Message-ID: <RVf4ItmRZSU.XVbsrrBNYDMJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <RVf4ItmRZSU.VArnOeWl4joJ@israel-r-user-group.groups.google.com>
+References: <RVf4ItmRZSU.pOo6i49w-BQJ@israel-r-user-group.groups.google.com> <RVf4ItmRZSU.VArnOeWl4joJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/RVf4ItmRZSU/m/XVbsrrBNYDMJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I believe copy actually creates a new copy thereby not doing the whole "by reference" bit, I was looking for something which activates the copy on write bit.
+In any case, following is what I did (this is of course slimmed down than the full code...):
+in the cpp file:
+
+#include <Rcpp.h>
+using namespace Rcpp;
+
+/// Function to clean up a column based on number of packets
+///
+/// This function recieves a data frame and changes a single column (feature) in it
+/// in place (i.e. by reference). The change is to turn illegal values to NA.
+/// Values would change to NA if there are not enough packets to reach 'i'.
+/// @note The column @b MUST be an integer vector, otherwise it might be copied instead
+///       both wasting memory and losing the information when the function exists
+/// @param DL The data frame to change
+/// @param feature_name The name of the feature (column) we are currently fixing
+/// @param i We need at least this number of packets to have arrived for the data to be valid.
+void clean_int(DataFrame DL, String feature_name,int i)
+
+{
+    IntegerVector feature_vec = DL[feature_name];
+
+    IntegerVector NPKTS = DL["NPACKETS"];
+
+    int n = feature_vec.size();
+    for(int n_row = 0; n_row < n; n_row++) {
+
+        if(NPKTS[n_row] < i) {
+            feature_vec[n_row] = NA_INTEGER;
+        }
+    }
+}
+
+/// Function to clean up a column based on number of packets
+///
+/// This function recieves a data frame and changes a single column (feature) in it
+/// in place (i.e. by reference). The change is to turn illegal values to NA.
+/// Values would change to NA if there are not enough packets to reach 'i'.
+/// @note The column @b MUST be a numeric vector, otherwise it might be copied instead
+///       both wasting memory and losing the information when the function exists
+/// @param DL The data frame to change
+/// @param feature_name The name of the feature (column) we are currently fixing
+/// @param i We need at least this number of packets to have arrived for the data to be valid.
+void clean_numeric(DataFrame DL, String feature_name,int i)
+{
+    NumericVector feature_vec = DL[feature_name];
+    IntegerVector NPKTS = DL["NPACKETS"];
+
+    int n = feature_vec.size();
+    for(int n_row = 0; n_row < n; n_row++) {
+
+        if(NPKTS[n_row] < i) {
+            feature_vec[n_row] = NA_REAL;
+        }
+    }
+}
+
+/// Function to clean up a column based on number of packets
+///
+/// This function recieves a data frame and changes a single column (feature) in it
+/// in place (i.e. by reference). The change is to turn illegal values to NA.
+/// Values would change to NA if there are not enough packets to reach 'i'.
+/// @param DL The data frame to change
+/// @param feature_name The name of the feature (column) we are currently fixing
+/// @param i We need at least this number of packets to have arrived for the data to be valid.
+// [[Rcpp::export]]
+void clean_func(DataFrame DL, String feature_name,int i)
+{
+    switch(TYPEOF(DL[feature_name])) {
+        case REALSXP:
+            clean_numeric(DL,feature_name,i);
+            break;
+        case INTSXP:
+            clean_int(DL,feature_name,i);
+            break;
+        default:
+            stop("Only integer and numeric vectors are supported");
+        break;
+
+    }
+}
+
+In R:
+I sourced the cpp file and defined the cleaning function as such:
+
+# A generation function (it creates the actual function)
+# the generated function will have the data be legal if at least 'i' packets arrived.
+# input: feature_name: A string containing the feature name
+# Input: 'i' the number of packets which should arrive for the data to be legal
+# Output: A cleaning function.
+generate_min_packet_i_clean_func <- function(feature_name,i) {
+    # input: features_list: the environment containing the feature list data frame
+    # return: The specific feature vector with all values where packet number is smaller than or equal to
+    # i+1 are set to NA
+    ret_func <- function(feature_list_ptr) {
+        clean_func(feature_list_ptr$value, feature_name, i);
+    }
+    return (ret_func);
+}
+
+The generation function is called on the features with some logic. I then have a vector containing the resulting features.
+
+I then do the cleaning as such:
+# function to apply cleaning functions on the data frame
+# input: feature_list A data.frame containing the data. It must include the NPACKETS column
+# input:  feature_structures A vector containing the cleaning function
+# return: A cleaned version of the data frame
+clean_features <- function(features_list, feature_structures) {
+    # make the call to the function "by reference" by passing it through an environment.
+    res_env = new.env();
+    res_env$value = features_list;
+    # the following lines handle the fact that R uses lazy copy on write, this forces
+    # the data to be copied for the first time to avoid changing the source.
+    a = res_env$value[1,1];
+    res_env$value[1,1] = NA;
+    res_env$value[1,1] = a;
+
+    # go over the functions one by one.
+    for(f in feature_structures) {
+        f(res_env);
+    }
+    #extract the result, apply the filter and return the result.
+    res = res_env$value;
+    rm(res_env);
+    return (res);
+}
+
+btw, originally The cleaning function looked like this:
+generate_min_packet_i_clean_func <- function(feature_name,i) {
+    ret_func <- function(feature_list) {
+        feature_list[[feature_name]][feature_list[["NPACKETS"]]<=i] = NA;
+    }
+    return (ret_func);
+}
+
+and it was called by:
+
+res = data.frame(lapply(feature_structures,function(g,d) { g(d) }, features_list ),stringsAsFactors=F)
+
+The difference in performance was more than 1000 times faster!!!
+In general the move to "by reference" to the function improved around 15-20% while the move to cpp did the rest...
+
+On Sunday, August 4, 2013 4:56:05 PM UTC+3, Tal Galili wrote:
+> I think they have the .copy method for that:
+> y = x.copy();
+> Or something similar.
+>
+>
+> p.s: please consider sharing your final code - I'm sure we could all learn from it.
+>
+>
+>
+> ----------------Contact Details:-------------------------------------------------------
+> Contact me: Tal.G...@gmail.com |
+> Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> ----------------------------------------------------------------------------------------------
+>
+>
+>
+> On Sun, Aug 4, 2013 at 4:51 PM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+> > Thanks, this works.
+> > I still have a problem that R does a lazy copy on write. Is there a better way to make sure I don't overwrite other objects than to change the value before and back:
+> >
+> > features_list2=feature_list
+> > then call the function, both feature_lists change while if I do:
+> > features_list2=feature_list
+> > a=feature_list2[1,1];
+> > feature_list2[1,1]=NA
+> > feature_list2[1,1]=a
+> > then only feature_list changes.
+> >
+> > On Sunday, August 4, 2013 4:41:43 PM UTC+3, Tal Galili wrote:
+> > > הפונקציה שאתה מחפש היא TYPEOF, ראה:
+> > > http://gallery.rcpp.org/articles/rcpp-wrap-and-recurse/
+> > >
+> > >
+> > >
+> > > ----------------Contact Details:-------------------------------------------------------
+> > >
+> > > Contact me: Tal.G...@gmail.com |
+> > > Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> > > ----------------------------------------------------------------------------------------------
+> > >
+> > >
+> > >
+> > > On Sun, Aug 4, 2013 at 1:15 PM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+> > > > Can you direct me to these functions?
+> > > > I looked and could only find the "as" function to convert, which will explicitly causes the problem that was caused implicitly before.
+> > > >
+> > > >
+> > > > On Sunday, August 4, 2013 10:19:10 AM UTC+3, Tal Galili wrote:
+> > > > > I remember Rcpp offers functions for checking what type of variable you have.
+> > > > > Did you look into that?
+> > > > > (and then have the decision made within your C++ function)
+> > > > >
+> > > > >
+> > > > >
+> > > > >
+> > > > > ----------------Contact Details:-------------------------------------------------------
+> > > > > Contact me: Tal.G...@gmail.com |
+> > > > > Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+> > > > > ----------------------------------------------------------------------------------------------
+> > > > >
+> > > > >
+> > > > >
+> > > > > On Sun, Aug 4, 2013 at 10:12 AM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+> > > > > > I have a very large data.frame
+> > > > > > The data.frame contains ~800 rows and ~10K columns.
+> > > > > >
+> > > > > > I have a vector of functions which performs a cleaning, an example of such a function is:
+> > > > > > ret_func <- function (features_list) {
+> > > > > >         features_list[["f1]][features_list$NPACKETS_DIR_0 + features_list$NPACKETS_DIR_1 < num_packets] = NA;
+> > > > > >         return (features_list[["f1"]);
+> > > > > >     }
+> > > > > >
+> > > > > > I then called it by using:
+> > > > > > res = data.frame(lapply(feature_structures,function(g,d) { g(d) }, features_list ),stringsAsFactors=F)
+> > > > > >
+> > > > > > The problem with this is that it takes a really long time to calculate (Around 1 minute on my computer and I need to do this on lots of such data frames).
+> > > > > >
+> > > > > > So I decided to use Rcpp.
+> > > > > > What I did was change the function to look something like this:
+> > > > > >
+> > > > > >
+> > > > > > void min_packet_i_clean_func_int(DataFrame DL, String feature_name,int num_packets)
+> > > > > > {
+> > > > > >     IntegerVector feature_vec = DL[feature_name];
+> > > > > >     IntegerVector NPKTS_0 = DL["NPACKETS_DIR_0"];
+> > > > > >     IntegerVector NPKTS_1 = DL["NPACKETS_DIR_1"];
+> > > > > >     int n = feature_vec.size();
+> > > > > >     for(int n_row = 0; n_row < n; n_row++) {
+> > > > > >         int pkt = NPKTS_0[n_row] + NPKTS_1[n_row];
+> > > > > >         }
+> > > > > >         if(pkt < num_packets) {
+> > > > > >             feature_vec[n_row] = NA_INTEGER;
+> > > > > >         }
+> > > > > >     }
+> > > > > > }
+> > > > > >
+> > > > > > and then call it using:
+> > > > > >     for(f in feature_structures) {
+> > > > > >         f(res_env);
+> > > > > >     }
+> > > > > >
+> > > > > > This improved the performance by a factor of almost 1000!
+> > > > > > The problem is that i want the change to occur in place (i.e. don't copy the data but instead pass the data by reference and change it directly).
+> > > > > > This works properly for integer rows but fails for non integer rows. For non integer rows it works by value (i.e. it makes the change but creates a new version of the data which is both not what I wanted and takes longer).
+> > > > > > So I added a comperable function which is numeric based and one which is logical based. The problem is that I do not know how to check what type of row I am using.
+> > > > > > I thought of doing something like:
+> > > > > > type=class(feature_list[[feature_name]])
+> > > > > > func=switch(class,integer=func1, numerical=func2,logical=func3);
+> > > > > > func(feature_list,feature_name,num_packets);
+> > > > > >
+> > > > > > but that would mean doing a copy of the row. It is still a lot faster than before but it does have a cost.
+> > > > > > I was wondering if there is a way to do this better (either to find the class of the vector.
+> > > > > >
+> > > > > > Another problem that I saw is that if I do:
+> > > > > > features_list2=feature_list
+> > > > > > then call the function, both feature_lists change while if I do:
+> > > > > > features_list2=feature_list
+> > > > > > a=feature_list2[1,1];
+> > > > > > feature_list2[1,1]=NA
+> > > > > > feature_list2[1,1]=a
+> > > > > > then only feature_list changes.
+> > > > > > I assume this is because R performs a "copy on write" methodology, is there a better way to do this?
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsubscribe...@googlegroups.com.
+> > > > > > For more options, visit https://groups.google.com/groups/opt_out.
+> > > > > >
+> > > > > >
+> > > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsubscribe...@googlegroups.com.
+> > > > For more options, visit https://groups.google.com/groups/opt_out.
+> > > >
+> > > >
+> > >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-group+unsub...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+> >
+> >
+>
+
+From u290df4ae223eac06 at groups.google.com  Mon Aug  5 19:10:31 2013
+From: u290df4ae223eac06 at groups.google.com (Simon Givoli)
+Date: Mon, 05 Aug 2013 19:10:31 +0000
+Subject: R university courses for SS?
+Message-ID: <-Te5a1bUDL0.YQANzE4-HCQJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/-Te5a1bUDL0/m/YQANzE4-HCQJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone!
+
+I'm new to the group and to R also. just taking my first baby steps in the field....It isn't easy by myself...
+Are there any university courses that teach R for social science students here in Israel, preferably in Haifa university?
+
+Simon
+
+From u9d7c257e609d0807 at groups.google.com  Mon Aug  5 19:19:51 2013
+From: u9d7c257e609d0807 at groups.google.com (amit gal)
+Date: Mon, 05 Aug 2013 19:19:51 +0000
+Subject: Re: [Israel RUG] R university courses for SS?
+Message-ID: <-Te5a1bUDL0.fWNVRkhUO_8J@israel-r-user-group.groups.google.com>
+In-Reply-To: <-Te5a1bUDL0.YQANzE4-HCQJ@israel-r-user-group.groups.google.com>
+References: <-Te5a1bUDL0.YQANzE4-HCQJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/-Te5a1bUDL0/m/fWNVRkhUO_8J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I did it last semester in TAU. And although I think it was a success (I made extreme attempts to make it accessible to people who know nothing about computer programming), there was no budget for it. If you find something, let me know. I'm curious about how people learn R.
+
+Amit
+
+On Mon, Aug 5, 2013 at 10:10 PM, Simon Givoli <giv...@gmail.com> wrote:
+
+> Hi everyone!
+>
+> I'm new to the group and to R also. just taking my first baby steps in the field....It isn't easy by myself...
+> Are there any university courses that teach R for social science students here in Israel, preferably in Haifa university?
+
+>
+> Simon
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+
+From ua305e65fa9dfb74d at groups.google.com  Tue Aug  6 00:38:23 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Tue, 06 Aug 2013 00:38:23 +0000
+Subject: Re: [Israel RUG] R university courses for SS?
+Message-ID: <-Te5a1bUDL0.Ze2Ojk60x6cJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <-Te5a1bUDL0.YQANzE4-HCQJ@israel-r-user-group.groups.google.com>
+References: <-Te5a1bUDL0.YQANzE4-HCQJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/-Te5a1bUDL0/m/Ze2Ojk60x6cJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+צור קשר עם יובל נוב מאוניב חיפה:
+yu...@stat.haifa.ac.il
+
+On Monday, August 5, 2013, Simon Givoli wrote:
+
+> Hi everyone!
+>
+> I'm new to the group and to R also. just taking my first baby steps in the field....It isn't easy by myself...
+> Are there any university courses that teach R for social science students here in Israel, preferably in Haifa university?
+>
+> Simon
+>
+
+> --
+
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From u290df4ae223eac06 at groups.google.com  Tue Aug  6 05:32:37 2013
+From: u290df4ae223eac06 at groups.google.com (Simon Givoli)
+Date: Tue, 06 Aug 2013 05:32:37 +0000
+Subject: Re: [Israel RUG] R university courses for SS?
+Message-ID: <-Te5a1bUDL0.FVFG23mY_J0J@israel-r-user-group.groups.google.com>
+In-Reply-To: <-Te5a1bUDL0.YQANzE4-HCQJ@israel-r-user-group.groups.google.com>
+References: <-Te5a1bUDL0.YQANzE4-HCQJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/-Te5a1bUDL0/m/FVFG23mY_J0J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Amit for your referral. Can you elaborate on this person- Is he an instructor at Haifa uni. Or just somebody that might have info?
+Simon
+
+From u909ff578d0e714f8 at groups.google.com  Tue Aug  6 09:28:32 2013
+From: u909ff578d0e714f8 at groups.google.com (Asaf Weinstein)
+Date: Tue, 06 Aug 2013 09:28:32 +0000
+Subject: Re: [Israel RUG] R university courses for SS?
+Message-ID: <-Te5a1bUDL0.Ui-nA9Tc-mUJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <-Te5a1bUDL0.FVFG23mY_J0J@israel-r-user-group.groups.google.com>
+References: <-Te5a1bUDL0.YQANzE4-HCQJ@israel-r-user-group.groups.google.com> <-Te5a1bUDL0.FVFG23mY_J0J@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/-Te5a1bUDL0/m/Ui-nA9Tc-mUJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+A friend just posted this somewhere, I thought it may be helpful:
+http://www.r-bloggers.com/google-developers-r-programming-video-lectures/
+
+Asaf
+
+On 6 August 2013 08:32, Simon Givoli <giv...@gmail.com> wrote:
+
+> Thanks Amit for your referral. Can you elaborate on this person- Is he an instructor at Haifa uni. Or just somebody that might have info?
+
+> Simon
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+
+From ub8c77fa5305c80cb at groups.google.com  Tue Aug  6 12:26:44 2013
+From: ub8c77fa5305c80cb at groups.google.com (Assaf Mendelson)
+Date: Tue, 06 Aug 2013 12:26:44 +0000
+Subject: checking for NA in Rcpp
+Message-ID: <U68Iu6QOcE4.S1o-cNjHLUUJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/U68Iu6QOcE4/m/S1o-cNjHLUUJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I know this sounds stupid but how do I check if a value in a vector is NA from within a cpp function?
+
+Consider the following very simple function:
+// [[Rcpp::export]]
+void f(IntegerVector v)
+{
+    int n = v.size();
+    for(int i=0; i<n; i++)
+    {
+        if(R_IsNA(v[i])) {
+            printf("v[%d] is NA\n", i);
+        } else {
+            printf("v[%d] is NOT NA\n", i);
+        }
+    }
+}
+
+If I do:
+>v=integer(3);
+>v[1]=NA;
+>f(v);
+I get that all of them are NOT NA
+I know there is a synthetic suger function is_na but it fails to compile if I replace R_IsNA with it (probably because it returns a vector, i.e. I would have to allocate a vector of the same size, which will get TRUE/FALSE but that is not my goal,
+I simply want to test if a specific element is NA before I do calculations on it.
+Any ideas?
+
+From ub8c77fa5305c80cb at groups.google.com  Tue Aug  6 14:24:06 2013
+From: ub8c77fa5305c80cb at groups.google.com (Assaf Mendelson)
+Date: Tue, 06 Aug 2013 14:24:06 +0000
+Subject: Re: checking for NA in Rcpp
+Message-ID: <U68Iu6QOcE4.ivE4IQvqX-gJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <U68Iu6QOcE4.S1o-cNjHLUUJ@israel-r-user-group.groups.google.com>
+References: <U68Iu6QOcE4.S1o-cNjHLUUJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/U68Iu6QOcE4/m/ivE4IQvqX-gJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+this is sort of answering my own questions but still.
+I have no idea why R_IsNA doesn't work (it should according to everything I found) but as a work around I found I could use:
+IntegerVector::is_na(v[i])
+and
+NumericVector::is_na(v[i])
+
+On Tuesday, August 6, 2013 3:26:44 PM UTC+3, Assaf Mendelson wrote:
+> I know this sounds stupid but how do I check if a value in a vector is NA from within a cpp function?
+>
+> Consider the following very simple function:
+> // [[Rcpp::export]]
+> void f(IntegerVector v)
+> {
+>     int n = v.size();
+>     for(int i=0; i<n; i++)
+>     {
+>         if(R_IsNA(v[i])) {
+>             printf("v[%d] is NA\n", i);
+>         } else {
+>             printf("v[%d] is NOT NA\n", i);
+>         }
+>     }
+> }
+>
+> If I do:
+> >v=integer(3);
+> >v[1]=NA;
+> >f(v);
+> I get that all of them are NOT NA
+> I know there is a synthetic suger function is_na but it fails to compile if I replace R_IsNA with it (probably because it returns a vector, i.e. I would have to allocate a vector of the same size, which will get TRUE/FALSE but that is not my goal,
+> I simply want to test if a specific element is NA before I do calculations on it.
+> Any ideas?
+
+From u2a57eddc33b1b035 at groups.google.com  Tue Aug 20 06:39:29 2013
+From: u2a57eddc33b1b035 at groups.google.com (Shlomo Yona)
+Date: Tue, 20 Aug 2013 06:39:29 +0000
+Subject: =?utf-8?b?15DXnNeS15XXqNeZ16rXnteZINeh15nXldeV15Ig16ktItee15LXnNeZ150iINeQ?=
+ =?utf-8?b?16og15TXl9eV16fXmded?=
+Message-ID: <ICcf6U8u2uI.hq-2XiAgpkoJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/ICcf6U8u2uI/m/hq-2XiAgpkoJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+שלום,
+
+אשמח לשמוע מנסיונכם וגם לקבל הפניות לגבי אלגוריתמים וספריות לאלגוריתמים ב-R שמבצעים סיווג (classification) אבל מאפשרים גם לקבל את החוקים שלפיהם התבצע הסיווג.
+
+האם יש דרך גנרית לקבל את החוקים מאלגוריתמים אלה או שנדרש תחביר נפרד לכל מקרה?
+
+תודה רבה.
+שלמה
+
+From ub24c10731fdfceaf at groups.google.com  Tue Aug 20 06:57:37 2013
+From: ub24c10731fdfceaf at groups.google.com (Tal Galili)
+Date: Tue, 20 Aug 2013 06:57:37 +0000
+Subject: =?utf-8?b?UmU6IFtJc3JhZWwgUlVHXSDXkNec15LXldeo15nXqtee15kg16HXmdeV15XXkiA=?=
+ =?utf-8?b?16ktItee15LXnNeZ150iINeQ16og15TXl9eV16fXmded?=
+Message-ID: <ICcf6U8u2uI.KvPDTu2QBVsJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <ICcf6U8u2uI.hq-2XiAgpkoJ@israel-r-user-group.groups.google.com>
+References: <ICcf6U8u2uI.hq-2XiAgpkoJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/ICcf6U8u2uI/m/KvPDTu2QBVsJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+שלום שלמה,
+אם אתה מתכוון ל decision trees (ולא ל rule based methods), אז מה שאפשר לעשות זה זה לבנות עץ החלטות באמצעות rpart
+ועל האובייקט הזה להפעיל את הפונקציה asRules מהחבילה של  rattle.
+זה נותן את הכללים של העץ (למרות שזה לא מאחד חוקים, לצערי)
+
+בברכה,
+טל
+
+----------------Contact Details:-------------------------------------------------------
+Contact me: Tal.G...@gmail.com |
+Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+----------------------------------------------------------------------------------------------
+
+2013/8/20 Shlomo Yona <shlom...@gmail.com>
+
+> שלום,
+>
+> אשמח לשמוע מנסיונכם וגם לקבל הפניות לגבי אלגוריתמים וספריות לאלגוריתמים ב-R שמבצעים סיווג (classification) אבל מאפשרים גם לקבל את החוקים שלפיהם התבצע הסיווג.
+>
+> האם יש דרך גנרית לקבל את החוקים מאלגוריתמים אלה או שנדרש תחביר נפרד לכל מקרה?
+>
+>
+> תודה רבה.
+> שלמה
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+From u33f86ee6cc219142 at groups.google.com  Mon Aug 26 08:10:52 2013
+From: u33f86ee6cc219142 at groups.google.com (Ido Sloma)
+Date: Mon, 26 Aug 2013 08:10:52 +0000
+Subject: ANOVA in R
+Message-ID: <A3KQInqObrM.x9302_AFZy0J@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/A3KQInqObrM/m/x9302_AFZy0J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+HELLO ALL
+
+i have a design model which was made with design.model at edgeR package but it`s source code are from Limma package.
+
+  melatonine0.01mM melatonine0.1mM melatonine1mM melatoninecontrol time4
+A                0               0             0                 1     0
+B                1               0             0                 0     0
+C                0               1             0                 0     0
+D                0               0             1                 0     0
+E                0               0             0                 1     1
+F                1               0             0                 0     1
+G                0               1             0                 0     1
+H                0               0             1                 0     1
+
+melatonine <- factor(c("control","0.01mM","0.1mM","1mM","control","0.01mM","0.1mM","1mM"))
+time<- factor(c(1,1,1,1,4,4,4,4))
+data.frame(Sample=colnames(y),melatonine,time)
+design<- model.matrix(~0+melatonine+time)
+rownames(design) <- colnames(y)
+
+the A,B,C.... are samples and the colnames are their phenotype(drug dose, and the last colume is hour from the injection).
+
+i have wrote:
+fit <- glmFit(y, design)
+
+and now i want to find contrast:
+
+my question is how to work with the contrast and the coef??
+
+From u9ced40e31f56669e at groups.google.com  Tue Aug 27 06:47:24 2013
+From: u9ced40e31f56669e at groups.google.com (eliav schmulewitz)
+Date: Tue, 27 Aug 2013 06:47:24 +0000
+Subject: =?utf-8?b?15DXpNec15nXp9em15nXlCDXnNeg15nXqteV15cg16jXldeX15XXqiDXkdei15Y=?=
+ =?utf-8?b?16jXqiDXlNeX15HXmdec15XXqiBzaGlueSDXlSBvcGVuYWly?=
+Message-ID: <X0hN8lkIwC4.M-LyaUBYOIAJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/X0hN8lkIwC4/m/M-LyaUBYOIAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+שלום
+פעם ראשונה שאני כותב בקבוצה, כתבתי אפליקציה לניתוח רוחות אשמח אם תסתכלו ואם יש למישהו הערות אשמח כמובן לשמוע אותם
+http://spark.rstudio.com/windrose/pollutionrose/
+תודה
+אליאב
+
+From ua305e65fa9dfb74d at groups.google.com  Tue Aug 27 07:13:52 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Tue, 27 Aug 2013 07:13:52 +0000
+Subject: =?utf-8?b?UmU6IFtJc3JhZWwgUlVHXSDXkNek15zXmden16bXmdeUINec16DXmdeq15XXlyA=?=
+ =?utf-8?b?16jXldeX15XXqiDXkdei15bXqNeqINeU15fXkdeZ15zXldeqIHNoaW55INeVIG9w?=
+ =?utf-8?b?ZW5haXI=?=
+Message-ID: <X0hN8lkIwC4.Tj1axbK7EmEJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <X0hN8lkIwC4.M-LyaUBYOIAJ@israel-r-user-group.groups.google.com>
+References: <X0hN8lkIwC4.M-LyaUBYOIAJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/X0hN8lkIwC4/m/Tj1axbK7EmEJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+האם תוכל לספק קובץ להדגמה?
+
+On Tue, Aug 27, 2013 at 9:47 AM, eliav schmulewitz <eli...@gmail.com> wrote:
+
+> שלום
+> פעם ראשונה שאני כותב בקבוצה, כתבתי אפליקציה לניתוח רוחות אשמח אם תסתכלו ואם יש למישהו הערות אשמח כמובן לשמוע אותם
+> http://spark.rstudio.com/windrose/pollutionrose/
+> תודה
+> אליאב
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From ua305e65fa9dfb74d at groups.google.com  Tue Aug 27 07:15:58 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Tue, 27 Aug 2013 07:15:58 +0000
+Subject: Re: [Israel RUG] ANOVA in R
+Message-ID: <A3KQInqObrM.zIzAbRTZmgEJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <A3KQInqObrM.x9302_AFZy0J@israel-r-user-group.groups.google.com>
+References: <A3KQInqObrM.x9302_AFZy0J@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/A3KQInqObrM/m/zIzAbRTZmgEJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+what contrast would you like to test?
+
+On Mon, Aug 26, 2013 at 11:10 AM, Ido Sloma <ido....@gmail.com> wrote:
+
+> HELLO ALL
+>
+> i have a design model which was made with design.model at edgeR package but it`s source code are from Limma package.
+>
+>
+>
+>   melatonine0.01mM melatonine0.1mM melatonine1mM melatoninecontrol time4
+> A                0               0             0                 1     0
+> B                1               0             0                 0     0
+> C                0               1             0                 0     0
+> D                0               0             1                 0     0
+> E                0               0             0                 1     1
+> F                1               0             0                 0     1
+> G                0               1             0                 0     1
+> H                0               0             1                 0     1
+>
+>
+>
+> melatonine <- factor(c("control","0.01mM","0.1mM","1mM","control","0.01mM","0.1mM","1mM"))
+> time<- factor(c(1,1,1,1,4,4,4,4))
+> data.frame(Sample=colnames(y),melatonine,time)
+> design<- model.matrix(~0+melatonine+time)
+> rownames(design) <- colnames(y)
+>
+>
+>
+>
+> the A,B,C.... are samples and the colnames are their phenotype(drug dose, and the last colume is hour from the injection).
+>
+> i have wrote:
+> fit <- glmFit(y, design)
+>
+> and now i want to find contrast:
+>
+> my question is how to work with the contrast and the coef??
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From u9ced40e31f56669e at groups.google.com  Tue Aug 27 07:24:46 2013
+From: u9ced40e31f56669e at groups.google.com (eliav schmulewitz)
+Date: Tue, 27 Aug 2013 07:24:46 +0000
+Subject: =?utf-8?b?UmU6IFtJc3JhZWwgUlVHXSDXkNek15zXmden16bXmdeUINec16DXmdeq15XXlyA=?=
+ =?utf-8?b?16jXldeX15XXqiDXkdei15bXqNeqINeU15fXkdeZ15zXldeqIHNoaW55INeVIG9w?=
+ =?utf-8?b?ZW5haXI=?=
+Message-ID: <X0hN8lkIwC4.Io6CBy73WZEJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <X0hN8lkIwC4.Tj1axbK7EmEJ@israel-r-user-group.groups.google.com>
+References: <X0hN8lkIwC4.M-LyaUBYOIAJ@israel-r-user-group.groups.google.com> <X0hN8lkIwC4.Tj1axbK7EmEJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/X0hN8lkIwC4/m/Io6CBy73WZEJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+יש גם הוראות שימוש ב:
+ http://luftgesheft.wordpress.com/2013/08/13/eliavs-wind-rose-instructions/
+
+On Tuesday, August 27, 2013 9:13:52 AM UTC+2, Jonathan Rosenblatt wrote:
+
+> האם תוכל לספק קובץ להדגמה?
+
+>
+>
+> On Tue, Aug 27, 2013 at 9:47 AM, eliav schmulewitz <eli...@gmail.com> wrote:
+> > שלום
+> > פעם ראשונה שאני כותב בקבוצה, כתבתי אפליקציה לניתוח רוחות אשמח אם תסתכלו ואם יש למישהו הערות אשמח כמובן לשמוע אותם
+> > http://spark.rstudio.com/windrose/pollutionrose/
+> > תודה
+> > אליאב
+> >
+> > --
+> >
+>
+>
+>
+
+> --
+> Jonathan Rosenblatt
+> www.john-ros.com <http://www.john-ros.com>
+>
+
+From ua305e65fa9dfb74d at groups.google.com  Tue Aug 27 07:33:48 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Tue, 27 Aug 2013 07:33:48 +0000
+Subject: =?utf-8?b?UmU6IFtJc3JhZWwgUlVHXSDXkNek15zXmden16bXmdeUINec16DXmdeq15XXlyA=?=
+ =?utf-8?b?16jXldeX15XXqiDXkdei15bXqNeqINeU15fXkdeZ15zXldeqIHNoaW55INeVIG9w?=
+ =?utf-8?b?ZW5haXI=?=
+Message-ID: <X0hN8lkIwC4.d_12KZSGfEgJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <X0hN8lkIwC4.Io6CBy73WZEJ@israel-r-user-group.groups.google.com>
+References: <X0hN8lkIwC4.M-LyaUBYOIAJ@israel-r-user-group.groups.google.com> <X0hN8lkIwC4.Io6CBy73WZEJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/X0hN8lkIwC4/m/d_12KZSGfEgJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+(a) an error is returned until selections are made. not very user friendly.
+(b) can k in the pollution rose can be selected/suggested automatically?
+(c) why no wind~pollution scatter plot?
+(d) wind direction/wind speed/pollutants drop down lists all have the same options. Is this intended?
+(e) "sort by" actually works like a "split" or "facet" (in the language of ggplot2)
+(f) I would show an example of the required csv file in the help site.
+
+Jonathan
+
+On Tue, Aug 27, 2013 at 10:24 AM, eliav schmulewitz <eli...@gmail.com> wrote:
+
+>
+> יש גם הוראות שימוש ב:
+>  http://luftgesheft.wordpress.com/2013/08/13/eliavs-wind-rose-instructions/
+>
+>
+> On Tuesday, August 27, 2013 9:13:52 AM UTC+2, Jonathan Rosenblatt wrote:
+> > האם תוכל לספק קובץ להדגמה?
+> >
+> >
+> > On Tue, Aug 27, 2013 at 9:47 AM, eliav schmulewitz <eli...@gmail.com> wrote:
+> > > שלום
+> > > פעם ראשונה שאני כותב בקבוצה, כתבתי אפליקציה לניתוח רוחות אשמח אם תסתכלו ואם יש למישהו הערות אשמח כמובן לשמוע אותם
+> > > http://spark.rstudio.com/windrose/pollutionrose/
+> > > תודה
+> > > אליאב
+> > >
+> > > --
+> > >
+> >
+> >
+> >
+> > --
+> > Jonathan Rosenblatt
+> > www.john-ros.com <http://www.john-ros.com>
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From u9ced40e31f56669e at groups.google.com  Tue Aug 27 07:51:39 2013
+From: u9ced40e31f56669e at groups.google.com (eliav schmulewitz)
+Date: Tue, 27 Aug 2013 07:51:39 +0000
+Subject: =?utf-8?b?UmU6IFtJc3JhZWwgUlVHXSDXkNek15zXmden16bXmdeUINec16DXmdeq15XXlyA=?=
+ =?utf-8?b?16jXldeX15XXqiDXkdei15bXqNeqINeU15fXkdeZ15zXldeqIHNoaW55INeVIG9w?=
+ =?utf-8?b?ZW5haXI=?=
+Message-ID: <X0hN8lkIwC4.s_Rw1RgagJcJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <X0hN8lkIwC4.d_12KZSGfEgJ@israel-r-user-group.groups.google.com>
+References: <X0hN8lkIwC4.M-LyaUBYOIAJ@israel-r-user-group.groups.google.com> <X0hN8lkIwC4.d_12KZSGfEgJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/X0hN8lkIwC4/m/s_Rw1RgagJcJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Wow thank you!
+
+I will chew on that for a little
+
+(a) I will take care of it
+
+(b) K has a default value I need to explain somehow the meaning of the k value
+
+(c) Do you think it is necessary?
+
+(d) Yes because it is the names of the columns in the file
+
+(e) Yes except I am not using ggplot2
+
+(f) Great idea I just need to think how to implement this
+
+On Tuesday, August 27, 2013 9:33:48 AM UTC+2, Jonathan Rosenblatt wrote:
+
+> (a) an error is returned until selections are made. not very user friendly.
+> (b) can k in the pollution rose can be selected/suggested automatically?
+> (c) why no wind~pollution scatter plot?
+> (d) wind direction/wind speed/pollutants drop down lists all have the same options. Is this intended?
+> (e) "sort by" actually works like a "split" or "facet" (in the language of ggplot2)
+> (f) I would show an example of the required csv file in the help site.
+>
+> Jonathan
+
+>
+>
+> On Tue, Aug 27, 2013 at 10:24 AM, eliav schmulewitz <eli...@gmail.com> wrote:
+> >
+> > יש גם הוראות שימוש ב:
+> >  http://luftgesheft.wordpress.com/2013/08/13/eliavs-wind-rose-instructions/
+> >
+> >
+> > On Tuesday, August 27, 2013 9:13:52 AM UTC+2, Jonathan Rosenblatt wrote:
+> > > האם תוכל לספק קובץ להדגמה?
+> > >
+> > >
+> > > On Tue, Aug 27, 2013 at 9:47 AM, eliav schmulewitz <eli...@gmail.com> wrote:
+> > > > שלום
+> > > > פעם ראשונה שאני כותב בקבוצה, כתבתי אפליקציה לניתוח רוחות אשמח אם תסתכלו ואם יש למישהו הערות אשמח כמובן לשמוע אותם
+> > > > http://spark.rstudio.com/windrose/pollutionrose/
+> > > > תודה
+> > > > אליאב
+> > > >
+> > > > --
+> > > >
+> > >
+> > >
+> > >
+> > > --
+> > > Jonathan Rosenblatt
+> > > www.john-ros.com <http://www.john-ros.com>
+> > >
+> > --
+>
+>
+
+> --
+> Jonathan Rosenblatt
+> www.john-ros.com <http://www.john-ros.com>
+>
+
+From u2a57eddc33b1b035 at groups.google.com  Thu Aug 29 06:51:01 2013
+From: u2a57eddc33b1b035 at groups.google.com (Shlomo Yona)
+Date: Thu, 29 Aug 2013 06:51:01 +0000
+Subject: R 3.0.1 on linux (mint) + openatlas
+Message-ID: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/XGHNujAUrhs/m/PCjB-a0AT0oJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+שלום,
+ניסיתי להתקין R עם openatlas על לינוקס מינט.
+חשבתי שדרך apt-get install אקבל הגרסה האחרונה של R אבל קיבלתי את 2.15.
+
+1. מה השיטה לקבל את 3.0.1?
+2. שווה לטרוח עם זה?
+3. נניח שאעדכן, האם אצטרך להתקין מחדש את openatlas?
+
+תודה.
+שלמה
+
+From ua305e65fa9dfb74d at groups.google.com  Thu Aug 29 06:58:19 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Thu, 29 Aug 2013 06:58:19 +0000
+Subject: Re: [Israel RUG] R 3.0.1 on linux (mint) + openatlas
+Message-ID: <XGHNujAUrhs.VN0-OUqH0WcJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com>
+References: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/XGHNujAUrhs/m/VN0-OUqH0WcJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+היות שמינט זו וריאציה על אובונטו, אתה יכול להיעזר בהוראות ההתקנה של אובונטו.
+הבינאריים שבמאגרים של מינט/אובונטו (אליהם agt-get ניגש) הם בד"כ מפגרים אחרי המאגרים של CRAN הואיל שכל גרסה צריכה לעבוד בדיקות גם של אנשי מינט/אובונטו.
+הוראות להתקנה מהמאגרים של CRAN תמצא כאן:
+http://cran.r-project.org/bin/linux/ubuntu/
+
+לא תצטרך להתקין מחדש את openatals
+
+2013/8/29 Shlomo Yona <shlom...@gmail.com>
+
+> שלום,
+> ניסיתי להתקין R עם openatlas על לינוקס מינט.
+> חשבתי שדרך apt-get install אקבל הגרסה האחרונה של R אבל קיבלתי את 2.15.
+>
+> 1. מה השיטה לקבל את 3.0.1?
+> 2. שווה לטרוח עם זה?
+> 3. נניח שאעדכן, האם אצטרך להתקין מחדש את openatlas?
+>
+> תודה.
+> שלמה
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From ub8c77fa5305c80cb at groups.google.com  Thu Aug 29 09:27:36 2013
+From: ub8c77fa5305c80cb at groups.google.com (Assaf Mendelson)
+Date: Thu, 29 Aug 2013 09:27:36 +0000
+Subject: Removing an element from a vector by name
+Message-ID: <APA7PniIsR4.XAEtGn_wXqMJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/APA7PniIsR4/m/XAEtGn_wXqMJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+I have a vector with names for example:
+v = 1:10;
+names(v) = letters[1:10]
+
+now I want to move the value of "c" to be the first.
+So I wanted to do the following:
+
+a = v["c"]
+b = v[-"c"]
+v = c(a,b);
+
+The problem is that the second line (b = b[-"c"]) gives me an error: Error in -"c" : invalid argument to unary operator
+I know I could do this if i would have used the index (number) but I do not have the number, just the name.
+I would appreciate any help...
+
+From ua305e65fa9dfb74d at groups.google.com  Thu Aug 29 10:21:11 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Thu, 29 Aug 2013 10:21:11 +0000
+Subject: Re: [Israel RUG] Removing an element from a vector by name
+Message-ID: <APA7PniIsR4.9wliw9gB2EgJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <APA7PniIsR4.XAEtGn_wXqMJ@israel-r-user-group.groups.google.com>
+References: <APA7PniIsR4.XAEtGn_wXqMJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/APA7PniIsR4/m/9wliw9gB2EgJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+one option:
+
+v[-match("c", names(v))]
+
+On Thu, Aug 29, 2013 at 12:27 PM, Assaf Mendelson <assaf.m...@gmail.com> wrote:
+
+> Hi,
+> I have a vector with names for example:
+> v = 1:10;
+> names(v) = letters[1:10]
+>
+> now I want to move the value of "c" to be the first.
+> So I wanted to do the following:
+>
+> a = v["c"]
+> b = v[-"c"]
+> v = c(a,b);
+>
+> The problem is that the second line (b = b[-"c"]) gives me an error: Error in -"c" : invalid argument to unary operator
+> I know I could do this if i would have used the index (number) but I do not have the number, just the name.
+> I would appreciate any help...
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From u896fea6929e11bf5 at groups.google.com  Thu Aug 29 11:26:26 2013
+From: u896fea6929e11bf5 at groups.google.com (Asher)
+Date: Thu, 29 Aug 2013 11:26:26 +0000
+Subject: Applying functions with multiple variables
+Message-ID: <l30Kkxfw_E0.Nw8rChjq3roJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/l30Kkxfw_E0/m/Nw8rChjq3roJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+,שלום
+
+:יש לי את המטריצה הבאה
+> OutputT
+       Item_ID   ID Answer_Seq   Test_ID Candidate_ID
+[1,] 270026457 2093          8 270026526            1
+[2,] 270026458 2093         14 270026526            1
+[3,] 270026432 2093         20 270026526            1
+>
+
+.q9, q53,q275,q318 ברצוני להריץ פונקציה על כל אחת מהשורות במטריצה, כך שאקבל את המשתנים
+
+:הפונקציה
+Calc.funAnswer = function(OutputT){if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==7){q9<-1
+} else if (Test_ID==270026526 & Item_ID== 270026457 & ID==2093 & Answer_Seq==8){q9<-2
+} else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==9){q9<-3
+} else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==10){q9<-4
+} else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==11){q9<-5
+} else {q9<-NA
+}
+if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==14){q53<-1
+} else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==15){q53<-2
+} else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==16){q53<-3
+} else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==17){q53<-4
+} else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==18){q53<-5
+} else {q53<-NA
+}
+if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==34){q275<-1
+} else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==35){q275<-2
+} else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==36){q275<-3
+} else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==37){q275<-4
+} else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==38){q275<-5
+} else {q275<-NA
+}
+if (Test_ID==270026526 & Item_ID==270026522 & ID==2093 & Answer_Seq==16){q318<-1
+} else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==17){q318<-2
+} else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==18){q318<-3
+} else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==19){q318<-4
+} else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==20){q318<-5
+} else {q318<-NA}}
+
+OutputT = apply(OutputT,1,Calc.funAnswer)
+
+:כשהרצתי קיבלתי את הודעת השגיאה
+
+There were 50 or more warnings (use warnings() to see the first 50)
+
+1: In if (Test_ID == 270026526 & Item_ID == 270026457 & ID ==  ... :
+  the condition has length > 1 and only the first element will be used
+.
+.
+.
+.
+.כשיצרתי וקטור ובו השורה הראשונה של המטריצה, לא היתה כל בעיה
+
+?מה עושים
+תודה
+
+From u2a57eddc33b1b035 at groups.google.com  Thu Aug 29 11:58:23 2013
+From: u2a57eddc33b1b035 at groups.google.com (Shlomo Yona)
+Date: Thu, 29 Aug 2013 11:58:23 +0000
+Subject: Re: [Israel RUG] R 3.0.1 on linux (mint) + openatlas
+Message-ID: <XGHNujAUrhs.13VWF2HmZaoJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com>
+References: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/XGHNujAUrhs/m/13VWF2HmZaoJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+תודה, יהונתן
+למעשה כך עשיתי וכך סיימתי עם גרסה 2.15 תחת הגרסה החדשה. אתה מסביר יפה מדוע.
+אולי הפתרון להתקין מ-source code.
+
+תודה.
+שלמה
+
+2013/8/29 Jonathan Rosenblatt <john...@gmail.com>
+
+> היות שמינט זו וריאציה על אובונטו, אתה יכול להיעזר בהוראות ההתקנה של אובונטו.
+> הבינאריים שבמאגרים של מינט/אובונטו (אליהם agt-get ניגש) הם בד"כ מפגרים אחרי המאגרים של CRAN הואיל שכל גרסה צריכה לעבוד בדיקות גם של אנשי מינט/אובונטו.
+> הוראות להתקנה מהמאגרים של CRAN תמצא כאן:
+> http://cran.r-project.org/bin/linux/ubuntu/
+>
+> לא תצטרך להתקין מחדש את openatals
+>
+>
+>
+> 2013/8/29 Shlomo Yona <shlom...@gmail.com>
+> > שלום,
+> > ניסיתי להתקין R עם openatlas על לינוקס מינט.
+> > חשבתי שדרך apt-get install אקבל הגרסה האחרונה של R אבל קיבלתי את 2.15.
+> >
+> > 1. מה השיטה לקבל את 3.0.1?
+> > 2. שווה לטרוח עם זה?
+> > 3. נניח שאעדכן, האם אצטרך להתקין מחדש את openatlas?
+> >
+> > תודה.
+> > שלמה
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+>
+> --
+> Jonathan Rosenblatt
+> www.john-ros.com <http://www.john-ros.com>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+From ua305e65fa9dfb74d at groups.google.com  Thu Aug 29 18:39:09 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Thu, 29 Aug 2013 18:39:09 +0000
+Subject: Re: [Israel RUG] R 3.0.1 on linux (mint) + openatlas
+Message-ID: <XGHNujAUrhs.HDJHEG7pqwgJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com>
+References: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/XGHNujAUrhs/m/HDJHEG7pqwgJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+לא הייתי ממליץ לבנות את התוכנה מהקוד כי אז אתה לא נהנה מבדיקת תלויות בתוכנות אחרות (לדוגה הגדרות Java) ועדכונים אוטומטיית שמתאפשרים על ידי התקנה מהמאגרים. כמו כן- קומפילציה עם אפשרויות ברירת המחדל בוודאות תגרום לכך שלא תצליח להפעיל את RStudio, Eclipse וכמעט כל דבר אחר שמתממשק ל- R. ללא ספק הייתי משקיע את הזמן בשביל להתקין גרסה מעודכנת מהמאגרים, והדבר אכן אפשרי.
+
+אם קיבלת את גרסה 2.15 הייתי מוודא שהמאגרים של CRAN הוגדרו כראוי. כמו כן- כשיוצאת גרסת אובונטו חדשה, התוכנות שבמאגרים מפסיקות להתעדכן עבור גרסאות ישנות. יוצאים מן הכלל לכך הן גרסאות מסוג LTS כמו 12.04.
+כל זאת בשביל להגיד שייתכן שגרסאות מאוחרות של R יהיו זמינות רק עבור הפצות מאוחרות של אובונטו כמו raring או quantal. אתה צריך לבדוק על איזו גרסת אובונטו נבנתה גרסת ה- mint שלך ובתקווה שזו אחת הגרסות המאוחרות- להפנות למקום הנכון במאגרי אובונטו.
+
+יונתן
+
+2013/8/29 Shlomo Yona <shlom...@gmail.com>
+
+> תודה, יהונתן
+> למעשה כך עשיתי וכך סיימתי עם גרסה 2.15 תחת הגרסה החדשה. אתה מסביר יפה מדוע.
+> אולי הפתרון להתקין מ-source code.
+>
+> תודה.
+> שלמה
+>
+>
+> 2013/8/29 Jonathan Rosenblatt <john...@gmail.com>
+> > היות שמינט זו וריאציה על אובונטו, אתה יכול להיעזר בהוראות ההתקנה של אובונטו.
+> > הבינאריים שבמאגרים של מינט/אובונטו (אליהם agt-get ניגש) הם בד"כ מפגרים אחרי המאגרים של CRAN הואיל שכל גרסה צריכה לעבוד בדיקות גם של אנשי מינט/אובונטו.
+> > הוראות להתקנה מהמאגרים של CRAN תמצא כאן:
+> > http://cran.r-project.org/bin/linux/ubuntu/
+> >
+> > לא תצטרך להתקין מחדש את openatals
+> >
+> >
+> >
+> > 2013/8/29 Shlomo Yona <shlom...@gmail.com>
+> > > שלום,
+> > > ניסיתי להתקין R עם openatlas על לינוקס מינט.
+> > > חשבתי שדרך apt-get install אקבל הגרסה האחרונה של R אבל קיבלתי את 2.15.
+> > >
+> > > 1. מה השיטה לקבל את 3.0.1?
+> > > 2. שווה לטרוח עם זה?
+> > > 3. נניח שאעדכן, האם אצטרך להתקין מחדש את openatlas?
+> > >
+> > > תודה.
+> > > שלמה
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/groups/opt_out.
+> >
+> >
+> >
+> > --
+> > Jonathan Rosenblatt
+> > www.john-ros.com <http://www.john-ros.com>
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From ua305e65fa9dfb74d at groups.google.com  Thu Aug 29 18:43:13 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Thu, 29 Aug 2013 18:43:13 +0000
+Subject: Re: [Israel RUG] Applying functions with multiple variables
+Message-ID: <l30Kkxfw_E0.q8xkv_XXAksJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <l30Kkxfw_E0.Nw8rChjq3roJ@israel-r-user-group.groups.google.com>
+References: <l30Kkxfw_E0.Nw8rChjq3roJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/l30Kkxfw_E0/m/q8xkv_XXAksJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+הנה דוגמה לאופן שבו אפשר להשתמש ב- apply לפונקציות מותאמות אישית:
+configs<- data.frame(a=c(1,2), b=c(3,4))
+apply(configs, 1, function(x) x[['a']]-x[['b']])
+
+האם זה עזר?
+
+On Thu, Aug 29, 2013 at 2:26 PM, Asher <asher...@gmail.com> wrote:
+
+> ,שלום
+>
+> :יש לי את המטריצה הבאה
+> > OutputT
+>        Item_ID   ID Answer_Seq   Test_ID Candidate_ID
+> [1,] 270026457 2093          8 270026526            1
+> [2,] 270026458 2093         14 270026526            1
+> [3,] 270026432 2093         20 270026526            1
+> >
+>
+> .q9, q53,q275,q318 ברצוני להריץ פונקציה על כל אחת מהשורות במטריצה, כך שאקבל את המשתנים
+>
+> :הפונקציה
+> Calc.funAnswer = function(OutputT){if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==7){q9<-1
+> } else if (Test_ID==270026526 & Item_ID== 270026457 & ID==2093 & Answer_Seq==8){q9<-2
+> } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==9){q9<-3
+> } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==10){q9<-4
+> } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==11){q9<-5
+> } else {q9<-NA
+> }
+> if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==14){q53<-1
+> } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==15){q53<-2
+> } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==16){q53<-3
+> } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==17){q53<-4
+> } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==18){q53<-5
+> } else {q53<-NA
+> }
+> if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==34){q275<-1
+> } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==35){q275<-2
+> } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==36){q275<-3
+> } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==37){q275<-4
+> } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==38){q275<-5
+> } else {q275<-NA
+> }
+> if (Test_ID==270026526 & Item_ID==270026522 & ID==2093 & Answer_Seq==16){q318<-1
+> } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==17){q318<-2
+> } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==18){q318<-3
+> } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==19){q318<-4
+> } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==20){q318<-5
+> } else {q318<-NA}}
+>
+> OutputT = apply(OutputT,1,Calc.funAnswer)
+>
+> :כשהרצתי קיבלתי את הודעת השגיאה
+>
+> There were 50 or more warnings (use warnings() to see the first 50)
+>
+> 1: In if (Test_ID == 270026526 & Item_ID == 270026457 & ID ==  ... :
+>   the condition has length > 1 and only the first element will be used
+> .
+> .
+> .
+> .
+> .כשיצרתי וקטור ובו השורה הראשונה של המטריצה, לא היתה כל בעיה
+>
+> ?מה עושים
+> תודה
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From u2a57eddc33b1b035 at groups.google.com  Fri Aug 30 05:23:07 2013
+From: u2a57eddc33b1b035 at groups.google.com (Shlomo Yona)
+Date: Fri, 30 Aug 2013 05:23:07 +0000
+Subject: Re: [Israel RUG] R 3.0.1 on linux (mint) + openatlas
+Message-ID: <XGHNujAUrhs.UxojoWhWkmUJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <XGHNujAUrhs.HDJHEG7pqwgJ@israel-r-user-group.groups.google.com>
+References: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com> <XGHNujAUrhs.HDJHEG7pqwgJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/XGHNujAUrhs/m/UxojoWhWkmUJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+וואו. תודה על הטיפ החשוב.
+אחפור לעומק.
+שלמה
+
+On Aug 29, 2013 9:39 PM, "Jonathan Rosenblatt" <john...@gmail.com> wrote:
+> לא הייתי ממליץ לבנות את התוכנה מהקוד כי אז אתה לא נהנה מבדיקת תלויות בתוכנות אחרות (לדוגה הגדרות Java) ועדכונים אוטומטיית שמתאפשרים על ידי התקנה מהמאגרים. כמו כן- קומפילציה עם אפשרויות ברירת המחדל בוודאות תגרום לכך שלא תצליח להפעיל את RStudio, Eclipse וכמעט כל דבר אחר שמתממשק ל- R. ללא ספק הייתי משקיע את הזמן בשביל להתקין גרסה מעודכנת מהמאגרים, והדבר אכן אפשרי.
+>
+> אם קיבלת את גרסה 2.15 הייתי מוודא שהמאגרים של CRAN הוגדרו כראוי. כמו כן- כשיוצאת גרסת אובונטו חדשה, התוכנות שבמאגרים מפסיקות להתעדכן עבור גרסאות ישנות. יוצאים מן הכלל לכך הן גרסאות מסוג LTS כמו 12.04.
+> כל זאת בשביל להגיד שייתכן שגרסאות מאוחרות של R יהיו זמינות רק עבור הפצות מאוחרות של אובונטו כמו raring או quantal. אתה צריך לבדוק על איזו גרסת אובונטו נבנתה גרסת ה- mint שלך ובתקווה שזו אחת הגרסות המאוחרות- להפנות למקום הנכון במאגרי אובונטו.
+>
+> יונתן
+>
+>
+>
+>
+> 2013/8/29 Shlomo Yona <shlom...@gmail.com>
+> > תודה, יהונתן
+> > למעשה כך עשיתי וכך סיימתי עם גרסה 2.15 תחת הגרסה החדשה. אתה מסביר יפה מדוע.
+> > אולי הפתרון להתקין מ-source code.
+> >
+> > תודה.
+> > שלמה
+> >
+> >
+> > 2013/8/29 Jonathan Rosenblatt <john...@gmail.com>
+> > > היות שמינט זו וריאציה על אובונטו, אתה יכול להיעזר בהוראות ההתקנה של אובונטו.
+> > > הבינאריים שבמאגרים של מינט/אובונטו (אליהם agt-get ניגש) הם בד"כ מפגרים אחרי המאגרים של CRAN הואיל שכל גרסה צריכה לעבוד בדיקות גם של אנשי מינט/אובונטו.
+> > > הוראות להתקנה מהמאגרים של CRAN תמצא כאן:
+> > > http://cran.r-project.org/bin/linux/ubuntu/
+> > >
+> > > לא תצטרך להתקין מחדש את openatals
+> > >
+> > >
+> > >
+> > > 2013/8/29 Shlomo Yona <shlom...@gmail.com>
+> > > > שלום,
+> > > > ניסיתי להתקין R עם openatlas על לינוקס מינט.
+> > > > חשבתי שדרך apt-get install אקבל הגרסה האחרונה של R אבל קיבלתי את 2.15.
+> > > >
+> > > > 1. מה השיטה לקבל את 3.0.1?
+> > > > 2. שווה לטרוח עם זה?
+> > > > 3. נניח שאעדכן, האם אצטרך להתקין מחדש את openatlas?
+> > > >
+> > > > תודה.
+> > > > שלמה
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > > For more options, visit https://groups.google.com/groups/opt_out.
+> > >
+> > >
+> > >
+> > > --
+> > > Jonathan Rosenblatt
+> > > www.john-ros.com <http://www.john-ros.com>
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/groups/opt_out.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+>
+> --
+> Jonathan Rosenblatt
+> www.john-ros.com <http://www.john-ros.com>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+From ueb340cf0e0f94e2e at groups.google.com  Fri Aug 30 07:32:55 2013
+From: ueb340cf0e0f94e2e at groups.google.com (Moran Koren)
+Date: Fri, 30 Aug 2013 07:32:55 +0000
+Subject: Re: [Israel RUG] R 3.0.1 on linux (mint) + openatlas
+Message-ID: <XGHNujAUrhs.LboBL96hJ2MJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <XGHNujAUrhs.HDJHEG7pqwgJ@israel-r-user-group.groups.google.com>
+References: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com> <XGHNujAUrhs.HDJHEG7pqwgJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/XGHNujAUrhs/m/LboBL96hJ2MJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+שאלה בעקבות השיחה,  יש דרך לשדרג את R מתוך R?
+
+On Aug 29, 2013 9:39 PM, "Jonathan Rosenblatt" <john...@gmail.com> wrote:
+
+> לא הייתי ממליץ לבנות את התוכנה מהקוד כי אז אתה לא נהנה מבדיקת תלויות בתוכנות אחרות (לדוגה הגדרות Java) ועדכונים אוטומטיית שמתאפשרים על ידי התקנה מהמאגרים. כמו כן- קומפילציה עם אפשרויות ברירת המחדל בוודאות תגרום לכך שלא תצליח להפעיל את RStudio, Eclipse וכמעט כל דבר אחר שמתממשק ל- R. ללא ספק הייתי משקיע את הזמן בשביל להתקין גרסה מעודכנת מהמאגרים, והדבר אכן אפשרי.
+>
+> אם קיבלת את גרסה 2.15 הייתי מוודא שהמאגרים של CRAN הוגדרו כראוי. כמו כן- כשיוצאת גרסת אובונטו חדשה, התוכנות שבמאגרים מפסיקות להתעדכן עבור גרסאות ישנות. יוצאים מן הכלל לכך הן גרסאות מסוג LTS כמו 12.04.
+> כל זאת בשביל להגיד שייתכן שגרסאות מאוחרות של R יהיו זמינות רק עבור הפצות מאוחרות של אובונטו כמו raring או quantal. אתה צריך לבדוק על איזו גרסת אובונטו נבנתה גרסת ה- mint שלך ובתקווה שזו אחת הגרסות המאוחרות- להפנות למקום הנכון במאגרי אובונטו.
+>
+> יונתן
+>
+>
+>
+>
+> 2013/8/29 Shlomo Yona <shlom...@gmail.com>
+> > תודה, יהונתן
+> > למעשה כך עשיתי וכך סיימתי עם גרסה 2.15 תחת הגרסה החדשה. אתה מסביר יפה מדוע.
+> > אולי הפתרון להתקין מ-source code.
+> >
+> > תודה.
+> > שלמה
+> >
+> >
+> > 2013/8/29 Jonathan Rosenblatt <john...@gmail.com>
+> > > היות שמינט זו וריאציה על אובונטו, אתה יכול להיעזר בהוראות ההתקנה של אובונטו.
+> > > הבינאריים שבמאגרים של מינט/אובונטו (אליהם agt-get ניגש) הם בד"כ מפגרים אחרי המאגרים של CRAN הואיל שכל גרסה צריכה לעבוד בדיקות גם של אנשי מינט/אובונטו.
+> > > הוראות להתקנה מהמאגרים של CRAN תמצא כאן:
+> > > http://cran.r-project.org/bin/linux/ubuntu/
+> > >
+> > > לא תצטרך להתקין מחדש את openatals
+> > >
+> > >
+> > >
+> > > 2013/8/29 Shlomo Yona <shlom...@gmail.com>
+> > > > שלום,
+> > > > ניסיתי להתקין R עם openatlas על לינוקס מינט.
+> > > > חשבתי שדרך apt-get install אקבל הגרסה האחרונה של R אבל קיבלתי את 2.15.
+> > > >
+> > > > 1. מה השיטה לקבל את 3.0.1?
+> > > > 2. שווה לטרוח עם זה?
+> > > > 3. נניח שאעדכן, האם אצטרך להתקין מחדש את openatlas?
+> > > >
+> > > > תודה.
+> > > > שלמה
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > > For more options, visit https://groups.google.com/groups/opt_out.
+> > >
+> > >
+> > >
+> > > --
+> > > Jonathan Rosenblatt
+> > > www.john-ros.com <http://www.john-ros.com>
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/groups/opt_out.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+>
+> --
+> Jonathan Rosenblatt
+> www.john-ros.com <http://www.john-ros.com>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+From ueb340cf0e0f94e2e at groups.google.com  Fri Aug 30 07:32:56 2013
+From: ueb340cf0e0f94e2e at groups.google.com (Moran Koren)
+Date: Fri, 30 Aug 2013 07:32:56 +0000
+Subject: Re: [Israel RUG] Applying functions with multiple variables
+Message-ID: <l30Kkxfw_E0.5A60ckrtSEAJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <l30Kkxfw_E0.q8xkv_XXAksJ@israel-r-user-group.groups.google.com>
+References: <l30Kkxfw_E0.Nw8rChjq3roJ@israel-r-user-group.groups.google.com> <l30Kkxfw_E0.q8xkv_XXAksJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/l30Kkxfw_E0/m/5A60ckrtSEAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+יש גם את mapply שמאפשרת לעבוד עם יותר מווקטור אחד, אולי זה יכול להתאים?
+
+On Aug 29, 2013 9:43 PM, "Jonathan Rosenblatt" <john...@gmail.com> wrote:
+> הנה דוגמה לאופן שבו אפשר להשתמש ב- apply לפונקציות מותאמות אישית:
+> configs<- data.frame(a=c(1,2), b=c(3,4))
+> apply(configs, 1, function(x) x[['a']]-x[['b']])
+>
+> האם זה עזר?
+>
+>
+> On Thu, Aug 29, 2013 at 2:26 PM, Asher <asher...@gmail.com> wrote:
+> > ,שלום
+> >
+> > :יש לי את המטריצה הבאה
+> > > OutputT
+> >        Item_ID   ID Answer_Seq   Test_ID Candidate_ID
+> > [1,] 270026457 2093          8 270026526            1
+> > [2,] 270026458 2093         14 270026526            1
+> > [3,] 270026432 2093         20 270026526            1
+> > >
+> >
+> > .q9, q53,q275,q318 ברצוני להריץ פונקציה על כל אחת מהשורות במטריצה, כך שאקבל את המשתנים
+> >
+> > :הפונקציה
+> > Calc.funAnswer = function(OutputT){if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==7){q9<-1
+> > } else if (Test_ID==270026526 & Item_ID== 270026457 & ID==2093 & Answer_Seq==8){q9<-2
+> > } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==9){q9<-3
+> > } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==10){q9<-4
+> > } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==11){q9<-5
+> > } else {q9<-NA
+> > }
+> > if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==14){q53<-1
+> > } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==15){q53<-2
+> > } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==16){q53<-3
+> > } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==17){q53<-4
+> > } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==18){q53<-5
+> > } else {q53<-NA
+> > }
+> > if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==34){q275<-1
+> > } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==35){q275<-2
+> > } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==36){q275<-3
+> > } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==37){q275<-4
+> > } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==38){q275<-5
+> > } else {q275<-NA
+> > }
+> > if (Test_ID==270026526 & Item_ID==270026522 & ID==2093 & Answer_Seq==16){q318<-1
+> > } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==17){q318<-2
+> > } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==18){q318<-3
+> > } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==19){q318<-4
+> > } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==20){q318<-5
+> > } else {q318<-NA}}
+> >
+> > OutputT = apply(OutputT,1,Calc.funAnswer)
+> >
+> > :כשהרצתי קיבלתי את הודעת השגיאה
+> >
+> > There were 50 or more warnings (use warnings() to see the first 50)
+> >
+> > 1: In if (Test_ID == 270026526 & Item_ID == 270026457 & ID ==  ... :
+> >   the condition has length > 1 and only the first element will be used
+> > .
+> > .
+> > .
+> > .
+> > .כשיצרתי וקטור ובו השורה הראשונה של המטריצה, לא היתה כל בעיה
+> >
+> > ?מה עושים
+> > תודה
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+>
+>
+>
+> --
+> Jonathan Rosenblatt
+> www.john-ros.com <http://www.john-ros.com>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+From ua305e65fa9dfb74d at groups.google.com  Fri Aug 30 08:30:04 2013
+From: ua305e65fa9dfb74d at groups.google.com (Jonathan Rosenblatt)
+Date: Fri, 30 Aug 2013 08:30:04 +0000
+Subject: Re: [Israel RUG] Applying functions with multiple variables
+Message-ID: <l30Kkxfw_E0.Xt-7cmQoSSEJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <l30Kkxfw_E0.q8xkv_XXAksJ@israel-r-user-group.groups.google.com>
+References: <l30Kkxfw_E0.Nw8rChjq3roJ@israel-r-user-group.groups.google.com> <l30Kkxfw_E0.q8xkv_XXAksJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/l30Kkxfw_E0/m/Xt-7cmQoSSEJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+ייתכן והתמונה הגדולה אובדת בפרטים הקטנים של הדוגמה שלך.
+אם תוכל להכין דוגמה קטנה יותר יהיה קל יותר להבין כיצד היא פועלת.
+
+2013/8/30 Moran Koren <mora...@gmail.com>
+
+> יש גם את mapply שמאפשרת לעבוד עם יותר מווקטור אחד, אולי זה יכול להתאים?
+> On Aug 29, 2013 9:43 PM, "Jonathan Rosenblatt" <john...@gmail.com> wrote:
+> > הנה דוגמה לאופן שבו אפשר להשתמש ב- apply לפונקציות מותאמות אישית:
+> > configs<- data.frame(a=c(1,2), b=c(3,4))
+> > apply(configs, 1, function(x) x[['a']]-x[['b']])
+> >
+> > האם זה עזר?
+> >
+> >
+> > On Thu, Aug 29, 2013 at 2:26 PM, Asher <asher...@gmail.com> wrote:
+> > > ,שלום
+> > >
+> > > :יש לי את המטריצה הבאה
+> > > > OutputT
+> > >        Item_ID   ID Answer_Seq   Test_ID Candidate_ID
+> > > [1,] 270026457 2093          8 270026526            1
+> > > [2,] 270026458 2093         14 270026526            1
+> > > [3,] 270026432 2093         20 270026526            1
+> > > >
+> > >
+> > > .q9, q53,q275,q318 ברצוני להריץ פונקציה על כל אחת מהשורות במטריצה, כך שאקבל את המשתנים
+> > >
+> > > :הפונקציה
+> > > Calc.funAnswer = function(OutputT){if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==7){q9<-1
+> > > } else if (Test_ID==270026526 & Item_ID== 270026457 & ID==2093 & Answer_Seq==8){q9<-2
+> > > } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==9){q9<-3
+> > > } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==10){q9<-4
+> > > } else if (Test_ID==270026526 & Item_ID==270026457 & ID==2093 & Answer_Seq==11){q9<-5
+> > > } else {q9<-NA
+> > > }
+> > > if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==14){q53<-1
+> > > } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==15){q53<-2
+> > > } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==16){q53<-3
+> > > } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==17){q53<-4
+> > > } else if (Test_ID==270026526 & Item_ID==270026458 & ID==2093 & Answer_Seq==18){q53<-5
+> > > } else {q53<-NA
+> > > }
+> > > if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==34){q275<-1
+> > > } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==35){q275<-2
+> > > } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==36){q275<-3
+> > > } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==37){q275<-4
+> > > } else if (Test_ID==270026526 & Item_ID==270026511 & ID==2093 & Answer_Seq==38){q275<-5
+> > > } else {q275<-NA
+> > > }
+> > > if (Test_ID==270026526 & Item_ID==270026522 & ID==2093 & Answer_Seq==16){q318<-1
+> > > } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==17){q318<-2
+> > > } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==18){q318<-3
+> > > } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==19){q318<-4
+> > > } else if (Test_ID==270026526 & Item_ID==270026432 & ID==2093 & Answer_Seq==20){q318<-5
+> > > } else {q318<-NA}}
+> > >
+> > > OutputT = apply(OutputT,1,Calc.funAnswer)
+> > >
+> > > :כשהרצתי קיבלתי את הודעת השגיאה
+> > >
+> > > There were 50 or more warnings (use warnings() to see the first 50)
+> > >
+> > > 1: In if (Test_ID == 270026526 & Item_ID == 270026457 & ID ==  ... :
+> > >   the condition has length > 1 and only the first element will be used
+> > > .
+> > > .
+> > > .
+> > > .
+> > > .כשיצרתי וקטור ובו השורה הראשונה של המטריצה, לא היתה כל בעיה
+> > >
+> > > ?מה עושים
+> > > תודה
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/groups/opt_out.
+> >
+> >
+> >
+> > --
+> > Jonathan Rosenblatt
+> > www.john-ros.com <http://www.john-ros.com>
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
+--
+Jonathan Rosenblatt
+www.john-ros.com <http://www.john-ros.com>
+
+From ub24c10731fdfceaf at groups.google.com  Sat Aug 31 11:34:10 2013
+From: ub24c10731fdfceaf at groups.google.com (Tal Galili)
+Date: Sat, 31 Aug 2013 11:34:10 +0000
+Subject: Re: [Israel RUG] R 3.0.1 on linux (mint) + openatlas
+Message-ID: <XGHNujAUrhs.EJlW81c3R2YJ@israel-r-user-group.groups.google.com>
+In-Reply-To: <XGHNujAUrhs.HDJHEG7pqwgJ@israel-r-user-group.groups.google.com>
+References: <XGHNujAUrhs.PCjB-a0AT0oJ@israel-r-user-group.groups.google.com> <XGHNujAUrhs.HDJHEG7pqwgJ@israel-r-user-group.groups.google.com>
+Archived-At: <https://groups.google.com/g/israel-r-user-group/c/XGHNujAUrhs/m/EJlW81c3R2YJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+שלום מורן ושאר חברי הקבוצה.
+R לא מאפשרת לשדרג את עצמה כברירת מחדל.
+ישנה חבילה המיועדת ל Windows (אשר כתבתי), שמאפשרת לשרדג את R דרך ממשק נוח.
+הנה פוסט עם צילומי מסך שמדגים את החבילה:
+http://www.r-statistics.com/2013/04/updating-r-on-windows-through-a-menu-bar-installr-0-9-released-on-cran/
+
+מה שכן, היות ואני לא משתמש במערכות הפעלה אחרות, לא כתבתי פתרון ל MAC או לינוקס.
+עם זאת (@shlomo yona), אם מישהו פה ירצה לסייע ולהרחיב את החבילה למערכות הפעלה אחרות - אני אשמח לשיתוף הפעולה.
+
+בברכה,
+טל
+
+----------------Contact Details:-------------------------------------------------------
+Contact me: Tal.G...@gmail.com |
+Read me: www.talgalili.com <http://www.talgalili.com> (Hebrew) | www.biostatistics.co.il <http://www.biostatistics.co.il> (Hebrew) | www.r-statistics.com <http://www.r-statistics.com> (English)
+----------------------------------------------------------------------------------------------
+
+2013/8/30 Moran Koren <mora...@gmail.com>
+
+> שאלה בעקבות השיחה,  יש דרך לשדרג את R מתוך R?
+> On Aug 29, 2013 9:39 PM, "Jonathan Rosenblatt" <john...@gmail.com> wrote:
+> > לא הייתי ממליץ לבנות את התוכנה מהקוד כי אז אתה לא נהנה מבדיקת תלויות בתוכנות אחרות (לדוגה הגדרות Java) ועדכונים אוטומטיית שמתאפשרים על ידי התקנה מהמאגרים. כמו כן- קומפילציה עם אפשרויות ברירת המחדל בוודאות תגרום לכך שלא תצליח להפעיל את RStudio, Eclipse וכמעט כל דבר אחר שמתממשק ל- R. ללא ספק הייתי משקיע את הזמן בשביל להתקין גרסה מעודכנת מהמאגרים, והדבר אכן אפשרי.
+> >
+> > אם קיבלת את גרסה 2.15 הייתי מוודא שהמאגרים של CRAN הוגדרו כראוי. כמו כן- כשיוצאת גרסת אובונטו חדשה, התוכנות שבמאגרים מפסיקות להתעדכן עבור גרסאות ישנות. יוצאים מן הכלל לכך הן גרסאות מסוג LTS כמו 12.04.
+> > כל זאת בשביל להגיד שייתכן שגרסאות מאוחרות של R יהיו זמינות רק עבור הפצות מאוחרות של אובונטו כמו raring או quantal. אתה צריך לבדוק על איזו גרסת אובונטו נבנתה גרסת ה- mint שלך ובתקווה שזו אחת הגרסות המאוחרות- להפנות למקום הנכון במאגרי אובונטו.
+> >
+> > יונתן
+> >
+> >
+> >
+> >
+> > 2013/8/29 Shlomo Yona <shlom...@gmail.com>
+> > > תודה, יהונתן
+> > > למעשה כך עשיתי וכך סיימתי עם גרסה 2.15 תחת הגרסה החדשה. אתה מסביר יפה מדוע.
+> > > אולי הפתרון להתקין מ-source code.
+> > >
+> > > תודה.
+> > > שלמה
+> > >
+> > >
+> > > 2013/8/29 Jonathan Rosenblatt <john...@gmail.com>
+> > > > היות שמינט זו וריאציה על אובונטו, אתה יכול להיעזר בהוראות ההתקנה של אובונטו.
+> > > > הבינאריים שבמאגרים של מינט/אובונטו (אליהם agt-get ניגש) הם בד"כ מפגרים אחרי המאגרים של CRAN הואיל שכל גרסה צריכה לעבוד בדיקות גם של אנשי מינט/אובונטו.
+> > > > הוראות להתקנה מהמאגרים של CRAN תמצא כאן:
+> > > > http://cran.r-project.org/bin/linux/ubuntu/
+> > > >
+> > > > לא תצטרך להתקין מחדש את openatals
+> > > >
+> > > >
+> > > >
+> > > > 2013/8/29 Shlomo Yona <shlom...@gmail.com>
+> > > > > שלום,
+> > > > > ניסיתי להתקין R עם openatlas על לינוקס מינט.
+> > > > > חשבתי שדרך apt-get install אקבל הגרסה האחרונה של R אבל קיבלתי את 2.15.
+> > > > >
+> > > > > 1. מה השיטה לקבל את 3.0.1?
+> > > > > 2. שווה לטרוח עם זה?
+> > > > > 3. נניח שאעדכן, האם אצטרך להתקין מחדש את openatlas?
+> > > > >
+> > > > > תודה.
+> > > > > שלמה
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > > > For more options, visit https://groups.google.com/groups/opt_out.
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > Jonathan Rosenblatt
+> > > > www.john-ros.com <http://www.john-ros.com>
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > > For more options, visit https://groups.google.com/groups/opt_out.
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/groups/opt_out.
+> >
+> >
+> >
+> > --
+> > Jonathan Rosenblatt
+> > www.john-ros.com <http://www.john-ros.com>
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> > For more options, visit https://groups.google.com/groups/opt_out.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Israel R User Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to israel-r-user-g...@googlegroups.com.
+> For more options, visit https://groups.google.com/groups/opt_out.
+
