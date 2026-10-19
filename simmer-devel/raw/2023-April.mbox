@@ -1,0 +1,406 @@
+From u574beeebc8eda76a at groups.google.com  Wed Apr  5 15:20:57 2023
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Wed, 05 Apr 2023 15:20:57 +0000
+Subject: Resetting simmer environment for Monte Carlo simulation
+Message-ID: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/4cQWtS571iQ/m/o0Rbb2m0AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I would like to run Monte Carlo replications of my simmer simulation and was wondering if there is a way to do this without calling simmer::simmer() during each replication while still ensuring that the simmer::timeout() values are randomly sampled.
+
+At a high level, my setup is as follows:
+
+env <- setup_sim(input_params)
+results <- run_sim(env, n_mc = 100)
+
+where
+
+setup_sim() is a function that initializes the simmer environment and adds resources and trajectories. I would like to separate environment creation from executing the simulation, since I am defining the environment programmatically and it takes a nonsignificant amount of time to set up. I then call run_sim() to execute the simulation, resetting the simmer environment each time:
+
+run_sim <- function(.env, run_until = Inf, n_mc = 1, use_parallel = FALSE) {
+  # Run simulation
+  start_time <- Sys.time()
+
+  print('Simulating...')
+  if (use_parallel == TRUE & n_mc > 1) {
+    envs <- parallel::mclapply(1:n_mc, function(i) {
+      .env |>
+        simmer::reset() |>
+        simmer::run(until = run_until) |>
+        simmer::wrap()
+      })
+    } else {
+      envs <- purrr::map(
+        seq.int <http://seq.int>(1, n_mc),
+        function(i) {
+          .env |>
+            simmer::reset() |>
+            simmer::run(
+              until = run_until,
+              progress = simmer_progress
+              )
+        },
+        .progress = pb_bar_options
+        )
+      }
+
+  duration <- Sys.time() - start_time
+  print('Simulation complete. ')
+  print(duration)
+
+  envs
+}
+
+However, I noticed that the random number generated for timeouts do not change across replications, even though they are generated from function calls:
+
+... |>
+    simmer::timeout(
+        \() {
+          step_nbr <- simmer::get_attribute(env, keys = 'step_nbr')
+          cycle_time <- get_cycle_time_wrapper(
+            step_nbr,
+            simmer::get_selected(env),
+            rand_seed = sample.int <http://sample.int>(100000, 1)
+            ) *
+            simmer::get_attribute(env, keys = 'TimeMultiplier')
+
+          cycle_time
+        }
+        ) |>
+...
+
+where get_cycle_time_wrapper() is a function that randomly samples values from a lookup table.
+
+Is there a way to ensure a new random sample for each replication given my setup, or do I have to recreate the simmer environment each time?
+
+Thanks!
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Apr  5 16:41:16 2023
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 05 Apr 2023 16:41:16 +0000
+Subject: Re: [simmer-devel] Resetting simmer environment for Monte Carlo simulation
+Message-ID: <4cQWtS571iQ.QUQdmcu4AgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+References: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/4cQWtS571iQ/m/QUQdmcu4AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Did you set a parallel-friendly RNG? E.g. RNGkind("L'Ecuyer-CMRG")
+
+On Wed, 5 Apr 2023 at 18:18, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+
+> I would like to run Monte Carlo replications of my simmer simulation and was wondering if there is a way to do this without calling simmer::simmer() during each replication while still ensuring that the simmer::timeout() values are randomly sampled.
+>
+> At a high level, my setup is as follows:
+>
+> env <- setup_sim(input_params)
+> results <- run_sim(env, n_mc = 100)
+>
+> where
+>
+> setup_sim() is a function that initializes the simmer environment and adds resources and trajectories. I would like to separate environment creation from executing the simulation, since I am defining the environment programmatically and it takes a nonsignificant amount of time to set up. I then call run_sim() to execute the simulation, resetting the simmer environment each time:
+>
+> run_sim <- function(.env, run_until = Inf, n_mc = 1, use_parallel = FALSE) {
+>   # Run simulation
+>   start_time <- Sys.time()
+>
+>   print('Simulating...')
+>   if (use_parallel == TRUE & n_mc > 1) {
+>     envs <- parallel::mclapply(1:n_mc, function(i) {
+>       .env |>
+>         simmer::reset() |>
+>         simmer::run(until = run_until) |>
+>         simmer::wrap()
+>       })
+>     } else {
+>       envs <- purrr::map(
+>         seq.int <http://seq.int>(1, n_mc),
+>         function(i) {
+>           .env |>
+>             simmer::reset() |>
+>             simmer::run(
+>               until = run_until,
+>               progress = simmer_progress
+>               )
+>         },
+>         .progress = pb_bar_options
+>         )
+>       }
+>
+>   duration <- Sys.time() - start_time
+>   print('Simulation complete. ')
+>   print(duration)
+>
+>   envs
+> }
+>
+> However, I noticed that the random number generated for timeouts do not change across replications, even though they are generated from function calls:
+>
+> ... |>
+>     simmer::timeout(
+>         \() {
+>           step_nbr <- simmer::get_attribute(env, keys = 'step_nbr')
+>           cycle_time <- get_cycle_time_wrapper(
+>             step_nbr,
+>             simmer::get_selected(env),
+>             rand_seed = sample.int <http://sample.int>(100000, 1)
+>             ) *
+>             simmer::get_attribute(env, keys = 'TimeMultiplier')
+>
+>           cycle_time
+>         }
+>         ) |>
+> ...
+>
+> where get_cycle_time_wrapper() is a function that randomly samples values from a lookup table.
+>
+> Is there a way to ensure a new random sample for each replication given my setup, or do I have to recreate the simmer environment each time?
+>
+> Thanks!
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/04c4c239-a341-4fdc-b8f9-c540bae50daen%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/04c4c239-a341-4fdc-b8f9-c540bae50daen%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From u574beeebc8eda76a at groups.google.com  Wed Apr  5 18:49:31 2023
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Wed, 05 Apr 2023 18:49:31 +0000
+Subject: 
+Message-ID: <4cQWtS571iQ.aj8zMcu_AgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+References: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/4cQWtS571iQ/m/aj8zMcu_AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u574beeebc8eda76a at groups.google.com  Wed Apr  5 19:23:47 2023
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Wed, 05 Apr 2023 19:23:47 +0000
+Subject: 
+Message-ID: <4cQWtS571iQ.3r8F6N6PAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+References: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/4cQWtS571iQ/m/3r8F6N6PAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u0f5b7adb7e70bd8b at groups.google.com  Fri Apr  7 10:32:42 2023
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Fri, 07 Apr 2023 10:32:42 +0000
+Subject: Re: [simmer-devel] Resetting simmer environment for Monte Carlo simulation
+Message-ID: <4cQWtS571iQ.v9H83QwQAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <4cQWtS571iQ.3r8F6N6PAQAJ@simmer-devel.groups.google.com>
+References: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com> <4cQWtS571iQ.3r8F6N6PAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/4cQWtS571iQ/m/v9H83QwQAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Sorry that these messages didn't get through. Apparently, they were marked as spam for some reason. Copying here the hints I gave you privately for more visibility:
+mclapply and family don't work on Windows. The simmer environment (like any other external pointer) is not serializable, and therefore cannot be shared in any other parallelization method. If you have access to a Linux machine, you can parallelize very efficiently via mclapply, by building the environment once and then sharing it. But on Windows you need to build the environment at least once in every worker (then you can simulate more than once per worker with the same environment).
+Whenever you parallelize, but also when you replicate via lapply/purrr tools by resetting and reusing the environment, you need to wrap() the final result. In a parallel run, this means that the results of your simulation can be exported back to the main process. In serial lapply/purrr runs, this means that you get a list of all the different simulation results, and not a list pointing to the same simulation environment, which only holds the results for your last simulation.
+Hope it helps.
+Iñaki
+
+On Fri, 7 Apr 2023 at 11:35, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> The issue does not occur when I used  parallel::mclapply(), but I just realized that this does not actually parallelize under Windows and just runs serially. Indeed, when trying to parallelize under Windows, I get
+> Error in { : task 1 failed - "external pointer is not valid"
+>
+> I tried using furrr::future_map() as well as foreach %dopar%, but both approaches result in the same error. Is this maybe a case of "Non-exportable objects" discussed here: A Future for R: Common Issues with Solutions (r-project.org) <https://cran.r-project.org/web/packages/future/vignettes/future-4-issues.html>?
+>
+> Are there any examples of successful parallelization of simmer under Windows?
+>
+
+> On Wednesday, April 5, 2023 at 12:41:16 PM UTC-4 iu...@fedoraproject.org wrote:
+> > Did you set a parallel-friendly RNG? E.g. RNGkind("L'Ecuyer-CMRG")
+> >
+> > On Wed, 5 Apr 2023 at 18:18, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> > > I would like to run Monte Carlo replications of my simmer simulation and was wondering if there is a way to do this without calling simmer::simmer() during each replication while still ensuring that the simmer::timeout() values are randomly sampled.
+> > >
+> > > At a high level, my setup is as follows:
+> > >
+> > > env <- setup_sim(input_params)
+> > > results <- run_sim(env, n_mc = 100)
+> > >
+> > > where
+> > >
+> > > setup_sim() is a function that initializes the simmer environment and adds resources and trajectories. I would like to separate environment creation from executing the simulation, since I am defining the environment programmatically and it takes a nonsignificant amount of time to set up. I then call run_sim() to execute the simulation, resetting the simmer environment each time:
+> > >
+> > > run_sim <- function(.env, run_until = Inf, n_mc = 1, use_parallel = FALSE) {
+> > >   # Run simulation
+> > >   start_time <- Sys.time()
+> > >
+> > >   print('Simulating...')
+> > >   if (use_parallel == TRUE & n_mc > 1) {
+> > >     envs <- parallel::mclapply(1:n_mc, function(i) {
+> > >       .env |>
+> > >         simmer::reset() |>
+> > >         simmer::run(until = run_until) |>
+> > >         simmer::wrap()
+> > >       })
+> > >     } else {
+> > >       envs <- purrr::map(
+> > >         seq.int <http://seq.int>(1, n_mc),
+> > >         function(i) {
+> > >           .env |>
+> > >             simmer::reset() |>
+> > >             simmer::run(
+> > >               until = run_until,
+> > >               progress = simmer_progress
+> > >               )
+> > >         },
+> > >         .progress = pb_bar_options
+> > >         )
+> > >       }
+> > >
+> > >   duration <- Sys.time() - start_time
+> > >   print('Simulation complete. ')
+> > >   print(duration)
+> > >
+> > >   envs
+> > > }
+> > >
+> > > However, I noticed that the random number generated for timeouts do not change across replications, even though they are generated from function calls:
+> > >
+> > > ... |>
+> > >     simmer::timeout(
+> > >         \() {
+> > >           step_nbr <- simmer::get_attribute(env, keys = 'step_nbr')
+> > >           cycle_time <- get_cycle_time_wrapper(
+> > >             step_nbr,
+> > >             simmer::get_selected(env),
+> > >             rand_seed = sample.int <http://sample.int>(100000, 1)
+> > >             ) *
+> > >             simmer::get_attribute(env, keys = 'TimeMultiplier')
+> > >
+> > >           cycle_time
+> > >         }
+> > >         ) |>
+> > > ...
+> > >
+> > > where get_cycle_time_wrapper() is a function that randomly samples values from a lookup table.
+> > >
+> > > Is there a way to ensure a new random sample for each replication given my setup, or do I have to recreate the simmer environment each time?
+> > >
+> > > Thanks!
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/04c4c239-a341-4fdc-b8f9-c540bae50daen%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/04c4c239-a341-4fdc-b8f9-c540bae50daen%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> >
+> > --
+> > Iñaki Úcar
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/4f81474e-0b95-418d-892c-1b8984494278n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/4f81474e-0b95-418d-892c-1b8984494278n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From u574beeebc8eda76a at groups.google.com  Fri Apr  7 15:16:34 2023
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Fri, 07 Apr 2023 15:16:34 +0000
+Subject: 
+Message-ID: <4cQWtS571iQ.PWyXh4ofAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+References: <4cQWtS571iQ.o0Rbb2m0AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/4cQWtS571iQ/m/PWyXh4ofAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u574beeebc8eda76a at groups.google.com  Wed Apr 19 16:11:06 2023
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Wed, 19 Apr 2023 16:11:06 +0000
+Subject: Resource not dropping arrival when capacity --> 0
+Message-ID: <6cSkDx6-R7U.wmWOjSqXAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/6cSkDx6-R7U/m/wmWOjSqXAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+In my simulation, certain resources are on a capacity schedule, which alternates between 0 and 1 based on the time of day. If a resource cannot complete its task by the time its capacity goes to zero, the arrival should be dropped, wait a short period, and rollback to try to select an available resource. If no resource is available, the arrival goes through a timeout --> rollback loop until a resource becomes available.
+
+The relevant code is as follows:
+    # Use a reject trajectory used to go back and select a new resource if the current
+    # resource runs out of time (i.e., its shift ends)
+    ... |>
+    simmer::seize_selected(
+      continue = TRUE,
+      reject = simmer::trajectory('dropped') |>
+        simmer::timeout(\() runif(1, min = 0.07, max = 0.1)) |>
+        simmer::rollback(target = 'select_resource')
+      ) |>
+
+    # Clear the queue of the selected resource when its capacity is zero
+    simmer::renege_if(
+      signal = 'clear_queue'
+      ) |>
+    simmer::send(
+      signals =  \() {
+        cap <- simmer::get_capacity_selected(env)
+
+        res_name <- simmer::get_selected(env)
+        now <- simmer::now(env)
+
+        queue_count <- simmer::get_queue_count_selected(env)
+        if (res_name == 'Operator_Bill' & now > 41 & queue_count > 0) {
+          browser()
+        }
+
+        if (cap == 0) {
+          'clear_queue'
+          } else {
+            ''
+          }
+        }
+      ) |> ...
+
+The debug condition is never triggered for some reason, but on inspecting mon_resources it shows that arrivals are being served/in queue when capacity == 0.  What would be the correct code to handle this situation?
+
+Please see my stackoverflow post for figures: event simulation - R simmer resource not dropping arrival when capacity --> 0 - Stack Overflow <https://stackoverflow.com/questions/76056706/r-simmer-resource-not-dropping-arrival-when-capacity-0>
+
+Thank you!
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Apr 19 16:37:02 2023
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 19 Apr 2023 16:37:02 +0000
+Subject: Re: [simmer-devel] Resource not dropping arrival when capacity --> 0
+Message-ID: <6cSkDx6-R7U.jZVp25SYAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <6cSkDx6-R7U.wmWOjSqXAAAJ@simmer-devel.groups.google.com>
+References: <6cSkDx6-R7U.wmWOjSqXAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/6cSkDx6-R7U/m/jZVp25SYAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wed, 19 Apr 2023 at 18:11, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> Please see my stackoverflow post for figures: event simulation - R simmer resource not dropping arrival when capacity --> 0 - Stack Overflow <https://stackoverflow.com/questions/76056706/r-simmer-resource-not-dropping-arrival-when-capacity-0>
+
+See my answer there.
+
+--
+Iñaki Úcar
+

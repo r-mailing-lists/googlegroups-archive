@@ -1,0 +1,1811 @@
+From ud1514084e49b4d7a at groups.google.com  Sat Jul 11 09:29:21 2020
+From: ud1514084e49b4d7a at groups.google.com (s-geissler)
+Date: Sat, 11 Jul 2020 09:29:21 +0000
+Subject: set_capacity does not accept function
+Message-ID: <e7TsysNockM.azHipw0PAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/e7TsysNockM/m/azHipw0PAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone,
+
+Does set_capacity() within a trajectory not accept a function for its resource parameter?
+
+I currently have the following code to check the current mean queue size and call set_capacity if a threshold is reached.
+
+s1.current <- 1
+
+update_current <- function() {
+  s1.current <<- s1.current + 1
+  return(0)
+}
+
+t_scale <- trajectory("Scale") %>%
+  branch(option = function() { (mean(get_queue_count(env, paste0("s1_", s1.current))) > config$s1.scaler.threshold) }, continue = F,
+         trajectory() %>%
+           timeout(function() update_current()) %>%
+           set_capacity(function() {paste0("s1_", s1.current)}, value = config$s1.capacity) %>%
+           log_(function() {paste0("Added new s1 resource. ", s1.current)})) %>%
+  log_("No resources added.")
+
+The idea is to keep track of resources that currently have a capacity > 0 within s1.current. Everytime the threshold is reached, the timeout activity calls the update_current function that increases s1.current by one.
+
+However, set_capacity does not accept the function as its argument and fails with. Without the function i run into the problem that the expression is evaluated during definition instead of runtime.
+
+Error: set_capacity: 'resource' is not a valid character
+
+I tried the same using a global attribute instead of a base R variable but got the same error.
+
+What would be the right way to achieve this? Specifically, how do i dynamically change the capacity of a resource of which i have to assembly the name at runtime?
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sat Jul 11 09:45:26 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sat, 11 Jul 2020 09:45:26 +0000
+Subject: Re: [simmer-devel] set_capacity does not accept function
+Message-ID: <e7TsysNockM.zwhsz3QcAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <e7TsysNockM.azHipw0PAwAJ@simmer-devel.groups.google.com>
+References: <e7TsysNockM.azHipw0PAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/e7TsysNockM/m/zwhsz3QcAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sat, 11 Jul 2020 at 11:30, 's-geissler' via simmer-devel
+<simmer...@googlegroups.com> wrote:
+>
+> Hi everyone,
+>
+> Does set_capacity() within a trajectory not accept a function for its resource parameter?
+
+It does not.
+
+> What would be the right way to achieve this? Specifically, how do i dynamically change the capacity of a resource of which i have to assembly the name at runtime?
+
+TL;DR, use "select" and then "set_capacity_selected".
+
+Long explanation follows. Resources are special, because a "unit of
+interaction" typically spans over several activities. Consider the
+following:
+
+seize("something") %>%
+timeout(t) %>%
+release("something")
+
+If we allow "something" to be a function, then something may change
+during the course of that timeout and your trajectory becomes invalid
+because you are selecting a different resource for releasing. To avoid
+this kind of mistakes, every activity that deals with resources has
+its *_selected() counterpart that acts on the resource selected by the
+select() activity. Thus, this is equivalent to the example above:
+
+select("something") %>%
+seize_selected() %>%
+timeout(t) %>%
+release_selected()
+
+And now "something" can be substituted by a function, and no matter
+what happens, the trajectory integrity is preserved.
+
+Regards,
+--
+Iñaki Úcar
+
+From u8c246fbd7c0e1dac at groups.google.com  Wed Jul 15 22:51:07 2020
+From: u8c246fbd7c0e1dac at groups.google.com (Dale Frakes)
+Date: Wed, 15 Jul 2020 22:51:07 +0000
+Subject: controlling resource by schedule and number consumed, customers not seeing consumables
+Message-ID: <QAgbhdRNIyY.Z2XP56aBBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/QAgbhdRNIyY/m/Z2XP56aBBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I've tried setting up a simple simulation where the resource is only available during a short window fixed window, and the resource can only be seized if it's available in the schedule AND if there's still a consumable resource available too.
+
+I've based the model off the gas-station example, but in this case it's a donut shop that's only open from 8 to 9 and only sells 12 donuts each day.  These are amazing donuts, so customers will wait as long as they have to.
+
+I successfully made a "donut maker" that makes the 12 donuts at midnight, and this can be seen in the output:
+0: controller0: made 12 donuts, discarded 0 old donuts on day 0
+24: controller0: made 12 donuts, discarded 12 old donuts on day 1
+48: controller0: made 12 donuts, discarded 11 old donuts on day 2
+72: controller0: made 12 donuts, discarded 11 old donuts on day 3
+96: controller0: made 12 donuts, discarded 11 old donuts on day 4
+120: controller0: made 12 donuts, discarded 11 old donuts on day 5
+144: controller0: made 12 donuts, discarded 11 old donuts on day 6
+
+However the customers aren't seeing the donuts when they should be available (here's the logging for customer0 and customer1 getting their donuts):
+
+4.76008: customer0: in line for donuts, I see 0 donuts
+8: customer0: at the counter, I see 0 donuts
+20.6216: customer1: in line for donuts, I see 0 donuts
+24: controller0: made 12 donuts, discarded 12 old donuts on day 1
+24: customer0: I finally got a donut after waiting for new ones
+24.0167: customer0: leaving counter with my donut after 19.2565831838533 hours
+27.4254: customer2: in line for donuts, I see 0 donuts
+28.342: customer3: in line for donuts, I see 0 donuts
+32: customer1: at the counter, I see 0 donuts
+39.6982: customer4: in line for donuts, I see 0 donuts
+48: controller0: made 12 donuts, discarded 11 old donuts on day 2
+48: customer1: I finally got a donut after waiting for new ones
+48.0167: customer1: leaving counter with my donut after 27.3950971326217 hours
+
+If we focus on just customer0, we see:
+4.76008: customer0: in line for donuts, I see 0 donuts
+8: customer0: at the counter, I see 0 donuts
+24: customer0: I finally got a donut after waiting for new ones
+24.0167: customer0: leaving counter with my donut after 19.2565831838533 hours
+
+In that first line, at 4.76, they get in line and should see the 12 donuts that were made at time 0.
+In that second line, at 8, they should be able to seize the counter, but only if there's a donut available.  There SHOULD be a donut, but they're not seeing it, so they're waiting all the way until midnight for when the next batch is made.
+
+Can anyone  help me figure out what am I doing wrong?  I feel confident it's in the customer trajectory, but I'm not sure how to fix it.
+
+Thank you!
+Dale
+
+Here's the code, essentially a stripped-down version of the gas-station example, but with a schedule added.
+
+## Beginning of code
+library(simmer)
+
+MAX_DONUTS <- 12
+NUM_DONUTS <- 0
+SIM_TIME <- 24 * 7            # Simulation time in hours
+
+NUM_DONUTS <- 0
+signal <- "new donuts made"
+
+# setup
+set.seed(42)
+env <- simmer()
+
+make_donuts <- trajectory() %>%
+  log_(function() {
+    sim_day <- now(env) %/% 24
+    old_donuts <- NUM_DONUTS
+    NUM_DONUTS <<- MAX_DONUTS
+    paste0("made ", NUM_DONUTS, " donuts, discarded ", old_donuts, " old donuts on day ", sim_day)
+  }) %>%
+  send(signal)
+
+controller <- trajectory() %>%
+  join(make_donuts) %>%
+  timeout(24) %>%
+  rollback(3, Inf)
+
+customer <- trajectory() %>%
+  set_attribute(c("start"), function() c(now(env))) %>%
+  log_(paste0("in line for donuts, I see ", NUM_DONUTS, " donuts")) %>%
+  # check if there are donuts available
+  branch(function() NUM_DONUTS > 0,
+         continue = TRUE,
+         # if not, block until the signal "new donuts made" is received
+         trajectory() %>%
+           trap(signal) %>%
+           wait() %>%
+           log_(paste0("I finally got a donut after waiting for new ones")) %>%
+           untrap(signal)
+  ) %>%
+  # get a donut
+  seize("counter", 1) %>%
+  log_(paste0(function() "at the counter, I see ", NUM_DONUTS, " donuts")) %>%
+  timeout(function() {
+    NUM_DONUTS <<- NUM_DONUTS -1
+    return(1/60)
+  }) %>%
+  release("counter", 1) %>%
+  log_(function()
+    paste0("leaving counter with my donut after ", now(env) - get_attribute(env, "start"), " hours"))
+
+capacity_schedule <- schedule(c(8, 9), c(1, 0), period=24)
+
+env %>%
+  add_resource("counter", capacity_schedule) %>%
+  add_generator("controller", controller, at(0)) %>%
+  add_generator("customer", customer, function() rexp(rate = 1/24, n = 1)) %>%
+
+  run(SIM_TIME)
+
+## End of Code
+
+Full output:
+0: controller0: made 12 donuts, discarded 0 old donuts on day 0
+4.76008: customer0: in line for donuts, I see 0 donuts
+8: customer0: at the counter, I see 0 donuts
+20.6216: customer1: in line for donuts, I see 0 donuts
+24: controller0: made 12 donuts, discarded 12 old donuts on day 1
+24: customer0: I finally got a donut after waiting for new ones
+24.0167: customer0: leaving counter with my donut after 19.2565831838533 hours
+27.4254: customer2: in line for donuts, I see 0 donuts
+28.342: customer3: in line for donuts, I see 0 donuts
+32: customer1: at the counter, I see 0 donuts
+39.6982: customer4: in line for donuts, I see 0 donuts
+48: controller0: made 12 donuts, discarded 11 old donuts on day 2
+48: customer1: I finally got a donut after waiting for new ones
+48.0167: customer1: leaving counter with my donut after 27.3950971326217 hours
+56: customer2: at the counter, I see 0 donuts
+72: controller0: made 12 donuts, discarded 11 old donuts on day 3
+72: customer2: I finally got a donut after waiting for new ones
+72.0167: customer2: leaving counter with my donut after 44.5913122257576 hours
+74.8253: customer5: in line for donuts, I see 0 donuts
+80: customer3: at the counter, I see 0 donuts
+82.3609: customer6: in line for donuts, I see 0 donuts
+92.204: customer7: in line for donuts, I see 0 donuts
+96: controller0: made 12 donuts, discarded 11 old donuts on day 4
+96: customer3: I finally got a donut after waiting for new ones
+96.0167: customer3: leaving counter with my donut after 67.6747066675112 hours
+104: customer4: at the counter, I see 0 donuts
+120: controller0: made 12 donuts, discarded 11 old donuts on day 5
+120: customer4: I finally got a donut after waiting for new ones
+120.017: customer4: leaving counter with my donut after 80.3184675647304 hours
+120.802: customer8: in line for donuts, I see 0 donuts
+128: customer5: at the counter, I see 0 donuts
+137.959: customer9: in line for donuts, I see 0 donuts
+144: controller0: made 12 donuts, discarded 11 old donuts on day 6
+144: customer5: I finally got a donut after waiting for new ones
+144.017: customer5: leaving counter with my donut after 69.1914162281934 hours
+152: customer6: at the counter, I see 0 donuts
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Jul 16 12:47:01 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Thu, 16 Jul 2020 12:47:01 +0000
+Subject: Re: [simmer-devel] controlling resource by schedule and number consumed, customers not seeing consumables
+Message-ID: <QAgbhdRNIyY.PpcjbESvBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <QAgbhdRNIyY.Z2XP56aBBAAJ@simmer-devel.groups.google.com>
+References: <QAgbhdRNIyY.Z2XP56aBBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/QAgbhdRNIyY/m/PpcjbESvBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, thanks for the detailed description. Comments inline:
+
+On Thu, 16 Jul 2020 at 00:51, Dale Frakes <dfr...@pdx.edu> wrote:
+>
+> customer <- trajectory() %>%
+>   set_attribute(c("start"), function() c(now(env))) %>%
+>   log_(paste0("in line for donuts, I see ", NUM_DONUTS, " donuts")) %>%
+
+The "function()" is missing here, so this string is static. Mystery
+solved. :) But keep reading.
+
+>   # check if there are donuts available
+>   branch(function() NUM_DONUTS > 0,
+
+This should be NUM_DONUTS == 0. If there are no donuts, you enter the
+branch to wait for the signal. If not, the customer just bypasses the
+branch.
+
+>          continue = TRUE,
+>          # if not, block until the signal "new donuts made" is received
+>          trajectory() %>%
+>            trap(signal) %>%
+>            wait() %>%
+>            log_(paste0("I finally got a donut after waiting for new ones")) %>%
+>            untrap(signal)
+>   ) %>%
+>   # get a donut
+>   seize("counter", 1) %>%
+>   log_(paste0(function() "at the counter, I see ", NUM_DONUTS, " donuts")) %>%
+
+Same issue as before: the "function()" should be outside.
+
+>   timeout(function() {
+>     NUM_DONUTS <<- NUM_DONUTS -1
+>     return(1/60)
+>   }) %>%
+>   release("counter", 1) %>%
+>   log_(function()
+>     paste0("leaving counter with my donut after ", now(env) - get_attribute(env, "start"), " hours"))
+
+This is ok.
+
+With those changes, it seems to work as expected.
+
+--
+Iñaki Úcar
+
+From ubdf61e559da3c102 at groups.google.com  Wed Jul 22 21:46:15 2020
+From: ubdf61e559da3c102 at groups.google.com (Sam Schaffel)
+Date: Wed, 22 Jul 2020 21:46:15 +0000
+Subject: Issue with signalling
+Message-ID: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/xG8p5nmTAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I am attempting to simulate an environment that is similar to the example in the State-Dependent Service Rates <https://r-simmer.org/articles/simmer-06-queueing.html> section of in vignette. It this case, I want the state of those being served by resource 1 to be affected by the number in entities being served by resource 1 and resource 2. Below I have two trajectories, the first being a basic seize and release after a timeout of the two resources and the second is meant to recreate the first trajectory using signalling. I expect both trj_1 and trj_2 to produce the same plot. I test each trajectory by changing the trajectory  argument in the add_generator function.
+library(simmer)
+library(simmer.plot)
+
+tmax <- 100
+
+#set Timeouts
+TIME_OUT <- 5
+TIME_OUT_2  <- 20
+INTAKE_TIMES <- at(seq(from = 0, to = tmax, by = 0.1))
+
+#Basic seize/release trajectory with constant timeout
+trj_1 <- trajectory() %>%
+  seize("resrc")%>%
+  timeout(TIME_OUT)%>%
+  release("resrc")%>%
+  seize("resrc2")%>%
+  timeout(TIME_OUT_2)%>%
+  release("resrc2")
+
+#Basic Trajectory with signalling and "do nothing" handler
+handlr <- trajectory()%>%
+  set_attribute(c("start", "delay"), function() {
+    left <- sum(get_attribute(envs, c("start", "delay"))) - now(envs)
+    delay <- left
+    c(now(envs), delay)
+  })%>%
+  timeout_from_attribute("delay")
+
+trj_2 <- trajectory()%>%
+  seize("resrc")%>%
+  set_attribute(c("start","delay"), function()
+    c(now(envs), TIME_OUT))%>%
+  trap("sgnl", handlr)%>%
+  send("sgnl")%>%
+  untrap("sgnl") %>%
+  release("resrc")%>%
+  send("sgnl")%>%
+
+  seize("resrc2")%>%  #seize resource 2
+  send("sgnl")%>%     #update the delay of entities seizing resource 1
+  timeout(TIME_OUT_2)%>%
+  release("resrc2")%>%
+  send("sgnl")
+
+envs <- simmer()
+
+envs%>%
+  add_resource("resrc", Inf, Inf)%>%
+  add_resource("resrc2", Inf, Inf)%>%
+
+  add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+
+  run(until = tmax)%>%
+
+  get_mon_resources()%>%
+  plot(metric = "usage")
+
+Here is the plot for trajectory 1.
+
+and for trajectory 2.
+
+We can see that trajectory 1 hits the desired steady state of 50 for resource 1 while trajectory 2 does not.
+
+What I have done so far:
+
+1. I tried replicating the problem with only using resource 1.
+
+Here I was not able to recreate the same problem. I tried sending the signal multiple times after untrapping and releasing resource 1. However the trj_1 and trj_2 plots remained identical with only 1 resource.
+
+2. Removing lines of code to isolate the problem.
+
+In trajectory 2, if I remove any one of the send("sgnl") commands after releasing resource 1 or the timeout(TIME_OUT_2) command. It results in a plot identical to trajectory 1. I also discovered here that the duration of TIME_OUT_2 affects the resource 1 usage curve.
+
+3. I tried changing the INTAKE_TIMES data. Here I discovered that if the increment of the arrival sequence is less than or equal to 0.1 then the two plots will differ. But if the increment is greater than 0.1 then the plots for trajectory 1 and trajectory 2 will be identical.
+
+4. I tried logging each entity as they went through the handler. Here I discovered an interesting pattern. The first 10 entities sent each time send("sgnl") is called appear to be entities from earlier in the simulation which should have been untrapped and unsubscribed from the signal. Every 5th entity from 274 to 319 seems to have not unsubscribed.
+
+99.9: entity274: in the handler
+
+99.9: entity279: in the handler
+
+99.9: entity284: in the handler
+
+99.9: entity289: in the handler
+
+99.9: entity294: in the handler
+
+99.9: entity299: in the handler
+
+99.9: entity304: in the handler
+
+99.9: entity309: in the handler
+
+99.9: entity314: in the handler
+
+99.9: entity319: in the handler
+
+99.9: entity949: in the handler
+
+99.9: entity950: in the handler
+
+99.9: entity951: in the handler
+
+99.9: entity952: in the handler
+
+...
+
+99.9: entity996: in the handler
+
+99.9: entity997: in the handler
+
+From u02c504fc23f1bb98 at groups.google.com  Sun Jul 26 05:34:54 2020
+From: u02c504fc23f1bb98 at groups.google.com (Xistance)
+Date: Sun, 26 Jul 2020 05:34:54 +0000
+Subject: renege_in doesn't set finished to FALSE if trajectory() is used
+Message-ID: <hxE4b7rkInc.W269gcqYAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/hxE4b7rkInc/m/W269gcqYAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Two opening statements; 1) what a great package!! 2) new user so I hope my question is not ignorant... :)
+
+I'm running the following example code inspired from the bank tutorial. I use renegade_in() below in its simplest form (see bold comment in code) to simulate a customer leaving after a period of time.
+
+## leave with some probability
+set.seed(1234)
+
+traj <- trajectory() %>%
+  log_("leave with some probability") %>%
+  leave(function() runif(1) < 0.5) %>%
+  log_("didn't leave")
+
+simmer() %>%
+  add_generator("dummy", traj, at(0, 1)) %>%
+  run() %>% invisible#> 0: dummy0: leave with some probability
+#> 1: dummy1: leave with some probability
+#> 1: dummy1: didn't leave
+## reneging after some time
+bank <- trajectory() %>%
+  log_("here I am") %>%
+  # renege in 5 minutes
+  renege_in(5) %>%    # I changed this from the example on the website
+  seize("clerk") %>%
+  # stay if I'm being attended within 5 minutes
+  renege_abort() %>%
+  log_("I'm being attended") %>%
+  timeout(10) %>%
+  release("clerk") %>%
+  log_("finished")
+
+cc <- simmer() %>%
+  add_resource("clerk", 1) %>%
+  add_generator("customer", bank, at(0, 1)) %>%
+  run() #> 0: customer0: here I am
+
+arrivals <- get_mon_arrivals(cc)
+arrivals
+
+> arrivals
+       name start_time end_time activity_time finished replication
+1 customer1          1        6             0    FALSE           1
+2 customer0          0       10            10     TRUE           1
+
+This is what I expect. I'm interested in the "finished" column as I'm learning to model a Call centre and can easily compute expected abandonment rates through it.
+
+However, when I change the renege_in() command to: "renege_in(5, out = trajectory() %>% log_("lost my patience. Reneging..."))" as per website example I get the following:
+
+set.seed(1234)
+
+traj <- trajectory() %>%
+  log_("leave with some probability") %>%
+  leave(function() runif(1) < 0.5) %>%
+  log_("didn't leave")
+
+simmer() %>%
+  add_generator("dummy", traj, at(0, 1)) %>%
+  run() %>% invisible#> 0: dummy0: leave with some probability
+#> 1: dummy1: leave with some probability
+#> 1: dummy1: didn't leave
+## reneging after some time
+bank <- trajectory() %>%
+  log_("here I am") %>%
+  # renege in 5 minutes
+  renege_in(5, out = trajectory() %>% log_("lost my patience. Reneging...")) %>%
+  seize("clerk") %>%
+  # stay if I'm being attended within 5 minutes
+  renege_abort() %>%
+  log_("I'm being attended") %>%
+  timeout(10) %>%
+  release("clerk") %>%
+  log_("finished")
+
+cc <- simmer() %>%
+  add_resource("clerk", 1) %>%
+  add_generator("customer", bank, at(0, 1)) %>%
+  run() #> 0: customer0: here I am
+
+Output:
+0: customer0: here I am
+0: customer0: I'm being attended
+1: customer1: here I am
+6: customer1: lost my patience. Reneging...
+10: customer0: finished
+
+arrivals <- get_mon_arrivals(cc)
+arrivals
+
+       name start_time end_time activity_time finished replication
+1 customer1          1        6             0     TRUE           1
+2 customer0          0       10            10     TRUE           1
+
+This is not what I expect. The reference page for renege says: "Arrivals that leave the trajectory will set the finished flag to FALSE in the output of get_mon_arrivals <https://r-simmer.org/reference/get_mon.html>. "
+
+Am I misunderstanding how things work, or is there a challenge with logging of renege tasks?
+
+Many thanks!
+Martin
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sun Jul 26 11:17:21 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sun, 26 Jul 2020 11:17:21 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.65PE5l-iAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/65PE5l-iAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, thanks for a detailed assessment, comments below:
+
+On Wed, 22 Jul 2020 at 23:46, Sam Schaffel <sam.sch...@gmail.com> wrote:
+>
+> In trajectory 2, if I remove any one of the send("sgnl") commands after releasing resource 1 or the timeout(TIME_OUT_2) command. It results in a plot identical to trajectory 1.
+
+This is the main issue: there are two "simultaneous" (because there is
+no timeout between them) send() activities. This typically leads to
+undefined behaviour, because it's impossible to order the events
+properly anymore.
+
+More specifically, the second consecutive send() is triggering a
+secondary handler when the arrivals didn't reach the
+timeout_from_attribute yet, and thus they end up executing *two*
+timeouts instead of one.
+
+TL;DR, the send() activity between resources is superfluous, and the
+solution is to remove it, as you found.
+
+--
+Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sun Jul 26 11:27:05 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sun, 26 Jul 2020 11:27:05 +0000
+Subject: Re: [simmer-devel] renege_in doesn't set finished to FALSE if trajectory() is used
+Message-ID: <hxE4b7rkInc.MTRHzeeiAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <hxE4b7rkInc.W269gcqYAQAJ@simmer-devel.groups.google.com>
+References: <hxE4b7rkInc.W269gcqYAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/hxE4b7rkInc/m/MTRHzeeiAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, comments below:
+
+On Sun, 26 Jul 2020 at 07:35, Xistance <martijn...@gmail.com> wrote:
+>
+> Two opening statements; 1) what a great package!! 2) new user so I hope my question is not ignorant... :)
+
+Thanks! The only "ignorant" question is the one never asked. :)
+
+> I'm running the following example code inspired from the bank tutorial. I use renegade_in() below in its simplest form (see bold comment in code) to simulate a customer leaving after a period of time.
+>
+
+> [snip]
+
+>
+> However, when I change the renege_in() command to: "renege_in(5, out = trajectory() %>% log_("lost my patience. Reneging..."))" as per website example I get the following:
+>
+
+>        name start_time end_time activity_time finished replication
+> 1 customer1          1        6             0     TRUE           1
+> 2 customer0          0       10            10     TRUE           1
+>
+> This is not what I expect. The reference page for renege says: "Arrivals that leave the trajectory will set the finished flag to FALSE in the output of get_mon_arrivals. "
+
+This is expected behaviour. In this case, the arrival is not leaving
+the trajectory "unexpectedly" anymore, because you are redirecting it
+to a fallback trajectory. The same happens if you use
+handle_unfinished(), in a more general way, to catch any abandoning
+customer.
+
+If you still want those to be marked as not finished, then simply
+chain a leave(1) activity after the "lost my patience" message.
+
+--
+Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sun Jul 26 11:42:11 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sun, 26 Jul 2020 11:42:11 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.bu4V37qjAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.65PE5l-iAQAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.65PE5l-iAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/bu4V37qjAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sun, 26 Jul 2020 at 13:17, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+>
+> Hi, thanks for a detailed assessment, comments below:
+>
+> On Wed, 22 Jul 2020 at 23:46, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > In trajectory 2, if I remove any one of the send("sgnl") commands after releasing resource 1 or the timeout(TIME_OUT_2) command. It results in a plot identical to trajectory 1.
+>
+> This is the main issue: there are two "simultaneous" (because there is
+> no timeout between them) send() activities. This typically leads to
+> undefined behaviour, because it's impossible to order the events
+> properly anymore.
+>
+> More specifically, the second consecutive send() is triggering a
+> secondary handler when the arrivals didn't reach the
+> timeout_from_attribute yet, and thus they end up executing *two*
+> timeouts instead of one.
+>
+> TL;DR, the send() activity between resources is superfluous, and the
+> solution is to remove it, as you found.
+
+Actually, on second thought, if the number of arrivals in resource 1
+is going to affect the timeout too, it's not superfluous anymore,
+because as soon as resource 2 is full, the arrival will end up in its
+queue without executing any send()...
+
+So the most general solution is to insert timeout(0) after the first
+send() and before seizing the second resource. The timeout() activity
+has the lowest priority, so even a null timeout effectively splits up
+a simultaneous event chain.
+
+--
+Iñaki Úcar
+
+From u02c504fc23f1bb98 at groups.google.com  Sun Jul 26 11:59:03 2020
+From: u02c504fc23f1bb98 at groups.google.com (Xistance)
+Date: Sun, 26 Jul 2020 11:59:03 +0000
+Subject: Re: renege_in doesn't set finished to FALSE if trajectory() is used
+Message-ID: <hxE4b7rkInc.h3Yf8cCtAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <hxE4b7rkInc.W269gcqYAQAJ@simmer-devel.groups.google.com>
+References: <hxE4b7rkInc.W269gcqYAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/hxE4b7rkInc/m/h3Yf8cCtAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you very much! That makes perfect sense.
+
+30 years ago I studied "task analysis" during my psychology degree (what we called DES back then). Always had a fascination for process simulation, but never quite found the right tool to use (unless investing heavily). Simmer and R, it can't get much better I think!
+
+So thank you for your work and sharing, I appreciate it deeply and will spread the word among my R passionate colleagues :)
+
+On Sunday, July 26, 2020 at 3:34:54 PM UTC+10, Xistance wrote:
+> Two opening statements; 1) what a great package!! 2) new user so I hope my question is not ignorant... :)
+>
+> I'm running the following example code inspired from the bank tutorial. I use renegade_in() below in its simplest form (see bold comment in code) to simulate a customer leaving after a period of time.
+>
+> ## leave with some probability
+> set.seed(1234)
+>
+> traj <- trajectory() %>%
+>   log_("leave with some probability") %>%
+>   leave(function() runif(1) < 0.5) %>%
+>   log_("didn't leave")
+>
+> simmer() %>%
+>   add_generator("dummy", traj, at(0, 1)) %>%
+>   run() %>% invisible#> 0: dummy0: leave with some probability
+> #> 1: dummy1: leave with some probability
+> #> 1: dummy1: didn't leave
+> ## reneging after some time
+> bank <- trajectory() %>%
+>   log_("here I am") %>%
+>   # renege in 5 minutes
+>   renege_in(5) %>%    # I changed this from the example on the website
+>   seize("clerk") %>%
+>   # stay if I'm being attended within 5 minutes
+>   renege_abort() %>%
+>   log_("I'm being attended") %>%
+>   timeout(10) %>%
+>   release("clerk") %>%
+>   log_("finished")
+>
+> cc <- simmer() %>%
+>   add_resource("clerk", 1) %>%
+>   add_generator("customer", bank, at(0, 1)) %>%
+>   run() #> 0: customer0: here I am
+>
+> arrivals <- get_mon_arrivals(cc)
+> arrivals
+>
+> > arrivals
+>        name start_time end_time activity_time finished replication
+> 1 customer1          1        6             0    FALSE           1
+> 2 customer0          0       10            10     TRUE           1
+>
+> This is what I expect. I'm interested in the "finished" column as I'm learning to model a Call centre and can easily compute expected abandonment rates through it.
+>
+> However, when I change the renege_in() command to: "renege_in(5, out = trajectory() %>% log_("lost my patience. Reneging..."))" as per website example I get the following:
+>
+> set.seed(1234)
+>
+> traj <- trajectory() %>%
+>   log_("leave with some probability") %>%
+>   leave(function() runif(1) < 0.5) %>%
+>   log_("didn't leave")
+>
+> simmer() %>%
+>   add_generator("dummy", traj, at(0, 1)) %>%
+>   run() %>% invisible#> 0: dummy0: leave with some probability
+> #> 1: dummy1: leave with some probability
+> #> 1: dummy1: didn't leave
+> ## reneging after some time
+> bank <- trajectory() %>%
+>   log_("here I am") %>%
+>   # renege in 5 minutes
+>   renege_in(5, out = trajectory() %>% log_("lost my patience. Reneging...")) %>%
+>   seize("clerk") %>%
+>   # stay if I'm being attended within 5 minutes
+>   renege_abort() %>%
+>   log_("I'm being attended") %>%
+>   timeout(10) %>%
+>   release("clerk") %>%
+>   log_("finished")
+>
+> cc <- simmer() %>%
+>   add_resource("clerk", 1) %>%
+>   add_generator("customer", bank, at(0, 1)) %>%
+>   run() #> 0: customer0: here I am
+>
+> Output:
+> 0: customer0: here I am
+> 0: customer0: I'm being attended
+> 1: customer1: here I am
+> 6: customer1: lost my patience. Reneging...
+> 10: customer0: finished
+>
+>
+> arrivals <- get_mon_arrivals(cc)
+> arrivals
+>
+>        name start_time end_time activity_time finished replication
+> 1 customer1          1        6             0     TRUE           1
+> 2 customer0          0       10            10     TRUE           1
+>
+> This is not what I expect. The reference page for renege says: "Arrivals that leave the trajectory will set the finished flag to FALSE in the output of get_mon_arrivals <https://r-simmer.org/reference/get_mon.html>. "
+>
+> Am I misunderstanding how things work, or is there a challenge with logging of renege tasks?
+>
+> Many thanks!
+> Martin
+
+From ubdf61e559da3c102 at groups.google.com  Mon Jul 27 14:45:01 2020
+From: ubdf61e559da3c102 at groups.google.com (Sam Schaffel)
+Date: Mon, 27 Jul 2020 14:45:01 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.5qbQGGQFAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.bu4V37qjAQAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.bu4V37qjAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/5qbQGGQFAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you for the response Iñaki,
+This solution worked perfectly for the example I gave. Yet somehow makes the problem worse in my original program, perhaps the problem is something else entirely. Here I think I narrowed the problem down to when I had stochastic effects to the rates and initial conditions to the resources. Interestingly enough, in this version of my code, the problem seems to be in reverse. The signalling trajectory matches the basic trajectory only when all 4 send() cmds are including, and otherwise the graph deviates. Adding the timeout(0) in this case changes the behavior dramatically.
+library(simmer)
+library(simmer.plot)
+
+x0 <- c(25, 100)
+xtarget <- c(50, 200)
+c <- 0.05
+a <- c * xtarget[2]
+b <- a / xtarget[1]
+tmax <- 100
+
+TIME_OUT <- rexp(1, b)
+TIME_OUT_2 <- function()  rexp(1, c)
+INTAKE_TIMES <- function() rexp(1, a)
+
+#List of test trajectories
+#Basic seize/release trajectory with contant timeout
+trj_1.2 <- trajectory()%>%
+
+  seize("resrc2")%>%
+  timeout(TIME_OUT_2)%>%
+  release("resrc2")
+
+trj_1 <- trajectory() %>%
+  seize("resrc")%>%
+
+  timeout(function() rexp(1, b))%>%
+  release("resrc")%>%
+  join(trj_1.2)
+
+#Basic Trajectory with signalling and "do nothing" handler
+handlr <- trajectory()%>%
+  set_attribute(c("start", "delay"), function() {
+    left <- sum(get_attribute(envs, c("start", "delay"))) - now(envs)
+    delay <- left
+    c(now(envs), delay)
+  })%>%
+  timeout_from_attribute("delay")
+
+trj_2.2 <- trajectory()%>%
+  seize("resrc2")%>%
+  send("sgnl")%>%
+  timeout(TIME_OUT_2)%>%
+
+  release("resrc2")%>%
+  send("sgnl")
+
+trj_2 <- trajectory()%>%
+  seize("resrc")%>%
+
+  set_attribute(c("start","delay","multiplier"), function()
+    c(now(envs), rexp(1, b), 1))%>%
+
+  trap("sgnl", handlr)%>%
+  send("sgnl")%>%
+  untrap("sgnl") %>%
+  release("resrc")%>%
+
+  send("sgnl")%>%   #comment out this line for picture 3
+  #timeout(0)%>%    #uncomment this line for picture 4
+  join(trj_2.2)
+
+envs <- simmer()
+
+envs%>%
+  add_resource("resrc", Inf, Inf)%>%
+  add_resource("resrc2", Inf, Inf)%>%
+
+  add_generator("initial resrc", trj_1.2, at(numeric(x0[2]))) %>%
+  add_generator("initial resrc2", trj_1, at(numeric(x0[1]))) %>%
+  add_generator("entity", trj_1, distribution = INTAKE_TIMES)%>%
+  run(until = tmax)
+
+resrcs <- get_mon_resources(envs)
+plot(resrcs, metric = "usage")
+This code results in the following graphs:
+Trajectory 1.
+Trajectory 2 (as in the code):
+Trajectory two (with one of the send() cmds removed):
+Trajectory 2 (with timeout(0)):
+I am confused why these 3 implementations of trajectory 2 produce such different graphs, since I expect the handler and timeout(0) to essentially do nothing.
+
+Finally, the main difference between that code and my program is the handler. The objective of the handler is to keep the overall rate of entities leaving resource 1 to be "constant" when it reaches a saturation point. In other words, when the number of entities served by resource 1 is below 1/3 * the number of entities served by resource 2 I want the behaviour as above. But when the number of entities served by resource 1 reaches or exceeds that saturation point, I want the overall rate of entities releasing resource 1 to no longer depend on the number of entities served by resource 1. Instead I want the over rate to be 1/3* the current number of entities served by resource 2. I also want each entity in resource 1 to receive equal attention from the resource. i.e if a new entity enters the trajectory when it is above the saturation point, all of the entities served by resource 1 must have their timeout extended by the same factor.
+I apologize if the is confusing.
+The new handler in below:
+
+handlr2 <- trajectory() %>%
+  set_attribute(c("start", "delay", "multiplier"), function() {
+    cap <- 1/3*get_server_count(envs, "resrc2")
+    multiplier <- get_attribute(envs, "multiplier")
+    num_mentees <- get_server_count(envs, "resrc")
+
+    left <- sum(get_attribute(envs, c("start", "delay"))) - now(envs)
+
+    new_multiplier <- cap/num_mentees
+    #return new values
+    if (num_mentees <= cap)
+      delay <- left
+    else
+      delay <- left*multiplier / new_multiplier
+    c(now(envs), delay, new_multiplier)
+
+  })%>%
+  timeout_from_attribute("delay")
+
+I've also modeled this simulation using just a Monte Carlo method. But I wanted to be able to track the individual entities in the system which is why I'm reimplementing using simmer. However the plots for the Simmer and Monte Carlo methods do not overlap. Below is a graph showing the mean of the Simmer and Monte Carlo programs after being run 100 times.
+
+Is there a better way to achieve what I want?
+
+Thanks,
+
+Sam
+
+On Sunday, July 26, 2020 at 7:42:11 AM UTC-4, Iñaki Ucar wrote:
+> On Sun, 26 Jul 2020 at 13:17, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> >
+> > Hi, thanks for a detailed assessment, comments below:
+> >
+> > On Wed, 22 Jul 2020 at 23:46, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> > >
+> > > In trajectory 2, if I remove any one of the send("sgnl") commands after releasing resource 1 or the timeout(TIME_OUT_2) command. It results in a plot identical to trajectory 1.
+> >
+> > This is the main issue: there are two "simultaneous" (because there is
+> > no timeout between them) send() activities. This typically leads to
+> > undefined behaviour, because it's impossible to order the events
+> > properly anymore.
+> >
+> > More specifically, the second consecutive send() is triggering a
+> > secondary handler when the arrivals didn't reach the
+> > timeout_from_attribute yet, and thus they end up executing *two*
+> > timeouts instead of one.
+> >
+> > TL;DR, the send() activity between resources is superfluous, and the
+> > solution is to remove it, as you found.
+>
+> Actually, on second thought, if the number of arrivals in resource 1
+> is going to affect the timeout too, it's not superfluous anymore,
+> because as soon as resource 2 is full, the arrival will end up in its
+> queue without executing any send()...
+>
+> So the most general solution is to insert timeout(0) after the first
+> send() and before seizing the second resource. The timeout() activity
+> has the lowest priority, so even a null timeout effectively splits up
+> a simultaneous event chain.
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Jul 27 19:25:35 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 27 Jul 2020 19:25:35 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.FBM68JgLAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.5qbQGGQFAgAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.5qbQGGQFAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/FBM68JgLAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Mon, 27 Jul 2020 at 16:45, Sam Schaffel <sam.sch...@gmail.com> wrote:
+>
+> Thank you for the response Iñaki,
+> This solution worked perfectly for the example I gave. Yet somehow makes the problem worse in my original program, perhaps the problem is something else entirely. Here I think I narrowed the problem down to when I had stochastic effects to the rates and initial conditions to the resources. Interestingly enough, in this version of my code, the problem seems to be in reverse. The signalling trajectory matches the basic trajectory only when all 4 send() cmds are including, and otherwise the graph deviates. Adding the timeout(0) in this case changes the behavior dramatically.
+
+Of course, silly me... timeout() has the lowest priority, but there is
+a timeout_from_attribute() in the handler, which *also* has the lowest
+priority. Therefore, we have the correct ordering sometimes, sometimes
+not. So, this may sound silly, but add *another* timeout(0), like
+this:
+
+trj_2 <- trajectory()%>%
+  seize("resrc")%>%
+  set_attribute(c("start","delay","multiplier"), function()
+    c(now(envs), rexp(1, b), 1))%>%
+  trap("sgnl", handlr)%>%
+  send("sgnl")%>%
+  untrap("sgnl") %>%
+  release("resrc")%>%
+  send("sgnl")%>%
+
+  timeout(0)%>%
+  timeout(0)%>%
+  join(trj_2.2)
+
+And now you should get the same* result, because now the second
+timeout(0) is executed necessarily after any timeout_from_attribute()
+in the handlers. In the future, we should try to rework this because I
+don't like this workaround.
+
+*You won't get exactly the same result unless you load dataframes with
+all your arrival and service times and then use add_dataframe instead
+of add_generator. In this way, you ensure that all values are
+generated exactly with the same random state.
+
+> Finally, the main difference between that code and my program is the handler. The objective of the handler is to keep the overall rate of entities leaving resource 1 to be "constant" when it reaches a saturation point. In other words, when the number of entities served by resource 1 is below 1/3 * the number of entities served by resource 2 I want the behaviour as above. But when the number of entities served by resource 1 reaches or exceeds that saturation point, I want the overall rate of entities releasing resource 1 to no longer depend on the number of entities served by resource 1. Instead I want the over rate to be 1/3* the current number of entities served by resource 2. I also want each entity in resource 1 to receive equal attention from the resource. i.e if a new entity enters the trajectory when it is above the saturation point, all of the entities served by resource 1 must have their timeout extended by the same factor.
+> I apologize if the is confusing.
+> The new handler in below:
+>
+> handlr2 <- trajectory() %>%
+>   set_attribute(c("start", "delay", "multiplier"), function() {
+>     cap <- 1/3*get_server_count(envs, "resrc2")
+>     multiplier <- get_attribute(envs, "multiplier")
+>     num_mentees <- get_server_count(envs, "resrc")
+>     left <- sum(get_attribute(envs, c("start", "delay"))) - now(envs)
+>     new_multiplier <- cap/num_mentees
+>     #return new values
+>     if (num_mentees <= cap)
+>       delay <- left
+>     else
+>       delay <- left*multiplier / new_multiplier
+>     c(now(envs), delay, new_multiplier)
+>   })%>%
+>   timeout_from_attribute("delay")
+>
+> I've also modeled this simulation using just a Monte Carlo method. But I wanted to be able to track the individual entities in the system which is why I'm reimplementing using simmer. However the plots for the Simmer and Monte Carlo methods do not overlap. Below is a graph showing the mean of the Simmer and Monte Carlo programs after being run 100 times.
+>
+
+> Is there a better way to achieve what I want?
+
+Please, try the workaround above with this handler.
+
+--
+Iñaki Úcar
+
+From ubdf61e559da3c102 at groups.google.com  Mon Jul 27 20:34:48 2020
+From: ubdf61e559da3c102 at groups.google.com (Sam Schaffel)
+Date: Mon, 27 Jul 2020 20:34:48 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.cM0KYHoYAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.FBM68JgLAgAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.FBM68JgLAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/cM0KYHoYAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks again for such a quick response,
+
+I tried the workaround you suggested. The result I got was that
+
+trj_2 <- trajectory()%>%
+  seize("resrc")%>%
+  set_attribute(c("start","delay","multiplier"), function()
+    c(now(envs), rexp(1, b), 1))%>%
+  trap("sgnl", handlr)%>%
+  send("sgnl")%>%
+  untrap("sgnl") %>%
+  release("resrc")%>%
+  send("sgnl")%>%
+  timeout(0)%>%
+  timeout(0)%>%
+
+  join(trj_2.2)
+
+is equivalent to
+
+trj_2 <- trajectory()%>%
+  seize("resrc")%>%
+  set_attribute(c("start","delay","multiplier"), function()
+    c(now(envs), rexp(1, b), 1))%>%
+  trap("sgnl", handlr)%>%
+  send("sgnl")%>%
+  untrap("sgnl") %>%
+  release("resrc")%>%
+
+  # send("sgnl")%>%
+  # timeout(0)%>%
+  # timeout(0)%>%
+
+  join(trj_2.2)
+
+However now both of which result in resource 1 having a steady state somewhere between 65-70 (as opposed to 50 from trajectory 1).
+The following gives a plot with steady state 50, however I don't actually want to send the signal when an entity is in between resources, since in my simulation when an entity is done with resource 1 it immediately goes to resource 2 with no time delay. And I wouldn't want to update the delay for entities served by resource 1 based on a state that *shouldn't exist*.
+
+trj_2 <- trajectory()%>%
+  seize("resrc")%>%
+  set_attribute(c("start","delay","multiplier"), function()
+    c(now(envs), rexp(1, b), 1))%>%
+  trap("sgnl", handlr)%>%
+  send("sgnl")%>%
+  untrap("sgnl") %>%
+  release("resrc")%>%
+  send("sgnl")%>%
+
+  # timeout(0)%>%
+  # timeout(0)%>%
+
+  join(trj_2.2)
+
+I tried the workaround with handlr2. Again I find that the usage curve for resource 1 is higher than I expected/wanted.
+
+Thanks again for dedicating your time to helping me,
+
+Sam
+
+On Monday, July 27, 2020 at 3:25:35 PM UTC-4, Iñaki Ucar wrote:
+> On Mon, 27 Jul 2020 at 16:45, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Thank you for the response Iñaki,
+> > This solution worked perfectly for the example I gave. Yet somehow makes the problem worse in my original program, perhaps the problem is something else entirely. Here I think I narrowed the problem down to when I had stochastic effects to the rates and initial conditions to the resources. Interestingly enough, in this version of my code, the problem seems to be in reverse. The signalling trajectory matches the basic trajectory only when all 4 send() cmds are including, and otherwise the graph deviates. Adding the timeout(0) in this case changes the behavior dramatically.
+>
+> Of course, silly me... timeout() has the lowest priority, but there is
+> a timeout_from_attribute() in the handler, which *also* has the lowest
+> priority. Therefore, we have the correct ordering sometimes, sometimes
+> not. So, this may sound silly, but add *another* timeout(0), like
+> this:
+>
+> trj_2 <- trajectory()%>%
+>   seize("resrc")%>%
+>   set_attribute(c("start","delay","multiplier"), function()
+>     c(now(envs), rexp(1, b), 1))%>%
+>   trap("sgnl", handlr)%>%
+>   send("sgnl")%>%
+>   untrap("sgnl") %>%
+>   release("resrc")%>%
+>   send("sgnl")%>%
+>   timeout(0)%>%
+>   timeout(0)%>%
+>   join(trj_2.2)
+>
+> And now you should get the same* result, because now the second
+> timeout(0) is executed necessarily after any timeout_from_attribute()
+> in the handlers. In the future, we should try to rework this because I
+> don't like this workaround.
+>
+> *You won't get exactly the same result unless you load dataframes with
+> all your arrival and service times and then use add_dataframe instead
+> of add_generator. In this way, you ensure that all values are
+> generated exactly with the same random state.
+>
+> > Finally, the main difference between that code and my program is the handler. The objective of the handler is to keep the overall rate of entities leaving resource 1 to be "constant" when it reaches a saturation point. In other words, when the number of entities served by resource 1 is below 1/3 * the number of entities served by resource 2 I want the behaviour as above. But when the number of entities served by resource 1 reaches or exceeds that saturation point, I want the overall rate of entities releasing resource 1 to no longer depend on the number of entities served by resource 1. Instead I want the over rate to be 1/3* the current number of entities served by resource 2. I also want each entity in resource 1 to receive equal attention from the resource. i.e if a new entity enters the trajectory when it is above the saturation point, all of the entities served by resource 1 must have their timeout extended by the same factor.
+> > I apologize if the is confusing.
+> > The new handler in below:
+> >
+> > handlr2 <- trajectory() %>%
+> >   set_attribute(c("start", "delay", "multiplier"), function() {
+> >     cap <- 1/3*get_server_count(envs, "resrc2")
+> >     multiplier <- get_attribute(envs, "multiplier")
+> >     num_mentees <- get_server_count(envs, "resrc")
+> >     left <- sum(get_attribute(envs, c("start", "delay"))) - now(envs)
+> >     new_multiplier <- cap/num_mentees
+> >     #return new values
+> >     if (num_mentees <= cap)
+> >       delay <- left
+> >     else
+> >       delay <- left*multiplier / new_multiplier
+> >     c(now(envs), delay, new_multiplier)
+> >   })%>%
+> >   timeout_from_attribute("delay")
+> >
+> > I've also modeled this simulation using just a Monte Carlo method. But I wanted to be able to track the individual entities in the system which is why I'm reimplementing using simmer. However the plots for the Simmer and Monte Carlo methods do not overlap. Below is a graph showing the mean of the Simmer and Monte Carlo programs after being run 100 times.
+> >
+> > Is there a better way to achieve what I want?
+>
+> Please, try the workaround above with this handler.
+>
+> --
+> Iñaki Úcar
+
+On Monday, July 27, 2020 at 3:25:35 PM UTC-4, Iñaki Ucar wrote:
+> On Mon, 27 Jul 2020 at 16:45, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Thank you for the response Iñaki,
+> > This solution worked perfectly for the example I gave. Yet somehow makes the problem worse in my original program, perhaps the problem is something else entirely. Here I think I narrowed the problem down to when I had stochastic effects to the rates and initial conditions to the resources. Interestingly enough, in this version of my code, the problem seems to be in reverse. The signalling trajectory matches the basic trajectory only when all 4 send() cmds are including, and otherwise the graph deviates. Adding the timeout(0) in this case changes the behavior dramatically.
+>
+> Of course, silly me... timeout() has the lowest priority, but there is
+> a timeout_from_attribute() in the handler, which *also* has the lowest
+> priority. Therefore, we have the correct ordering sometimes, sometimes
+> not. So, this may sound silly, but add *another* timeout(0), like
+> this:
+>
+> trj_2 <- trajectory()%>%
+>   seize("resrc")%>%
+>   set_attribute(c("start","delay","multiplier"), function()
+>     c(now(envs), rexp(1, b), 1))%>%
+>   trap("sgnl", handlr)%>%
+>   send("sgnl")%>%
+>   untrap("sgnl") %>%
+>   release("resrc")%>%
+>   send("sgnl")%>%
+>   timeout(0)%>%
+>   timeout(0)%>%
+>   join(trj_2.2)
+>
+> And now you should get the same* result, because now the second
+> timeout(0) is executed necessarily after any timeout_from_attribute()
+> in the handlers. In the future, we should try to rework this because I
+> don't like this workaround.
+>
+> *You won't get exactly the same result unless you load dataframes with
+> all your arrival and service times and then use add_dataframe instead
+> of add_generator. In this way, you ensure that all values are
+> generated exactly with the same random state.
+>
+> > Finally, the main difference between that code and my program is the handler. The objective of the handler is to keep the overall rate of entities leaving resource 1 to be "constant" when it reaches a saturation point. In other words, when the number of entities served by resource 1 is below 1/3 * the number of entities served by resource 2 I want the behaviour as above. But when the number of entities served by resource 1 reaches or exceeds that saturation point, I want the overall rate of entities releasing resource 1 to no longer depend on the number of entities served by resource 1. Instead I want the over rate to be 1/3* the current number of entities served by resource 2. I also want each entity in resource 1 to receive equal attention from the resource. i.e if a new entity enters the trajectory when it is above the saturation point, all of the entities served by resource 1 must have their timeout extended by the same factor.
+> > I apologize if the is confusing.
+> > The new handler in below:
+> >
+> > handlr2 <- trajectory() %>%
+> >   set_attribute(c("start", "delay", "multiplier"), function() {
+> >     cap <- 1/3*get_server_count(envs, "resrc2")
+> >     multiplier <- get_attribute(envs, "multiplier")
+> >     num_mentees <- get_server_count(envs, "resrc")
+> >     left <- sum(get_attribute(envs, c("start", "delay"))) - now(envs)
+> >     new_multiplier <- cap/num_mentees
+> >     #return new values
+> >     if (num_mentees <= cap)
+> >       delay <- left
+> >     else
+> >       delay <- left*multiplier / new_multiplier
+> >     c(now(envs), delay, new_multiplier)
+> >   })%>%
+> >   timeout_from_attribute("delay")
+> >
+> > I've also modeled this simulation using just a Monte Carlo method. But I wanted to be able to track the individual entities in the system which is why I'm reimplementing using simmer. However the plots for the Simmer and Monte Carlo methods do not overlap. Below is a graph showing the mean of the Simmer and Monte Carlo programs after being run 100 times.
+> >
+> > Is there a better way to achieve what I want?
+>
+> Please, try the workaround above with this handler.
+>
+> --
+> Iñaki Úcar
+
+On Monday, July 27, 2020 at 3:25:35 PM UTC-4, Iñaki Ucar wrote:
+> On Mon, 27 Jul 2020 at 16:45, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Thank you for the response Iñaki,
+> > This solution worked perfectly for the example I gave. Yet somehow makes the problem worse in my original program, perhaps the problem is something else entirely. Here I think I narrowed the problem down to when I had stochastic effects to the rates and initial conditions to the resources. Interestingly enough, in this version of my code, the problem seems to be in reverse. The signalling trajectory matches the basic trajectory only when all 4 send() cmds are including, and otherwise the graph deviates. Adding the timeout(0) in this case changes the behavior dramatically.
+>
+> Of course, silly me... timeout() has the lowest priority, but there is
+> a timeout_from_attribute() in the handler, which *also* has the lowest
+> priority. Therefore, we have the correct ordering sometimes, sometimes
+> not. So, this may sound silly, but add *another* timeout(0), like
+> this:
+>
+> trj_2 <- trajectory()%>%
+>   seize("resrc")%>%
+>   set_attribute(c("start","delay","multiplier"), function()
+>     c(now(envs), rexp(1, b), 1))%>%
+>   trap("sgnl", handlr)%>%
+>   send("sgnl")%>%
+>   untrap("sgnl") %>%
+>   release("resrc")%>%
+>   send("sgnl")%>%
+>   timeout(0)%>%
+>   timeout(0)%>%
+>   join(trj_2.2)
+>
+> And now you should get the same* result, because now the second
+> timeout(0) is executed necessarily after any timeout_from_attribute()
+> in the handlers. In the future, we should try to rework this because I
+> don't like this workaround.
+>
+> *You won't get exactly the same result unless you load dataframes with
+> all your arrival and service times and then use add_dataframe instead
+> of add_generator. In this way, you ensure that all values are
+> generated exactly with the same random state.
+>
+> > Finally, the main difference between that code and my program is the handler. The objective of the handler is to keep the overall rate of entities leaving resource 1 to be "constant" when it reaches a saturation point. In other words, when the number of entities served by resource 1 is below 1/3 * the number of entities served by resource 2 I want the behaviour as above. But when the number of entities served by resource 1 reaches or exceeds that saturation point, I want the overall rate of entities releasing resource 1 to no longer depend on the number of entities served by resource 1. Instead I want the over rate to be 1/3* the current number of entities served by resource 2. I also want each entity in resource 1 to receive equal attention from the resource. i.e if a new entity enters the trajectory when it is above the saturation point, all of the entities served by resource 1 must have their timeout extended by the same factor.
+> > I apologize if the is confusing.
+> > The new handler in below:
+> >
+> > handlr2 <- trajectory() %>%
+> >   set_attribute(c("start", "delay", "multiplier"), function() {
+> >     cap <- 1/3*get_server_count(envs, "resrc2")
+> >     multiplier <- get_attribute(envs, "multiplier")
+> >     num_mentees <- get_server_count(envs, "resrc")
+> >     left <- sum(get_attribute(envs, c("start", "delay"))) - now(envs)
+> >     new_multiplier <- cap/num_mentees
+> >     #return new values
+> >     if (num_mentees <= cap)
+> >       delay <- left
+> >     else
+> >       delay <- left*multiplier / new_multiplier
+> >     c(now(envs), delay, new_multiplier)
+> >   })%>%
+> >   timeout_from_attribute("delay")
+> >
+> > I've also modeled this simulation using just a Monte Carlo method. But I wanted to be able to track the individual entities in the system which is why I'm reimplementing using simmer. However the plots for the Simmer and Monte Carlo methods do not overlap. Below is a graph showing the mean of the Simmer and Monte Carlo programs after being run 100 times.
+> >
+> > Is there a better way to achieve what I want?
+>
+> Please, try the workaround above with this handler.
+>
+> --
+> Iñaki Úcar
+
+On Monday, July 27, 2020 at 3:25:35 PM UTC-4, Iñaki Ucar wrote:
+> On Mon, 27 Jul 2020 at 16:45, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Thank you for the response Iñaki,
+> > This solution worked perfectly for the example I gave. Yet somehow makes the problem worse in my original program, perhaps the problem is something else entirely. Here I think I narrowed the problem down to when I had stochastic effects to the rates and initial conditions to the resources. Interestingly enough, in this version of my code, the problem seems to be in reverse. The signalling trajectory matches the basic trajectory only when all 4 send() cmds are including, and otherwise the graph deviates. Adding the timeout(0) in this case changes the behavior dramatically.
+>
+> Of course, silly me... timeout() has the lowest priority, but there is
+> a timeout_from_attribute() in the handler, which *also* has the lowest
+> priority. Therefore, we have the correct ordering sometimes, sometimes
+> not. So, this may sound silly, but add *another* timeout(0), like
+> this:
+>
+> trj_2 <- trajectory()%>%
+>   seize("resrc")%>%
+>   set_attribute(c("start","delay","multiplier"), function()
+>     c(now(envs), rexp(1, b), 1))%>%
+>   trap("sgnl", handlr)%>%
+>   send("sgnl")%>%
+>   untrap("sgnl") %>%
+>   release("resrc")%>%
+>   send("sgnl")%>%
+>   timeout(0)%>%
+>   timeout(0)%>%
+>   join(trj_2.2)
+>
+> And now you should get the same* result, because now the second
+> timeout(0) is executed necessarily after any timeout_from_attribute()
+> in the handlers. In the future, we should try to rework this because I
+> don't like this workaround.
+>
+> *You won't get exactly the same result unless you load dataframes with
+> all your arrival and service times and then use add_dataframe instead
+> of add_generator. In this way, you ensure that all values are
+> generated exactly with the same random state.
+>
+> > Finally, the main difference between that code and my program is the handler. The objective of the handler is to keep the overall rate of entities leaving resource 1 to be "constant" when it reaches a saturation point. In other words, when the number of entities served by resource 1 is below 1/3 * the number of entities served by resource 2 I want the behaviour as above. But when the number of entities served by resource 1 reaches or exceeds that saturation point, I want the overall rate of entities releasing resource 1 to no longer depend on the number of entities served by resource 1. Instead I want the over rate to be 1/3* the current number of entities served by resource 2. I also want each entity in resource 1 to receive equal attention from the resource. i.e if a new entity enters the trajectory when it is above the saturation point, all of the entities served by resource 1 must have their timeout extended by the same factor.
+> > I apologize if the is confusing.
+> > The new handler in below:
+> >
+> > handlr2 <- trajectory() %>%
+> >   set_attribute(c("start", "delay", "multiplier"), function() {
+> >     cap <- 1/3*get_server_count(envs, "resrc2")
+> >     multiplier <- get_attribute(envs, "multiplier")
+> >     num_mentees <- get_server_count(envs, "resrc")
+> >     left <- sum(get_attribute(envs, c("start", "delay"))) - now(envs)
+> >     new_multiplier <- cap/num_mentees
+> >     #return new values
+> >     if (num_mentees <= cap)
+> >       delay <- left
+> >     else
+> >       delay <- left*multiplier / new_multiplier
+> >     c(now(envs), delay, new_multiplier)
+> >   })%>%
+> >   timeout_from_attribute("delay")
+> >
+> > I've also modeled this simulation using just a Monte Carlo method. But I wanted to be able to track the individual entities in the system which is why I'm reimplementing using simmer. However the plots for the Simmer and Monte Carlo methods do not overlap. Below is a graph showing the mean of the Simmer and Monte Carlo programs after being run 100 times.
+> >
+> > Is there a better way to achieve what I want?
+>
+> Please, try the workaround above with this handler.
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Jul 27 21:06:17 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 27 Jul 2020 21:06:17 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.plHrwBcRAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.cM0KYHoYAgAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.cM0KYHoYAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/plHrwBcRAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Mon, 27 Jul 2020 at 22:34, Sam Schaffel <sam.sch...@gmail.com> wrote:
+>
+> Thanks again for such a quick response,
+>
+> I tried the workaround you suggested. The result I got was that
+> trj_2 <- trajectory()%>%
+>   seize("resrc")%>%
+>   set_attribute(c("start","delay","multiplier"), function()
+>     c(now(envs), rexp(1, b), 1))%>%
+>   trap("sgnl", handlr)%>%
+>   send("sgnl")%>%
+>   untrap("sgnl") %>%
+>   release("resrc")%>%
+>   send("sgnl")%>%
+>   timeout(0)%>%
+>   timeout(0)%>%
+>
+>   join(trj_2.2)
+>
+> is equivalent to
+> trj_2 <- trajectory()%>%
+>   seize("resrc")%>%
+>   set_attribute(c("start","delay","multiplier"), function()
+>     c(now(envs), rexp(1, b), 1))%>%
+>   trap("sgnl", handlr)%>%
+>   send("sgnl")%>%
+>   untrap("sgnl") %>%
+>   release("resrc")%>%
+>   # send("sgnl")%>%
+>   # timeout(0)%>%
+>   # timeout(0)%>%
+>
+>   join(trj_2.2)
+
+They are as long as resource 2 has enough capacity. If you are going
+to simulate with infinite capacity, that's fine. If not, then I would
+suggest using send > timeout(0) > timeout(0) instead.
+
+> However now both of which result in resource 1 having a steady state somewhere between 65-70 (as opposed to 50 from trajectory 1).
+
+Maybe a single consecutive run. But run many replications and you'll
+see that on average it's completely equivalent to trajectory 1.
+
+> I tried the workaround with handlr2. Again I find that the usage curve for resource 1 is higher than I expected/wanted.
+
+You mean compared to the MC method? Are you taking a single simmer
+simulation or the average of many replications?
+
+--
+Iñaki Úcar
+
+From ubdf61e559da3c102 at groups.google.com  Mon Jul 27 21:31:45 2020
+From: ubdf61e559da3c102 at groups.google.com (Sam Schaffel)
+Date: Mon, 27 Jul 2020 21:31:45 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.m8kdAJYbAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.plHrwBcRAgAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.plHrwBcRAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/m8kdAJYbAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+> Maybe a single consecutive run. But run many replications and you'll
+> see that on average it's completely equivalent to trajectory 1.
+
+I tried 35 replications and got the following result:
+Here all 25 seem to reach a steady state of above 60.
+
+> You mean compared to the MC method? Are you taking a single simmer
+> simulation or the average of many replications?
+
+Yes compared to the MC method. The original plot I sent comparing Simmer to MC was the mean over 100 iterations. When testing the workaround I plotted the mean, median and quartiles against the MC for 3 iterations (because the run time is quite long with all the signalling). Here the difference was too vast for me to try again with 100 iterations (this takes about an hour for me).
+
+Thanks,
+
+Sam
+
+On Monday, July 27, 2020 at 5:06:17 PM UTC-4, Iñaki Ucar wrote:
+> On Mon, 27 Jul 2020 at 22:34, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Thanks again for such a quick response,
+> >
+> > I tried the workaround you suggested. The result I got was that
+> > trj_2 <- trajectory()%>%
+> >   seize("resrc")%>%
+> >   set_attribute(c("start","delay","multiplier"), function()
+> >     c(now(envs), rexp(1, b), 1))%>%
+> >   trap("sgnl", handlr)%>%
+> >   send("sgnl")%>%
+> >   untrap("sgnl") %>%
+> >   release("resrc")%>%
+> >   send("sgnl")%>%
+> >   timeout(0)%>%
+> >   timeout(0)%>%
+> >
+> >   join(trj_2.2)
+> >
+> > is equivalent to
+> > trj_2 <- trajectory()%>%
+> >   seize("resrc")%>%
+> >   set_attribute(c("start","delay","multiplier"), function()
+> >     c(now(envs), rexp(1, b), 1))%>%
+> >   trap("sgnl", handlr)%>%
+> >   send("sgnl")%>%
+> >   untrap("sgnl") %>%
+> >   release("resrc")%>%
+> >   # send("sgnl")%>%
+> >   # timeout(0)%>%
+> >   # timeout(0)%>%
+> >
+> >   join(trj_2.2)
+>
+> They are as long as resource 2 has enough capacity. If you are going
+> to simulate with infinite capacity, that's fine. If not, then I would
+> suggest using send > timeout(0) > timeout(0) instead.
+>
+> > However now both of which result in resource 1 having a steady state somewhere between 65-70 (as opposed to 50 from trajectory 1).
+>
+> Maybe a single consecutive run. But run many replications and you'll
+> see that on average it's completely equivalent to trajectory 1.
+>
+> > I tried the workaround with handlr2. Again I find that the usage curve for resource 1 is higher than I expected/wanted.
+>
+> You mean compared to the MC method? Are you taking a single simmer
+> simulation or the average of many replications?
+>
+> --
+> Iñaki Úcar
+
+On Monday, July 27, 2020 at 5:06:17 PM UTC-4, Iñaki Ucar wrote:
+> On Mon, 27 Jul 2020 at 22:34, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Thanks again for such a quick response,
+> >
+> > I tried the workaround you suggested. The result I got was that
+> > trj_2 <- trajectory()%>%
+> >   seize("resrc")%>%
+> >   set_attribute(c("start","delay","multiplier"), function()
+> >     c(now(envs), rexp(1, b), 1))%>%
+> >   trap("sgnl", handlr)%>%
+> >   send("sgnl")%>%
+> >   untrap("sgnl") %>%
+> >   release("resrc")%>%
+> >   send("sgnl")%>%
+> >   timeout(0)%>%
+> >   timeout(0)%>%
+> >
+> >   join(trj_2.2)
+> >
+> > is equivalent to
+> > trj_2 <- trajectory()%>%
+> >   seize("resrc")%>%
+> >   set_attribute(c("start","delay","multiplier"), function()
+> >     c(now(envs), rexp(1, b), 1))%>%
+> >   trap("sgnl", handlr)%>%
+> >   send("sgnl")%>%
+> >   untrap("sgnl") %>%
+> >   release("resrc")%>%
+> >   # send("sgnl")%>%
+> >   # timeout(0)%>%
+> >   # timeout(0)%>%
+> >
+> >   join(trj_2.2)
+>
+> They are as long as resource 2 has enough capacity. If you are going
+> to simulate with infinite capacity, that's fine. If not, then I would
+> suggest using send > timeout(0) > timeout(0) instead.
+>
+> > However now both of which result in resource 1 having a steady state somewhere between 65-70 (as opposed to 50 from trajectory 1).
+>
+> Maybe a single consecutive run. But run many replications and you'll
+> see that on average it's completely equivalent to trajectory 1.
+>
+> > I tried the workaround with handlr2. Again I find that the usage curve for resource 1 is higher than I expected/wanted.
+>
+> You mean compared to the MC method? Are you taking a single simmer
+> simulation or the average of many replications?
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Jul 27 22:09:46 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 27 Jul 2020 22:09:46 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.I1llNo8UAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.m8kdAJYbAgAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.m8kdAJYbAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/I1llNo8UAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Mon, 27 Jul 2020 at 23:31, Sam Schaffel <sam.sch...@gmail.com> wrote:
+>
+> Hello,
+>
+>> Maybe a single consecutive run. But run many replications and you'll
+>> see that on average it's completely equivalent to trajectory 1.
+>
+> I tried 35 replications and got the following result:
+
+> Here all 25 seem to reach a steady state of above 60.
+
+That is not what I get. Code and plot attached.
+
+--
+Iñaki Úcar
+
+From ubdf61e559da3c102 at groups.google.com  Tue Jul 28 18:12:01 2020
+From: ubdf61e559da3c102 at groups.google.com (Sam Schaffel)
+Date: Tue, 28 Jul 2020 18:12:01 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.6Xz56zRsAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.I1llNo8UAgAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.I1llNo8UAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/6Xz56zRsAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Iñaki, the code you sent seems to work well.
+I do have one more question. The only difference between your code and the one I have is where the initial entities at time 0 are sent.
+I have
+    add_generator("initial resrc", trj_2.2, at(numeric(x0[2]))) %>%
+    add_generator("initial resrc2", trj_2, at(numeric(x0[1]))) %>%
+
+    add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+
+while you have
+
+    add_generator("initial resrc", trj_1.2, at(numeric(x0[2]))) %>%
+    add_generator("initial resrc2", trj_1, at(numeric(x0[1]))) %>%
+
+    add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+
+This means that the initial entities do not update the state of the system when they change resources, and the initial entities in resource 1 never get sent to the handler to have their delay updated.. However in my version of the code the plot is completely different. I assume this is because multiple signals are being sent simultaneously at time 0. Is there any way around that?
+
+Thanks,
+
+Sam
+
+On Monday, July 27, 2020 at 6:09:46 PM UTC-4, Iñaki Ucar wrote:
+> On Mon, 27 Jul 2020 at 23:31, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Hello,
+> >
+> >> Maybe a single consecutive run. But run many replications and you'll
+> >> see that on average it's completely equivalent to trajectory 1.
+> >
+> > I tried 35 replications and got the following result:
+> > Here all 25 seem to reach a steady state of above 60.
+>
+> That is not what I get. Code and plot attached.
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Jul 28 18:52:37 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Tue, 28 Jul 2020 18:52:37 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.o3DLBWFYAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.6Xz56zRsAQAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.6Xz56zRsAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/o3DLBWFYAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tue, 28 Jul 2020 at 20:43, Sam Schaffel <sam.sch...@gmail.com> wrote:
+>
+> Thanks Iñaki, the code you sent seems to work well.
+> I do have one more question. The only difference between your code and the one I have is where the initial entities at time 0 are sent.
+> I have
+>     add_generator("initial resrc", trj_2.2, at(numeric(x0[2]))) %>%
+>     add_generator("initial resrc2", trj_2, at(numeric(x0[1]))) %>%
+>     add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+> while you have
+>     add_generator("initial resrc", trj_1.2, at(numeric(x0[2]))) %>%
+>     add_generator("initial resrc2", trj_1, at(numeric(x0[1]))) %>%
+>     add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+>
+> This means that the initial entities do not update the state of the system when they change resources, and the initial entities in resource 1 never get sent to the handler to have their delay updated.. However in my version of the code the plot is completely different. I assume this is because multiple signals are being sent simultaneously at time 0. Is there any way around that?
+
+Oh, I see. I thought you wanted the initial arrivals to have fixed
+times. Then, yes, the issue is all the stuff going on at the same time
+at t=0. The workaround is to randomize those arrivals too.
+
+--
+Iñaki Úcar
+
+From ubdf61e559da3c102 at groups.google.com  Tue Jul 28 20:06:17 2020
+From: ubdf61e559da3c102 at groups.google.com (Sam Schaffel)
+Date: Tue, 28 Jul 2020 20:06:17 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.x7M-GnFyAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.o3DLBWFYAgAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.o3DLBWFYAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/x7M-GnFyAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Just to clarify, I can't have multiple arrivals at time 0 subscribe to the signal and have their delay updated?
+
+On Tuesday, July 28, 2020 at 2:52:37 PM UTC-4, Iñaki Ucar wrote:
+> On Tue, 28 Jul 2020 at 20:43, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Thanks Iñaki, the code you sent seems to work well.
+> > I do have one more question. The only difference between your code and the one I have is where the initial entities at time 0 are sent.
+> > I have
+> >     add_generator("initial resrc", trj_2.2, at(numeric(x0[2]))) %>%
+> >     add_generator("initial resrc2", trj_2, at(numeric(x0[1]))) %>%
+> >     add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+> > while you have
+> >     add_generator("initial resrc", trj_1.2, at(numeric(x0[2]))) %>%
+> >     add_generator("initial resrc2", trj_1, at(numeric(x0[1]))) %>%
+> >     add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+> >
+> > This means that the initial entities do not update the state of the system when they change resources, and the initial entities in resource 1 never get sent to the handler to have their delay updated.. However in my version of the code the plot is completely different. I assume this is because multiple signals are being sent simultaneously at time 0. Is there any way around that?
+>
+> Oh, I see. I thought you wanted the initial arrivals to have fixed
+> times. Then, yes, the issue is all the stuff going on at the same time
+> at t=0. The workaround is to randomize those arrivals too.
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Jul 29 08:07:46 2020
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 29 Jul 2020 08:07:46 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.Sn_VNsWDAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.x7M-GnFyAQAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.x7M-GnFyAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/Sn_VNsWDAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I don't think so. Arrivals execute their handler multiple times, thus
+ending up executing several timeouts (and that's why you see a higher
+occupation over time).
+
+On Tue, 28 Jul 2020 at 22:42, Sam Schaffel <sam.sch...@gmail.com> wrote:
+>
+> Just to clarify, I can't have multiple arrivals at time 0 subscribe to the signal and have their delay updated?
+>
+>
+> On Tuesday, July 28, 2020 at 2:52:37 PM UTC-4, Iñaki Ucar wrote:
+>>
+>> On Tue, 28 Jul 2020 at 20:43, Sam Schaffel <sam.sch...@gmail.com> wrote:
+>> >
+>> > Thanks Iñaki, the code you sent seems to work well.
+>> > I do have one more question. The only difference between your code and the one I have is where the initial entities at time 0 are sent.
+>> > I have
+>> >     add_generator("initial resrc", trj_2.2, at(numeric(x0[2]))) %>%
+>> >     add_generator("initial resrc2", trj_2, at(numeric(x0[1]))) %>%
+>> >     add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+>> > while you have
+>> >     add_generator("initial resrc", trj_1.2, at(numeric(x0[2]))) %>%
+>> >     add_generator("initial resrc2", trj_1, at(numeric(x0[1]))) %>%
+>> >     add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+>> >
+>> > This means that the initial entities do not update the state of the system when they change resources, and the initial entities in resource 1 never get sent to the handler to have their delay updated.. However in my version of the code the plot is completely different. I assume this is because multiple signals are being sent simultaneously at time 0. Is there any way around that?
+>>
+>> Oh, I see. I thought you wanted the initial arrivals to have fixed
+>> times. Then, yes, the issue is all the stuff going on at the same time
+>> at t=0. The workaround is to randomize those arrivals too.
+>>
+>> --
+>> Iñaki Úcar
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/6a910358-9f2b-4313-9cc4-120d4a693678o%40googlegroups.com.
+
+--
+Iñaki Úcar
+
+From ubdf61e559da3c102 at groups.google.com  Wed Jul 29 13:06:18 2020
+From: ubdf61e559da3c102 at groups.google.com (Sam Schaffel)
+Date: Wed, 29 Jul 2020 13:06:18 +0000
+Subject: Re: [simmer-devel] Issue with signalling
+Message-ID: <SkOcpu12sT8.FRH9oRqqAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <SkOcpu12sT8.Sn_VNsWDAgAJ@simmer-devel.groups.google.com>
+References: <SkOcpu12sT8.xG8p5nmTAAAJ@simmer-devel.groups.google.com> <SkOcpu12sT8.Sn_VNsWDAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/SkOcpu12sT8/m/FRH9oRqqAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I see, thanks for all the help!
+
+Sam
+
+On Wednesday, July 29, 2020 at 4:07:46 AM UTC-4, Iñaki Ucar wrote:
+
+> I don't think so. Arrivals execute their handler multiple times, thus
+> ending up executing several timeouts (and that's why you see a higher
+> occupation over time).
+>
+> On Tue, 28 Jul 2020 at 22:42, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >
+> > Just to clarify, I can't have multiple arrivals at time 0 subscribe to the signal and have their delay updated?
+> >
+> >
+> > On Tuesday, July 28, 2020 at 2:52:37 PM UTC-4, Iñaki Ucar wrote:
+> >>
+> >> On Tue, 28 Jul 2020 at 20:43, Sam Schaffel <sam.sch...@gmail.com> wrote:
+> >> >
+> >> > Thanks Iñaki, the code you sent seems to work well.
+> >> > I do have one more question. The only difference between your code and the one I have is where the initial entities at time 0 are sent.
+> >> > I have
+> >> >     add_generator("initial resrc", trj_2.2, at(numeric(x0[2]))) %>%
+> >> >     add_generator("initial resrc2", trj_2, at(numeric(x0[1]))) %>%
+> >> >     add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+> >> > while you have
+> >> >     add_generator("initial resrc", trj_1.2, at(numeric(x0[2]))) %>%
+> >> >     add_generator("initial resrc2", trj_1, at(numeric(x0[1]))) %>%
+> >> >     add_generator("entity", trj_2, distribution = INTAKE_TIMES)%>%
+> >> >
+> >> > This means that the initial entities do not update the state of the system when they change resources, and the initial entities in resource 1 never get sent to the handler to have their delay updated.. However in my version of the code the plot is completely different. I assume this is because multiple signals are being sent simultaneously at time 0. Is there any way around that?
+> >>
+> >> Oh, I see. I thought you wanted the initial arrivals to have fixed
+> >> times. Then, yes, the issue is all the stuff going on at the same time
+> >> at t=0. The workaround is to randomize those arrivals too.
+> >>
+> >> --
+> >> Iñaki Úcar
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer...@googlegroups.com.
+
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/6a910358-9f2b-4313-9cc4-120d4a693678o%40googlegroups.com.
+>
+>
+>
+> --
+> Iñaki Úcar
+

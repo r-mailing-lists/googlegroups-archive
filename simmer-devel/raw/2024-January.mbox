@@ -1,0 +1,1172 @@
+From uc9573d5f110a3778 at groups.google.com  Fri Jan 12 05:19:24 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Fri, 12 Jan 2024 05:19:24 +0000
+Subject: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/ElMzgg6dBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+
+So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+
+In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+
+It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+
+I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+
+For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+
+So far, so good...
+
+I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+
+It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+
+I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+
+All help is appreciated!
+
+From u574beeebc8eda76a at groups.google.com  Fri Jan 12 14:42:20 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Fri, 12 Jan 2024 14:42:20 +0000
+Subject: Re: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.H566l8a7BAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+References: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/H566l8a7BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think the only way for one arrival to get information about other arrivals during a simulation is with get_mon_attributes(), which IIRC, returns a dataframe of all arrivals and their attributes, including when the attributes were set/modified. You could then possibly use a mix of local and global attributes to handle the patient-blood interaction (since one arrival cannot set a local attribute of another arrival) but this will probably be messy and slow.
+
+Another approach might be to leverage your gigantic dataframe idea, but instead of using it to dynamically add resources (which I don't know if is possible in simmer - I think they all need to be defined a priori), use it as a dynamic lookup table to keep track of available and consumed blood. The lookup table should be initialized outside the simulation, then you can use the super-assignment operator, <--, to update it from within the simulation. You could in principle use any simmer function that takes a function argument to do the updates, with simmer::log_() probably being the simplest, since you could use it simultaneously for debugging by printing out the result of your update. You would of course also need to write your own update functions, i.e., to 1) add new blood from the blood trajectory and 2) select the best available blood and flag it as "consumed" from the patient trajectory.
+
+On Friday, January 12, 2024 at 12:19:24 AM UTC-5 ralph....@gmail.com wrote:
+> I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+>
+> So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+>
+> In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+>
+> It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+>
+> I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+>
+> For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+>
+> So far, so good...
+>
+> I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+>
+> It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+>
+> I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+>
+> All help is appreciated!
+>
+
+From uc9573d5f110a3778 at groups.google.com  Fri Jan 12 15:07:47 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Fri, 12 Jan 2024 15:07:47 +0000
+Subject: Re: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.q5idKSq9BAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <p7bMHOBgOtg.H566l8a7BAAJ@simmer-devel.groups.google.com>
+References: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com> <p7bMHOBgOtg.H566l8a7BAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/q5idKSq9BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm making some progress with using signals. So far I'm able to have the patient, upon arrival, send a "Blood Needed" signal.  The blood trajectory has a `trap` function that looks for the signal and, when seen, changes the status of the blood to 'used', sends a "Blood Used" signal back to the patient, and exits the system.  The patient, having `trap`pped the "Blood Used" signal, then changes their status to 'received blood' and exits the system.
+
+Problem so far is that the signal traps all the blood: ie if there are two units available, both trap the signal and are used by one patient (not the plan).  And this totally ignores blood type. But it's progress.
+
+On Friday, January 12, 2024 at 8:42:20 AM UTC-6 Philemon Cyclone wrote:
+> I think the only way for one arrival to get information about other arrivals during a simulation is with get_mon_attributes(), which IIRC, returns a dataframe of all arrivals and their attributes, including when the attributes were set/modified. You could then possibly use a mix of local and global attributes to handle the patient-blood interaction (since one arrival cannot set a local attribute of another arrival) but this will probably be messy and slow.
+>
+> Another approach might be to leverage your gigantic dataframe idea, but instead of using it to dynamically add resources (which I don't know if is possible in simmer - I think they all need to be defined a priori), use it as a dynamic lookup table to keep track of available and consumed blood. The lookup table should be initialized outside the simulation, then you can use the super-assignment operator, <--, to update it from within the simulation. You could in principle use any simmer function that takes a function argument to do the updates, with simmer::log_() probably being the simplest, since you could use it simultaneously for debugging by printing out the result of your update. You would of course also need to write your own update functions, i.e., to 1) add new blood from the blood trajectory and 2) select the best available blood and flag it as "consumed" from the patient trajectory.
+>
+> On Friday, January 12, 2024 at 12:19:24 AM UTC-5 ralph....@gmail.com wrote:
+> > I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+> >
+> > So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+> >
+> > In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+> >
+> > It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+> >
+> > I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+> >
+> > For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+> >
+> > So far, so good...
+> >
+> > I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+> >
+> > It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+> >
+> > I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+> >
+> > All help is appreciated!
+> >
+
+From u574beeebc8eda76a at groups.google.com  Fri Jan 12 16:26:54 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Fri, 12 Jan 2024 16:26:54 +0000
+Subject: Re: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.JxYGYXvBBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+References: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/JxYGYXvBBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The signal use is an interesting approach, but doesn't it also run into the problem of missing blood units that have arrived before the patient has signaled? As for the blood type problem maybe using branch() in the handler trajectory may help?
+
+On Friday, January 12, 2024 at 10:07:47 AM UTC-5 ralph....@gmail.com wrote:
+> I'm making some progress with using signals. So far I'm able to have the patient, upon arrival, send a "Blood Needed" signal.  The blood trajectory has a `trap` function that looks for the signal and, when seen, changes the status of the blood to 'used', sends a "Blood Used" signal back to the patient, and exits the system.  The patient, having `trap`pped the "Blood Used" signal, then changes their status to 'received blood' and exits the system.
+>
+> Problem so far is that the signal traps all the blood: ie if there are two units available, both trap the signal and are used by one patient (not the plan).  And this totally ignores blood type. But it's progress.
+>
+> On Friday, January 12, 2024 at 8:42:20 AM UTC-6 Philemon Cyclone wrote:
+> > I think the only way for one arrival to get information about other arrivals during a simulation is with get_mon_attributes(), which IIRC, returns a dataframe of all arrivals and their attributes, including when the attributes were set/modified. You could then possibly use a mix of local and global attributes to handle the patient-blood interaction (since one arrival cannot set a local attribute of another arrival) but this will probably be messy and slow.
+> >
+> > Another approach might be to leverage your gigantic dataframe idea, but instead of using it to dynamically add resources (which I don't know if is possible in simmer - I think they all need to be defined a priori), use it as a dynamic lookup table to keep track of available and consumed blood. The lookup table should be initialized outside the simulation, then you can use the super-assignment operator, <--, to update it from within the simulation. You could in principle use any simmer function that takes a function argument to do the updates, with simmer::log_() probably being the simplest, since you could use it simultaneously for debugging by printing out the result of your update. You would of course also need to write your own update functions, i.e., to 1) add new blood from the blood trajectory and 2) select the best available blood and flag it as "consumed" from the patient trajectory.
+> >
+> > On Friday, January 12, 2024 at 12:19:24 AM UTC-5 ralph....@gmail.com wrote:
+> > > I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+> > >
+> > > So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+> > >
+> > > In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+> > >
+> > > It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+> > >
+> > > I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+> > >
+> > > For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+> > >
+> > > So far, so good...
+> > >
+> > > I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+> > >
+> > > It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+> > >
+> > > I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+> > >
+> > > All help is appreciated!
+> > >
+
+From uc9573d5f110a3778 at groups.google.com  Fri Jan 12 17:09:19 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Fri, 12 Jan 2024 17:09:19 +0000
+Subject: Re: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.0_z848vDBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <p7bMHOBgOtg.JxYGYXvBBAAJ@simmer-devel.groups.google.com>
+References: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com> <p7bMHOBgOtg.JxYGYXvBBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/0_z848vDBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+No, when the patient signals, all blood units that are in the system respond.  (The blood trajectory ends with checking for expiration via a branch, exiting the system if expired, rollback otherwise... so any unexpired blood is "around" to get the signal.)
+
+The issue I'm having with the bloodtype is that while the patient can send a signal with their bloodtype (e.g., signal is named "BloodNeeded_APOS"), I am getting error messages when I try to use get_attribute inside trap.
+
+Code snippet, this is what the Patient sends as a signal:
+send(signals= function() {
+      paste0("BloodNeeded_Type_",
+      get_attribute(env,'bloodtype') )
+
+I can set up the trap function to look for all 8 different signals (for 8 differnt blood types), and reply to all 8 types. What I can't do is set up the trap function to only look for signals that match only the unit's blood's type. e.g., if I format it as :
+
+trap(signals= function() {
+      paste0("BloodNeeded_Type_",
+      get_attribute(env,'bloodtype') ) ,
+
+I get the "there is no arrival running" error. I assume that is an issue with trying to get the blood arrival's attribute inside a trap function?
+
+On Friday, January 12, 2024 at 10:26:54 AM UTC-6 Philemon Cyclone wrote:
+> The signal use is an interesting approach, but doesn't it also run into the problem of missing blood units that have arrived before the patient has signaled? As for the blood type problem maybe using branch() in the handler trajectory may help?
+>
+> On Friday, January 12, 2024 at 10:07:47 AM UTC-5 ralph....@gmail.com wrote:
+> > I'm making some progress with using signals. So far I'm able to have the patient, upon arrival, send a "Blood Needed" signal.  The blood trajectory has a `trap` function that looks for the signal and, when seen, changes the status of the blood to 'used', sends a "Blood Used" signal back to the patient, and exits the system.  The patient, having `trap`pped the "Blood Used" signal, then changes their status to 'received blood' and exits the system.
+> >
+> > Problem so far is that the signal traps all the blood: ie if there are two units available, both trap the signal and are used by one patient (not the plan).  And this totally ignores blood type. But it's progress.
+> >
+> > On Friday, January 12, 2024 at 8:42:20 AM UTC-6 Philemon Cyclone wrote:
+> > > I think the only way for one arrival to get information about other arrivals during a simulation is with get_mon_attributes(), which IIRC, returns a dataframe of all arrivals and their attributes, including when the attributes were set/modified. You could then possibly use a mix of local and global attributes to handle the patient-blood interaction (since one arrival cannot set a local attribute of another arrival) but this will probably be messy and slow.
+> > >
+> > > Another approach might be to leverage your gigantic dataframe idea, but instead of using it to dynamically add resources (which I don't know if is possible in simmer - I think they all need to be defined a priori), use it as a dynamic lookup table to keep track of available and consumed blood. The lookup table should be initialized outside the simulation, then you can use the super-assignment operator, <--, to update it from within the simulation. You could in principle use any simmer function that takes a function argument to do the updates, with simmer::log_() probably being the simplest, since you could use it simultaneously for debugging by printing out the result of your update. You would of course also need to write your own update functions, i.e., to 1) add new blood from the blood trajectory and 2) select the best available blood and flag it as "consumed" from the patient trajectory.
+> > >
+> > > On Friday, January 12, 2024 at 12:19:24 AM UTC-5 ralph....@gmail.com wrote:
+> > > > I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+> > > >
+> > > > So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+> > > >
+> > > > In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+> > > >
+> > > > It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+> > > >
+> > > > I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+> > > >
+> > > > For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+> > > >
+> > > > So far, so good...
+> > > >
+> > > > I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+> > > >
+> > > > It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+> > > >
+> > > > I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+> > > >
+> > > > All help is appreciated!
+> > > >
+
+From u574beeebc8eda76a at groups.google.com  Fri Jan 12 21:12:44 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Fri, 12 Jan 2024 21:12:44 +0000
+Subject: Re: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.8TYpexTRBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+References: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/8TYpexTRBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The syntax for trap() looks ok, but I see a trailing comma after the last closing bracket in your code snippet - was that intentional or is there a typo? In my experience, the "no arrival running" errors are often because the function passed to one of the simmer function arguments is somehow misspecified, but in other cases I've had to resort to inelegant workarounds...
+
+On Friday, January 12, 2024 at 12:09:19 PM UTC-5 ralph....@gmail.com wrote:
+> No, when the patient signals, all blood units that are in the system respond.  (The blood trajectory ends with checking for expiration via a branch, exiting the system if expired, rollback otherwise... so any unexpired blood is "around" to get the signal.)
+>
+> The issue I'm having with the bloodtype is that while the patient can send a signal with their bloodtype (e.g., signal is named "BloodNeeded_APOS"), I am getting error messages when I try to use get_attribute inside trap.
+>
+>
+> Code snippet, this is what the Patient sends as a signal:
+> send(signals= function() {
+>       paste0("BloodNeeded_Type_",
+>       get_attribute(env,'bloodtype') )
+>
+>
+> I can set up the trap function to look for all 8 different signals (for 8 differnt blood types), and reply to all 8 types. What I can't do is set up the trap function to only look for signals that match only the unit's blood's type. e.g., if I format it as :
+>
+> trap(signals= function() {
+>       paste0("BloodNeeded_Type_",
+>       get_attribute(env,'bloodtype') ) ,
+>
+> I get the "there is no arrival running" error. I assume that is an issue with trying to get the blood arrival's attribute inside a trap function?
+>
+>
+>
+> On Friday, January 12, 2024 at 10:26:54 AM UTC-6 Philemon Cyclone wrote:
+> > The signal use is an interesting approach, but doesn't it also run into the problem of missing blood units that have arrived before the patient has signaled? As for the blood type problem maybe using branch() in the handler trajectory may help?
+> >
+> > On Friday, January 12, 2024 at 10:07:47 AM UTC-5 ralph....@gmail.com wrote:
+> > > I'm making some progress with using signals. So far I'm able to have the patient, upon arrival, send a "Blood Needed" signal.  The blood trajectory has a `trap` function that looks for the signal and, when seen, changes the status of the blood to 'used', sends a "Blood Used" signal back to the patient, and exits the system.  The patient, having `trap`pped the "Blood Used" signal, then changes their status to 'received blood' and exits the system.
+> > >
+> > > Problem so far is that the signal traps all the blood: ie if there are two units available, both trap the signal and are used by one patient (not the plan).  And this totally ignores blood type. But it's progress.
+> > >
+> > > On Friday, January 12, 2024 at 8:42:20 AM UTC-6 Philemon Cyclone wrote:
+> > > > I think the only way for one arrival to get information about other arrivals during a simulation is with get_mon_attributes(), which IIRC, returns a dataframe of all arrivals and their attributes, including when the attributes were set/modified. You could then possibly use a mix of local and global attributes to handle the patient-blood interaction (since one arrival cannot set a local attribute of another arrival) but this will probably be messy and slow.
+> > > >
+> > > > Another approach might be to leverage your gigantic dataframe idea, but instead of using it to dynamically add resources (which I don't know if is possible in simmer - I think they all need to be defined a priori), use it as a dynamic lookup table to keep track of available and consumed blood. The lookup table should be initialized outside the simulation, then you can use the super-assignment operator, <--, to update it from within the simulation. You could in principle use any simmer function that takes a function argument to do the updates, with simmer::log_() probably being the simplest, since you could use it simultaneously for debugging by printing out the result of your update. You would of course also need to write your own update functions, i.e., to 1) add new blood from the blood trajectory and 2) select the best available blood and flag it as "consumed" from the patient trajectory.
+> > > >
+> > > > On Friday, January 12, 2024 at 12:19:24 AM UTC-5 ralph....@gmail.com wrote:
+> > > > > I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+> > > > >
+> > > > > So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+> > > > >
+> > > > > In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+> > > > >
+> > > > > It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+> > > > >
+> > > > > I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+> > > > >
+> > > > > For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+> > > > >
+> > > > > So far, so good...
+> > > > >
+> > > > > I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+> > > > >
+> > > > > It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+> > > > >
+> > > > > I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+> > > > >
+> > > > > All help is appreciated!
+> > > > >
+
+From uc9573d5f110a3778 at groups.google.com  Fri Jan 12 22:41:09 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Fri, 12 Jan 2024 22:41:09 +0000
+Subject: Re: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.qs9jlefVBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <p7bMHOBgOtg.8TYpexTRBAAJ@simmer-devel.groups.google.com>
+References: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com> <p7bMHOBgOtg.8TYpexTRBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/qs9jlefVBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes looks like I needed to use function() for my signal. So far, I've been able to:
+
+1) send a patient-specific signal that says "BloodNeeded_Type_1"  (since attributes are numeric, I have 1 through 8 as representing their bloodtype)
+2) Each blood unit traps the signal " BloodNeeded_Type_1", then if the blood unit's bloodtype is 1, then consume the blood and send it out of the system. Send a message back that the blood is consumed, which the patient then traps and leaves the system.
+
+When I run postprocessing on output data, only blood of Type 1 is used, and only patients with Type 1 blood, receive blood. So I think I can just replicate the same for the other blood types. It doesn't take into account that some people can take multiple blood types (but still prefer their own), but it's big progress!
+
+On Friday, January 12, 2024 at 3:12:44 PM UTC-6 Philemon Cyclone wrote:
+> The syntax for trap() looks ok, but I see a trailing comma after the last closing bracket in your code snippet - was that intentional or is there a typo? In my experience, the "no arrival running" errors are often because the function passed to one of the simmer function arguments is somehow misspecified, but in other cases I've had to resort to inelegant workarounds...
+>
+> On Friday, January 12, 2024 at 12:09:19 PM UTC-5 ralph....@gmail.com wrote:
+> > No, when the patient signals, all blood units that are in the system respond.  (The blood trajectory ends with checking for expiration via a branch, exiting the system if expired, rollback otherwise... so any unexpired blood is "around" to get the signal.)
+> >
+> > The issue I'm having with the bloodtype is that while the patient can send a signal with their bloodtype (e.g., signal is named "BloodNeeded_APOS"), I am getting error messages when I try to use get_attribute inside trap.
+> >
+> >
+> > Code snippet, this is what the Patient sends as a signal:
+> > send(signals= function() {
+> >       paste0("BloodNeeded_Type_",
+> >       get_attribute(env,'bloodtype') )
+> >
+> >
+> > I can set up the trap function to look for all 8 different signals (for 8 differnt blood types), and reply to all 8 types. What I can't do is set up the trap function to only look for signals that match only the unit's blood's type. e.g., if I format it as :
+> >
+> > trap(signals= function() {
+> >       paste0("BloodNeeded_Type_",
+> >       get_attribute(env,'bloodtype') ) ,
+> >
+> > I get the "there is no arrival running" error. I assume that is an issue with trying to get the blood arrival's attribute inside a trap function?
+> >
+> >
+> >
+> > On Friday, January 12, 2024 at 10:26:54 AM UTC-6 Philemon Cyclone wrote:
+> > > The signal use is an interesting approach, but doesn't it also run into the problem of missing blood units that have arrived before the patient has signaled? As for the blood type problem maybe using branch() in the handler trajectory may help?
+> > >
+> > > On Friday, January 12, 2024 at 10:07:47 AM UTC-5 ralph....@gmail.com wrote:
+> > > > I'm making some progress with using signals. So far I'm able to have the patient, upon arrival, send a "Blood Needed" signal.  The blood trajectory has a `trap` function that looks for the signal and, when seen, changes the status of the blood to 'used', sends a "Blood Used" signal back to the patient, and exits the system.  The patient, having `trap`pped the "Blood Used" signal, then changes their status to 'received blood' and exits the system.
+> > > >
+> > > > Problem so far is that the signal traps all the blood: ie if there are two units available, both trap the signal and are used by one patient (not the plan).  And this totally ignores blood type. But it's progress.
+> > > >
+> > > > On Friday, January 12, 2024 at 8:42:20 AM UTC-6 Philemon Cyclone wrote:
+> > > > > I think the only way for one arrival to get information about other arrivals during a simulation is with get_mon_attributes(), which IIRC, returns a dataframe of all arrivals and their attributes, including when the attributes were set/modified. You could then possibly use a mix of local and global attributes to handle the patient-blood interaction (since one arrival cannot set a local attribute of another arrival) but this will probably be messy and slow.
+> > > > >
+> > > > > Another approach might be to leverage your gigantic dataframe idea, but instead of using it to dynamically add resources (which I don't know if is possible in simmer - I think they all need to be defined a priori), use it as a dynamic lookup table to keep track of available and consumed blood. The lookup table should be initialized outside the simulation, then you can use the super-assignment operator, <--, to update it from within the simulation. You could in principle use any simmer function that takes a function argument to do the updates, with simmer::log_() probably being the simplest, since you could use it simultaneously for debugging by printing out the result of your update. You would of course also need to write your own update functions, i.e., to 1) add new blood from the blood trajectory and 2) select the best available blood and flag it as "consumed" from the patient trajectory.
+> > > > >
+> > > > > On Friday, January 12, 2024 at 12:19:24 AM UTC-5 ralph....@gmail.com wrote:
+> > > > > > I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+> > > > > >
+> > > > > > So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+> > > > > >
+> > > > > > In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+> > > > > >
+> > > > > > It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+> > > > > >
+> > > > > > I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+> > > > > >
+> > > > > > For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+> > > > > >
+> > > > > > So far, so good...
+> > > > > >
+> > > > > > I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+> > > > > >
+> > > > > > It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+> > > > > >
+> > > > > > I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+> > > > > >
+> > > > > > All help is appreciated!
+> > > > > >
+
+From uc9573d5f110a3778 at groups.google.com  Sat Jan 13 13:21:20 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Sat, 13 Jan 2024 13:21:20 +0000
+Subject: Limiting signal / trap to one recipient
+Message-ID: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/7Pbqoa2XKQw/m/xjrBnO8FBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I have a simulation of blood distribution (see previous post) where both patients (needing blood) and blood units (from donations) are modeled as arrivals with generators.
+
+When a patient arrives and needs blood, they send a signal with what type of blood they can accept. This signal goes out to all blood units. The blood units that are of an acceptable blood type, trap this signal and send a return signal indicating that the patient can use it. Both patient and blood then exit the system.
+
+So far, so good. However, I'm finding that I can't do a 1-to-1 pairing between patient and blood unit this way.
+
+Sometimes, there may be 5 blood units waiting in the system with no patients.  A patient arrives, sends a signal, and all 5 blood units trap the signal; this results in the patient getting all 5 units. (Not desired!)
+
+Other times, there can be 3 patients all waiting for blood but not is available. With all 3 patients sending signals, if a blood unit becomes available, then the blood unit traps signals from all 3 patients and the model acts as if all 3 patients received the same blood. (Not OK!)
+
+What I'm looking for is a way to basically code:
+
+1) once a blood unit has trapped a patient's signal, no other blood units can trap the patient's signal
+2) once a blood unit has trapped a patient's signal, it can't trap any other patient's signal
+
+To make it more complex, right now I'm modeling as if each patient needs one unit of blood. In actuality there's a distribution of patient needs (1,2,3,4, or 5 units) and I've assigned that as an attribute to patient. So ideally I'd code it so that the patient keeps sending signals, and blood units trapping that signal, until their attribute of units_needed goes to zero.
+
+, which then send out their own signal
+
+From uc9573d5f110a3778 at groups.google.com  Sat Jan 13 13:33:41 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Sat, 13 Jan 2024 13:33:41 +0000
+Subject: Re: Limiting signal / trap to one recipient
+Message-ID: <7Pbqoa2XKQw.8ZhuG5wGBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+References: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/7Pbqoa2XKQw/m/8ZhuG5wGBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ignore the very last line of that post, poor editing on my part.
+
+On Saturday, January 13, 2024 at 7:21:20 AM UTC-6 Ralph Asher wrote:
+> I have a simulation of blood distribution (see previous post) where both patients (needing blood) and blood units (from donations) are modeled as arrivals with generators.
+>
+> When a patient arrives and needs blood, they send a signal with what type of blood they can accept. This signal goes out to all blood units. The blood units that are of an acceptable blood type, trap this signal and send a return signal indicating that the patient can use it. Both patient and blood then exit the system.
+>
+> So far, so good. However, I'm finding that I can't do a 1-to-1 pairing between patient and blood unit this way.
+>
+> Sometimes, there may be 5 blood units waiting in the system with no patients.  A patient arrives, sends a signal, and all 5 blood units trap the signal; this results in the patient getting all 5 units. (Not desired!)
+>
+> Other times, there can be 3 patients all waiting for blood but not is available. With all 3 patients sending signals, if a blood unit becomes available, then the blood unit traps signals from all 3 patients and the model acts as if all 3 patients received the same blood. (Not OK!)
+>
+> What I'm looking for is a way to basically code:
+>
+> 1) once a blood unit has trapped a patient's signal, no other blood units can trap the patient's signal
+> 2) once a blood unit has trapped a patient's signal, it can't trap any other patient's signal
+>
+> To make it more complex, right now I'm modeling as if each patient needs one unit of blood. In actuality there's a distribution of patient needs (1,2,3,4, or 5 units) and I've assigned that as an attribute to patient. So ideally I'd code it so that the patient keeps sending signals, and blood units trapping that signal, until their attribute of units_needed goes to zero.
+>
+> , which then send out their own signal
+
+From u574beeebc8eda76a at groups.google.com  Sat Jan 13 13:49:33 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Sat, 13 Jan 2024 13:49:33 +0000
+Subject: Re: Limiting signal / trap to one recipient
+Message-ID: <7Pbqoa2XKQw.x0958nkHBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+References: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/7Pbqoa2XKQw/m/x0958nkHBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+My concern about the dynamic signal-trap approach with many conditions is that it could become unwieldy and hard to maintain with simmer logic. Another alternative to the large dataframe approach could be to treat blood as an actual resource that is set up as follows:
+Define all possible blood types and initialize with some starting capacity (e.g., zero or whatever the blood bank actually has in stock at the time).
+Use an arrivals generator to dynamically add capacity and use one rollback after a timeout(shelf_life) per blood arrival to reduce capacity upon expiration.
+You can then rely more on simmer internals to handle patients queueing for, and consuming blood. You would still need a custom function to select() the best available blood for each type (I've written exactly this sort of custom functionality for one of my use cases and could provide a code snippet if you like).
+
+On Saturday, January 13, 2024 at 8:21:20 AM UTC-5 ralph....@gmail.com wrote:
+> I have a simulation of blood distribution (see previous post) where both patients (needing blood) and blood units (from donations) are modeled as arrivals with generators.
+>
+> When a patient arrives and needs blood, they send a signal with what type of blood they can accept. This signal goes out to all blood units. The blood units that are of an acceptable blood type, trap this signal and send a return signal indicating that the patient can use it. Both patient and blood then exit the system.
+>
+> So far, so good. However, I'm finding that I can't do a 1-to-1 pairing between patient and blood unit this way.
+>
+> Sometimes, there may be 5 blood units waiting in the system with no patients.  A patient arrives, sends a signal, and all 5 blood units trap the signal; this results in the patient getting all 5 units. (Not desired!)
+>
+> Other times, there can be 3 patients all waiting for blood but not is available. With all 3 patients sending signals, if a blood unit becomes available, then the blood unit traps signals from all 3 patients and the model acts as if all 3 patients received the same blood. (Not OK!)
+>
+> What I'm looking for is a way to basically code:
+>
+> 1) once a blood unit has trapped a patient's signal, no other blood units can trap the patient's signal
+> 2) once a blood unit has trapped a patient's signal, it can't trap any other patient's signal
+>
+> To make it more complex, right now I'm modeling as if each patient needs one unit of blood. In actuality there's a distribution of patient needs (1,2,3,4, or 5 units) and I've assigned that as an attribute to patient. So ideally I'd code it so that the patient keeps sending signals, and blood units trapping that signal, until their attribute of units_needed goes to zero.
+>
+> , which then send out their own signal
+
+From uc9573d5f110a3778 at groups.google.com  Sat Jan 13 14:15:10 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Sat, 13 Jan 2024 14:15:10 +0000
+Subject: Re: [simmer-devel] Re: Limiting signal / trap to one recipient
+Message-ID: <7Pbqoa2XKQw.RswE0t8IBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <7Pbqoa2XKQw.x0958nkHBQAJ@simmer-devel.groups.google.com>
+References: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com> <7Pbqoa2XKQw.x0958nkHBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/7Pbqoa2XKQw/m/RswE0t8IBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm not following how you would track lot-specific expiration dates with blood as a resource, though. I get how I could use an arrivals generator to add capacity to an individual blood type; but not how to track lot-level aging.
+
+On Sat, Jan 13, 2024, 7:49 AM Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+
+> My concern about the dynamic signal-trap approach with many conditions is that it could become unwieldy and hard to maintain with simmer logic. Another alternative to the large dataframe approach could be to treat blood as an actual resource that is set up as follows:
+> Define all possible blood types and initialize with some starting capacity (e.g., zero or whatever the blood bank actually has in stock at the time).
+> Use an arrivals generator to dynamically add capacity and use one rollback after a timeout(shelf_life) per blood arrival to reduce capacity upon expiration.
+> You can then rely more on simmer internals to handle patients queueing for, and consuming blood. You would still need a custom function to select() the best available blood for each type (I've written exactly this sort of custom functionality for one of my use cases and could provide a code snippet if you like).
+>
+> On Saturday, January 13, 2024 at 8:21:20 AM UTC-5 ralph....@gmail.com wrote:
+> > I have a simulation of blood distribution (see previous post) where both patients (needing blood) and blood units (from donations) are modeled as arrivals with generators.
+> >
+> > When a patient arrives and needs blood, they send a signal with what type of blood they can accept. This signal goes out to all blood units. The blood units that are of an acceptable blood type, trap this signal and send a return signal indicating that the patient can use it. Both patient and blood then exit the system.
+> >
+> > So far, so good. However, I'm finding that I can't do a 1-to-1 pairing between patient and blood unit this way.
+> >
+> > Sometimes, there may be 5 blood units waiting in the system with no patients.  A patient arrives, sends a signal, and all 5 blood units trap the signal; this results in the patient getting all 5 units. (Not desired!)
+> >
+> > Other times, there can be 3 patients all waiting for blood but not is available. With all 3 patients sending signals, if a blood unit becomes available, then the blood unit traps signals from all 3 patients and the model acts as if all 3 patients received the same blood. (Not OK!)
+> >
+> > What I'm looking for is a way to basically code:
+> >
+> > 1) once a blood unit has trapped a patient's signal, no other blood units can trap the patient's signal
+> > 2) once a blood unit has trapped a patient's signal, it can't trap any other patient's signal
+> >
+> > To make it more complex, right now I'm modeling as if each patient needs one unit of blood. In actuality there's a distribution of patient needs (1,2,3,4, or 5 units) and I've assigned that as an attribute to patient. So ideally I'd code it so that the patient keeps sending signals, and blood units trapping that signal, until their attribute of units_needed goes to zero.
+> >
+> > , which then send out their own signal
+>
+
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/7Pbqoa2XKQw/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u574beeebc8eda76a at groups.google.com  Sat Jan 13 16:27:59 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Sat, 13 Jan 2024 16:27:59 +0000
+Subject: Re: [simmer-devel] Re: Limiting signal / trap to one recipient
+Message-ID: <7Pbqoa2XKQw.QOEdNh8QBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+References: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/7Pbqoa2XKQw/m/QOEdNh8QBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+If you assume that the oldest lots are always consumed first, I think you could derive the age at consumption after the simulation has run by comparing the get_mon_arrivals() dataframe, containing blood and patient arrival times, to the get_mon_resources() dataframe, which has timestamps for when blood is consumed and which you could augment to track the age of unexpired lots.
+
+On Saturday, January 13, 2024 at 9:15:10 AM UTC-5 ralph....@gmail.com wrote:
+> I'm not following how you would track lot-specific expiration dates with blood as a resource, though. I get how I could use an arrivals generator to add capacity to an individual blood type; but not how to track lot-level aging.
+>
+> On Sat, Jan 13, 2024, 7:49 AM Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> > My concern about the dynamic signal-trap approach with many conditions is that it could become unwieldy and hard to maintain with simmer logic. Another alternative to the large dataframe approach could be to treat blood as an actual resource that is set up as follows:
+> > Define all possible blood types and initialize with some starting capacity (e.g., zero or whatever the blood bank actually has in stock at the time).
+> > Use an arrivals generator to dynamically add capacity and use one rollback after a timeout(shelf_life) per blood arrival to reduce capacity upon expiration.
+> > You can then rely more on simmer internals to handle patients queueing for, and consuming blood. You would still need a custom function to select() the best available blood for each type (I've written exactly this sort of custom functionality for one of my use cases and could provide a code snippet if you like).
+> >
+> > On Saturday, January 13, 2024 at 8:21:20 AM UTC-5 ralph....@gmail.com wrote:
+> > > I have a simulation of blood distribution (see previous post) where both patients (needing blood) and blood units (from donations) are modeled as arrivals with generators.
+> > >
+> > > When a patient arrives and needs blood, they send a signal with what type of blood they can accept. This signal goes out to all blood units. The blood units that are of an acceptable blood type, trap this signal and send a return signal indicating that the patient can use it. Both patient and blood then exit the system.
+> > >
+> > > So far, so good. However, I'm finding that I can't do a 1-to-1 pairing between patient and blood unit this way.
+> > >
+> > > Sometimes, there may be 5 blood units waiting in the system with no patients.  A patient arrives, sends a signal, and all 5 blood units trap the signal; this results in the patient getting all 5 units. (Not desired!)
+> > >
+> > > Other times, there can be 3 patients all waiting for blood but not is available. With all 3 patients sending signals, if a blood unit becomes available, then the blood unit traps signals from all 3 patients and the model acts as if all 3 patients received the same blood. (Not OK!)
+> > >
+> > > What I'm looking for is a way to basically code:
+> > >
+> > > 1) once a blood unit has trapped a patient's signal, no other blood units can trap the patient's signal
+> > > 2) once a blood unit has trapped a patient's signal, it can't trap any other patient's signal
+> > >
+> > > To make it more complex, right now I'm modeling as if each patient needs one unit of blood. In actuality there's a distribution of patient needs (1,2,3,4, or 5 units) and I've assigned that as an attribute to patient. So ideally I'd code it so that the patient keeps sending signals, and blood units trapping that signal, until their attribute of units_needed goes to zero.
+> > >
+> > > , which then send out their own signal
+> >
+> > --
+> > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/7Pbqoa2XKQw/unsubscribe.
+> > To unsubscribe from this group and all its topics, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uc9573d5f110a3778 at groups.google.com  Sun Jan 14 03:46:14 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Sun, 14 Jan 2024 03:46:14 +0000
+Subject: Re: [simmer-devel] Re: Limiting signal / trap to one recipient
+Message-ID: <7Pbqoa2XKQw.hYefNSI1BQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <7Pbqoa2XKQw.QOEdNh8QBQAJ@simmer-devel.groups.google.com>
+References: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com> <7Pbqoa2XKQw.QOEdNh8QBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/7Pbqoa2XKQw/m/hYefNSI1BQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I moved to the "big external dataframe of blood resources" approach and yes, it made it much easier. Basically I use a  set_attribute function to modify the external dataframe, and let simmer know if the patient found an acceptable unit of blood or not. If so, then I just modify the "units needed" attribute down by 1 unit. If units_needed goes to 0, exit the simulation via a branch.  If not, roll back to checking available blood. If you don't get enough blood by the expiry date (I put as 6 hours after entering the hospital), exit simulation via a branch representing insufficient blood found in time.
+
+The "big dataframe" approach also made preference much simpler.  A couple things i need to iron out on warming up the simulation, but that's a small issue.  Thanks for all the help!
+
+On Saturday, January 13, 2024 at 10:27:59 AM UTC-6 Philemon Cyclone wrote:
+> If you assume that the oldest lots are always consumed first, I think you could derive the age at consumption after the simulation has run by comparing the get_mon_arrivals() dataframe, containing blood and patient arrival times, to the get_mon_resources() dataframe, which has timestamps for when blood is consumed and which you could augment to track the age of unexpired lots.
+> On Saturday, January 13, 2024 at 9:15:10 AM UTC-5 ralph....@gmail.com wrote:
+> > I'm not following how you would track lot-specific expiration dates with blood as a resource, though. I get how I could use an arrivals generator to add capacity to an individual blood type; but not how to track lot-level aging.
+> >
+> > On Sat, Jan 13, 2024, 7:49 AM Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> > > My concern about the dynamic signal-trap approach with many conditions is that it could become unwieldy and hard to maintain with simmer logic. Another alternative to the large dataframe approach could be to treat blood as an actual resource that is set up as follows:
+> > > Define all possible blood types and initialize with some starting capacity (e.g., zero or whatever the blood bank actually has in stock at the time).
+> > > Use an arrivals generator to dynamically add capacity and use one rollback after a timeout(shelf_life) per blood arrival to reduce capacity upon expiration.
+> > > You can then rely more on simmer internals to handle patients queueing for, and consuming blood. You would still need a custom function to select() the best available blood for each type (I've written exactly this sort of custom functionality for one of my use cases and could provide a code snippet if you like).
+> > >
+> > > On Saturday, January 13, 2024 at 8:21:20 AM UTC-5 ralph....@gmail.com wrote:
+> > > > I have a simulation of blood distribution (see previous post) where both patients (needing blood) and blood units (from donations) are modeled as arrivals with generators.
+> > > >
+> > > > When a patient arrives and needs blood, they send a signal with what type of blood they can accept. This signal goes out to all blood units. The blood units that are of an acceptable blood type, trap this signal and send a return signal indicating that the patient can use it. Both patient and blood then exit the system.
+> > > >
+> > > > So far, so good. However, I'm finding that I can't do a 1-to-1 pairing between patient and blood unit this way.
+> > > >
+> > > > Sometimes, there may be 5 blood units waiting in the system with no patients.  A patient arrives, sends a signal, and all 5 blood units trap the signal; this results in the patient getting all 5 units. (Not desired!)
+> > > >
+> > > > Other times, there can be 3 patients all waiting for blood but not is available. With all 3 patients sending signals, if a blood unit becomes available, then the blood unit traps signals from all 3 patients and the model acts as if all 3 patients received the same blood. (Not OK!)
+> > > >
+> > > > What I'm looking for is a way to basically code:
+> > > >
+> > > > 1) once a blood unit has trapped a patient's signal, no other blood units can trap the patient's signal
+> > > > 2) once a blood unit has trapped a patient's signal, it can't trap any other patient's signal
+> > > >
+> > > > To make it more complex, right now I'm modeling as if each patient needs one unit of blood. In actuality there's a distribution of patient needs (1,2,3,4, or 5 units) and I've assigned that as an attribute to patient. So ideally I'd code it so that the patient keeps sending signals, and blood units trapping that signal, until their attribute of units_needed goes to zero.
+> > > >
+> > > > , which then send out their own signal
+> > >
+> > > --
+> > > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/7Pbqoa2XKQw/unsubscribe.
+> > > To unsubscribe from this group and all its topics, send an email to simmer-devel...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u574beeebc8eda76a at groups.google.com  Sun Jan 14 13:38:04 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Sun, 14 Jan 2024 13:38:04 +0000
+Subject: Re: [simmer-devel] Re: Limiting signal / trap to one recipient
+Message-ID: <7Pbqoa2XKQw.MVp0Am5VBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+References: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/7Pbqoa2XKQw/m/MVp0Am5VBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Glad to hear it's working out, and happy to have been able to help!
+
+On Saturday, January 13, 2024 at 10:46:14 PM UTC-5 ralph....@gmail.com wrote:
+> I moved to the "big external dataframe of blood resources" approach and yes, it made it much easier. Basically I use a  set_attribute function to modify the external dataframe, and let simmer know if the patient found an acceptable unit of blood or not. If so, then I just modify the "units needed" attribute down by 1 unit. If units_needed goes to 0, exit the simulation via a branch.  If not, roll back to checking available blood. If you don't get enough blood by the expiry date (I put as 6 hours after entering the hospital), exit simulation via a branch representing insufficient blood found in time.
+>
+> The "big dataframe" approach also made preference much simpler.  A couple things i need to iron out on warming up the simulation, but that's a small issue.  Thanks for all the help!
+>
+>
+>
+> On Saturday, January 13, 2024 at 10:27:59 AM UTC-6 Philemon Cyclone wrote:
+> > If you assume that the oldest lots are always consumed first, I think you could derive the age at consumption after the simulation has run by comparing the get_mon_arrivals() dataframe, containing blood and patient arrival times, to the get_mon_resources() dataframe, which has timestamps for when blood is consumed and which you could augment to track the age of unexpired lots.
+> > On Saturday, January 13, 2024 at 9:15:10 AM UTC-5 ralph....@gmail.com wrote:
+> > > I'm not following how you would track lot-specific expiration dates with blood as a resource, though. I get how I could use an arrivals generator to add capacity to an individual blood type; but not how to track lot-level aging.
+> > >
+> > > On Sat, Jan 13, 2024, 7:49 AM Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> > > > My concern about the dynamic signal-trap approach with many conditions is that it could become unwieldy and hard to maintain with simmer logic. Another alternative to the large dataframe approach could be to treat blood as an actual resource that is set up as follows:
+> > > > Define all possible blood types and initialize with some starting capacity (e.g., zero or whatever the blood bank actually has in stock at the time).
+> > > > Use an arrivals generator to dynamically add capacity and use one rollback after a timeout(shelf_life) per blood arrival to reduce capacity upon expiration.
+> > > > You can then rely more on simmer internals to handle patients queueing for, and consuming blood. You would still need a custom function to select() the best available blood for each type (I've written exactly this sort of custom functionality for one of my use cases and could provide a code snippet if you like).
+> > > >
+> > > > On Saturday, January 13, 2024 at 8:21:20 AM UTC-5 ralph....@gmail.com wrote:
+> > > > > I have a simulation of blood distribution (see previous post) where both patients (needing blood) and blood units (from donations) are modeled as arrivals with generators.
+> > > > >
+> > > > > When a patient arrives and needs blood, they send a signal with what type of blood they can accept. This signal goes out to all blood units. The blood units that are of an acceptable blood type, trap this signal and send a return signal indicating that the patient can use it. Both patient and blood then exit the system.
+> > > > >
+> > > > > So far, so good. However, I'm finding that I can't do a 1-to-1 pairing between patient and blood unit this way.
+> > > > >
+> > > > > Sometimes, there may be 5 blood units waiting in the system with no patients.  A patient arrives, sends a signal, and all 5 blood units trap the signal; this results in the patient getting all 5 units. (Not desired!)
+> > > > >
+> > > > > Other times, there can be 3 patients all waiting for blood but not is available. With all 3 patients sending signals, if a blood unit becomes available, then the blood unit traps signals from all 3 patients and the model acts as if all 3 patients received the same blood. (Not OK!)
+> > > > >
+> > > > > What I'm looking for is a way to basically code:
+> > > > >
+> > > > > 1) once a blood unit has trapped a patient's signal, no other blood units can trap the patient's signal
+> > > > > 2) once a blood unit has trapped a patient's signal, it can't trap any other patient's signal
+> > > > >
+> > > > > To make it more complex, right now I'm modeling as if each patient needs one unit of blood. In actuality there's a distribution of patient needs (1,2,3,4, or 5 units) and I've assigned that as an attribute to patient. So ideally I'd code it so that the patient keeps sending signals, and blood units trapping that signal, until their attribute of units_needed goes to zero.
+> > > > >
+> > > > > , which then send out their own signal
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/7Pbqoa2XKQw/unsubscribe.
+> > > > To unsubscribe from this group and all its topics, send an email to simmer-devel...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Jan 15 12:22:37 2024
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 15 Jan 2024 12:22:37 +0000
+Subject: Re: [simmer-devel] Re: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.2ciCoOSfBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <p7bMHOBgOtg.qs9jlefVBAAJ@simmer-devel.groups.google.com>
+References: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com> <p7bMHOBgOtg.qs9jlefVBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/2ciCoOSfBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think that for this kind of application I would go just for the dataframe option, i.e. having a global database of blood available with all the attributes you need. The donation trajectory would:
+Increase a global counter that would represent a unique identifier for this donation
+Read that global counter and set it as a private attribute for later use. Also append the donation (attributes and this unique identifier) to the dataframe.
+Timeout with some expiration time.
+Delete the donation from the dataframe using the previous identifier.
+Then, you could just write a function for the patients that take their preferences and look for blood in the dataframe, select the proper row, then decrease the amount of blood if they use any. This function would return just TRUE/FALSE, if the amount of blood requested was available. And then you can use that in a branch.
+
+Iñaki
+
+On Fri, 12 Jan 2024 at 23:41, Ralph Asher <ralph....@gmail.com> wrote:
+
+> Yes looks like I needed to use function() for my signal. So far, I've been able to:
+>
+> 1) send a patient-specific signal that says "BloodNeeded_Type_1"  (since attributes are numeric, I have 1 through 8 as representing their bloodtype)
+> 2) Each blood unit traps the signal " BloodNeeded_Type_1", then if the blood unit's bloodtype is 1, then consume the blood and send it out of the system. Send a message back that the blood is consumed, which the patient then traps and leaves the system.
+>
+> When I run postprocessing on output data, only blood of Type 1 is used, and only patients with Type 1 blood, receive blood. So I think I can just replicate the same for the other blood types. It doesn't take into account that some people can take multiple blood types (but still prefer their own), but it's big progress!
+>
+>
+>
+> On Friday, January 12, 2024 at 3:12:44 PM UTC-6 Philemon Cyclone wrote:
+> > The syntax for trap() looks ok, but I see a trailing comma after the last closing bracket in your code snippet - was that intentional or is there a typo? In my experience, the "no arrival running" errors are often because the function passed to one of the simmer function arguments is somehow misspecified, but in other cases I've had to resort to inelegant workarounds...
+> >
+> > On Friday, January 12, 2024 at 12:09:19 PM UTC-5 ralph....@gmail.com wrote:
+> > > No, when the patient signals, all blood units that are in the system respond.  (The blood trajectory ends with checking for expiration via a branch, exiting the system if expired, rollback otherwise... so any unexpired blood is "around" to get the signal.)
+> > >
+> > > The issue I'm having with the bloodtype is that while the patient can send a signal with their bloodtype (e.g., signal is named "BloodNeeded_APOS"), I am getting error messages when I try to use get_attribute inside trap.
+> > >
+> > >
+> > > Code snippet, this is what the Patient sends as a signal:
+> > > send(signals= function() {
+> > >       paste0("BloodNeeded_Type_",
+> > >       get_attribute(env,'bloodtype') )
+> > >
+> > >
+> > > I can set up the trap function to look for all 8 different signals (for 8 differnt blood types), and reply to all 8 types. What I can't do is set up the trap function to only look for signals that match only the unit's blood's type. e.g., if I format it as :
+> > >
+> > > trap(signals= function() {
+> > >       paste0("BloodNeeded_Type_",
+> > >       get_attribute(env,'bloodtype') ) ,
+> > >
+> > > I get the "there is no arrival running" error. I assume that is an issue with trying to get the blood arrival's attribute inside a trap function?
+> > >
+> > >
+> > >
+> > > On Friday, January 12, 2024 at 10:26:54 AM UTC-6 Philemon Cyclone wrote:
+> > > > The signal use is an interesting approach, but doesn't it also run into the problem of missing blood units that have arrived before the patient has signaled? As for the blood type problem maybe using branch() in the handler trajectory may help?
+> > > >
+> > > > On Friday, January 12, 2024 at 10:07:47 AM UTC-5 ralph....@gmail.com wrote:
+> > > > > I'm making some progress with using signals. So far I'm able to have the patient, upon arrival, send a "Blood Needed" signal.  The blood trajectory has a `trap` function that looks for the signal and, when seen, changes the status of the blood to 'used', sends a "Blood Used" signal back to the patient, and exits the system.  The patient, having `trap`pped the "Blood Used" signal, then changes their status to 'received blood' and exits the system.
+> > > > >
+> > > > > Problem so far is that the signal traps all the blood: ie if there are two units available, both trap the signal and are used by one patient (not the plan).  And this totally ignores blood type. But it's progress.
+> > > > >
+> > > > > On Friday, January 12, 2024 at 8:42:20 AM UTC-6 Philemon Cyclone wrote:
+> > > > > > I think the only way for one arrival to get information about other arrivals during a simulation is with get_mon_attributes(), which IIRC, returns a dataframe of all arrivals and their attributes, including when the attributes were set/modified. You could then possibly use a mix of local and global attributes to handle the patient-blood interaction (since one arrival cannot set a local attribute of another arrival) but this will probably be messy and slow.
+> > > > > >
+> > > > > > Another approach might be to leverage your gigantic dataframe idea, but instead of using it to dynamically add resources (which I don't know if is possible in simmer - I think they all need to be defined a priori), use it as a dynamic lookup table to keep track of available and consumed blood. The lookup table should be initialized outside the simulation, then you can use the super-assignment operator, <--, to update it from within the simulation. You could in principle use any simmer function that takes a function argument to do the updates, with simmer::log_() probably being the simplest, since you could use it simultaneously for debugging by printing out the result of your update. You would of course also need to write your own update functions, i.e., to 1) add new blood from the blood trajectory and 2) select the best available blood and flag it as "consumed" from the patient trajectory.
+> > > > > >
+> > > > > > On Friday, January 12, 2024 at 12:19:24 AM UTC-5 ralph....@gmail.com wrote:
+> > > > > > > I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+> > > > > > >
+> > > > > > > So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+> > > > > > >
+> > > > > > > In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+> > > > > > >
+> > > > > > > It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+> > > > > > >
+> > > > > > > I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+> > > > > > >
+> > > > > > > For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+> > > > > > >
+> > > > > > > So far, so good...
+> > > > > > >
+> > > > > > > I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+> > > > > > >
+> > > > > > > It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+> > > > > > >
+> > > > > > > I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+> > > > > > >
+> > > > > > > All help is appreciated!
+> > > > > > >
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/aed844bc-b562-4b3e-af44-eef2ed843f1en%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/aed844bc-b562-4b3e-af44-eef2ed843f1en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Jan 15 12:25:41 2024
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 15 Jan 2024 12:25:41 +0000
+Subject: Re: [simmer-devel] Re: Limiting signal / trap to one recipient
+Message-ID: <7Pbqoa2XKQw.a9X8dQ-gBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <7Pbqoa2XKQw.MVp0Am5VBQAJ@simmer-devel.groups.google.com>
+References: <7Pbqoa2XKQw.xjrBnO8FBQAJ@simmer-devel.groups.google.com> <7Pbqoa2XKQw.MVp0Am5VBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/7Pbqoa2XKQw/m/a9X8dQ-gBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sat, 13 Jan 2024 at 14:49, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> My concern about the dynamic signal-trap approach with many conditions is that it could become unwieldy and hard to maintain with simmer logic. Another alternative to the large dataframe approach could be to treat blood as an actual resource that is set up as follows:
+> Define all possible blood types and initialize with some starting capacity (e.g., zero or whatever the blood bank actually has in stock at the time).
+> Use an arrivals generator to dynamically add capacity and use one rollback after a timeout(shelf_life) per blood arrival to reduce capacity upon expiration.
+> You can then rely more on simmer internals to handle patients queueing for, and consuming blood. You would still need a custom function to select() the best available blood for each type (I've written exactly this sort of custom functionality for one of my use cases and could provide a code snippet if you like).
+
+I would definitely go for this option and forget about signals if you don't mind losing track of individual donations. If you don't want to "merge" donations into the same resource, then see my previous post in the other thread.
+
+Iñaki
+
+>
+> On Saturday, January 13, 2024 at 8:21:20 AM UTC-5 ralph....@gmail.com wrote:
+> > I have a simulation of blood distribution (see previous post) where both patients (needing blood) and blood units (from donations) are modeled as arrivals with generators.
+> >
+> > When a patient arrives and needs blood, they send a signal with what type of blood they can accept. This signal goes out to all blood units. The blood units that are of an acceptable blood type, trap this signal and send a return signal indicating that the patient can use it. Both patient and blood then exit the system.
+> >
+> > So far, so good. However, I'm finding that I can't do a 1-to-1 pairing between patient and blood unit this way.
+> >
+> > Sometimes, there may be 5 blood units waiting in the system with no patients.  A patient arrives, sends a signal, and all 5 blood units trap the signal; this results in the patient getting all 5 units. (Not desired!)
+> >
+> > Other times, there can be 3 patients all waiting for blood but not is available. With all 3 patients sending signals, if a blood unit becomes available, then the blood unit traps signals from all 3 patients and the model acts as if all 3 patients received the same blood. (Not OK!)
+> >
+> > What I'm looking for is a way to basically code:
+> >
+> > 1) once a blood unit has trapped a patient's signal, no other blood units can trap the patient's signal
+> > 2) once a blood unit has trapped a patient's signal, it can't trap any other patient's signal
+> >
+> > To make it more complex, right now I'm modeling as if each patient needs one unit of blood. In actuality there's a distribution of patient needs (1,2,3,4, or 5 units) and I've assigned that as an attribute to patient. So ideally I'd code it so that the patient keeps sending signals, and blood units trapping that signal, until their attribute of units_needed goes to zero.
+> >
+> > , which then send out their own signal
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+>
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/faff4245-471c-45b6-8251-b242b3385463n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From u574beeebc8eda76a at groups.google.com  Mon Jan 15 13:04:23 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Mon, 15 Jan 2024 13:04:23 +0000
+Subject: Setting initial conditions of arrivals along trajectories
+Message-ID: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/m5YnRpBvaVU/m/NzCv5SuiBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I have a complex simulation for the manufacture of various product types, with each product following a dynamically-generated trajectory unique to that product. The products share a pool of common resources (where each resource is a process step).
+
+I was wondering - is there a way to initialize the simulation with arrivals at specific points along their trajectories? I'm picturing something like the rollback() function with a target, except in this case it would be a "rollforward". I need this to replicate the current state of the real-world manufacturing line, then run simulations from that point on for optimization purposes.
+
+Thanks!
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Jan 15 13:45:25 2024
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 15 Jan 2024 13:45:25 +0000
+Subject: Re: [simmer-devel] Setting initial conditions of arrivals along trajectories
+Message-ID: <m5YnRpBvaVU.k6UNYWmkBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+References: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/m5YnRpBvaVU/m/k6UNYWmkBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+There's no such method to automagically initialize the state of the system. You could do that manually by defining one auxiliary generator per step, with the initial arrivals and remaining times. Then you could just pass each step of the trajectory to those generators just by subsetting it. See https://r-simmer.org/reference/extract.trajectory
+
+Iñaki
+
+On Mon, 15 Jan 2024 at 14:04, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+
+> I have a complex simulation for the manufacture of various product types, with each product following a dynamically-generated trajectory unique to that product. The products share a pool of common resources (where each resource is a process step).
+>
+> I was wondering - is there a way to initialize the simulation with arrivals at specific points along their trajectories? I'm picturing something like the rollback() function with a target, except in this case it would be a "rollforward". I need this to replicate the current state of the real-world manufacturing line, then run simulations from that point on for optimization purposes.
+>
+> Thanks!
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/88f0a06e-3d3f-4ac4-8e64-7efcf1132e60n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/88f0a06e-3d3f-4ac4-8e64-7efcf1132e60n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From uc9573d5f110a3778 at groups.google.com  Mon Jan 15 13:50:09 2024
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Mon, 15 Jan 2024 13:50:09 +0000
+Subject: Re: [simmer-devel] Re: Blood Distribution: arrivals from different generators "pairing off"
+Message-ID: <p7bMHOBgOtg.Q0OzbaukBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+References: <p7bMHOBgOtg.ElMzgg6dBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/p7bMHOBgOtg/m/Q0OzbaukBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Inaki. I ended up doing a slightly different approach. Outside simmer, I made a dataframe of all donations, including their time available to patients, expiration time, bloodtype, status (available, used, or expired), and using patient (initially NA). There was no blood trajectory.  In a set_attribute, the patient trajectory looked at this dataframe, filtered to just the blood units that were available, sorted by preference, then identified the most-preferred unit. The blood unit's status was then modified to "used", and the using patient's ID was put into the dataframe. The attribute was either set to -1 (no blood available) or 1 (a unit of blood available).
+
+If set_attribute was 1, the patient trajectory then modified the number of units required by the patient (an attribute) down by 1. The patient exited the trajectory when either:
+a) they've received all the units necessary, or
+b) they ran out of time in the system (6 hours) without getting the blood they needed.
+
+I liked this system because it was important for me to track status, usage, and results by individual blood unit. However, I may modify it to build up the blood dataframe via a blood trajetory as you suggested.  I wouldn't delete the blood unit from the dataframe at the end, though. I'd keep it in there for tracking.  Even typing this out I realized I can improve the logic flow even more.
+
+Really appreciate both of your help!
+
+Ralph
+
+On Monday, January 15, 2024 at 6:22:37 AM UTC-6 iu...@fedoraproject.org wrote:
+> I think that for this kind of application I would go just for the dataframe option, i.e. having a global database of blood available with all the attributes you need. The donation trajectory would:
+> Increase a global counter that would represent a unique identifier for this donation
+> Read that global counter and set it as a private attribute for later use. Also append the donation (attributes and this unique identifier) to the dataframe.
+> Timeout with some expiration time.
+> Delete the donation from the dataframe using the previous identifier.
+> Then, you could just write a function for the patients that take their preferences and look for blood in the dataframe, select the proper row, then decrease the amount of blood if they use any. This function would return just TRUE/FALSE, if the amount of blood requested was available. And then you can use that in a branch.
+>
+> Iñaki
+>
+> On Fri, 12 Jan 2024 at 23:41, Ralph Asher <ralph....@gmail.com> wrote:
+> > Yes looks like I needed to use function() for my signal. So far, I've been able to:
+> >
+> > 1) send a patient-specific signal that says "BloodNeeded_Type_1"  (since attributes are numeric, I have 1 through 8 as representing their bloodtype)
+> > 2) Each blood unit traps the signal " BloodNeeded_Type_1", then if the blood unit's bloodtype is 1, then consume the blood and send it out of the system. Send a message back that the blood is consumed, which the patient then traps and leaves the system.
+> >
+> > When I run postprocessing on output data, only blood of Type 1 is used, and only patients with Type 1 blood, receive blood. So I think I can just replicate the same for the other blood types. It doesn't take into account that some people can take multiple blood types (but still prefer their own), but it's big progress!
+> >
+> >
+> >
+> > On Friday, January 12, 2024 at 3:12:44 PM UTC-6 Philemon Cyclone wrote:
+> > > The syntax for trap() looks ok, but I see a trailing comma after the last closing bracket in your code snippet - was that intentional or is there a typo? In my experience, the "no arrival running" errors are often because the function passed to one of the simmer function arguments is somehow misspecified, but in other cases I've had to resort to inelegant workarounds...
+> > >
+> > > On Friday, January 12, 2024 at 12:09:19 PM UTC-5 ralph....@gmail.com wrote:
+> > > > No, when the patient signals, all blood units that are in the system respond.  (The blood trajectory ends with checking for expiration via a branch, exiting the system if expired, rollback otherwise... so any unexpired blood is "around" to get the signal.)
+> > > >
+> > > > The issue I'm having with the bloodtype is that while the patient can send a signal with their bloodtype (e.g., signal is named "BloodNeeded_APOS"), I am getting error messages when I try to use get_attribute inside trap.
+> > > >
+> > > >
+> > > > Code snippet, this is what the Patient sends as a signal:
+> > > > send(signals= function() {
+> > > >       paste0("BloodNeeded_Type_",
+> > > >       get_attribute(env,'bloodtype') )
+> > > >
+> > > >
+> > > > I can set up the trap function to look for all 8 different signals (for 8 differnt blood types), and reply to all 8 types. What I can't do is set up the trap function to only look for signals that match only the unit's blood's type. e.g., if I format it as :
+> > > >
+> > > > trap(signals= function() {
+> > > >       paste0("BloodNeeded_Type_",
+> > > >       get_attribute(env,'bloodtype') ) ,
+> > > >
+> > > > I get the "there is no arrival running" error. I assume that is an issue with trying to get the blood arrival's attribute inside a trap function?
+> > > >
+> > > >
+> > > >
+> > > > On Friday, January 12, 2024 at 10:26:54 AM UTC-6 Philemon Cyclone wrote:
+> > > > > The signal use is an interesting approach, but doesn't it also run into the problem of missing blood units that have arrived before the patient has signaled? As for the blood type problem maybe using branch() in the handler trajectory may help?
+> > > > >
+> > > > > On Friday, January 12, 2024 at 10:07:47 AM UTC-5 ralph....@gmail.com wrote:
+> > > > > > I'm making some progress with using signals. So far I'm able to have the patient, upon arrival, send a "Blood Needed" signal.  The blood trajectory has a `trap` function that looks for the signal and, when seen, changes the status of the blood to 'used', sends a "Blood Used" signal back to the patient, and exits the system.  The patient, having `trap`pped the "Blood Used" signal, then changes their status to 'received blood' and exits the system.
+> > > > > >
+> > > > > > Problem so far is that the signal traps all the blood: ie if there are two units available, both trap the signal and are used by one patient (not the plan).  And this totally ignores blood type. But it's progress.
+> > > > > >
+> > > > > > On Friday, January 12, 2024 at 8:42:20 AM UTC-6 Philemon Cyclone wrote:
+> > > > > > > I think the only way for one arrival to get information about other arrivals during a simulation is with get_mon_attributes(), which IIRC, returns a dataframe of all arrivals and their attributes, including when the attributes were set/modified. You could then possibly use a mix of local and global attributes to handle the patient-blood interaction (since one arrival cannot set a local attribute of another arrival) but this will probably be messy and slow.
+> > > > > > >
+> > > > > > > Another approach might be to leverage your gigantic dataframe idea, but instead of using it to dynamically add resources (which I don't know if is possible in simmer - I think they all need to be defined a priori), use it as a dynamic lookup table to keep track of available and consumed blood. The lookup table should be initialized outside the simulation, then you can use the super-assignment operator, <--, to update it from within the simulation. You could in principle use any simmer function that takes a function argument to do the updates, with simmer::log_() probably being the simplest, since you could use it simultaneously for debugging by printing out the result of your update. You would of course also need to write your own update functions, i.e., to 1) add new blood from the blood trajectory and 2) select the best available blood and flag it as "consumed" from the patient trajectory.
+> > > > > > >
+> > > > > > > On Friday, January 12, 2024 at 12:19:24 AM UTC-5 ralph....@gmail.com wrote:
+> > > > > > > > I'm modeling the distribution of blood from a blood bank, to a hospital where it is used.
+> > > > > > > >
+> > > > > > > > So far, I have two trajectories and two generators, one each for blood donation and for patients that need blood.
+> > > > > > > >
+> > > > > > > > In the blood trajectory, blood "arrives" into the system via donations. Upon arrival into the system, unit of blood is given attributes of blood type, donation time, expiration time (42 days after donation), and Status (available, used, or expired).
+> > > > > > > >
+> > > > > > > > It then takes about 6 days to be tested and transported to the hospital, represented by timeouts.
+> > > > > > > >
+> > > > > > > > I then have a branch/timeout/rollback section of the blood trajectory that checks, every 6 hours, to see if the blood is past its expiration time. If so, then it leaves the system with probability 1. (I switch the status to Expired just before the blood leaves the system).
+> > > > > > > >
+> > > > > > > > For the patient trajectory, the patient arrives into the system and is given attributes of blood type, arrival time, need-by time, and Status (waiting, received blood, or did not receive blood by need-by time). If they don't get blood by the need-by time, they exit the system via a branch/timeout/rollback section like with the blood trajectory, with a corresponding Status change.
+> > > > > > > >
+> > > > > > > > So far, so good...
+> > > > > > > >
+> > > > > > > > I'm struggling with how to have the model, for each patient arrival, check to see what blood is present in the simulation environment, "pair off" the patient with a unit of blood, then make both the patient and the blood leave the system (with the appropriate Status changes).
+> > > > > > > >
+> > > > > > > > It gets even trickier when you consider blood types (a patient with AB+ blood can take blood of any type, but prefers AB+ blood; a patient with O- blood can only take O- blood, etc.). Further complications include a FIFO policy for blood use (want to use the oldest unexpired blood first) and prioritization of patients (generally, the one closest to its need-by time is priority).
+> > > > > > > >
+> > > > > > > > I could probably make a gigantic dataframe of blood as resources and have each patient seize a resource, then never un-seize it. But I suspect that may be much slower, and harder to scale.
+> > > > > > > >
+> > > > > > > > All help is appreciated!
+> > > > > > > >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/aed844bc-b562-4b3e-af44-eef2ed843f1en%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/aed844bc-b562-4b3e-af44-eef2ed843f1en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> Iñaki Úcar
+
+From u574beeebc8eda76a at groups.google.com  Thu Jan 18 17:57:58 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Thu, 18 Jan 2024 17:57:58 +0000
+Subject: Re: [simmer-devel] Setting initial conditions of arrivals along trajectories
+Message-ID: <m5YnRpBvaVU.wZFoDQ6UAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+References: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/m5YnRpBvaVU/m/wZFoDQ6UAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Is there a way to search the trajectory for a unique step identifier (e.g., a "tag" name or log_ "message") to get the desired index of the corresponding activity? My trajectories can be of vastly differently lengths, depending on the arrival type, such that knowing the desired trajectory step index a priori is very difficult to determine manually (and would not be sustainable as far as code maintenance goes).
+
+Thanks!
+Phil
+
+On Monday, January 15, 2024 at 8:45:25 AM UTC-5 iu...@fedoraproject.org wrote:
+> There's no such method to automagically initialize the state of the system. You could do that manually by defining one auxiliary generator per step, with the initial arrivals and remaining times. Then you could just pass each step of the trajectory to those generators just by subsetting it. See https://r-simmer.org/reference/extract.trajectory
+>
+> Iñaki
+>
+> On Mon, 15 Jan 2024 at 14:04, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> > I have a complex simulation for the manufacture of various product types, with each product following a dynamically-generated trajectory unique to that product. The products share a pool of common resources (where each resource is a process step).
+> >
+> > I was wondering - is there a way to initialize the simulation with arrivals at specific points along their trajectories? I'm picturing something like the rollback() function with a target, except in this case it would be a "rollforward". I need this to replicate the current state of the real-world manufacturing line, then run simulations from that point on for optimization purposes.
+> >
+> > Thanks!
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/88f0a06e-3d3f-4ac4-8e64-7efcf1132e60n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/88f0a06e-3d3f-4ac4-8e64-7efcf1132e60n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Jan 18 18:15:27 2024
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Thu, 18 Jan 2024 18:15:27 +0000
+Subject: Re: [simmer-devel] Setting initial conditions of arrivals along trajectories
+Message-ID: <m5YnRpBvaVU.6lNlPQKVAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+References: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/m5YnRpBvaVU/m/6lNlPQKVAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is currently not possible. But now that we have tags, we should
+be able to subset by tag. I added an issue to track this:
+https://github.com/r-simmer/simmer/issues/305. Thanks for the idea.
+
+Iñaki
+
+On Thu, 18 Jan 2024 at 18:58, Philemon Cyclone
+<phil.m.f...@gmail.com> wrote:
+>
+> Is there a way to search the trajectory for a unique step identifier (e.g., a "tag" name or log_ "message") to get the desired index of the corresponding activity? My trajectories can be of vastly differently lengths, depending on the arrival type, such that knowing the desired trajectory step index a priori is very difficult to determine manually (and would not be sustainable as far as code maintenance goes).
+>
+> Thanks!
+> Phil
+>
+> On Monday, January 15, 2024 at 8:45:25 AM UTC-5 iu...@fedoraproject.org wrote:
+>>
+>> There's no such method to automagically initialize the state of the system. You could do that manually by defining one auxiliary generator per step, with the initial arrivals and remaining times. Then you could just pass each step of the trajectory to those generators just by subsetting it. See https://r-simmer.org/reference/extract.trajectory
+>>
+>> Iñaki
+>>
+>> On Mon, 15 Jan 2024 at 14:04, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+>>>
+>>> I have a complex simulation for the manufacture of various product types, with each product following a dynamically-generated trajectory unique to that product. The products share a pool of common resources (where each resource is a process step).
+>>>
+>>> I was wondering - is there a way to initialize the simulation with arrivals at specific points along their trajectories? I'm picturing something like the rollback() function with a target, except in this case it would be a "rollforward". I need this to replicate the current state of the real-world manufacturing line, then run simulations from that point on for optimization purposes.
+>>>
+>>> Thanks!
+>>>
+>>> --
+>>> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+>>> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+>>> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/88f0a06e-3d3f-4ac4-8e64-7efcf1132e60n%40googlegroups.com.
+>>
+>>
+>>
+>> --
+>> Iñaki Úcar
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/8f76d093-6fe1-4402-ba11-d5c55d66f1e2n%40googlegroups.com.
+
+--
+Iñaki Úcar
+
+From u574beeebc8eda76a at groups.google.com  Fri Jan 19 14:35:02 2024
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Fri, 19 Jan 2024 14:35:02 +0000
+Subject: Re: [simmer-devel] Setting initial conditions of arrivals along trajectories
+Message-ID: <m5YnRpBvaVU.oV1hkI_XAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+References: <m5YnRpBvaVU.NzCv5SuiBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/m5YnRpBvaVU/m/oV1hkI_XAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for adding the issue. I think as a temporary workaround I can iterate over the trajectory indices and use capture.output() to save the strings otherwise printed to the console, then search those strings for my unique step identifier and use that to get the desired index.
+
+On Thursday, January 18, 2024 at 1:15:27 PM UTC-5 iu...@fedoraproject.org wrote:
+> This is currently not possible. But now that we have tags, we should
+> be able to subset by tag. I added an issue to track this:
+> https://github.com/r-simmer/simmer/issues/305. Thanks for the idea.
+>
+> Iñaki
+>
+> On Thu, 18 Jan 2024 at 18:58, Philemon Cyclone
+> <phil.m.f...@gmail.com> wrote:
+> >
+> > Is there a way to search the trajectory for a unique step identifier (e.g., a "tag" name or log_ "message") to get the desired index of the corresponding activity? My trajectories can be of vastly differently lengths, depending on the arrival type, such that knowing the desired trajectory step index a priori is very difficult to determine manually (and would not be sustainable as far as code maintenance goes).
+> >
+> > Thanks!
+> > Phil
+> >
+> > On Monday, January 15, 2024 at 8:45:25 AM UTC-5 iu...@fedoraproject.org wrote:
+> >>
+> >> There's no such method to automagically initialize the state of the system. You could do that manually by defining one auxiliary generator per step, with the initial arrivals and remaining times. Then you could just pass each step of the trajectory to those generators just by subsetting it. See https://r-simmer.org/reference/extract.trajectory
+> >>
+> >> Iñaki
+> >>
+> >> On Mon, 15 Jan 2024 at 14:04, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> >>>
+> >>> I have a complex simulation for the manufacture of various product types, with each product following a dynamically-generated trajectory unique to that product. The products share a pool of common resources (where each resource is a process step).
+> >>>
+> >>> I was wondering - is there a way to initialize the simulation with arrivals at specific points along their trajectories? I'm picturing something like the rollback() function with a target, except in this case it would be a "rollforward". I need this to replicate the current state of the real-world manufacturing line, then run simulations from that point on for optimization purposes.
+> >>>
+> >>> Thanks!
+> >>>
+> >>> --
+> >>> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> >>> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> >>> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/88f0a06e-3d3f-4ac4-8e64-7efcf1132e60n%40googlegroups.com.
+> >>
+> >>
+> >>
+> >> --
+> >> Iñaki Úcar
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/8f76d093-6fe1-4402-ba11-d5c55d66f1e2n%40googlegroups.com.
+>
+>
+>
+> --
+> Iñaki Úcar
+

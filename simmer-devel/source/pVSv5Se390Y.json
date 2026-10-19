@@ -1,0 +1,170 @@
+{
+ "thread": "pVSv5Se390Y",
+ "subject": "Generate retries (new arrivals) without removing original arrival from queues",
+ "messages_listed": 6,
+ "last_activity": "2020-08-25T15:44:44Z",
+ "messages": [
+  {
+   "id": "8G1VchhgBwAJ",
+   "from": "s-geissler",
+   "author": "d1514084e49b4d7a",
+   "date": "2020-08-12T13:28:59Z",
+   "subject": "Generate retries (new arrivals) without removing original arrival from queues",
+   "parts": [
+    [
+     1,
+     "<div>Hi everyone,</div><div><br></div><div>I am currently trying to realize a simulation in which a source generates requests to a system. If these requests are not processed within a certain timeframe (30 seconds), the source generates a new request. Thereby, the initial request is not removed from the system, instead, both requests are processed. Ideally, I would be able to track which requests are issued by which source so that I can track how many retries were needed before successful completion.<br></div><div><br></div><div>Is there a intended mechanism in simmer that allows the generation of new arrivals based on the current sojourn time of a previous arrival?</div><div><br></div><div>I tried using `renege_in`, but even with `keep_seized = T` this seems to remove the arrival from the queue.</div><div><br></div><div>So ideally, I would like to create a new arrival every time any previous arrival has been in the system for exactly n seconds without removing the original arrival.</div><div><br></div><div>Any idea how I could achieve this?<br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "8u50A7VkBwAJ",
+   "from": "s-geissler",
+   "author": "d1514084e49b4d7a",
+   "date": "2020-08-12T14:53:29Z",
+   "subject": "Re: Generate retries (new arrivals) without removing original arrival from queues",
+   "parts": [
+    [
+     1,
+     "<div>Closest I managed to get is the following. The problem here is, however, that renege_abort() within the out trajectory of a renege_if does not abort the renege, so I still lose the original event.</div><div><br></div><div></div><div>     library(simmer)<br><br>     env &lt;- simmer() %&gt;% <br>       add_global(&quot;nDevices&quot;, 0) %&gt;% <br>       add_global(&quot;nRetries&quot;, 0)<br><br>     trj_initial &lt;- trajectory() %&gt;% <br>       set_attribute(&quot;device&quot;, function() get_global(env, &quot;nDevices&quot;)) %&gt;% <br>       set_global(&quot;nDevices&quot;, 1, &quot;+&quot;) %&gt;% <br>       renege_in(t = 30, out = trajectory() %&gt;% log_(&quot;Retry&quot;) %&gt;% activate(&quot;retry&quot;) %&gt;% set_global(&quot;retry_device&quot;, function() get_attribute(env, &quot;device&quot;)) %&gt;% renege_abort()) %&gt;% <br>       seize(&quot;cpu&quot;) %&gt;% <br>       timeout(20) %&gt;% <br>       release(&quot;cpu&quot;) %&gt;% <br>       log_(&quot;Finished&quot;)<br><br>     trj_retry &lt;- trajectory() %&gt;% <br>       deactivate(&quot;retry&quot;) %&gt;% <br>       set_attribute(&quot;device&quot;, function() get_global(env, &quot;retry_device&quot;)) %&gt;% <br>       renege_in(t = 30, out = trajectory() %&gt;% log_(&quot;Retry&quot;) %&gt;% renege_abort()) %&gt;% <br>       seize(&quot;cpu&quot;) %&gt;% <br>       timeout(20) %&gt;% <br>       release(&quot;cpu&quot;) %&gt;% <br>       log_(&quot;Finished&quot;)<br>     <br>     trj_setup &lt;- trajectory() %&gt;% <br>       deactivate(&quot;retry&quot;)<br>     <br>     env %&gt;%<br>       add_resource(&quot;cpu&quot;, capacity = 1) %&gt;% <br>       add_generator(&quot;initial&quot;, trj_initial, distribution = at(0, 1), mon = 2) %&gt;% <br>       add_generator(&quot;setup&quot;, trj_setup, distribution = at(0)) %&gt;% <br>       add_generator(&quot;retry&quot;, trj_retry, distribution = function() 0) <br>  <br>     env %&gt;% <br>       reset() %&gt;% <br>       run(until = 120)</div>"
+    ]
+   ]
+  },
+  {
+   "id": "hYVVm9o_BgAJ",
+   "from": "s-geissler",
+   "author": "d1514084e49b4d7a",
+   "date": "2020-08-13T10:23:08Z",
+   "subject": "Re: Generate retries (new arrivals) without removing original arrival from queues",
+   "parts": [
+    [
+     1,
+     "<div>I think I solved it using clone() and signaling.</div><div><br></div><div>The code below achieves what I was trying to do. The idea is to clone each arrival that remove the clone via leave if the original has been processed within the timeout. Otherwise, the timeout runs out and the retry is triggered by activating the retry generator for a single arrival. I would still be interested to know if there is a simpler, more elegant solution to this. Maybe something like async_timeout or timeout(blocking = FALSE) could be used to make this simpler?<br></div><div><br></div><div>       library(simmer)<br>       <br>       retry_on &lt;- F<br>       retry_vec &lt;- c()</div>"
+    ],
+    [
+     2,
+     "<div><br>       <br>       env &lt;- simmer() %&gt;% <br>         add_global(&quot;nDevices&quot;, 0) %&gt;% <br>         add_global(&quot;nRetries&quot;, 0)<br>       <br>       trj_initial &lt;- trajectory() %&gt;% <br>         set_attribute(&quot;device&quot;, function() get_global(env, &quot;nDevices&quot;)) %&gt;% <br></div>"
+    ],
+    [
+     1,
+     "<div>         set_global(function() paste0(&quot;nRetries_device_&quot;, get_attribute(env, &quot;device&quot;)), 0) %&gt;% <br></div>"
+    ],
+    [
+     2,
+     "<div>         set_global(&quot;nDevices&quot;, 1, &quot;+&quot;) %&gt;% <br></div>"
+    ],
+    [
+     1,
+     "<div>         log_(function() paste0(&quot;Arrival of intial of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;% <br>         clone(2,<br>               trajectory() %&gt;%</div>"
+    ],
+    [
+     2,
+     "<div><br>                 seize(&quot;cpu&quot;) %&gt;% <br>                 timeout(20) %&gt;% <br>                 release(&quot;cpu&quot;) %&gt;% <br></div>"
+    ],
+    [
+     1,
+     "<div>                 send(function() paste0(get_name(env))) %&gt;% <br>                 log_(&quot;Initial Finished&quot;),<br>               trajectory() %&gt;% <br>                 trap(function() paste0(get_name(env)), handler = trajectory() %&gt;% leave(1, keep_seized = F)) %&gt;% <br>                 timeout(30) %&gt;% <br>                 log_(function() paste0(&quot;Trigger retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%<br>                 timeout(function() { retry_vec &lt;&lt;- c(retry_vec, get_attribute(env, &quot;device&quot;)); return(0) }) %&gt;% <br>                 timeout(function() { retry_on &lt;&lt;- T; return(0) }) %&gt;% <br>                 activate(&quot;retry&quot;))</div>"
+    ],
+    [
+     2,
+     "<div><br>         <br>       <br>       trj_retry &lt;- trajectory() %&gt;% <br>         deactivate(&quot;retry&quot;) %&gt;% <br></div>"
+    ],
+    [
+     1,
+     "<div>         timeout(function() { retry_on &lt;&lt;- F; return(0) }) %&gt;% <br>         set_attribute(&quot;device&quot;, function() { i &lt;- retry_vec[1]; retry_vec &lt;&lt;- tail(retry_vec, -1); return(i) }) %&gt;% <br>         set_global(function() paste0(&quot;nRetries_device_&quot;, get_attribute(env, &quot;device&quot;)), 1, &quot;+&quot;) %&gt;% <br>         log_(function() paste0(&quot;Arrival of retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;% <br>       clone(2,<br>               trajectory() %&gt;%</div>"
+    ],
+    [
+     2,
+     "<div><br>                 seize(&quot;cpu&quot;) %&gt;% <br>                 timeout(20) %&gt;% <br>                 release(&quot;cpu&quot;) %&gt;% <br></div>"
+    ],
+    [
+     1,
+     "<div>                 send(function() paste0(get_name(env))) %&gt;% <br>                 log_(&quot;Retry Finished&quot;),<br>               trajectory() %&gt;% <br>                 trap(function() paste0(get_name(env)), handler = trajectory() %&gt;% leave(1, keep_seized = F)) %&gt;% <br>                 timeout(30) %&gt;% <br>                 log_(function() paste0(&quot;Trigger retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%<br>                 timeout(function() { retry_vec &lt;&lt;- c(retry_vec, get_attribute(env, &quot;device&quot;)); return(0) }) %&gt;% <br>                 timeout(function() { retry_on &lt;&lt;- T; return(0) }) %&gt;% <br>                 activate(&quot;retry&quot;))</div>"
+    ],
+    [
+     2,
+     "<div><br><br>       env %&gt;%<br>         add_resource(&quot;cpu&quot;, capacity = 1) %&gt;% <br></div>"
+    ],
+    [
+     1,
+     "<div>         add_generator(&quot;initial&quot;, trj_initial, distribution = at(0, 1, 2, 3, 4, 5)) %&gt;% <br>         add_generator(&quot;retry&quot;, trj_retry, distribution = function() ifelse(retry_on, 0, -1)) <br></div>"
+    ],
+    [
+     2,
+     "<div>         <br>       env %&gt;% <br>         reset() %&gt;% <br></div>"
+    ],
+    [
+     1,
+     "<div>         run(until = 1000)<br></div>"
+    ],
+    [
+     3,
+     "<br><div class=\"gmail_quote\"><div dir=\"auto\" class=\"gmail_attr\">s-geissler schrieb am Mittwoch, 12. August 2020 um 16:53:29 UTC+2:<br></div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><div>Closest I managed to get is the following. The problem here is, however, that renege_abort() within the out trajectory of a renege_if does not abort the renege, so I still lose the original event.</div><div><br></div><div></div><div>     library(simmer)<br><br>     env &lt;- simmer() %&gt;% <br>       add_global(&quot;nDevices&quot;, 0) %&gt;% <br>       add_global(&quot;nRetries&quot;, 0)<br><br>     trj_initial &lt;- trajectory() %&gt;% <br>       set_attribute(&quot;device&quot;, function() get_global(env, &quot;nDevices&quot;)) %&gt;% <br>       set_global(&quot;nDevices&quot;, 1, &quot;+&quot;) %&gt;% <br>       renege_in(t = 30, out = trajectory() %&gt;% log_(&quot;Retry&quot;) %&gt;% activate(&quot;retry&quot;) %&gt;% set_global(&quot;retry_device&quot;, function() get_attribute(env, &quot;device&quot;)) %&gt;% renege_abort()) %&gt;% <br>       seize(&quot;cpu&quot;) %&gt;% <br>       timeout(20) %&gt;% <br>       release(&quot;cpu&quot;) %&gt;% <br>       log_(&quot;Finished&quot;)<br><br>     trj_retry &lt;- trajectory() %&gt;% <br>       deactivate(&quot;retry&quot;) %&gt;% <br>       set_attribute(&quot;device&quot;, function() get_global(env, &quot;retry_device&quot;)) %&gt;% <br>       renege_in(t = 30, out = trajectory() %&gt;% log_(&quot;Retry&quot;) %&gt;% renege_abort()) %&gt;% <br>       seize(&quot;cpu&quot;) %&gt;% <br>       timeout(20) %&gt;% <br>       release(&quot;cpu&quot;) %&gt;% <br>       log_(&quot;Finished&quot;)<br>     <br>     trj_setup &lt;- trajectory() %&gt;% <br>       deactivate(&quot;retry&quot;)<br>     <br>     env %&gt;%<br>       add_resource(&quot;cpu&quot;, capacity = 1) %&gt;% <br>       add_generator(&quot;initial&quot;, trj_initial, distribution = at(0, 1), mon = 2) %&gt;% <br>       add_generator(&quot;setup&quot;, trj_setup, distribution = at(0)) %&gt;% <br>       add_generator(&quot;retry&quot;, trj_retry, distribution = function() 0) <br>  <br>     env %&gt;% <br>       reset() %&gt;% <br>       run(until = 120)</div></blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "W5PyU8LsBgAJ",
+   "from": "Iñaki Ucar",
+   "author": "0f5b7adb7e70bd8b",
+   "date": "2020-08-15T15:11:39Z",
+   "subject": "Re: [simmer-devel] Re: Generate retries (new arrivals) without removing original arrival from queues",
+   "parts": [
+    [
+     1,
+     "Brilliant solution! A very clever use of clone(). :) Additionally,\r<br>there&#39;s a helper called when_activated() that generates n arrivals\r<br>when an activate() activity is called upon the generator (see examples\r<br>under ?when_activated). It doesn&#39;t require deactivation, or keeping\r<br>track of retries, so it could simplify your code notably.\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Thu, 13 Aug 2020 at 12:23, &#39;s-geissler&#39; via simmer-devel\r<br>&lt;<a href data-email-masked rel=\"nofollow\">simmer...@googlegroups.com</a>&gt; wrote:\r<br>&gt;\r<br>&gt; I think I solved it using clone() and signaling.\r<br>&gt;\r<br>&gt; The code below achieves what I was trying to do. The idea is to clone each arrival that remove the clone via leave if the original has been processed within the timeout. Otherwise, the timeout runs out and the retry is triggered by activating the retry generator for a single arrival. I would still be interested to know if there is a simpler, more elegant solution to this. Maybe something like async_timeout or timeout(blocking = FALSE) could be used to make this simpler?\r<br>&gt;\r<br>&gt;        library(simmer)\r<br>&gt;\r<br>&gt;        retry_on &lt;- F\r<br>&gt;        retry_vec &lt;- c()\r<br>&gt;\r<br>&gt;        env &lt;- simmer() %&gt;%\r<br>&gt;          add_global(&quot;nDevices&quot;, 0) %&gt;%\r<br>&gt;          add_global(&quot;nRetries&quot;, 0)\r<br>&gt;\r<br>&gt;        trj_initial &lt;- trajectory() %&gt;%\r<br>&gt;          set_attribute(&quot;device&quot;, function() get_global(env, &quot;nDevices&quot;)) %&gt;%\r<br>&gt;          set_global(function() paste0(&quot;nRetries_device_&quot;, get_attribute(env, &quot;device&quot;)), 0) %&gt;%\r<br>&gt;          set_global(&quot;nDevices&quot;, 1, &quot;+&quot;) %&gt;%\r<br>&gt;          log_(function() paste0(&quot;Arrival of intial of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%\r<br>&gt;          clone(2,\r<br>&gt;                trajectory() %&gt;%\r<br>&gt;                  seize(&quot;cpu&quot;) %&gt;%\r<br>&gt;                  timeout(20) %&gt;%\r<br>&gt;                  release(&quot;cpu&quot;) %&gt;%\r<br>&gt;                  send(function() paste0(get_name(env))) %&gt;%\r<br>&gt;                  log_(&quot;Initial Finished&quot;),\r<br>&gt;                trajectory() %&gt;%\r<br>&gt;                  trap(function() paste0(get_name(env)), handler = trajectory() %&gt;% leave(1, keep_seized = F)) %&gt;%\r<br>&gt;                  timeout(30) %&gt;%\r<br>&gt;                  log_(function() paste0(&quot;Trigger retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%\r<br>&gt;                  timeout(function() { retry_vec &lt;&lt;- c(retry_vec, get_attribute(env, &quot;device&quot;)); return(0) }) %&gt;%\r<br>&gt;                  timeout(function() { retry_on &lt;&lt;- T; return(0) }) %&gt;%\r<br>&gt;                  activate(&quot;retry&quot;))\r<br>&gt;\r<br>&gt;\r<br>&gt;        trj_retry &lt;- trajectory() %&gt;%\r<br>&gt;          deactivate(&quot;retry&quot;) %&gt;%\r<br>&gt;          timeout(function() { retry_on &lt;&lt;- F; return(0) }) %&gt;%\r<br>&gt;          set_attribute(&quot;device&quot;, function() { i &lt;- retry_vec[1]; retry_vec &lt;&lt;- tail(retry_vec, -1); return(i) }) %&gt;%\r<br>&gt;          set_global(function() paste0(&quot;nRetries_device_&quot;, get_attribute(env, &quot;device&quot;)), 1, &quot;+&quot;) %&gt;%\r<br>&gt;          log_(function() paste0(&quot;Arrival of retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%\r<br>&gt;        clone(2,\r<br>&gt;                trajectory() %&gt;%\r<br>&gt;                  seize(&quot;cpu&quot;) %&gt;%\r<br>&gt;                  timeout(20) %&gt;%\r<br>&gt;                  release(&quot;cpu&quot;) %&gt;%\r<br>&gt;                  send(function() paste0(get_name(env))) %&gt;%\r<br>&gt;                  log_(&quot;Retry Finished&quot;),\r<br>&gt;                trajectory() %&gt;%\r<br>&gt;                  trap(function() paste0(get_name(env)), handler = trajectory() %&gt;% leave(1, keep_seized = F)) %&gt;%\r<br>&gt;                  timeout(30) %&gt;%\r<br>&gt;                  log_(function() paste0(&quot;Trigger retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%\r<br>&gt;                  timeout(function() { retry_vec &lt;&lt;- c(retry_vec, get_attribute(env, &quot;device&quot;)); return(0) }) %&gt;%\r<br>&gt;                  timeout(function() { retry_on &lt;&lt;- T; return(0) }) %&gt;%\r<br>&gt;                  activate(&quot;retry&quot;))\r<br>&gt;\r<br>&gt;        env %&gt;%\r<br>&gt;          add_resource(&quot;cpu&quot;, capacity = 1) %&gt;%\r<br>&gt;          add_generator(&quot;initial&quot;, trj_initial, distribution = at(0, 1, 2, 3, 4, 5)) %&gt;%\r<br>&gt;          add_generator(&quot;retry&quot;, trj_retry, distribution = function() ifelse(retry_on, 0, -1))\r<br>&gt;\r<br>&gt;        env %&gt;%\r<br>&gt;          reset() %&gt;%\r<br>&gt;          run(until = 1000)\r<br>&gt;\r<br>&gt; s-geissler schrieb am Mittwoch, 12. August 2020 um 16:53:29 UTC+2:\r<br>&gt;&gt;\r<br>&gt;&gt; Closest I managed to get is the following. The problem here is, however, that renege_abort() within the out trajectory of a renege_if does not abort the renege, so I still lose the original event.\r<br>&gt;&gt;\r<br>&gt;&gt;      library(simmer)\r<br>&gt;&gt;\r<br>&gt;&gt;      env &lt;- simmer() %&gt;%\r<br>&gt;&gt;        add_global(&quot;nDevices&quot;, 0) %&gt;%\r<br>&gt;&gt;        add_global(&quot;nRetries&quot;, 0)\r<br>&gt;&gt;\r<br>&gt;&gt;      trj_initial &lt;- trajectory() %&gt;%\r<br>&gt;&gt;        set_attribute(&quot;device&quot;, function() get_global(env, &quot;nDevices&quot;)) %&gt;%\r<br>&gt;&gt;        set_global(&quot;nDevices&quot;, 1, &quot;+&quot;) %&gt;%\r<br>&gt;&gt;        renege_in(t = 30, out = trajectory() %&gt;% log_(&quot;Retry&quot;) %&gt;% activate(&quot;retry&quot;) %&gt;% set_global(&quot;retry_device&quot;, function() get_attribute(env, &quot;device&quot;)) %&gt;% renege_abort()) %&gt;%\r<br>&gt;&gt;        seize(&quot;cpu&quot;) %&gt;%\r<br>&gt;&gt;        timeout(20) %&gt;%\r<br>&gt;&gt;        release(&quot;cpu&quot;) %&gt;%\r<br>&gt;&gt;        log_(&quot;Finished&quot;)\r<br>&gt;&gt;\r<br>&gt;&gt;      trj_retry &lt;- trajectory() %&gt;%\r<br>&gt;&gt;        deactivate(&quot;retry&quot;) %&gt;%\r<br>&gt;&gt;        set_attribute(&quot;device&quot;, function() get_global(env, &quot;retry_device&quot;)) %&gt;%\r<br>&gt;&gt;        renege_in(t = 30, out = trajectory() %&gt;% log_(&quot;Retry&quot;) %&gt;% renege_abort()) %&gt;%\r<br>&gt;&gt;        seize(&quot;cpu&quot;) %&gt;%\r<br>&gt;&gt;        timeout(20) %&gt;%\r<br>&gt;&gt;        release(&quot;cpu&quot;) %&gt;%\r<br>&gt;&gt;        log_(&quot;Finished&quot;)\r<br>&gt;&gt;\r<br>&gt;&gt;      trj_setup &lt;- trajectory() %&gt;%\r<br>&gt;&gt;        deactivate(&quot;retry&quot;)\r<br>&gt;&gt;\r<br>&gt;&gt;      env %&gt;%\r<br>&gt;&gt;        add_resource(&quot;cpu&quot;, capacity = 1) %&gt;%\r<br>&gt;&gt;        add_generator(&quot;initial&quot;, trj_initial, distribution = at(0, 1), mon = 2) %&gt;%\r<br>&gt;&gt;        add_generator(&quot;setup&quot;, trj_setup, distribution = at(0)) %&gt;%\r<br>&gt;&gt;        add_generator(&quot;retry&quot;, trj_retry, distribution = function() 0)\r<br>&gt;&gt;\r<br>&gt;&gt;      env %&gt;%\r<br>&gt;&gt;        reset() %&gt;%\r<br>&gt;&gt;        run(until = 120)\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; --\r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;simmer-devel&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">simmer-devel...@googlegroups.com</a>.\r<br>&gt; To view this discussion on the web visit <a href=\"https://groups.google.com/d/msgid/simmer-devel/15c140b3-4514-4b06-bbd5-ad783db2ec11n%40googlegroups.com\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msgid/simmer-devel/15c140b3-4514-4b06-bbd5-ad783db2ec11n%2540googlegroups.com&amp;source=gmail&amp;ust=1792467429187000&amp;usg=AOvVaw0sbqznOxRbV1CrW2YGJtSS\">https://groups.google.com/d/msgid/simmer-devel/15c140b3-4514-4b06-bbd5-ad783db2ec11n%40googlegroups.com</a>.\r<br>\r<br>\r<br>\r<br>-- \r<br>Iñaki Úcar\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "gtmfNXJrAAAJ",
+   "from": "s-geissler",
+   "author": "d1514084e49b4d7a",
+   "date": "2020-08-24T09:01:33Z",
+   "subject": "Re: [simmer-devel] Re: Generate retries (new arrivals) without removing original arrival from queues",
+   "parts": [
+    [
+     1,
+     "<div>Thank you for the hint regarding when_activated(). Really helpful!</div><div><br></div><div>I now have one last question regarding the monitoring of clones: Is there a way to only monitor the original? synchronize() provides the mon_all and wait flags, but I can&#39;t tell ahead of time if the original or the clone is going to be finished first. Ideally, I would like to only have the original included in the arrival results.</div><div><br></div><div>Right now, I just don&#39;t synchronize() at all and filter for finished == T afterwards since the clones all leave() the system. However, that doesn&#39;t seem to be always consistent and also conflicts with arrivals still in the system after the simulation time ends.</div><div><br></div><div>Any hints are much appreciated!<br></div>"
+    ],
+    [
+     3,
+     "<br><div class=\"gmail_quote\"><div dir=\"auto\" class=\"gmail_attr\"><a href data-email-masked rel=\"nofollow\">iu...@fedoraproject.org</a> schrieb am Samstag, 15. August 2020 um 17:11:39 UTC+2:<br></div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">Brilliant solution! A very clever use of clone(). :) Additionally,\r\n<br>there&#39;s a helper called when_activated() that generates n arrivals\r\n<br>when an activate() activity is called upon the generator (see examples\r\n<br>under ?when_activated). It doesn&#39;t require deactivation, or keeping\r\n<br>track of retries, so it could simplify your code notably.\r\n<br>\r\n<br>On Thu, 13 Aug 2020 at 12:23, &#39;s-geissler&#39; via simmer-devel\r\n<br>&lt;<a rel=\"nofollow\">simmer...@googlegroups.com</a>&gt; wrote:\r\n<br>&gt;\r\n<br>&gt; I think I solved it using clone() and signaling.\r\n<br>&gt;\r\n<br>&gt; The code below achieves what I was trying to do. The idea is to clone each arrival that remove the clone via leave if the original has been processed within the timeout. Otherwise, the timeout runs out and the retry is triggered by activating the retry generator for a single arrival. I would still be interested to know if there is a simpler, more elegant solution to this. Maybe something like async_timeout or timeout(blocking = FALSE) could be used to make this simpler?\r\n<br>&gt;\r\n<br>&gt;        library(simmer)\r\n<br>&gt;\r\n<br>&gt;        retry_on &lt;- F\r\n<br>&gt;        retry_vec &lt;- c()\r\n<br>&gt;\r\n<br>&gt;        env &lt;- simmer() %&gt;%\r\n<br>&gt;          add_global(&quot;nDevices&quot;, 0) %&gt;%\r\n<br>&gt;          add_global(&quot;nRetries&quot;, 0)\r\n<br>&gt;\r\n<br>&gt;        trj_initial &lt;- trajectory() %&gt;%\r\n<br>&gt;          set_attribute(&quot;device&quot;, function() get_global(env, &quot;nDevices&quot;)) %&gt;%\r\n<br>&gt;          set_global(function() paste0(&quot;nRetries_device_&quot;, get_attribute(env, &quot;device&quot;)), 0) %&gt;%\r\n<br>&gt;          set_global(&quot;nDevices&quot;, 1, &quot;+&quot;) %&gt;%\r\n<br>&gt;          log_(function() paste0(&quot;Arrival of intial of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%\r\n<br>&gt;          clone(2,\r\n<br>&gt;                trajectory() %&gt;%\r\n<br>&gt;                  seize(&quot;cpu&quot;) %&gt;%\r\n<br>&gt;                  timeout(20) %&gt;%\r\n<br>&gt;                  release(&quot;cpu&quot;) %&gt;%\r\n<br>&gt;                  send(function() paste0(get_name(env))) %&gt;%\r\n<br>&gt;                  log_(&quot;Initial Finished&quot;),\r\n<br>&gt;                trajectory() %&gt;%\r\n<br>&gt;                  trap(function() paste0(get_name(env)), handler = trajectory() %&gt;% leave(1, keep_seized = F)) %&gt;%\r\n<br>&gt;                  timeout(30) %&gt;%\r\n<br>&gt;                  log_(function() paste0(&quot;Trigger retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%\r\n<br>&gt;                  timeout(function() { retry_vec &lt;&lt;- c(retry_vec, get_attribute(env, &quot;device&quot;)); return(0) }) %&gt;%\r\n<br>&gt;                  timeout(function() { retry_on &lt;&lt;- T; return(0) }) %&gt;%\r\n<br>&gt;                  activate(&quot;retry&quot;))\r\n<br>&gt;\r\n<br>&gt;\r\n<br>&gt;        trj_retry &lt;- trajectory() %&gt;%\r\n<br>&gt;          deactivate(&quot;retry&quot;) %&gt;%\r\n<br>&gt;          timeout(function() { retry_on &lt;&lt;- F; return(0) }) %&gt;%\r\n<br>&gt;          set_attribute(&quot;device&quot;, function() { i &lt;- retry_vec[1]; retry_vec &lt;&lt;- tail(retry_vec, -1); return(i) }) %&gt;%\r\n<br>&gt;          set_global(function() paste0(&quot;nRetries_device_&quot;, get_attribute(env, &quot;device&quot;)), 1, &quot;+&quot;) %&gt;%\r\n<br>&gt;          log_(function() paste0(&quot;Arrival of retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%\r\n<br>&gt;        clone(2,\r\n<br>&gt;                trajectory() %&gt;%\r\n<br>&gt;                  seize(&quot;cpu&quot;) %&gt;%\r\n<br>&gt;                  timeout(20) %&gt;%\r\n<br>&gt;                  release(&quot;cpu&quot;) %&gt;%\r\n<br>&gt;                  send(function() paste0(get_name(env))) %&gt;%\r\n<br>&gt;                  log_(&quot;Retry Finished&quot;),\r\n<br>&gt;                trajectory() %&gt;%\r\n<br>&gt;                  trap(function() paste0(get_name(env)), handler = trajectory() %&gt;% leave(1, keep_seized = F)) %&gt;%\r\n<br>&gt;                  timeout(30) %&gt;%\r\n<br>&gt;                  log_(function() paste0(&quot;Trigger retry of device &quot;, get_attribute(env, &quot;device&quot;))) %&gt;%\r\n<br>&gt;                  timeout(function() { retry_vec &lt;&lt;- c(retry_vec, get_attribute(env, &quot;device&quot;)); return(0) }) %&gt;%\r\n<br>&gt;                  timeout(function() { retry_on &lt;&lt;- T; return(0) }) %&gt;%\r\n<br>&gt;                  activate(&quot;retry&quot;))\r\n<br>&gt;\r\n<br>&gt;        env %&gt;%\r\n<br>&gt;          add_resource(&quot;cpu&quot;, capacity = 1) %&gt;%\r\n<br>&gt;          add_generator(&quot;initial&quot;, trj_initial, distribution = at(0, 1, 2, 3, 4, 5)) %&gt;%\r\n<br>&gt;          add_generator(&quot;retry&quot;, trj_retry, distribution = function() ifelse(retry_on, 0, -1))\r\n<br>&gt;\r\n<br>&gt;        env %&gt;%\r\n<br>&gt;          reset() %&gt;%\r\n<br>&gt;          run(until = 1000)\r\n<br>&gt;\r\n<br>&gt; s-geissler schrieb am Mittwoch, 12. August 2020 um 16:53:29 UTC+2:\r\n<br>&gt;&gt;\r\n<br>&gt;&gt; Closest I managed to get is the following. The problem here is, however, that renege_abort() within the out trajectory of a renege_if does not abort the renege, so I still lose the original event.\r\n<br>&gt;&gt;\r\n<br>&gt;&gt;      library(simmer)\r\n<br>&gt;&gt;\r\n<br>&gt;&gt;      env &lt;- simmer() %&gt;%\r\n<br>&gt;&gt;        add_global(&quot;nDevices&quot;, 0) %&gt;%\r\n<br>&gt;&gt;        add_global(&quot;nRetries&quot;, 0)\r\n<br>&gt;&gt;\r\n<br>&gt;&gt;      trj_initial &lt;- trajectory() %&gt;%\r\n<br>&gt;&gt;        set_attribute(&quot;device&quot;, function() get_global(env, &quot;nDevices&quot;)) %&gt;%\r\n<br>&gt;&gt;        set_global(&quot;nDevices&quot;, 1, &quot;+&quot;) %&gt;%\r\n<br>&gt;&gt;        renege_in(t = 30, out = trajectory() %&gt;% log_(&quot;Retry&quot;) %&gt;% activate(&quot;retry&quot;) %&gt;% set_global(&quot;retry_device&quot;, function() get_attribute(env, &quot;device&quot;)) %&gt;% renege_abort()) %&gt;%\r\n<br>&gt;&gt;        seize(&quot;cpu&quot;) %&gt;%\r\n<br>&gt;&gt;        timeout(20) %&gt;%\r\n<br>&gt;&gt;        release(&quot;cpu&quot;) %&gt;%\r\n<br>&gt;&gt;        log_(&quot;Finished&quot;)\r\n<br>&gt;&gt;\r\n<br>&gt;&gt;      trj_retry &lt;- trajectory() %&gt;%\r\n<br>&gt;&gt;        deactivate(&quot;retry&quot;) %&gt;%\r\n<br>&gt;&gt;        set_attribute(&quot;device&quot;, function() get_global(env, &quot;retry_device&quot;)) %&gt;%\r\n<br>&gt;&gt;        renege_in(t = 30, out = trajectory() %&gt;% log_(&quot;Retry&quot;) %&gt;% renege_abort()) %&gt;%\r\n<br>&gt;&gt;        seize(&quot;cpu&quot;) %&gt;%\r\n<br>&gt;&gt;        timeout(20) %&gt;%\r\n<br>&gt;&gt;        release(&quot;cpu&quot;) %&gt;%\r\n<br>&gt;&gt;        log_(&quot;Finished&quot;)\r\n<br>&gt;&gt;\r\n<br>&gt;&gt;      trj_setup &lt;- trajectory() %&gt;%\r\n<br>&gt;&gt;        deactivate(&quot;retry&quot;)\r\n<br>&gt;&gt;\r\n<br>&gt;&gt;      env %&gt;%\r\n<br>&gt;&gt;        add_resource(&quot;cpu&quot;, capacity = 1) %&gt;%\r\n<br>&gt;&gt;        add_generator(&quot;initial&quot;, trj_initial, distribution = at(0, 1), mon = 2) %&gt;%\r\n<br>&gt;&gt;        add_generator(&quot;setup&quot;, trj_setup, distribution = at(0)) %&gt;%\r\n<br>&gt;&gt;        add_generator(&quot;retry&quot;, trj_retry, distribution = function() 0)\r\n<br>&gt;&gt;\r\n<br>&gt;&gt;      env %&gt;%\r\n<br>&gt;&gt;        reset() %&gt;%\r\n<br>&gt;&gt;        run(until = 120)\r\n<br>&gt;\r\n<br>&gt; --\r\n<br>&gt; You received this message because you are subscribed to the Google Groups &quot;simmer-devel&quot; group.\r\n<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a rel=\"nofollow\">simmer-devel...@googlegroups.com</a>.\r\n<br>&gt; To view this discussion on the web visit <a href=\"https://groups.google.com/d/msgid/simmer-devel/15c140b3-4514-4b06-bbd5-ad783db2ec11n%40googlegroups.com\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msgid/simmer-devel/15c140b3-4514-4b06-bbd5-ad783db2ec11n%2540googlegroups.com&amp;source=gmail&amp;ust=1792467429190000&amp;usg=AOvVaw2KGrWgGcbP_hmEiD4FgG5A\">https://groups.google.com/d/msgid/simmer-devel/15c140b3-4514-4b06-bbd5-ad783db2ec11n%40googlegroups.com</a>.\r\n<br>\r\n<br>\r\n<br>\r\n<br>-- \r\n<br>Iñaki Úcar\r\n<br></blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "PLIAFwfQAAAJ",
+   "from": "Iñaki Ucar",
+   "author": "0f5b7adb7e70bd8b",
+   "date": "2020-08-25T15:44:44Z",
+   "subject": "Re: [simmer-devel] Re: Generate retries (new arrivals) without removing original arrival from queues",
+   "parts": [
+    [
+     2,
+     "On Mon, 24 Aug 2020 at 11:23, &#39;s-geissler&#39; via simmer-devel\r<br>&lt;<a href data-email-masked rel=\"nofollow\">simmer...@googlegroups.com</a>&gt; wrote:\r<br>&gt;\r<br>&gt; I now have one last question regarding the monitoring of clones: Is there a way to only monitor the original? synchronize() provides the mon_all and wait flags, but I can&#39;t tell ahead of time if the original or the clone is going to be finished first. Ideally, I would like to only have the original included in the arrival results.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Unfortunately, this is not possible currently.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Right now, I just don&#39;t synchronize() at all and filter for finished == T afterwards since the clones all leave() the system. However, that doesn&#39;t seem to be always consistent and also conflicts with arrivals still in the system after the simulation time ends.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "One thing you could do is to make clones wait() forever. Then, they\r<br>are not scheduled anymore and they don&#39;t appear in the output\r<br>statistics. Or you could set an attribute before leaving, so that you\r<br>can identify those clones. Or, given that clones do not seize\r<br>anything, they won&#39;t appear in get_mon_arrivals(per_resource=TRUE),\r<br>which is the most interesting table, I believe, for your main\r<br>arrivals.\r<br>\r<br>-- \r<br>Iñaki Úcar\r<br>"
+    ]
+   ]
+  }
+ ]
+}

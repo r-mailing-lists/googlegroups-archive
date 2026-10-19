@@ -1,0 +1,744 @@
+From udb61980ce2f4a607 at groups.google.com  Thu Aug  8 08:29:08 2024
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Thu, 08 Aug 2024 08:29:08 +0000
+Subject: parallel coordinator
+Message-ID: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/laSV40sled8/m/2jE448QhAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Iñaki,
+
+I am trying to simulate patient arrivals to the Emergency Department. Each patient will go through several steps, and at the end, the patient will wait for discharge, which is handled by a consultant.
+
+The hospital has a rule that the length of stay (from arrival to discharge) should be less than N minutes. If the length of stay from arrival to the time the patient is waiting for discharge is approaching N, a coordinator will alert the consultant to prioritize the patient so they can be discharged before N minutes.
+
+To simulate the coordinator, I created a parallel trajectory that acts as a coordinator. This trajectory loops to check the length of stay for each patient waiting to be discharged. When the time is approaching N, the patient's priority is upgraded so they can preempt the consultants.
+
+Below is the code. However, it is not possible to change the patient's priority in the parallel trajectory. Additionally, in the parallel trajectory, it is not possible to send a signal to stop the coordinator from watching.
+Would you please shed some light on what's wrong?
+
+>From the the example below, patient 2 should be discharged before patient 1: The set_prioritization is excuted but it did not work.
+<pre><code>
+
+library(simmer)
+library(simmer.bricks)
+library(simmer.plot)
+env<-simmer()
+
+coordinator_watch<- trajectory() %>%
+  renege_if(function() paste0("STOP",get_attribute(env,"UID")),out=trajectory()%>%log_("stop watch"))%>%
+  branch(option= function() ifelse( now(env) - get_attribute(env,"arrival_time") > 10   ,1,0),continue = FALSE,
+         trajectory()%>%
+              log_("try to increase priority and stop the coordinator watch but it does not work")%>%
+              set_prioritization(c(1,NA,F))%>%
+              send(function() paste0("STOP",get_attribute(env,"UID")))
+           ,tag="one"
+  )%>%
+  timeout(1)%>% rollback("one")
+
+plot(coordinator_watch)
+
+patient_path <-trajectory() %>%
+  seize('consultant',1) %>%
+  renege_abort()%>%
+  timeout(10) %>%
+  release('consultant',1) %>%
+  send(function() paste0("STOP",get_attribute(env,"UID")))
+
+ed_path<-trajectory() %>%
+  set_attribute("arrival_time", function() now(env)) %>%
+  #log_(function() paste0("arrival:",get_attribute(env,"arrival_time")))%>%
+  set_attribute("UID",function() rnorm(1,0,1))%>%
+  simmer::clone(n=2,
+                coordinator_watch,
+                patient_path
+  ) %>%
+  synchronize(wait=FALSE) %>%log_("discharged")
+plot(ed_path)
+test<-env%>%
+  add_resource("consultant", 1,preemptive = TRUE) %>%
+  add_generator("patient", ed_path, at(c(1,10,15))) %>%
+  run(until=80)
+test %>% get_mon_arrivals(per_resource=TRUE)
+
+</code></pre>
+
+From udb61980ce2f4a607 at groups.google.com  Fri Aug  9 08:16:49 2024
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Fri, 09 Aug 2024 08:16:49 +0000
+Subject: Re: parallel coordinator
+Message-ID: <laSV40sled8.Oi-3a61vAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com>
+References: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/laSV40sled8/m/Oi-3a61vAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi  Iñaki,
+
+I just found your article here Queueing Systems • simmer | DES for R (r-simmer.org) <https://r-simmer.org/articles/simmer-06-queueing.html#custom-service-policies-1> and it aligns closely with what I'm trying to achieve. However, I want to modify the model so that when a patient's priority is changed, they can preempt other patients who have already seized the resource. I thought I could accomplish this by setting preemptive=TRUE for the resource. While it technically works, the monitored data doesn't seem to be accurate.
+
+The code below is adapted from your example. I changed the prioritization for the arrival at time 16, so it should preempt the previous one. However, the end_time doesn't seem to be correct. Could you help me understand why this is happening?
+[Your code]
+env <- simmer()
+custom <- trajectory() %>%
+  set_attribute("arrival time", function() now(env)) %>%
+  renege_if(
+    "recompute priority",
+    out = trajectory() %>%
+      # e.g., increase priority if wait_time < 3
+      set_prioritization(function() {
+        if ( get_attribute(env,"arrival time") ==16)
+          c(1, NA, F)     # only change the priority
+        else c(NA, NA, NA) # don't change anything
+      }, mod="+") %>%
+      # go 2 steps back to renege_if
+      rollback("renege"),tag="renege") %>%
+  seize("resource") %>%
+  renege_abort() %>%
+  log_("processing") %>%
+  timeout(10) %>%
+  # trigger this before releasing the resource
+  send("recompute priority") %>%
+  timeout(0) %>%
+  release("resource")
+
+test<-env %>%
+  add_resource("resource",preemptive = TRUE) %>%
+  add_generator("dummy", custom, at(0,8,16)) %>%
+  run()
+
+test %>% get_mon_arrivals()
+
+   name start_time end_time activity_time finished replication
+1 dummy0          0       10            10     TRUE           1
+2 dummy2         16      30            10     TRUE           1
+3 dummy1          8       30            10     TRUE           1
+
+Should the dummy2's end_time be 26?
+
+Thanks in advance!
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Aug 14 13:33:00 2024
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 14 Aug 2024 13:33:00 +0000
+Subject: Re: [simmer-devel] Re: parallel coordinator
+Message-ID: <laSV40sled8.aBzCMiiPBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <laSV40sled8.Oi-3a61vAwAJ@simmer-devel.groups.google.com>
+References: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com> <laSV40sled8.Oi-3a61vAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/laSV40sled8/m/aBzCMiiPBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+On Fri, 9 Aug 2024 at 10:17, Dan Ng <dungngu...@gmail.com> wrote:
+> Hi  Iñaki,
+>
+> I just found your article here Queueing Systems • simmer | DES for R (r-simmer.org) <https://r-simmer.org/articles/simmer-06-queueing.html#custom-service-policies-1> and it aligns closely with what I'm trying to achieve. However, I want to modify the model so that when a patient's priority is changed, they can preempt other patients who have already seized the resource. I thought I could accomplish this by setting preemptive=TRUE for the resource. While it technically works, the monitored data doesn't seem to be accurate.
+
+Yes, I was going to point you in that direction. Prioritization values cannot be set from "outside", but each arrival can change its own values using the set_prioritization activity. So a way to do this is to set this reneging mechanism that removes everyone from the queue, they recalculate their values and reenter the queue by calling seize again. Admittedly, this is a bit cumbersome to set up, and we may consider in the future some other mechanism to tell a resource to recompute the arrivals' priorities. But this is how it's done for now.
+
+> The code below is adapted from your example. I changed the prioritization for the arrival at time 16, so it should preempt the previous one. However, the end_time doesn't seem to be correct. Could you help me understand why this is happening?
+
+I'm not sure what you are trying to achieve in this example, but basically
+dummy1 is served at t=10.
+dummy2 enters the queue at t=16 (the priority is not changed, because that's in the "out" trajectory, when a signal comes.
+dummy1 finishes the timeout at t=20 and sends a signal. This triggers the priority change.
+dummy2 increases the priority and preempts dummy1, so dummy2 is served at t=20 before dummy1 leaves the resource.
+dummy2 spends a timeout of 10 units there and leaves at t=30.
+dummy1 gets back into the server and leaves also at t=30 (because the first timeout was already completed).
+Iñaki
+
+> [Your code]
+> env <- simmer()
+> custom <- trajectory() %>%
+>   set_attribute("arrival time", function() now(env)) %>%
+>   renege_if(
+>     "recompute priority",
+>     out = trajectory() %>%
+>       # e.g., increase priority if wait_time < 3
+>       set_prioritization(function() {
+>         if ( get_attribute(env,"arrival time") ==16)
+>           c(1, NA, F)     # only change the priority
+>         else c(NA, NA, NA) # don't change anything
+>       }, mod="+") %>%
+>       # go 2 steps back to renege_if
+>       rollback("renege"),tag="renege") %>%
+>   seize("resource") %>%
+>   renege_abort() %>%
+>   log_("processing") %>%
+>   timeout(10) %>%
+>   # trigger this before releasing the resource
+>   send("recompute priority") %>%
+>   timeout(0) %>%
+>   release("resource")
+>
+> test<-env %>%
+>   add_resource("resource",preemptive = TRUE) %>%
+>   add_generator("dummy", custom, at(0,8,16)) %>%
+>   run()
+>
+> test %>% get_mon_arrivals()
+>
+>    name start_time end_time activity_time finished replication
+> 1 dummy0          0       10            10     TRUE           1
+> 2 dummy2         16      30            10     TRUE           1
+> 3 dummy1          8       30            10     TRUE           1
+>
+> Should the dummy2's end_time be 26?
+>
+> Thanks in advance!
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/48a44bac-afbf-4741-88c0-d2c8853c51d5n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/48a44bac-afbf-4741-88c0-d2c8853c51d5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From udb61980ce2f4a607 at groups.google.com  Sat Aug 17 08:24:14 2024
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Sat, 17 Aug 2024 08:24:14 +0000
+Subject: Re: [simmer-devel] Re: parallel coordinator
+Message-ID: <laSV40sled8.iFg0YiG1BgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com>
+References: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/laSV40sled8/m/iFg0YiG1BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Iñaki,
+
+Thank you so much for your help. I now understand that the signal is sent only from a dummy when the dummy is about to release the resource. In our case, dummy2 meets a condition to have its priority upgraded, but since dummy1 is still holding the resource, the signal isn't sent, preventing dummy2 from preempting dummy1.
+
+What I need is for any dummy to have its priority upgraded at any point in time if it meets certain conditions. It's similar to a real-world scenario where a monitor continuously checks the queue to see if any dummy satisfies the conditions.
+
+I've modified your code by adding a "monitor" trajectory. The monitor's only function is to continuously send out a signal. It seems to solve my problem, but the issue is that I had to use a timeout to repeatedly send the signal from the monitor. Is there a way to do this without relying on the timeout in the loop? thanks alot.
+
+library(simmer)
+env <- simmer()
+monitor <- trajectory() %>%
+  send("recompute priority",tag="send_signal")%>%
+  timeout(0.001)%>%   ### THE SMALLER THE TIMEOUT THE MORE ACCURATE BUT  SLOW, HOW CAN WE FIX THIS?
+  rollback("send_signal",check=function() ifelse(now(env)<100,TRUE,FALSE))
+
+custom <- trajectory() %>%
+  set_attribute("arrival time", function() now(env)) %>%
+  renege_if(
+    "recompute priority",
+    out = trajectory() %>%
+      # e.g., increase priority if wait_time < 3
+      set_prioritization(function() {
+        if ( get_attribute(env,"arrival time") ==16)
+          c(1, NA, F)     # only change the priority
+        else c(NA, NA, NA) # don't change anything
+      }, mod="+") %>%
+      # go 2 steps back to renege_if
+      rollback("renege"),tag="renege") %>%
+  seize("resource") %>%
+  renege_abort() %>%
+  log_("processing") %>%
+  timeout(10) %>%
+  # trigger this before releasing the resource
+
+  #send("recompute priority") %>%
+  #timeout(0) %>%
+
+  release("resource")
+
+test<-env %>%
+  add_resource("resource",preemptive = TRUE) %>%
+  add_generator("dummy", custom, at(0,8,16)) %>%
+
+  add_generator("monitor", monitor, at(0)) %>%
+
+  run()
+
+test %>% get_mon_arrivals()
+
+      name start_time end_time activity_time finished replication
+
+1   dummy0          0   10.000            10     TRUE           1
+2   dummy2         16   26.001            10     TRUE           1     : GOOD, dummy2 is upgraded so it preempt dummy1 at the time=16.     26.001        is due to the timeout by the monitor
+3   dummy1          8   30.000            10     TRUE           1      : dummy1 is preemtped by dummy2 at time =16, and being resumed at time =26, and finish 4 minutes
+4 monitor0          0  100.000           100     TRUE           1
+
+On Wednesday, August 14, 2024 at 9:33:00 PM UTC+8 iu...@fedoraproject.org wrote:
+> Hi,
+>
+> On Fri, 9 Aug 2024 at 10:17, Dan Ng <dungngu...@gmail.com> wrote:
+> > Hi  Iñaki,
+> >
+> > I just found your article here Queueing Systems • simmer | DES for R (r-simmer.org) <https://r-simmer.org/articles/simmer-06-queueing.html#custom-service-policies-1> and it aligns closely with what I'm trying to achieve. However, I want to modify the model so that when a patient's priority is changed, they can preempt other patients who have already seized the resource. I thought I could accomplish this by setting preemptive=TRUE for the resource. While it technically works, the monitored data doesn't seem to be accurate.
+>
+> Yes, I was going to point you in that direction. Prioritization values cannot be set from "outside", but each arrival can change its own values using the set_prioritization activity. So a way to do this is to set this reneging mechanism that removes everyone from the queue, they recalculate their values and reenter the queue by calling seize again. Admittedly, this is a bit cumbersome to set up, and we may consider in the future some other mechanism to tell a resource to recompute the arrivals' priorities. But this is how it's done for now.
+> >
+> > The code below is adapted from your example. I changed the prioritization for the arrival at time 16, so it should preempt the previous one. However, the end_time doesn't seem to be correct. Could you help me understand why this is happening?
+> I'm not sure what you are trying to achieve in this example, but basically
+> dummy1 is served at t=10.
+> dummy2 enters the queue at t=16 (the priority is not changed, because that's in the "out" trajectory, when a signal comes.
+> dummy1 finishes the timeout at t=20 and sends a signal. This triggers the priority change.
+> dummy2 increases the priority and preempts dummy1, so dummy2 is served at t=20 before dummy1 leaves the resource.
+> dummy2 spends a timeout of 10 units there and leaves at t=30.
+> dummy1 gets back into the server and leaves also at t=30 (because the first timeout was already completed).
+> Iñaki
+>
+> > [Your code]
+> > env <- simmer()
+> > custom <- trajectory() %>%
+> >   set_attribute("arrival time", function() now(env)) %>%
+> >   renege_if(
+> >     "recompute priority",
+> >     out = trajectory() %>%
+> >       # e.g., increase priority if wait_time < 3
+> >       set_prioritization(function() {
+> >         if ( get_attribute(env,"arrival time") ==16)
+> >           c(1, NA, F)     # only change the priority
+> >         else c(NA, NA, NA) # don't change anything
+> >       }, mod="+") %>%
+> >       # go 2 steps back to renege_if
+> >       rollback("renege"),tag="renege") %>%
+> >   seize("resource") %>%
+> >   renege_abort() %>%
+> >   log_("processing") %>%
+> >   timeout(10) %>%
+> >   # trigger this before releasing the resource
+> >   send("recompute priority") %>%
+> >   timeout(0) %>%
+> >   release("resource")
+> >
+> > test<-env %>%
+> >   add_resource("resource",preemptive = TRUE) %>%
+> >   add_generator("dummy", custom, at(0,8,16)) %>%
+> >   run()
+> >
+> > test %>% get_mon_arrivals()
+> >
+> >    name start_time end_time activity_time finished replication
+> > 1 dummy0          0       10            10     TRUE           1
+> > 2 dummy2         16      30            10     TRUE           1
+> > 3 dummy1          8       30            10     TRUE           1
+> >
+> > Should the dummy2's end_time be 26?
+> >
+> > Thanks in advance!
+> >
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/48a44bac-afbf-4741-88c0-d2c8853c51d5n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/48a44bac-afbf-4741-88c0-d2c8853c51d5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Aug 21 11:27:05 2024
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 21 Aug 2024 11:27:05 +0000
+Subject: Re: [simmer-devel] Re: parallel coordinator
+Message-ID: <laSV40sled8.cpWFmmSkBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <laSV40sled8.iFg0YiG1BgAJ@simmer-devel.groups.google.com>
+References: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com> <laSV40sled8.iFg0YiG1BgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/laSV40sled8/m/cpWFmmSkBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sat, 17 Aug 2024 at 10:24, Dan Ng <dungngu...@gmail.com> wrote:
+
+> Hi Iñaki,
+>
+> Thank you so much for your help. I now understand that the signal is sent only from a dummy when the dummy is about to release the resource. In our case, dummy2 meets a condition to have its priority upgraded, but since dummy1 is still holding the resource, the signal isn't sent, preventing dummy2 from preempting dummy1.
+
+> What I need is for any dummy to have its priority upgraded at any point in time if it meets certain conditions. It's similar to a real-world scenario where a monitor continuously checks the queue to see if any dummy satisfies the conditions.
+>
+> I've modified your code by adding a "monitor" trajectory. The monitor's only function is to continuously send out a signal. It seems to solve my problem,
+
+Yeap, that's the way to do it if this is the behavior you want.
+
+> but the issue is that I had to use a timeout to repeatedly send the signal from the monitor. Is there a way to do this without relying on the timeout in the loop? thanks alot.
+
+There's no way around this. If you want the monitor to send a signal every t interval of time, then it means that an event is executed every t, and the simulation is slower as t decreases. The best way to do this is with the timeout, as you did, and you'll have to live with a slower simulation.
+
+Iñaki
+
+>
+> library(simmer)
+> env <- simmer()
+> monitor <- trajectory() %>%
+>   send("recompute priority",tag="send_signal")%>%
+>   timeout(0.001)%>%   ### THE SMALLER THE TIMEOUT THE MORE ACCURATE BUT  SLOW, HOW CAN WE FIX THIS?
+>   rollback("send_signal",check=function() ifelse(now(env)<100,TRUE,FALSE))
+>
+> custom <- trajectory() %>%
+>   set_attribute("arrival time", function() now(env)) %>%
+>   renege_if(
+>     "recompute priority",
+>     out = trajectory() %>%
+>       # e.g., increase priority if wait_time < 3
+>       set_prioritization(function() {
+>         if ( get_attribute(env,"arrival time") ==16)
+>           c(1, NA, F)     # only change the priority
+>         else c(NA, NA, NA) # don't change anything
+>       }, mod="+") %>%
+>       # go 2 steps back to renege_if
+>       rollback("renege"),tag="renege") %>%
+>   seize("resource") %>%
+>   renege_abort() %>%
+>   log_("processing") %>%
+>   timeout(10) %>%
+>   # trigger this before releasing the resource
+>   #send("recompute priority") %>%
+>   #timeout(0) %>%
+>   release("resource")
+>
+> test<-env %>%
+>   add_resource("resource",preemptive = TRUE) %>%
+>   add_generator("dummy", custom, at(0,8,16)) %>%
+>   add_generator("monitor", monitor, at(0)) %>%
+>   run()
+>
+> test %>% get_mon_arrivals()
+>       name start_time end_time activity_time finished replication
+> 1   dummy0          0   10.000            10     TRUE           1
+> 2   dummy2         16   26.001            10     TRUE           1     : GOOD, dummy2 is upgraded so it preempt dummy1 at the time=16.     26.001        is due to the timeout by the monitor
+> 3   dummy1          8   30.000            10     TRUE           1      : dummy1 is preemtped by dummy2 at time =16, and being resumed at time =26, and finish 4 minutes
+> 4 monitor0          0  100.000           100     TRUE           1
+> On Wednesday, August 14, 2024 at 9:33:00 PM UTC+8 iu...@fedoraproject.org wrote:
+> > Hi,
+> >
+> > On Fri, 9 Aug 2024 at 10:17, Dan Ng <dungngu...@gmail.com> wrote:
+> > > Hi  Iñaki,
+> > >
+> > > I just found your article here Queueing Systems • simmer | DES for R (r-simmer.org) <https://r-simmer.org/articles/simmer-06-queueing.html#custom-service-policies-1> and it aligns closely with what I'm trying to achieve. However, I want to modify the model so that when a patient's priority is changed, they can preempt other patients who have already seized the resource. I thought I could accomplish this by setting preemptive=TRUE for the resource. While it technically works, the monitored data doesn't seem to be accurate.
+> >
+> > Yes, I was going to point you in that direction. Prioritization values cannot be set from "outside", but each arrival can change its own values using the set_prioritization activity. So a way to do this is to set this reneging mechanism that removes everyone from the queue, they recalculate their values and reenter the queue by calling seize again. Admittedly, this is a bit cumbersome to set up, and we may consider in the future some other mechanism to tell a resource to recompute the arrivals' priorities. But this is how it's done for now.
+> > >
+> > > The code below is adapted from your example. I changed the prioritization for the arrival at time 16, so it should preempt the previous one. However, the end_time doesn't seem to be correct. Could you help me understand why this is happening?
+> > I'm not sure what you are trying to achieve in this example, but basically
+> > dummy1 is served at t=10.
+> > dummy2 enters the queue at t=16 (the priority is not changed, because that's in the "out" trajectory, when a signal comes.
+> > dummy1 finishes the timeout at t=20 and sends a signal. This triggers the priority change.
+> > dummy2 increases the priority and preempts dummy1, so dummy2 is served at t=20 before dummy1 leaves the resource.
+> > dummy2 spends a timeout of 10 units there and leaves at t=30.
+> > dummy1 gets back into the server and leaves also at t=30 (because the first timeout was already completed).
+> > Iñaki
+> >
+> > > [Your code]
+> > > env <- simmer()
+> > > custom <- trajectory() %>%
+> > >   set_attribute("arrival time", function() now(env)) %>%
+> > >   renege_if(
+> > >     "recompute priority",
+> > >     out = trajectory() %>%
+> > >       # e.g., increase priority if wait_time < 3
+> > >       set_prioritization(function() {
+> > >         if ( get_attribute(env,"arrival time") ==16)
+> > >           c(1, NA, F)     # only change the priority
+> > >         else c(NA, NA, NA) # don't change anything
+> > >       }, mod="+") %>%
+> > >       # go 2 steps back to renege_if
+> > >       rollback("renege"),tag="renege") %>%
+> > >   seize("resource") %>%
+> > >   renege_abort() %>%
+> > >   log_("processing") %>%
+> > >   timeout(10) %>%
+> > >   # trigger this before releasing the resource
+> > >   send("recompute priority") %>%
+> > >   timeout(0) %>%
+> > >   release("resource")
+> > >
+> > > test<-env %>%
+> > >   add_resource("resource",preemptive = TRUE) %>%
+> > >   add_generator("dummy", custom, at(0,8,16)) %>%
+> > >   run()
+> > >
+> > > test %>% get_mon_arrivals()
+> > >
+> > >    name start_time end_time activity_time finished replication
+> > > 1 dummy0          0       10            10     TRUE           1
+> > > 2 dummy2         16      30            10     TRUE           1
+> > > 3 dummy1          8       30            10     TRUE           1
+> > >
+> > > Should the dummy2's end_time be 26?
+> > >
+> > > Thanks in advance!
+> > >
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/48a44bac-afbf-4741-88c0-d2c8853c51d5n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/48a44bac-afbf-4741-88c0-d2c8853c51d5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> >
+> > --
+> > Iñaki Úcar
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/c92107fe-8257-47cf-aa3e-392f74444f9bn%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/c92107fe-8257-47cf-aa3e-392f74444f9bn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From udb61980ce2f4a607 at groups.google.com  Thu Aug 22 04:15:30 2024
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Thu, 22 Aug 2024 04:15:30 +0000
+Subject: Re: [simmer-devel] Re: parallel coordinator
+Message-ID: <laSV40sled8.U8nT82vbBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com>
+References: <laSV40sled8.2jE448QhAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/laSV40sled8/m/U8nT82vbBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Many many thanks for your help!
+
+On Wednesday, August 21, 2024 at 7:27:05 PM UTC+8 iu...@fedoraproject.org wrote:
+> On Sat, 17 Aug 2024 at 10:24, Dan Ng <dungngu...@gmail.com> wrote:
+> >
+> > Hi Iñaki,
+> >
+> > Thank you so much for your help. I now understand that the signal is sent only from a dummy when the dummy is about to release the resource. In our case, dummy2 meets a condition to have its priority upgraded, but since dummy1 is still holding the resource, the signal isn't sent, preventing dummy2 from preempting dummy1.
+> >
+> > What I need is for any dummy to have its priority upgraded at any point in time if it meets certain conditions. It's similar to a real-world scenario where a monitor continuously checks the queue to see if any dummy satisfies the conditions.
+> >
+> > I've modified your code by adding a "monitor" trajectory. The monitor's only function is to continuously send out a signal. It seems to solve my problem,
+> Yeap, that's the way to do it if this is the behavior you want.
+> >
+> > but the issue is that I had to use a timeout to repeatedly send the signal from the monitor. Is there a way to do this without relying on the timeout in the loop? thanks alot.
+> There's no way around this. If you want the monitor to send a signal every t interval of time, then it means that an event is executed every t, and the simulation is slower as t decreases. The best way to do this is with the timeout, as you did, and you'll have to live with a slower simulation.
+>
+> Iñaki
+>
+>
+> >
+> >
+> > library(simmer)
+> > env <- simmer()
+> > monitor <- trajectory() %>%
+> >   send("recompute priority",tag="send_signal")%>%
+> >   timeout(0.001)%>%   ### THE SMALLER THE TIMEOUT THE MORE ACCURATE BUT  SLOW, HOW CAN WE FIX THIS?
+> >   rollback("send_signal",check=function() ifelse(now(env)<100,TRUE,FALSE))
+> >
+> > custom <- trajectory() %>%
+> >   set_attribute("arrival time", function() now(env)) %>%
+> >   renege_if(
+> >     "recompute priority",
+> >     out = trajectory() %>%
+> >       # e.g., increase priority if wait_time < 3
+> >       set_prioritization(function() {
+> >         if ( get_attribute(env,"arrival time") ==16)
+> >           c(1, NA, F)     # only change the priority
+> >         else c(NA, NA, NA) # don't change anything
+> >       }, mod="+") %>%
+> >       # go 2 steps back to renege_if
+> >       rollback("renege"),tag="renege") %>%
+> >   seize("resource") %>%
+> >   renege_abort() %>%
+> >   log_("processing") %>%
+> >   timeout(10) %>%
+> >   # trigger this before releasing the resource
+> >   #send("recompute priority") %>%
+> >   #timeout(0) %>%
+> >   release("resource")
+> >
+> > test<-env %>%
+> >   add_resource("resource",preemptive = TRUE) %>%
+> >   add_generator("dummy", custom, at(0,8,16)) %>%
+> >   add_generator("monitor", monitor, at(0)) %>%
+> >   run()
+> >
+> > test %>% get_mon_arrivals()
+> >       name start_time end_time activity_time finished replication
+> > 1   dummy0          0   10.000            10     TRUE           1
+> > 2   dummy2         16   26.001            10     TRUE           1     : GOOD, dummy2 is upgraded so it preempt dummy1 at the time=16.     26.001        is due to the timeout by the monitor
+> > 3   dummy1          8   30.000            10     TRUE           1      : dummy1 is preemtped by dummy2 at time =16, and being resumed at time =26, and finish 4 minutes
+> > 4 monitor0          0  100.000           100     TRUE           1
+> > On Wednesday, August 14, 2024 at 9:33:00 PM UTC+8 iu...@fedoraproject.org wrote:
+> > > Hi,
+> > >
+> > > On Fri, 9 Aug 2024 at 10:17, Dan Ng <dungngu...@gmail.com> wrote:
+> > > > Hi  Iñaki,
+> > > >
+> > > > I just found your article here Queueing Systems • simmer | DES for R (r-simmer.org) <https://r-simmer.org/articles/simmer-06-queueing.html#custom-service-policies-1> and it aligns closely with what I'm trying to achieve. However, I want to modify the model so that when a patient's priority is changed, they can preempt other patients who have already seized the resource. I thought I could accomplish this by setting preemptive=TRUE for the resource. While it technically works, the monitored data doesn't seem to be accurate.
+> > >
+> > > Yes, I was going to point you in that direction. Prioritization values cannot be set from "outside", but each arrival can change its own values using the set_prioritization activity. So a way to do this is to set this reneging mechanism that removes everyone from the queue, they recalculate their values and reenter the queue by calling seize again. Admittedly, this is a bit cumbersome to set up, and we may consider in the future some other mechanism to tell a resource to recompute the arrivals' priorities. But this is how it's done for now.
+> > > >
+> > > > The code below is adapted from your example. I changed the prioritization for the arrival at time 16, so it should preempt the previous one. However, the end_time doesn't seem to be correct. Could you help me understand why this is happening?
+> > > I'm not sure what you are trying to achieve in this example, but basically
+> > > dummy1 is served at t=10.
+> > > dummy2 enters the queue at t=16 (the priority is not changed, because that's in the "out" trajectory, when a signal comes.
+> > > dummy1 finishes the timeout at t=20 and sends a signal. This triggers the priority change.
+> > > dummy2 increases the priority and preempts dummy1, so dummy2 is served at t=20 before dummy1 leaves the resource.
+> > > dummy2 spends a timeout of 10 units there and leaves at t=30.
+> > > dummy1 gets back into the server and leaves also at t=30 (because the first timeout was already completed).
+> > > Iñaki
+> > >
+> > > > [Your code]
+> > > > env <- simmer()
+> > > > custom <- trajectory() %>%
+> > > >   set_attribute("arrival time", function() now(env)) %>%
+> > > >   renege_if(
+> > > >     "recompute priority",
+> > > >     out = trajectory() %>%
+> > > >       # e.g., increase priority if wait_time < 3
+> > > >       set_prioritization(function() {
+> > > >         if ( get_attribute(env,"arrival time") ==16)
+> > > >           c(1, NA, F)     # only change the priority
+> > > >         else c(NA, NA, NA) # don't change anything
+> > > >       }, mod="+") %>%
+> > > >       # go 2 steps back to renege_if
+> > > >       rollback("renege"),tag="renege") %>%
+> > > >   seize("resource") %>%
+> > > >   renege_abort() %>%
+> > > >   log_("processing") %>%
+> > > >   timeout(10) %>%
+> > > >   # trigger this before releasing the resource
+> > > >   send("recompute priority") %>%
+> > > >   timeout(0) %>%
+> > > >   release("resource")
+> > > >
+> > > > test<-env %>%
+> > > >   add_resource("resource",preemptive = TRUE) %>%
+> > > >   add_generator("dummy", custom, at(0,8,16)) %>%
+> > > >   run()
+> > > >
+> > > > test %>% get_mon_arrivals()
+> > > >
+> > > >    name start_time end_time activity_time finished replication
+> > > > 1 dummy0          0       10            10     TRUE           1
+> > > > 2 dummy2         16      30            10     TRUE           1
+> > > > 3 dummy1          8       30            10     TRUE           1
+> > > >
+> > > > Should the dummy2's end_time be 26?
+> > > >
+> > > > Thanks in advance!
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/48a44bac-afbf-4741-88c0-d2c8853c51d5n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/48a44bac-afbf-4741-88c0-d2c8853c51d5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/c92107fe-8257-47cf-aa3e-392f74444f9bn%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/c92107fe-8257-47cf-aa3e-392f74444f9bn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> Iñaki Úcar
+
+From udb61980ce2f4a607 at groups.google.com  Fri Aug 30 01:46:06 2024
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Fri, 30 Aug 2024 01:46:06 +0000
+Subject: How to retrieve data for a preemped arrival
+Message-ID: <jPlTWwN8MmI.SJdhdsAhAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/jPlTWwN8MmI/m/SJdhdsAhAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Inaki,
+
+In the "Priority customers with preemption" <https://r-simmer.org/articles/simmer-04-bank-2> example, is it possible to retrieve data that shows which customer was displaced by Guido?
+
+Thank you.
+Dan
+
+From u0f5b7adb7e70bd8b at groups.google.com  Fri Aug 30 16:23:40 2024
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Fri, 30 Aug 2024 16:23:40 +0000
+Subject: Re: [simmer-devel] How to retrieve data for a preemped arrival
+Message-ID: <jPlTWwN8MmI.ZrG7C6RRAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <jPlTWwN8MmI.SJdhdsAhAAAJ@simmer-devel.groups.google.com>
+References: <jPlTWwN8MmI.SJdhdsAhAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/jPlTWwN8MmI/m/ZrG7C6RRAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+On Fri, 30 Aug 2024 at 03:46, Dan Ng <dungngu...@gmail.com> wrote:
+> Hi Inaki,
+>
+> In the "Priority customers with preemption" <https://r-simmer.org/articles/simmer-04-bank-2> example, is it possible to retrieve data that shows which customer was displaced by Guido?
+
+Not directly, but it's easy to see:
+
+> bank |> get_mon_arrivals(per_resource=TRUE)
+       name start_time end_time activity_time resource replication
+1 Customer0  0.0000000       12            12  counter           1
+2    Guido0 23.0000000       35            12  counter           1
+3 Customer1  0.1773647       36            12  counter           1
+4 Customer2  8.6410598       48            12  counter           1
+5 Customer3 21.1345850       60            12  counter           1
+6 Customer4 28.0923489       72            12  counter           1
+
+Customer1 is right after Guido0, and the start_time is before Guido's, so Guido must have displaced Customer1.
+
+--
+Iñaki Úcar
+
+From udb61980ce2f4a607 at groups.google.com  Fri Aug 30 23:49:45 2024
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Fri, 30 Aug 2024 23:49:45 +0000
+Subject: Re: [simmer-devel] How to retrieve data for a preemped arrival
+Message-ID: <jPlTWwN8MmI.tvketftpAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <jPlTWwN8MmI.SJdhdsAhAAAJ@simmer-devel.groups.google.com>
+References: <jPlTWwN8MmI.SJdhdsAhAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/jPlTWwN8MmI/m/tvketftpAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Super! Thanks very much for quick reply!
+Dan
+
+On Saturday, August 31, 2024 at 12:23:40 AM UTC+8 iu...@fedoraproject.org wrote:
+> Hi,
+>
+> On Fri, 30 Aug 2024 at 03:46, Dan Ng <dungngu...@gmail.com> wrote:
+> > Hi Inaki,
+> >
+> > In the "Priority customers with preemption" <https://r-simmer.org/articles/simmer-04-bank-2> example, is it possible to retrieve data that shows which customer was displaced by Guido?
+>
+> Not directly, but it's easy to see:
+>
+> > bank |> get_mon_arrivals(per_resource=TRUE)
+>        name start_time end_time activity_time resource replication
+> 1 Customer0  0.0000000       12            12  counter           1
+> 2    Guido0 23.0000000       35            12  counter           1
+> 3 Customer1  0.1773647       36            12  counter           1
+> 4 Customer2  8.6410598       48            12  counter           1
+> 5 Customer3 21.1345850       60            12  counter           1
+> 6 Customer4 28.0923489       72            12  counter           1
+>
+> Customer1 is right after Guido0, and the start_time is before Guido's, so Guido must have displaced Customer1.
+>
+> --
+> Iñaki Úcar
+

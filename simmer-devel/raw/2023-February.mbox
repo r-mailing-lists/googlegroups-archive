@@ -1,0 +1,1403 @@
+From udb61980ce2f4a607 at groups.google.com  Sat Feb  4 23:26:35 2023
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Sat, 04 Feb 2023 23:26:35 +0000
+Subject: how to set timeout all resources at the same time?
+Message-ID: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kvsiYblnI1Y/m/BFC6BGukAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Inaki,
+I tried use do_parallel function as shown in your examples to setup a scenaior in hospital where a patient first seize a bed, then seize a consultant with timeout x minutes and a nurse with timeout y minutes in a parallel mode, then release consultant, nurse and bed after timeout.
+However there is a constraint that consultant and nurse have to be together at least z minutes with the patient.
+
+To do this (and not sure we have another better solution) I add a "monitor" trajectory in parallel, this monitor will wait for signals coming from consultant and nurse after they are seized by a patient. When the monitor receives all signals (from the seized consutant and nurse) then it will send a signal back to consulant and nurse to starting the clock.
+Below is the code:
+
+library(simmer)
+library(simmer.bricks)
+TIME_TOGETHER<-3
+TIME_CONSULTANT<-5
+TIME_NURSE<-10
+env <- simmer()
+
+monitor_path <- trajectory('monitor') %>%
+                trap(c('C','N'),handler=trajectory() %>% send('ALL_SEIZED')) %>%
+                wait() %>%
+                untrap(c('C','N'))
+consultant_path<- trajectory('consultant') %>%
+                seize('consultant') %>%
+                send('C') %>%
+                set_attribute('time_consultant_seized',function() now(env)) %>%
+                trap('ALL_SEIZED',handler=trajectory() %>%
+                       timeout(function() TIME_TOGETHER + TIME_CONSULTANT - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_consultant_seized'  ))))%>%
+                       release('consultant')
+                )%>%
+                wait()  %>%
+                untrap('ALL_SEIZED')
+
+ nurse_path<-trajectory('nurse') %>%
+                seize('nurse') %>%
+                send('N') %>%
+                set_attribute('time_nurse_seized',function() now(env)) %>%
+                trap('ALL_SEIZED',handler=trajectory() %>%
+                       timeout(function() TIME_TOGETHER + TIME_NURSE - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_nurse_seized'  ))))%>%
+                       release('nurse')
+                )%>% wait()  %>%
+                untrap('ALL_SEIZED')
+
+patient <- trajectory() %>%
+  seize('bed')%>%
+  do_parallel(
+        monitor_path,
+        consultant_path,
+        nurse_path,
+  .env=env,wait=TRUE)
+  release('bed')
+
+env %>%
+  add_resource('bed',1) %>%
+  add_resource('nurse',1) %>%
+  add_resource('consultant',1) %>%
+  add_generator('patient', patient, at(seq(1,10))) %>%
+  run() %>% invisible
+
+test<- env %>%  run()
+test %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+
+However the code did not run as expected!  It seems there are errors in timing between sending the signals and receiving signals between the paths.
+
+Is there any better method  to set the constraint for the timeout of consultant and nurse (in parallele) that they have to be at least together in z minutes?
+
+Thank you!
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Feb 13 14:14:36 2023
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 13 Feb 2023 14:14:36 +0000
+Subject: Re: [simmer-devel] how to set timeout all resources at the same time?
+Message-ID: <kvsiYblnI1Y.14--_otjAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com>
+References: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kvsiYblnI1Y/m/14--_otjAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+This is an interesting constraint. I wouldn't use signals for this, but I would play with the global attributes instead. I suppose that in the final simulation the shared time should be random, right? I would set that time in a global attribute, so that one trajectory sets it and the other uses it. Another global attribute would have a counter, so that the first attribute has a dynamic name and you can manage several requests at the same time.
+
+Iñaki
+
+On Sun, 5 Feb 2023 at 00:31, Dan Ng <dungngu...@gmail.com> wrote:
+
+> Hi Inaki,
+> I tried use do_parallel function as shown in your examples to setup a scenaior in hospital where a patient first seize a bed, then seize a consultant with timeout x minutes and a nurse with timeout y minutes in a parallel mode, then release consultant, nurse and bed after timeout.
+> However there is a constraint that consultant and nurse have to be together at least z minutes with the patient.
+>
+> To do this (and not sure we have another better solution) I add a "monitor" trajectory in parallel, this monitor will wait for signals coming from consultant and nurse after they are seized by a patient. When the monitor receives all signals (from the seized consutant and nurse) then it will send a signal back to consulant and nurse to starting the clock.
+> Below is the code:
+>
+> library(simmer)
+> library(simmer.bricks)
+> TIME_TOGETHER<-3
+> TIME_CONSULTANT<-5
+> TIME_NURSE<-10
+> env <- simmer()
+>
+> monitor_path <- trajectory('monitor') %>%
+>                 trap(c('C','N'),handler=trajectory() %>% send('ALL_SEIZED')) %>%
+>                 wait() %>%
+>                 untrap(c('C','N'))
+> consultant_path<- trajectory('consultant') %>%
+>                 seize('consultant') %>%
+>                 send('C') %>%
+>                 set_attribute('time_consultant_seized',function() now(env)) %>%
+>                 trap('ALL_SEIZED',handler=trajectory() %>%
+>                        timeout(function() TIME_TOGETHER + TIME_CONSULTANT - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_consultant_seized'  ))))%>%
+>                        release('consultant')
+>                 )%>%
+>                 wait()  %>%
+>                 untrap('ALL_SEIZED')
+>
+>  nurse_path<-trajectory('nurse') %>%
+>                 seize('nurse') %>%
+>                 send('N') %>%
+>                 set_attribute('time_nurse_seized',function() now(env)) %>%
+>                 trap('ALL_SEIZED',handler=trajectory() %>%
+>                        timeout(function() TIME_TOGETHER + TIME_NURSE - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_nurse_seized'  ))))%>%
+>                        release('nurse')
+>                 )%>% wait()  %>%
+>                 untrap('ALL_SEIZED')
+>
+> patient <- trajectory() %>%
+>   seize('bed')%>%
+>   do_parallel(
+>         monitor_path,
+>         consultant_path,
+>         nurse_path,
+>   .env=env,wait=TRUE)
+>   release('bed')
+>
+> env %>%
+>   add_resource('bed',1) %>%
+>   add_resource('nurse',1) %>%
+>   add_resource('consultant',1) %>%
+>   add_generator('patient', patient, at(seq(1,10))) %>%
+>   run() %>% invisible
+>
+> test<- env %>%  run()
+> test %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+>
+> However the code did not run as expected!  It seems there are errors in timing between sending the signals and receiving signals between the paths.
+>
+> Is there any better method  to set the constraint for the timeout of consultant and nurse (in parallele) that they have to be at least together in z minutes?
+>
+> Thank you!
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From udb61980ce2f4a607 at groups.google.com  Tue Feb 14 03:22:58 2023
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Tue, 14 Feb 2023 03:22:58 +0000
+Subject: Re: [simmer-devel] how to set timeout all resources at the same time?
+Message-ID: <kvsiYblnI1Y.E6o2R5GOAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com>
+References: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kvsiYblnI1Y/m/E6o2R5GOAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Inaki,
+Thank you and I have tried with global dynamic attributes as your direction. The problem is that I have to make a waiting loop in each resource trajectory. This is because when a resource is seized while the others are not then the resource has to wait until all seized. After the waiting loop the resource will time out for the remaining time. The problem is how to make the waiting loop asyn?
+The code below is working well but the waiting loop seems not to be well programmed. Any suggestions would be much appreciated:
+
+library(simmer)
+library(simmer.bricks)
+library(simmer.plot)
+library(tidyverse)
+library(tictoc)
+set.seed(1234)
+TIME_TOGETHER<-2 # doctor and nurse have to share 2 minutes
+TIME_NURSE<-c(5,.1) # 5 minutes  +/- 0.1
+TIME_DOCTOR<-c(3,.1) # 3 minutes +/- 0.1
+TIME_CLEANING<-1 # room cleaning after treatment
+NUM_OF_RES<-2 # two resources: nurse and doctor
+
+###function to generate unique patient arrival id
+get_patient_id <- function() {
+  patient_id<<- -1
+  function() {
+    patient_id <<- patient_id+1
+    patient_id
+  }
+}
+### calculate time to constraint time share together
+time_to_run<-function(res_time=TIME_DOCTOR)
+{
+  duration_time_from_seized<-now(env)- get_attribute(env,'time_seized')
+  mean_time<-rnorm(1,res_time[1],res_time[2])
+  return(ifelse( TIME_TOGETHER  +  duration_time_from_seized> mean_time,
+                 TIME_TOGETHER,
+                 mean_time- duration_time_from_seized)
+  )
+
+}
+### common path for doctor and nurse
+common_path<-function(res_name='doctor',res_time=TIME_DOCTOR)
+{
+  trajectory(res_name) %>%
+    seize(res_name) %>%
+    log_(function() paste0(res_name,' seized')) %>%
+    #mark when the resource is seized
+    set_attribute('time_seized',function() now(env)) %>%
+    #increasing global dynamic counter id (each patient has 1 unique id)
+    set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),1,mod='+')%>%
+    ### loop waiting until all resources are seized: using dynamic counter id
+    branch(option=function() ifelse( get_global(env, paste0('num_res_seized_',get_attribute(env,'patient_id')))==NUM_OF_RES,0,1),continue=TRUE,
+           trajectory() %>%
+             timeout(0.1) %>%  ### the smaller number the smaller error but simulation time is large
+             rollback(2)
+    )%>%
+    ## when all resources are seized, check time at all resources, they must be the same!
+    log_(function() paste0('Time now at ',res_name,'=',now(env))) %>%
+    ## then now calculate the time need to be shared
+    timeout( function() time_to_run(res_time) )%>%
+    release(res_name)  %>%
+    log_(function() paste0(res_name,' released'))
+}
+
+get_id<-get_patient_id()
+env<-simmer()
+doctor_path<-common_path('doctor',TIME_DOCTOR)
+nurse_path<-common_path('nurse',TIME_NURSE)
+
+t <- trajectory() %>%
+
+  seize("room") %>%
+  ## get unique id
+  set_attribute('patient_id',function() get_id()) %>%
+  ## create a global-unique  counter for each patient
+  set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),0) %>%
+  do_parallel(
+    doctor_path,
+    nurse_path,
+    .env=env,wait=TRUE
+
+  )%>%
+  timeout(TIME_CLEANING)%>%
+  release("room",1) %>%
+  log_("room released")
+
+tic()
+test1<-env %>%
+  add_resource("room",3) %>%
+  add_resource("doctor",2) %>%
+  add_resource("nurse",2) %>%
+  add_generator("visit", t, at(seq(1,1000))) %>%
+  run() %>% invisible
+
+test1 %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+
+toc()
+
+On Monday, February 13, 2023 at 10:14:36 PM UTC+8 iu...@fedoraproject.org wrote:
+> Hi,
+>
+> This is an interesting constraint. I wouldn't use signals for this, but I would play with the global attributes instead. I suppose that in the final simulation the shared time should be random, right? I would set that time in a global attribute, so that one trajectory sets it and the other uses it. Another global attribute would have a counter, so that the first attribute has a dynamic name and you can manage several requests at the same time.
+>
+> Iñaki
+>
+> On Sun, 5 Feb 2023 at 00:31, Dan Ng <dungngu...@gmail.com> wrote:
+> > Hi Inaki,
+> > I tried use do_parallel function as shown in your examples to setup a scenaior in hospital where a patient first seize a bed, then seize a consultant with timeout x minutes and a nurse with timeout y minutes in a parallel mode, then release consultant, nurse and bed after timeout.
+> > However there is a constraint that consultant and nurse have to be together at least z minutes with the patient.
+> >
+> > To do this (and not sure we have another better solution) I add a "monitor" trajectory in parallel, this monitor will wait for signals coming from consultant and nurse after they are seized by a patient. When the monitor receives all signals (from the seized consutant and nurse) then it will send a signal back to consulant and nurse to starting the clock.
+> > Below is the code:
+> >
+> > library(simmer)
+> > library(simmer.bricks)
+> > TIME_TOGETHER<-3
+> > TIME_CONSULTANT<-5
+> > TIME_NURSE<-10
+> > env <- simmer()
+> >
+> > monitor_path <- trajectory('monitor') %>%
+> >                 trap(c('C','N'),handler=trajectory() %>% send('ALL_SEIZED')) %>%
+> >                 wait() %>%
+> >                 untrap(c('C','N'))
+> > consultant_path<- trajectory('consultant') %>%
+> >                 seize('consultant') %>%
+> >                 send('C') %>%
+> >                 set_attribute('time_consultant_seized',function() now(env)) %>%
+> >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> >                        timeout(function() TIME_TOGETHER + TIME_CONSULTANT - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_consultant_seized'  ))))%>%
+> >                        release('consultant')
+> >                 )%>%
+> >                 wait()  %>%
+> >                 untrap('ALL_SEIZED')
+> >
+> >  nurse_path<-trajectory('nurse') %>%
+> >                 seize('nurse') %>%
+> >                 send('N') %>%
+> >                 set_attribute('time_nurse_seized',function() now(env)) %>%
+> >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> >                        timeout(function() TIME_TOGETHER + TIME_NURSE - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_nurse_seized'  ))))%>%
+> >                        release('nurse')
+> >                 )%>% wait()  %>%
+> >                 untrap('ALL_SEIZED')
+> >
+> > patient <- trajectory() %>%
+> >   seize('bed')%>%
+> >   do_parallel(
+> >         monitor_path,
+> >         consultant_path,
+> >         nurse_path,
+> >   .env=env,wait=TRUE)
+> >   release('bed')
+> >
+> > env %>%
+> >   add_resource('bed',1) %>%
+> >   add_resource('nurse',1) %>%
+> >   add_resource('consultant',1) %>%
+> >   add_generator('patient', patient, at(seq(1,10))) %>%
+> >   run() %>% invisible
+> >
+> > test<- env %>%  run()
+> > test %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+> >
+> > However the code did not run as expected!  It seems there are errors in timing between sending the signals and receiving signals between the paths.
+> >
+> > Is there any better method  to set the constraint for the timeout of consultant and nurse (in parallele) that they have to be at least together in z minutes?
+> >
+> > Thank you!
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Fri Feb 24 22:05:41 2023
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Fri, 24 Feb 2023 22:05:41 +0000
+Subject: Re: [simmer-devel] how to set timeout all resources at the same time?
+Message-ID: <kvsiYblnI1Y.4WFPtX7TBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kvsiYblnI1Y.E6o2R5GOAQAJ@simmer-devel.groups.google.com>
+References: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com> <kvsiYblnI1Y.E6o2R5GOAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kvsiYblnI1Y/m/4WFPtX7TBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Apologies for the late reply, but I'm a bit overloaded these days.
+
+I think that your first approach was a good idea, but you assumed that, when you trap several signals, all of them need to be received to run the handler, but it's not all, but any. Maybe that's not sufficiently clear in the docs. And one potential improvement could be to add an argument to switch from "any" to "all". I have to think about it.
+
+On the other hand, you could try to batch the clones together in a batch of size 2, and then one would wait for the other, and then the batch can spend a shared time in the resources without any need for complicated calculations.
+
+And anyway cloning and then batching sounds like a strange pattern... Wouldn't it be possible to seize both resources for the time spent together before cloning? Then there's only one arrival, so there's no need to synchronize anything. You just seize both resources, one after the other, and spend the shared time. That's it. After that you could clone the arrival to do things in parallel.
+
+Iñaki
+
+On Tue, 14 Feb 2023 at 04:23, Dan Ng <dungngu...@gmail.com> wrote:
+
+> Hi Inaki,
+> Thank you and I have tried with global dynamic attributes as your direction. The problem is that I have to make a waiting loop in each resource trajectory. This is because when a resource is seized while the others are not then the resource has to wait until all seized. After the waiting loop the resource will time out for the remaining time. The problem is how to make the waiting loop asyn?
+> The code below is working well but the waiting loop seems not to be well programmed. Any suggestions would be much appreciated:
+>
+> library(simmer)
+> library(simmer.bricks)
+> library(simmer.plot)
+> library(tidyverse)
+> library(tictoc)
+> set.seed(1234)
+> TIME_TOGETHER<-2 # doctor and nurse have to share 2 minutes
+> TIME_NURSE<-c(5,.1) # 5 minutes  +/- 0.1
+> TIME_DOCTOR<-c(3,.1) # 3 minutes +/- 0.1
+> TIME_CLEANING<-1 # room cleaning after treatment
+> NUM_OF_RES<-2 # two resources: nurse and doctor
+>
+> ###function to generate unique patient arrival id
+> get_patient_id <- function() {
+>   patient_id<<- -1
+>   function() {
+>     patient_id <<- patient_id+1
+>     patient_id
+>   }
+> }
+> ### calculate time to constraint time share together
+> time_to_run<-function(res_time=TIME_DOCTOR)
+> {
+>   duration_time_from_seized<-now(env)- get_attribute(env,'time_seized')
+>   mean_time<-rnorm(1,res_time[1],res_time[2])
+>   return(ifelse( TIME_TOGETHER  +  duration_time_from_seized> mean_time,
+>                  TIME_TOGETHER,
+>                  mean_time- duration_time_from_seized)
+>   )
+>
+> }
+> ### common path for doctor and nurse
+> common_path<-function(res_name='doctor',res_time=TIME_DOCTOR)
+> {
+>   trajectory(res_name) %>%
+>     seize(res_name) %>%
+>     log_(function() paste0(res_name,' seized')) %>%
+>     #mark when the resource is seized
+>     set_attribute('time_seized',function() now(env)) %>%
+>     #increasing global dynamic counter id (each patient has 1 unique id)
+>     set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),1,mod='+')%>%
+>     ### loop waiting until all resources are seized: using dynamic counter id
+>     branch(option=function() ifelse( get_global(env, paste0('num_res_seized_',get_attribute(env,'patient_id')))==NUM_OF_RES,0,1),continue=TRUE,
+>            trajectory() %>%
+>              timeout(0.1) %>%  ### the smaller number the smaller error but simulation time is large
+>              rollback(2)
+>     )%>%
+>     ## when all resources are seized, check time at all resources, they must be the same!
+>     log_(function() paste0('Time now at ',res_name,'=',now(env))) %>%
+>     ## then now calculate the time need to be shared
+>     timeout( function() time_to_run(res_time) )%>%
+>     release(res_name)  %>%
+>     log_(function() paste0(res_name,' released'))
+> }
+>
+> get_id<-get_patient_id()
+> env<-simmer()
+> doctor_path<-common_path('doctor',TIME_DOCTOR)
+> nurse_path<-common_path('nurse',TIME_NURSE)
+>
+> t <- trajectory() %>%
+>   seize("room") %>%
+>   ## get unique id
+>   set_attribute('patient_id',function() get_id()) %>%
+>   ## create a global-unique  counter for each patient
+>   set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),0) %>%
+>   do_parallel(
+>     doctor_path,
+>     nurse_path,
+>     .env=env,wait=TRUE
+>
+>   )%>%
+>   timeout(TIME_CLEANING)%>%
+>   release("room",1) %>%
+>   log_("room released")
+>
+> tic()
+> test1<-env %>%
+>   add_resource("room",3) %>%
+>   add_resource("doctor",2) %>%
+>   add_resource("nurse",2) %>%
+>   add_generator("visit", t, at(seq(1,1000))) %>%
+>   run() %>% invisible
+>
+> test1 %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+>
+> toc()
+>
+>
+>
+>
+>
+>
+> On Monday, February 13, 2023 at 10:14:36 PM UTC+8 iu...@fedoraproject.org wrote:
+> > Hi,
+> >
+> > This is an interesting constraint. I wouldn't use signals for this, but I would play with the global attributes instead. I suppose that in the final simulation the shared time should be random, right? I would set that time in a global attribute, so that one trajectory sets it and the other uses it. Another global attribute would have a counter, so that the first attribute has a dynamic name and you can manage several requests at the same time.
+> >
+> > Iñaki
+> >
+> > On Sun, 5 Feb 2023 at 00:31, Dan Ng <dungngu...@gmail.com> wrote:
+> > > Hi Inaki,
+> > > I tried use do_parallel function as shown in your examples to setup a scenaior in hospital where a patient first seize a bed, then seize a consultant with timeout x minutes and a nurse with timeout y minutes in a parallel mode, then release consultant, nurse and bed after timeout.
+> > > However there is a constraint that consultant and nurse have to be together at least z minutes with the patient.
+> > >
+> > > To do this (and not sure we have another better solution) I add a "monitor" trajectory in parallel, this monitor will wait for signals coming from consultant and nurse after they are seized by a patient. When the monitor receives all signals (from the seized consutant and nurse) then it will send a signal back to consulant and nurse to starting the clock.
+> > > Below is the code:
+> > >
+> > > library(simmer)
+> > > library(simmer.bricks)
+> > > TIME_TOGETHER<-3
+> > > TIME_CONSULTANT<-5
+> > > TIME_NURSE<-10
+> > > env <- simmer()
+> > >
+> > > monitor_path <- trajectory('monitor') %>%
+> > >                 trap(c('C','N'),handler=trajectory() %>% send('ALL_SEIZED')) %>%
+> > >                 wait() %>%
+> > >                 untrap(c('C','N'))
+> > > consultant_path<- trajectory('consultant') %>%
+> > >                 seize('consultant') %>%
+> > >                 send('C') %>%
+> > >                 set_attribute('time_consultant_seized',function() now(env)) %>%
+> > >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> > >                        timeout(function() TIME_TOGETHER + TIME_CONSULTANT - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_consultant_seized'  ))))%>%
+> > >                        release('consultant')
+> > >                 )%>%
+> > >                 wait()  %>%
+> > >                 untrap('ALL_SEIZED')
+> > >
+> > >  nurse_path<-trajectory('nurse') %>%
+> > >                 seize('nurse') %>%
+> > >                 send('N') %>%
+> > >                 set_attribute('time_nurse_seized',function() now(env)) %>%
+> > >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> > >                        timeout(function() TIME_TOGETHER + TIME_NURSE - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_nurse_seized'  ))))%>%
+> > >                        release('nurse')
+> > >                 )%>% wait()  %>%
+> > >                 untrap('ALL_SEIZED')
+> > >
+> > > patient <- trajectory() %>%
+> > >   seize('bed')%>%
+> > >   do_parallel(
+> > >         monitor_path,
+> > >         consultant_path,
+> > >         nurse_path,
+> > >   .env=env,wait=TRUE)
+> > >   release('bed')
+> > >
+> > > env %>%
+> > >   add_resource('bed',1) %>%
+> > >   add_resource('nurse',1) %>%
+> > >   add_resource('consultant',1) %>%
+> > >   add_generator('patient', patient, at(seq(1,10))) %>%
+> > >   run() %>% invisible
+> > >
+> > > test<- env %>%  run()
+> > > test %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+> > >
+> > > However the code did not run as expected!  It seems there are errors in timing between sending the signals and receiving signals between the paths.
+> > >
+> > > Is there any better method  to set the constraint for the timeout of consultant and nurse (in parallele) that they have to be at least together in z minutes?
+> > >
+> > > Thank you!
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> >
+> > --
+> > Iñaki Úcar
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/9c798d30-a928-434b-930c-93414563910an%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/9c798d30-a928-434b-930c-93414563910an%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From udb61980ce2f4a607 at groups.google.com  Mon Feb 27 09:08:12 2023
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Mon, 27 Feb 2023 09:08:12 +0000
+Subject: Re: [simmer-devel] how to set timeout all resources at the same time?
+Message-ID: <kvsiYblnI1Y.UOYRAs-UCAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kvsiYblnI1Y.4WFPtX7TBwAJ@simmer-devel.groups.google.com>
+References: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com> <kvsiYblnI1Y.4WFPtX7TBwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kvsiYblnI1Y/m/UOYRAs-UCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Inaki,
+Thank you very much for your time and you don't need apologies - totally understand !
+I thought
+trajectory() %>%
+  wait_until(c <https://rdrr.io/r/base/c.html>("one", "another"), 2)
+with n=2 is equivalent to
+trajectory() %>%
+  trap(c <https://rdrr.io/r/base/c.html>("one", "another")) %>%
+  wait() %>%
+  wait() %>%
+  untrap(c <https://rdrr.io/r/base/c.html>("one", "another"))
+so the trap is not waiting for 2 signals consequently ?
+
+I can't seize the resources before cloning because after the patient successfully seized a bed then, in practice, the patient would be seen by any resource available at that time (and actually in our simulation there are officially 4 resources - not just 2 ! -  a senior doctor, a registrar, a junior doctor, a nurse). So seizing resources one after the other is not satisfactory with the constraint  because one resource has to wait for the other being seized even though that one was already available.
+
+I will try with your instruction regarding batch of clones but I am not sure I can do it :)
+
+Once again, thanks a lot !
+
+On Sat, Feb 25, 2023 at 6:05 AM Iñaki Ucar <iu...@fedoraproject.org> wrote:
+
+> Apologies for the late reply, but I'm a bit overloaded these days.
+>
+> I think that your first approach was a good idea, but you assumed that, when you trap several signals, all of them need to be received to run the handler, but it's not all, but any. Maybe that's not sufficiently clear in the docs. And one potential improvement could be to add an argument to switch from "any" to "all". I have to think about it.
+>
+> On the other hand, you could try to batch the clones together in a batch of size 2, and then one would wait for the other, and then the batch can spend a shared time in the resources without any need for complicated calculations.
+>
+> And anyway cloning and then batching sounds like a strange pattern... Wouldn't it be possible to seize both resources for the time spent together before cloning? Then there's only one arrival, so there's no need to synchronize anything. You just seize both resources, one after the other, and spend the shared time. That's it. After that you could clone the arrival to do things in parallel.
+>
+> Iñaki
+>
+> On Tue, 14 Feb 2023 at 04:23, Dan Ng <dungngu...@gmail.com> wrote:
+> > Hi Inaki,
+> > Thank you and I have tried with global dynamic attributes as your direction. The problem is that I have to make a waiting loop in each resource trajectory. This is because when a resource is seized while the others are not then the resource has to wait until all seized. After the waiting loop the resource will time out for the remaining time. The problem is how to make the waiting loop asyn?
+> > The code below is working well but the waiting loop seems not to be well programmed. Any suggestions would be much appreciated:
+> >
+> > library(simmer)
+> > library(simmer.bricks)
+> > library(simmer.plot)
+> > library(tidyverse)
+> > library(tictoc)
+> > set.seed(1234)
+> > TIME_TOGETHER<-2 # doctor and nurse have to share 2 minutes
+> > TIME_NURSE<-c(5,.1) # 5 minutes  +/- 0.1
+> > TIME_DOCTOR<-c(3,.1) # 3 minutes +/- 0.1
+> > TIME_CLEANING<-1 # room cleaning after treatment
+> > NUM_OF_RES<-2 # two resources: nurse and doctor
+> >
+> > ###function to generate unique patient arrival id
+> > get_patient_id <- function() {
+> >   patient_id<<- -1
+> >   function() {
+> >     patient_id <<- patient_id+1
+> >     patient_id
+> >   }
+> > }
+> > ### calculate time to constraint time share together
+> > time_to_run<-function(res_time=TIME_DOCTOR)
+> > {
+> >   duration_time_from_seized<-now(env)- get_attribute(env,'time_seized')
+> >   mean_time<-rnorm(1,res_time[1],res_time[2])
+> >   return(ifelse( TIME_TOGETHER  +  duration_time_from_seized> mean_time,
+> >                  TIME_TOGETHER,
+> >                  mean_time- duration_time_from_seized)
+> >   )
+> >
+> > }
+> > ### common path for doctor and nurse
+> > common_path<-function(res_name='doctor',res_time=TIME_DOCTOR)
+> > {
+> >   trajectory(res_name) %>%
+> >     seize(res_name) %>%
+> >     log_(function() paste0(res_name,' seized')) %>%
+> >     #mark when the resource is seized
+> >     set_attribute('time_seized',function() now(env)) %>%
+> >     #increasing global dynamic counter id (each patient has 1 unique id)
+> >     set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),1,mod='+')%>%
+> >     ### loop waiting until all resources are seized: using dynamic counter id
+> >     branch(option=function() ifelse( get_global(env, paste0('num_res_seized_',get_attribute(env,'patient_id')))==NUM_OF_RES,0,1),continue=TRUE,
+> >            trajectory() %>%
+> >              timeout(0.1) %>%  ### the smaller number the smaller error but simulation time is large
+> >              rollback(2)
+> >     )%>%
+> >     ## when all resources are seized, check time at all resources, they must be the same!
+> >     log_(function() paste0('Time now at ',res_name,'=',now(env))) %>%
+> >     ## then now calculate the time need to be shared
+> >     timeout( function() time_to_run(res_time) )%>%
+> >     release(res_name)  %>%
+> >     log_(function() paste0(res_name,' released'))
+> > }
+> >
+> > get_id<-get_patient_id()
+> > env<-simmer()
+> > doctor_path<-common_path('doctor',TIME_DOCTOR)
+> > nurse_path<-common_path('nurse',TIME_NURSE)
+> >
+> > t <- trajectory() %>%
+> >   seize("room") %>%
+> >   ## get unique id
+> >   set_attribute('patient_id',function() get_id()) %>%
+> >   ## create a global-unique  counter for each patient
+> >   set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),0) %>%
+> >   do_parallel(
+> >     doctor_path,
+> >     nurse_path,
+> >     .env=env,wait=TRUE
+> >
+> >   )%>%
+> >   timeout(TIME_CLEANING)%>%
+> >   release("room",1) %>%
+> >   log_("room released")
+> >
+> > tic()
+> > test1<-env %>%
+> >   add_resource("room",3) %>%
+> >   add_resource("doctor",2) %>%
+> >   add_resource("nurse",2) %>%
+> >   add_generator("visit", t, at(seq(1,1000))) %>%
+> >   run() %>% invisible
+> >
+> > test1 %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+> >
+> > toc()
+> >
+> >
+> >
+> >
+> >
+> >
+> > On Monday, February 13, 2023 at 10:14:36 PM UTC+8 iu...@fedoraproject.org wrote:
+> > > Hi,
+> > >
+> > > This is an interesting constraint. I wouldn't use signals for this, but I would play with the global attributes instead. I suppose that in the final simulation the shared time should be random, right? I would set that time in a global attribute, so that one trajectory sets it and the other uses it. Another global attribute would have a counter, so that the first attribute has a dynamic name and you can manage several requests at the same time.
+> > >
+> > > Iñaki
+> > >
+> > > On Sun, 5 Feb 2023 at 00:31, Dan Ng <dungngu...@gmail.com> wrote:
+> > > > Hi Inaki,
+> > > > I tried use do_parallel function as shown in your examples to setup a scenaior in hospital where a patient first seize a bed, then seize a consultant with timeout x minutes and a nurse with timeout y minutes in a parallel mode, then release consultant, nurse and bed after timeout.
+> > > > However there is a constraint that consultant and nurse have to be together at least z minutes with the patient.
+> > > >
+> > > > To do this (and not sure we have another better solution) I add a "monitor" trajectory in parallel, this monitor will wait for signals coming from consultant and nurse after they are seized by a patient. When the monitor receives all signals (from the seized consutant and nurse) then it will send a signal back to consulant and nurse to starting the clock.
+> > > > Below is the code:
+> > > >
+> > > > library(simmer)
+> > > > library(simmer.bricks)
+> > > > TIME_TOGETHER<-3
+> > > > TIME_CONSULTANT<-5
+> > > > TIME_NURSE<-10
+> > > > env <- simmer()
+> > > >
+> > > > monitor_path <- trajectory('monitor') %>%
+> > > >                 trap(c('C','N'),handler=trajectory() %>% send('ALL_SEIZED')) %>%
+> > > >                 wait() %>%
+> > > >                 untrap(c('C','N'))
+> > > > consultant_path<- trajectory('consultant') %>%
+> > > >                 seize('consultant') %>%
+> > > >                 send('C') %>%
+> > > >                 set_attribute('time_consultant_seized',function() now(env)) %>%
+> > > >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> > > >                        timeout(function() TIME_TOGETHER + TIME_CONSULTANT - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_consultant_seized'  ))))%>%
+> > > >                        release('consultant')
+> > > >                 )%>%
+> > > >                 wait()  %>%
+> > > >                 untrap('ALL_SEIZED')
+> > > >
+> > > >  nurse_path<-trajectory('nurse') %>%
+> > > >                 seize('nurse') %>%
+> > > >                 send('N') %>%
+> > > >                 set_attribute('time_nurse_seized',function() now(env)) %>%
+> > > >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> > > >                        timeout(function() TIME_TOGETHER + TIME_NURSE - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_nurse_seized'  ))))%>%
+> > > >                        release('nurse')
+> > > >                 )%>% wait()  %>%
+> > > >                 untrap('ALL_SEIZED')
+> > > >
+> > > > patient <- trajectory() %>%
+> > > >   seize('bed')%>%
+> > > >   do_parallel(
+> > > >         monitor_path,
+> > > >         consultant_path,
+> > > >         nurse_path,
+> > > >   .env=env,wait=TRUE)
+> > > >   release('bed')
+> > > >
+> > > > env %>%
+> > > >   add_resource('bed',1) %>%
+> > > >   add_resource('nurse',1) %>%
+> > > >   add_resource('consultant',1) %>%
+> > > >   add_generator('patient', patient, at(seq(1,10))) %>%
+> > > >   run() %>% invisible
+> > > >
+> > > > test<- env %>%  run()
+> > > > test %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+> > > >
+> > > > However the code did not run as expected!  It seems there are errors in timing between sending the signals and receiving signals between the paths.
+> > > >
+> > > > Is there any better method  to set the constraint for the timeout of consultant and nurse (in parallele) that they have to be at least together in z minutes?
+> > > >
+> > > > Thank you!
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/9c798d30-a928-434b-930c-93414563910an%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/9c798d30-a928-434b-930c-93414563910an%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> Iñaki Úcar
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq20byCy45yTwgojS99HZ8nbqmk-TvyVDUQgbxyWNvzXTA%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq20byCy45yTwgojS99HZ8nbqmk-TvyVDUQgbxyWNvzXTA%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Feb 27 10:06:23 2023
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 27 Feb 2023 10:06:23 +0000
+Subject: Re: [simmer-devel] how to set timeout all resources at the same time?
+Message-ID: <kvsiYblnI1Y.lXzb8fuXCAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kvsiYblnI1Y.4WFPtX7TBwAJ@simmer-devel.groups.google.com>
+References: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com> <kvsiYblnI1Y.4WFPtX7TBwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kvsiYblnI1Y/m/lXzb8fuXCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+El lun., 27 feb. 2023 10:08, Dan Ng <dungngu...@gmail.com> escribió:
+> Hi Inaki,
+> Thank you very much for your time and you don't need apologies - totally understand !
+> I thought
+> trajectory() %>%
+>   wait_until(c <https://rdrr.io/r/base/c.html>("one", "another"), 2)
+> with n=2 is equivalent to
+> trajectory() %>%
+>   trap(c <https://rdrr.io/r/base/c.html>("one", "another")) %>%
+>   wait() %>%
+>   wait() %>%
+>   untrap(c <https://rdrr.io/r/base/c.html>("one", "another"))
+> so the trap is not waiting for 2 signals consequently ?
+
+Yes, you are correct, what I mean is that it does not necessarily wait for one AND another. It could be 2 one or 2 another. So maybe it would be better to user two consecutive trap() for your use case, and in the handler of each one you trap and wait for the other one.
+
+Iñaki
+
+>
+> I can't seize the resources before cloning because after the patient successfully seized a bed then, in practice, the patient would be seen by any resource available at that time (and actually in our simulation there are officially 4 resources - not just 2 ! -  a senior doctor, a registrar, a junior doctor, a nurse). So seizing resources one after the other is not satisfactory with the constraint  because one resource has to wait for the other being seized even though that one was already available.
+>
+> I will try with your instruction regarding batch of clones but I am not sure I can do it :)
+>
+> Once again, thanks a lot !
+>
+>
+>
+>
+>
+> On Sat, Feb 25, 2023 at 6:05 AM Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> > Apologies for the late reply, but I'm a bit overloaded these days.
+> >
+> > I think that your first approach was a good idea, but you assumed that, when you trap several signals, all of them need to be received to run the handler, but it's not all, but any. Maybe that's not sufficiently clear in the docs. And one potential improvement could be to add an argument to switch from "any" to "all". I have to think about it.
+> >
+> > On the other hand, you could try to batch the clones together in a batch of size 2, and then one would wait for the other, and then the batch can spend a shared time in the resources without any need for complicated calculations.
+> >
+> > And anyway cloning and then batching sounds like a strange pattern... Wouldn't it be possible to seize both resources for the time spent together before cloning? Then there's only one arrival, so there's no need to synchronize anything. You just seize both resources, one after the other, and spend the shared time. That's it. After that you could clone the arrival to do things in parallel.
+> >
+> > Iñaki
+> >
+> > On Tue, 14 Feb 2023 at 04:23, Dan Ng <dungngu...@gmail.com> wrote:
+> > > Hi Inaki,
+> > > Thank you and I have tried with global dynamic attributes as your direction. The problem is that I have to make a waiting loop in each resource trajectory. This is because when a resource is seized while the others are not then the resource has to wait until all seized. After the waiting loop the resource will time out for the remaining time. The problem is how to make the waiting loop asyn?
+> > > The code below is working well but the waiting loop seems not to be well programmed. Any suggestions would be much appreciated:
+> > >
+> > > library(simmer)
+> > > library(simmer.bricks)
+> > > library(simmer.plot)
+> > > library(tidyverse)
+> > > library(tictoc)
+> > > set.seed(1234)
+> > > TIME_TOGETHER<-2 # doctor and nurse have to share 2 minutes
+> > > TIME_NURSE<-c(5,.1) # 5 minutes  +/- 0.1
+> > > TIME_DOCTOR<-c(3,.1) # 3 minutes +/- 0.1
+> > > TIME_CLEANING<-1 # room cleaning after treatment
+> > > NUM_OF_RES<-2 # two resources: nurse and doctor
+> > >
+> > > ###function to generate unique patient arrival id
+> > > get_patient_id <- function() {
+> > >   patient_id<<- -1
+> > >   function() {
+> > >     patient_id <<- patient_id+1
+> > >     patient_id
+> > >   }
+> > > }
+> > > ### calculate time to constraint time share together
+> > > time_to_run<-function(res_time=TIME_DOCTOR)
+> > > {
+> > >   duration_time_from_seized<-now(env)- get_attribute(env,'time_seized')
+> > >   mean_time<-rnorm(1,res_time[1],res_time[2])
+> > >   return(ifelse( TIME_TOGETHER  +  duration_time_from_seized> mean_time,
+> > >                  TIME_TOGETHER,
+> > >                  mean_time- duration_time_from_seized)
+> > >   )
+> > >
+> > > }
+> > > ### common path for doctor and nurse
+> > > common_path<-function(res_name='doctor',res_time=TIME_DOCTOR)
+> > > {
+> > >   trajectory(res_name) %>%
+> > >     seize(res_name) %>%
+> > >     log_(function() paste0(res_name,' seized')) %>%
+> > >     #mark when the resource is seized
+> > >     set_attribute('time_seized',function() now(env)) %>%
+> > >     #increasing global dynamic counter id (each patient has 1 unique id)
+> > >     set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),1,mod='+')%>%
+> > >     ### loop waiting until all resources are seized: using dynamic counter id
+> > >     branch(option=function() ifelse( get_global(env, paste0('num_res_seized_',get_attribute(env,'patient_id')))==NUM_OF_RES,0,1),continue=TRUE,
+> > >            trajectory() %>%
+> > >              timeout(0.1) %>%  ### the smaller number the smaller error but simulation time is large
+> > >              rollback(2)
+> > >     )%>%
+> > >     ## when all resources are seized, check time at all resources, they must be the same!
+> > >     log_(function() paste0('Time now at ',res_name,'=',now(env))) %>%
+> > >     ## then now calculate the time need to be shared
+> > >     timeout( function() time_to_run(res_time) )%>%
+> > >     release(res_name)  %>%
+> > >     log_(function() paste0(res_name,' released'))
+> > > }
+> > >
+> > > get_id<-get_patient_id()
+> > > env<-simmer()
+> > > doctor_path<-common_path('doctor',TIME_DOCTOR)
+> > > nurse_path<-common_path('nurse',TIME_NURSE)
+> > >
+> > > t <- trajectory() %>%
+> > >   seize("room") %>%
+> > >   ## get unique id
+> > >   set_attribute('patient_id',function() get_id()) %>%
+> > >   ## create a global-unique  counter for each patient
+> > >   set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),0) %>%
+> > >   do_parallel(
+> > >     doctor_path,
+> > >     nurse_path,
+> > >     .env=env,wait=TRUE
+> > >
+> > >   )%>%
+> > >   timeout(TIME_CLEANING)%>%
+> > >   release("room",1) %>%
+> > >   log_("room released")
+> > >
+> > > tic()
+> > > test1<-env %>%
+> > >   add_resource("room",3) %>%
+> > >   add_resource("doctor",2) %>%
+> > >   add_resource("nurse",2) %>%
+> > >   add_generator("visit", t, at(seq(1,1000))) %>%
+> > >   run() %>% invisible
+> > >
+> > > test1 %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+> > >
+> > > toc()
+> > >
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > On Monday, February 13, 2023 at 10:14:36 PM UTC+8 iu...@fedoraproject.org wrote:
+> > > > Hi,
+> > > >
+> > > > This is an interesting constraint. I wouldn't use signals for this, but I would play with the global attributes instead. I suppose that in the final simulation the shared time should be random, right? I would set that time in a global attribute, so that one trajectory sets it and the other uses it. Another global attribute would have a counter, so that the first attribute has a dynamic name and you can manage several requests at the same time.
+> > > >
+> > > > Iñaki
+> > > >
+> > > > On Sun, 5 Feb 2023 at 00:31, Dan Ng <dungngu...@gmail.com> wrote:
+> > > > > Hi Inaki,
+> > > > > I tried use do_parallel function as shown in your examples to setup a scenaior in hospital where a patient first seize a bed, then seize a consultant with timeout x minutes and a nurse with timeout y minutes in a parallel mode, then release consultant, nurse and bed after timeout.
+> > > > > However there is a constraint that consultant and nurse have to be together at least z minutes with the patient.
+> > > > >
+> > > > > To do this (and not sure we have another better solution) I add a "monitor" trajectory in parallel, this monitor will wait for signals coming from consultant and nurse after they are seized by a patient. When the monitor receives all signals (from the seized consutant and nurse) then it will send a signal back to consulant and nurse to starting the clock.
+> > > > > Below is the code:
+> > > > >
+> > > > > library(simmer)
+> > > > > library(simmer.bricks)
+> > > > > TIME_TOGETHER<-3
+> > > > > TIME_CONSULTANT<-5
+> > > > > TIME_NURSE<-10
+> > > > > env <- simmer()
+> > > > >
+> > > > > monitor_path <- trajectory('monitor') %>%
+> > > > >                 trap(c('C','N'),handler=trajectory() %>% send('ALL_SEIZED')) %>%
+> > > > >                 wait() %>%
+> > > > >                 untrap(c('C','N'))
+> > > > > consultant_path<- trajectory('consultant') %>%
+> > > > >                 seize('consultant') %>%
+> > > > >                 send('C') %>%
+> > > > >                 set_attribute('time_consultant_seized',function() now(env)) %>%
+> > > > >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> > > > >                        timeout(function() TIME_TOGETHER + TIME_CONSULTANT - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_consultant_seized'  ))))%>%
+> > > > >                        release('consultant')
+> > > > >                 )%>%
+> > > > >                 wait()  %>%
+> > > > >                 untrap('ALL_SEIZED')
+> > > > >
+> > > > >  nurse_path<-trajectory('nurse') %>%
+> > > > >                 seize('nurse') %>%
+> > > > >                 send('N') %>%
+> > > > >                 set_attribute('time_nurse_seized',function() now(env)) %>%
+> > > > >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> > > > >                        timeout(function() TIME_TOGETHER + TIME_NURSE - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_nurse_seized'  ))))%>%
+> > > > >                        release('nurse')
+> > > > >                 )%>% wait()  %>%
+> > > > >                 untrap('ALL_SEIZED')
+> > > > >
+> > > > > patient <- trajectory() %>%
+> > > > >   seize('bed')%>%
+> > > > >   do_parallel(
+> > > > >         monitor_path,
+> > > > >         consultant_path,
+> > > > >         nurse_path,
+> > > > >   .env=env,wait=TRUE)
+> > > > >   release('bed')
+> > > > >
+> > > > > env %>%
+> > > > >   add_resource('bed',1) %>%
+> > > > >   add_resource('nurse',1) %>%
+> > > > >   add_resource('consultant',1) %>%
+> > > > >   add_generator('patient', patient, at(seq(1,10))) %>%
+> > > > >   run() %>% invisible
+> > > > >
+> > > > > test<- env %>%  run()
+> > > > > test %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+> > > > >
+> > > > > However the code did not run as expected!  It seems there are errors in timing between sending the signals and receiving signals between the paths.
+> > > > >
+> > > > > Is there any better method  to set the constraint for the timeout of consultant and nurse (in parallele) that they have to be at least together in z minutes?
+> > > > >
+> > > > > Thank you!
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > >
+> > > >
+> > > > --
+> > > > Iñaki Úcar
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/9c798d30-a928-434b-930c-93414563910an%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/9c798d30-a928-434b-930c-93414563910an%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> >
+> > --
+> > Iñaki Úcar
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq20byCy45yTwgojS99HZ8nbqmk-TvyVDUQgbxyWNvzXTA%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq20byCy45yTwgojS99HZ8nbqmk-TvyVDUQgbxyWNvzXTA%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CA%2BwGLEFG6%3D3N94K9ekBrN9aqAojUkGZbBcJbRFd%2BfswF5r%2B46g%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CA%2BwGLEFG6%3D3N94K9ekBrN9aqAojUkGZbBcJbRFd%2BfswF5r%2B46g%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From udb61980ce2f4a607 at groups.google.com  Tue Feb 28 00:53:06 2023
+From: udb61980ce2f4a607 at groups.google.com (Dan Ng)
+Date: Tue, 28 Feb 2023 00:53:06 +0000
+Subject: Re: [simmer-devel] how to set timeout all resources at the same time?
+Message-ID: <kvsiYblnI1Y.2CCXL1_ICAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com>
+References: <kvsiYblnI1Y.BFC6BGukAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kvsiYblnI1Y/m/2CCXL1_ICAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks very much Inaki - really appreciated your time! I am now going back to the first version using signal. However, to avoid the situation when the monitor of an arrival gets the same signal sent by other arrivals, I added  an unique ID into each signal. This unique ID is generated for each arrival so the monitor of each arrival can't trap the signals sent from other arrivals.  The code is below and is running OK however, there are still some issues:
+1) I have to set a timeout with random time before sending a signal after the resource being seized. Without this trick the code won't run  properly.
+Why does it happen like that?
+
+2) How can I add the waiting time for signal into the activity time? For example after a patient seized a nurse the patient will wait for signal coming from the monitor to start the clock. But during that time the nurse activity time should be added up into the total activity time. Example "patient1" should have activity_time=10 minutes which is including the time waiting for the trap. I am thinking to extract data from the attribute "time_seized" but is it a better way to do it?
+
+       name start_time  end_time activity_time resource replication
+1  patient0   1.043929  6.043929      4.984513   doctor           1
+2  patient0   1.043929 14.043929     13.000000    nurse           1
+3  patient0   1.043929 16.043929      2.000000      bed           1
+4  patient1   1.274570 11.043929      5.000000   doctor           1
+5  patient1   1.274570 14.274570      8.246127    nurse           1
+
+3) Similarly, the activity_time of the bed resource should be from the time the bed is seized until the end time of the longest clone plus cleaning bed time
+
+Thank you again.
+Cao
+
+library(simmer)
+library(simmer.bricks)
+set.seed(12345)
+TIME_TOGETHER<-2
+TIME_DOCTOR<-5
+TIME_NURSE<-13
+TIME_CLEANING_BED<-2
+
+env <- simmer()
+
+#generate unique ID for each arrival
+
+get_patient_id <- function() {
+  patient_id<<- -1
+  function() {
+    patient_id <<- patient_id+1
+    patient_id
+  }
+}
+
+get_uid<-get_patient_id()
+
+### calculate time to constraint time share together
+
+time_to_run<-function(res_time=TIME_CONSULTANT)
+{
+  activity_time_from_seized<-now(env)- get_attribute(env,'time_seized' )
+  return(ifelse( TIME_TOGETHER  +  activity_time_from_seized> res_time,
+                 TIME_TOGETHER,
+                 res_time- activity_time_from_seized)
+  )
+}
+
+### monitor if all resouces are being seized
+
+monitor_path <- trajectory('monitor') %>%
+
+  wait_until(function() paste0(c('doctor','nurse'),get_attribute(env,'UID')),n=2) %>%
+  send( function() paste0('ALL',get_attribute(env,'UID')))
+
+### common pathway for all resources
+common_path<- function(res_name='doctor',res_time=TIME_DOCTOR){
+  trajectory() %>%
+    seize(res_name) %>%
+
+    set_attribute('time_seized',function() now(env)) %>%
+
+    #delay timeout before sending the signal, it will be error if this line is removed ?
+    timeout(runif(1,0,0.1)) %>%
+    send( function() paste0(res_name,get_attribute(env,'UID'))) %>%
+    wait_until(function() paste0('ALL',get_attribute(env,'UID'))) %>%
+
+    log_(function() paste0('Time now at ', res_name,'=',now(env))) %>%
+
+    timeout( function() time_to_run(res_time) )%>%
+    release(res_name)
+}
+
+patient <- trajectory() %>%
+  seize('bed')%>%
+
+  set_attribute('UID',get_uid()) %>%
+  do_parallel(
+    monitor_path,
+    common_path('doctor',TIME_DOCTOR),
+    common_path('nurse',TIME_NURSE),
+    .env=env,wait=TRUE) %>%
+  timeout(TIME_CLEANING_BED)%>%
+  release('bed')
+
+test<-env %>%
+  add_resource('bed',2) %>%
+  add_resource('nurse',3) %>%
+  add_resource('doctor',1) %>%
+  add_generator('patient', patient, function() {c(rexp(10,1/2), -1)}) %>%
+  run() %>% invisible()
+
+test %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+
+On Monday, February 27, 2023 at 6:06:23 PM UTC+8 iu...@fedoraproject.org wrote:
+>
+>
+> El lun., 27 feb. 2023 10:08, Dan Ng <dungngu...@gmail.com> escribió:
+> > Hi Inaki,
+> > Thank you very much for your time and you don't need apologies - totally understand !
+> > I thought
+> > trajectory() %>%
+> >   wait_until(c <https://rdrr.io/r/base/c.html>("one", "another"), 2)
+> > with n=2 is equivalent to
+> > trajectory() %>%
+> >   trap(c <https://rdrr.io/r/base/c.html>("one", "another")) %>%
+> >   wait() %>%
+> >   wait() %>%
+> >   untrap(c <https://rdrr.io/r/base/c.html>("one", "another"))
+> > so the trap is not waiting for 2 signals consequently ?
+>
+> Yes, you are correct, what I mean is that it does not necessarily wait for one AND another. It could be 2 one or 2 another. So maybe it would be better to user two consecutive trap() for your use case, and in the handler of each one you trap and wait for the other one.
+>
+> Iñaki
+>
+>
+> >
+> > I can't seize the resources before cloning because after the patient successfully seized a bed then, in practice, the patient would be seen by any resource available at that time (and actually in our simulation there are officially 4 resources - not just 2 ! -  a senior doctor, a registrar, a junior doctor, a nurse). So seizing resources one after the other is not satisfactory with the constraint  because one resource has to wait for the other being seized even though that one was already available.
+> >
+> > I will try with your instruction regarding batch of clones but I am not sure I can do it :)
+> >
+> > Once again, thanks a lot !
+> >
+> >
+> >
+> >
+> >
+> > On Sat, Feb 25, 2023 at 6:05 AM Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> > > Apologies for the late reply, but I'm a bit overloaded these days.
+> > >
+> > > I think that your first approach was a good idea, but you assumed that, when you trap several signals, all of them need to be received to run the handler, but it's not all, but any. Maybe that's not sufficiently clear in the docs. And one potential improvement could be to add an argument to switch from "any" to "all". I have to think about it.
+> > >
+> > > On the other hand, you could try to batch the clones together in a batch of size 2, and then one would wait for the other, and then the batch can spend a shared time in the resources without any need for complicated calculations.
+> > >
+> > > And anyway cloning and then batching sounds like a strange pattern... Wouldn't it be possible to seize both resources for the time spent together before cloning? Then there's only one arrival, so there's no need to synchronize anything. You just seize both resources, one after the other, and spend the shared time. That's it. After that you could clone the arrival to do things in parallel.
+> > >
+> > > Iñaki
+> > >
+> > > On Tue, 14 Feb 2023 at 04:23, Dan Ng <dungngu...@gmail.com> wrote:
+> > > > Hi Inaki,
+> > > > Thank you and I have tried with global dynamic attributes as your direction. The problem is that I have to make a waiting loop in each resource trajectory. This is because when a resource is seized while the others are not then the resource has to wait until all seized. After the waiting loop the resource will time out for the remaining time. The problem is how to make the waiting loop asyn?
+> > > > The code below is working well but the waiting loop seems not to be well programmed. Any suggestions would be much appreciated:
+> > > >
+> > > > library(simmer)
+> > > > library(simmer.bricks)
+> > > > library(simmer.plot)
+> > > > library(tidyverse)
+> > > > library(tictoc)
+> > > > set.seed(1234)
+> > > > TIME_TOGETHER<-2 # doctor and nurse have to share 2 minutes
+> > > > TIME_NURSE<-c(5,.1) # 5 minutes  +/- 0.1
+> > > > TIME_DOCTOR<-c(3,.1) # 3 minutes +/- 0.1
+> > > > TIME_CLEANING<-1 # room cleaning after treatment
+> > > > NUM_OF_RES<-2 # two resources: nurse and doctor
+> > > >
+> > > > ###function to generate unique patient arrival id
+> > > > get_patient_id <- function() {
+> > > >   patient_id<<- -1
+> > > >   function() {
+> > > >     patient_id <<- patient_id+1
+> > > >     patient_id
+> > > >   }
+> > > > }
+> > > > ### calculate time to constraint time share together
+> > > > time_to_run<-function(res_time=TIME_DOCTOR)
+> > > > {
+> > > >   duration_time_from_seized<-now(env)- get_attribute(env,'time_seized')
+> > > >   mean_time<-rnorm(1,res_time[1],res_time[2])
+> > > >   return(ifelse( TIME_TOGETHER  +  duration_time_from_seized> mean_time,
+> > > >                  TIME_TOGETHER,
+> > > >                  mean_time- duration_time_from_seized)
+> > > >   )
+> > > >
+> > > > }
+> > > > ### common path for doctor and nurse
+> > > > common_path<-function(res_name='doctor',res_time=TIME_DOCTOR)
+> > > > {
+> > > >   trajectory(res_name) %>%
+> > > >     seize(res_name) %>%
+> > > >     log_(function() paste0(res_name,' seized')) %>%
+> > > >     #mark when the resource is seized
+> > > >     set_attribute('time_seized',function() now(env)) %>%
+> > > >     #increasing global dynamic counter id (each patient has 1 unique id)
+> > > >     set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),1,mod='+')%>%
+> > > >     ### loop waiting until all resources are seized: using dynamic counter id
+> > > >     branch(option=function() ifelse( get_global(env, paste0('num_res_seized_',get_attribute(env,'patient_id')))==NUM_OF_RES,0,1),continue=TRUE,
+> > > >            trajectory() %>%
+> > > >              timeout(0.1) %>%  ### the smaller number the smaller error but simulation time is large
+> > > >              rollback(2)
+> > > >     )%>%
+> > > >     ## when all resources are seized, check time at all resources, they must be the same!
+> > > >     log_(function() paste0('Time now at ',res_name,'=',now(env))) %>%
+> > > >     ## then now calculate the time need to be shared
+> > > >     timeout( function() time_to_run(res_time) )%>%
+> > > >     release(res_name)  %>%
+> > > >     log_(function() paste0(res_name,' released'))
+> > > > }
+> > > >
+> > > > get_id<-get_patient_id()
+> > > > env<-simmer()
+> > > > doctor_path<-common_path('doctor',TIME_DOCTOR)
+> > > > nurse_path<-common_path('nurse',TIME_NURSE)
+> > > >
+> > > > t <- trajectory() %>%
+> > > >   seize("room") %>%
+> > > >   ## get unique id
+> > > >   set_attribute('patient_id',function() get_id()) %>%
+> > > >   ## create a global-unique  counter for each patient
+> > > >   set_global(function() paste0('num_res_seized_',get_attribute(env,'patient_id')),0) %>%
+> > > >   do_parallel(
+> > > >     doctor_path,
+> > > >     nurse_path,
+> > > >     .env=env,wait=TRUE
+> > > >
+> > > >   )%>%
+> > > >   timeout(TIME_CLEANING)%>%
+> > > >   release("room",1) %>%
+> > > >   log_("room released")
+> > > >
+> > > > tic()
+> > > > test1<-env %>%
+> > > >   add_resource("room",3) %>%
+> > > >   add_resource("doctor",2) %>%
+> > > >   add_resource("nurse",2) %>%
+> > > >   add_generator("visit", t, at(seq(1,1000))) %>%
+> > > >   run() %>% invisible
+> > > >
+> > > > test1 %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+> > > >
+> > > > toc()
+> > > >
+> > > >
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > On Monday, February 13, 2023 at 10:14:36 PM UTC+8 iu...@fedoraproject.org wrote:
+> > > > > Hi,
+> > > > >
+> > > > > This is an interesting constraint. I wouldn't use signals for this, but I would play with the global attributes instead. I suppose that in the final simulation the shared time should be random, right? I would set that time in a global attribute, so that one trajectory sets it and the other uses it. Another global attribute would have a counter, so that the first attribute has a dynamic name and you can manage several requests at the same time.
+> > > > >
+> > > > > Iñaki
+> > > > >
+> > > > > On Sun, 5 Feb 2023 at 00:31, Dan Ng <dungngu...@gmail.com> wrote:
+> > > > > > Hi Inaki,
+> > > > > > I tried use do_parallel function as shown in your examples to setup a scenaior in hospital where a patient first seize a bed, then seize a consultant with timeout x minutes and a nurse with timeout y minutes in a parallel mode, then release consultant, nurse and bed after timeout.
+> > > > > > However there is a constraint that consultant and nurse have to be together at least z minutes with the patient.
+> > > > > >
+> > > > > > To do this (and not sure we have another better solution) I add a "monitor" trajectory in parallel, this monitor will wait for signals coming from consultant and nurse after they are seized by a patient. When the monitor receives all signals (from the seized consutant and nurse) then it will send a signal back to consulant and nurse to starting the clock.
+> > > > > > Below is the code:
+> > > > > >
+> > > > > > library(simmer)
+> > > > > > library(simmer.bricks)
+> > > > > > TIME_TOGETHER<-3
+> > > > > > TIME_CONSULTANT<-5
+> > > > > > TIME_NURSE<-10
+> > > > > > env <- simmer()
+> > > > > >
+> > > > > > monitor_path <- trajectory('monitor') %>%
+> > > > > >                 trap(c('C','N'),handler=trajectory() %>% send('ALL_SEIZED')) %>%
+> > > > > >                 wait() %>%
+> > > > > >                 untrap(c('C','N'))
+> > > > > > consultant_path<- trajectory('consultant') %>%
+> > > > > >                 seize('consultant') %>%
+> > > > > >                 send('C') %>%
+> > > > > >                 set_attribute('time_consultant_seized',function() now(env)) %>%
+> > > > > >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> > > > > >                        timeout(function() TIME_TOGETHER + TIME_CONSULTANT - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_consultant_seized'  ))))%>%
+> > > > > >                        release('consultant')
+> > > > > >                 )%>%
+> > > > > >                 wait()  %>%
+> > > > > >                 untrap('ALL_SEIZED')
+> > > > > >
+> > > > > >  nurse_path<-trajectory('nurse') %>%
+> > > > > >                 seize('nurse') %>%
+> > > > > >                 send('N') %>%
+> > > > > >                 set_attribute('time_nurse_seized',function() now(env)) %>%
+> > > > > >                 trap('ALL_SEIZED',handler=trajectory() %>%
+> > > > > >                        timeout(function() TIME_TOGETHER + TIME_NURSE - TIME_TOGETHER - ( (now(env) - get_attribute(env,'time_nurse_seized'  ))))%>%
+> > > > > >                        release('nurse')
+> > > > > >                 )%>% wait()  %>%
+> > > > > >                 untrap('ALL_SEIZED')
+> > > > > >
+> > > > > > patient <- trajectory() %>%
+> > > > > >   seize('bed')%>%
+> > > > > >   do_parallel(
+> > > > > >         monitor_path,
+> > > > > >         consultant_path,
+> > > > > >         nurse_path,
+> > > > > >   .env=env,wait=TRUE)
+> > > > > >   release('bed')
+> > > > > >
+> > > > > > env %>%
+> > > > > >   add_resource('bed',1) %>%
+> > > > > >   add_resource('nurse',1) %>%
+> > > > > >   add_resource('consultant',1) %>%
+> > > > > >   add_generator('patient', patient, at(seq(1,10))) %>%
+> > > > > >   run() %>% invisible
+> > > > > >
+> > > > > > test<- env %>%  run()
+> > > > > > test %>% get_mon_arrivals(per_resource=TRUE)  %>% arrange(name)
+> > > > > >
+> > > > > > However the code did not run as expected!  It seems there are errors in timing between sending the signals and receiving signals between the paths.
+> > > > > >
+> > > > > > Is there any better method  to set the constraint for the timeout of consultant and nurse (in parallele) that they have to be at least together in z minutes?
+> > > > > >
+> > > > > > Thank you!
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/59a24ed4-14c6-470d-8cc4-600b1ba80b63n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > >
+> > > > >
+> > > > > --
+> > > > > Iñaki Úcar
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/9c798d30-a928-434b-930c-93414563910an%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/9c798d30-a928-434b-930c-93414563910an%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq20byCy45yTwgojS99HZ8nbqmk-TvyVDUQgbxyWNvzXTA%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq20byCy45yTwgojS99HZ8nbqmk-TvyVDUQgbxyWNvzXTA%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CA%2BwGLEFG6%3D3N94K9ekBrN9aqAojUkGZbBcJbRFd%2BfswF5r%2B46g%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CA%2BwGLEFG6%3D3N94K9ekBrN9aqAojUkGZbBcJbRFd%2BfswF5r%2B46g%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+

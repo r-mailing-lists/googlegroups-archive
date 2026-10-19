@@ -1,0 +1,3430 @@
+From ua563d31d07937fcb at groups.google.com  Fri Feb  1 17:34:05 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Fri, 01 Feb 2019 17:34:05 +0000
+Subject: preemption of trajectory but not of resource
+Message-ID: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/BjzFmLarGRA/m/GFjDth2LAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+Perhaps this question has been answered before but I trying to find out how to handle the following case.
+
+parcels come in during the day and the warehouse closes at 18:00
+if a parcel is being processed at 18:00 by a resource then processing should complete. Other packages that have arrived before 18:00 should not handled anymore on the same day.
+if a higher priority parcel comes in before 18:00 then that parcel preempts the parcel which is currently being processed.
+
+Now there are some setups, each with different behavior:
+add_resource with preemption FALSE with a schedule: Parcels that are processed at 18:00 will continue processing until finished, but they will not be preempted by a higher prio package that came in just before 18:00
+add_resource with preemption TRUE with a schedule: High prio parcels will preempt parcels with lower priority, but processing will stop at exactly 18:00.
+add_resource with preemption FALSE and a separate task of high prio that will capture the resource at 18:00. This will lead to the parcel to finish processing, but also all other parcels that arrived before 18:00 will be processed. Then, after that, the high prio task will seize the resource.
+Option 3 is almost there, but how do I prevent other parcels that are not being processed at 18:00 and that arrived before 18:00 from being processed?
+
+Cheers
+  Erik
+
+From ua563d31d07937fcb at groups.google.com  Fri Feb  1 19:14:03 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Fri, 01 Feb 2019 19:14:03 +0000
+Subject: Re: preemption of trajectory but not of resource
+Message-ID: <BjzFmLarGRA.JEXtOpKQAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+References: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/BjzFmLarGRA/m/JEXtOpKQAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Please ignore this mail for now. I think that scenario 3 should work because the high prio parcel also preempts the other low prio parcels that were submitted before 18:00
+
+Op vrijdag 1 februari 2019 18:34:05 UTC+1 schreef Erik Brakkee:
+
+> Hi,
+>
+> Perhaps this question has been answered before but I trying to find out how to handle the following case.
+>
+> parcels come in during the day and the warehouse closes at 18:00
+> if a parcel is being processed at 18:00 by a resource then processing should complete. Other packages that have arrived before 18:00 should not handled anymore on the same day.
+> if a higher priority parcel comes in before 18:00 then that parcel preempts the parcel which is currently being processed.
+>
+> Now there are some setups, each with different behavior:
+> add_resource with preemption FALSE with a schedule: Parcels that are processed at 18:00 will continue processing until finished, but they will not be preempted by a higher prio package that came in just before 18:00
+> add_resource with preemption TRUE with a schedule: High prio parcels will preempt parcels with lower priority, but processing will stop at exactly 18:00.
+> add_resource with preemption FALSE and a separate task of high prio that will capture the resource at 18:00. This will lead to the parcel to finish processing, but also all other parcels that arrived before 18:00 will be processed. Then, after that, the high prio task will seize the resource.
+> Option 3 is almost there, but how do I prevent other parcels that are not being processed at 18:00 and that arrived before 18:00 from being processed?
+>
+> Cheers
+>   Erik
+
+From ua563d31d07937fcb at groups.google.com  Fri Feb  1 20:52:33 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Fri, 01 Feb 2019 20:52:33 +0000
+Subject: Re: preemption of trajectory but not of resource
+Message-ID: <BjzFmLarGRA.cXO4YvKVAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+References: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/BjzFmLarGRA/m/cXO4YvKVAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+Here is what I came up with so far and this is working. The idea is generalizable to multiple resources. It uses do_parallel from simmer.bricks to close all resources in parallel at the designated times.
+
+The example uses a Bank with a single counter and two customers. The customers enter the bank at 17:00 and 17:30 respectively. These are quite problematic customers, each taking 5 hours to process (just an example). The bank closes at 18:00 but the first customers is served until 22:00. The second customer that arrived before 18:00 as well is served the next day. I am using one trajectory for opening a resource and one for closing a resource.
+
+Here is the code.
+
+>
+> # define resources and capacities only once.
+> resources = c("counter")
+> capacities = c(1)
+>
+> env = simmer("bank")
+> for (i in seq_along(resources)) {
+>   env = env %>% add_resource(resources[[i]], preemptive=FALSE, capacity = capacities[[i]])
+> }
+>
+> customer =
+>   trajectory("customer") %>%
+>   log_("Entering") %>%
+>   set_attribute("t0", function() now(env)) %>%
+>   seize("counter", 1) %>%
+>   set_attribute("t1", function() now(env) - get_attribute(env, "t0"), mod = "+") %>%
+>   log_("being served") %>%
+>   timeout(5) %>%
+>   release("counter") %>%
+>   log_("leaving")
+>
+>
+> openResources = function(resources, capacities) {
+>   traj = trajectory("open resources")
+>   for (i in seq_along(resources)) {
+>     resource = resources[[i]]
+>     capacity = capacities[[i]]
+>     traj = traj %>%
+>       log_(paste("Opening", resource, "capacity", capacity, "\n")) %>%
+>       set_capacity(resource, capacity)
+>   }
+>   traj
+> }
+>
+> closeResources = function(resources) {
+>   # closing resources in parallel so that closing will start for
+>   # all resources at the same time.
+>   closeResourceTrajectory = function(resource) {
+>     trajectory(paste("close", resource)) %>%
+>       log_(paste("closing", resource)) %>%
+>       seize(resource, function() get_capacity(env, resource)) %>%
+>       log_(paste("closed", resource)) %>%
+>       set_capacity(resource, 0) %>%
+>       release_all(resource)
+>   }
+>
+>   args = lapply(resources, function(resource) {
+>     closeResourceTrajectory(resource)
+>   })
+>   trajectory("close resource") %>%
+>     do_parallel(args, .env = env, wait = TRUE)
+> }
+>
+> bank = env %>%
+>   add_generator("customer", customer, at(17, 17.5), mon=2) %>%
+>   add_generator("closing", closeResources(resources),
+>                 from_to(18, 100, function() 24), priority = 10) %>%
+>   add_generator("opening", openResources(resources, capacities),
+>                 from_to(7, 100, function() 24), priority=10)
+>
+>
+
+Please tell me what you think. Can this be simplified? How would you solve this problem?
+
+Cheers
+  Erik
+
+Op vrijdag 1 februari 2019 18:34:05 UTC+1 schreef Erik Brakkee:
+
+> Hi,
+
+>
+> Perhaps this question has been answered before but I trying to find out how to handle the following case.
+>
+> parcels come in during the day and the warehouse closes at 18:00
+> if a parcel is being processed at 18:00 by a resource then processing should complete. Other packages that have arrived before 18:00 should not handled anymore on the same day.
+> if a higher priority parcel comes in before 18:00 then that parcel preempts the parcel which is currently being processed.
+>
+> Now there are some setups, each with different behavior:
+> add_resource with preemption FALSE with a schedule: Parcels that are processed at 18:00 will continue processing until finished, but they will not be preempted by a higher prio package that came in just before 18:00
+> add_resource with preemption TRUE with a schedule: High prio parcels will preempt parcels with lower priority, but processing will stop at exactly 18:00.
+> add_resource with preemption FALSE and a separate task of high prio that will capture the resource at 18:00. This will lead to the parcel to finish processing, but also all other parcels that arrived before 18:00 will be processed. Then, after that, the high prio task will seize the resource.
+> Option 3 is almost there, but how do I prevent other parcels that are not being processed at 18:00 and that arrived before 18:00 from being processed?
+>
+> Cheers
+>   Erik
+
+From ua563d31d07937fcb at groups.google.com  Fri Feb  1 21:59:45 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Fri, 01 Feb 2019 21:59:45 +0000
+Subject: Re: preemption of trajectory but not of resource
+Message-ID: <BjzFmLarGRA.Wf5w_5yZAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+References: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/BjzFmLarGRA/m/Wf5w_5yZAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think I might not have answered my original question. I am now defining the resource as preemptive and using the 'premptive' option in the add_generator call to make sure that only priority customers can preempt customers and that the timeout logic does not preempt.
+
+This should lead to the situation where a high priority customer (priority=10) is immediately handled, even when that requires handling after the normal closing hours (18:00). Then the closing trajectory which has higher priority (priority=5) than the normal customer (priority=0) should take over, causing the closing of the bank and the continued handling of the customer the next day. However, what I am seeing is that the original low prio customer is preempted by the high prio customer. Then the low prio customer is handled, and after that the bank is closed. Is this the expected behavior?
+
+Here is the code:
+
+resources = c("counter")
+capacities = c(1)
+
+env = simmer("bank")
+for (i in seq_along(resources)) {
+
+  env = env %>% add_resource(resources[[i]], preemptive=TRUE, capacity = capacities[[i]])
+
+}
+
+customer =
+  trajectory("customer") %>%
+  log_("Entering") %>%
+  set_attribute("t0", function() now(env)) %>%
+  seize("counter", 1) %>%
+  set_attribute("t1", function() now(env) - get_attribute(env, "t0"), mod = "+") %>%
+  log_("being served") %>%
+  timeout(5) %>%
+  release("counter") %>%
+  log_("leaving")
+
+openResources = function(resources, capacities) {
+  traj = trajectory("open resources")
+  for (i in seq_along(resources)) {
+    resource = resources[[i]]
+    capacity = capacities[[i]]
+    traj = traj %>%
+      log_(paste("Opening", resource, "capacity", capacity, "\n")) %>%
+      set_capacity(resource, capacity)
+  }
+  traj
+}
+
+closeResources = function(resources) {
+  # closing resources in parallel so that closing will start for
+  # all resources at the same time.
+  closeResourceTrajectory = function(resource) {
+    trajectory(paste("close", resource)) %>%
+      log_(paste("closing", resource)) %>%
+      seize(resource, function() get_capacity(env, resource)) %>%
+      log_(paste("closed", resource)) %>%
+      set_capacity(resource, 0) %>%
+      release_all(resource)
+  }
+
+  args = lapply(resources, function(resource) {
+    closeResourceTrajectory(resource)
+  })
+  trajectory("close resource") %>%
+    do_parallel(args, .env = env, wait = TRUE)
+}
+
+bank = env %>%
+
+  add_generator("customer", customer, at(17, 17.5), mon=2, preemptible = 10) %>%
+  add_generator("priority_customer", customer, at(17.75), mon = 2,
+               priority = 11, preemptible = 20) %>%
+  add_generator("closing", closeResources(resources),
+                from_to(18, 100, function() 24), priority = 5) %>%
+
+  add_generator("opening", openResources(resources, capacities),
+
+                from_to(7, 100, function() 24), priority = 5)
+
+bank %>% run(until = 100)
+
+Also, perhaps this is getting too complicated and it would be better to add two closing generators: one at the exact closing time that does not preempt the customer (priority=5) and one 3 hours after that with a high priority (priority=30) that makes sure that the resources are closed. That would represent a more realistic case where the employee would refuse to do more than 3 hours of overtime.
+
+What do you think? I am just exploring the possibilities here.
+
+From ua563d31d07937fcb at groups.google.com  Fri Feb  1 22:02:47 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Fri, 01 Feb 2019 22:02:47 +0000
+Subject: Re: preemption of trajectory but not of resource
+Message-ID: <BjzFmLarGRA.cKxpfceZAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+References: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/BjzFmLarGRA/m/cKxpfceZAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Here is the code with forcefully closing the bank at 21:00. This is perhaps more realistic.
+
+bank = env %>%
+  add_generator("customer", customer, at(17, 17.5), mon=2, preemptible = 10) %>%
+  add_generator("priority_customer", customer, at(17.75), mon = 2,
+               priority = 11, preemptible = 20) %>%
+  add_generator("closing", closeResources(resources),
+                from_to(18, 100, function() 24), priority = 5) %>%
+
+  add_generator("closingForcefully", closeResources(resources),
+                from_to(21, 100, function() 24), priority = 30) %>%
+
+  add_generator("opening", openResources(resources, capacities),
+                from_to(7, 100, function() 24), priority = 5)
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sun Feb  3 18:45:33 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sun, 03 Feb 2019 18:45:33 +0000
+Subject: Re: [simmer-devel] Re: preemption of trajectory but not of resource
+Message-ID: <BjzFmLarGRA.AoyVWheRGgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <BjzFmLarGRA.cKxpfceZAgAJ@simmer-devel.groups.google.com>
+References: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com> <BjzFmLarGRA.cKxpfceZAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/BjzFmLarGRA/m/AoyVWheRGgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Fri, 1 Feb 2019 at 22:59, Erik Brakkee <erik.b...@gmail.com> wrote:
+>
+> I think I might not have answered my original question. I am now defining the resource as preemptive and using the 'premptive' option in the add_generator call to make sure that only priority customers can preempt customers and that the timeout logic does not preempt.
+>
+> This should lead to the situation where a high priority customer (priority=10) is immediately handled, even when that requires handling after the normal closing hours (18:00). Then the closing trajectory which has higher priority (priority=5) than the normal customer (priority=0) should take over, causing the closing of the bank and the continued handling of the customer the next day. However, what I am seeing is that the original low prio customer is preempted by the high prio customer. Then the low prio customer is handled, and after that the bank is closed. Is this the expected behavior?
+
+It is. By default, preempted customers eventually finish their work,
+and for that effect, they are handled in a special queue, different
+from the main one. If you want to override this behaviour, you need to
+set the queue_size_strict parameter to TRUE. Note that, in this way,
+preemption may cause rejection (if there is no space left in the
+regular queue).
+
+For this problem you are describing, consider increasing the priority
+of low-priority customers after seizing the resource (see
+set_prioritization), so that they can be preempted by high-priority
+customers, but not by the closing process, and at the same time the
+closing process has a higher priority than low-priority customers
+*before* being served.
+
+Hope it helps.
+
+>
+>
+> Here is the code:
+>
+> resources = c("counter")
+> capacities = c(1)
+>
+> env = simmer("bank")
+> for (i in seq_along(resources)) {
+>   env = env %>% add_resource(resources[[i]], preemptive=TRUE, capacity = capacities[[i]])
+> }
+>
+> customer =
+>   trajectory("customer") %>%
+>   log_("Entering") %>%
+>   set_attribute("t0", function() now(env)) %>%
+>   seize("counter", 1) %>%
+>   set_attribute("t1", function() now(env) - get_attribute(env, "t0"), mod = "+") %>%
+>   log_("being served") %>%
+>   timeout(5) %>%
+>   release("counter") %>%
+>   log_("leaving")
+>
+>
+> openResources = function(resources, capacities) {
+>   traj = trajectory("open resources")
+>   for (i in seq_along(resources)) {
+>     resource = resources[[i]]
+>     capacity = capacities[[i]]
+>     traj = traj %>%
+>       log_(paste("Opening", resource, "capacity", capacity, "\n")) %>%
+>       set_capacity(resource, capacity)
+>   }
+>   traj
+> }
+>
+> closeResources = function(resources) {
+>   # closing resources in parallel so that closing will start for
+>   # all resources at the same time.
+>   closeResourceTrajectory = function(resource) {
+>     trajectory(paste("close", resource)) %>%
+>       log_(paste("closing", resource)) %>%
+>       seize(resource, function() get_capacity(env, resource)) %>%
+>       log_(paste("closed", resource)) %>%
+>       set_capacity(resource, 0) %>%
+>       release_all(resource)
+>   }
+>
+>   args = lapply(resources, function(resource) {
+>     closeResourceTrajectory(resource)
+>   })
+>   trajectory("close resource") %>%
+>     do_parallel(args, .env = env, wait = TRUE)
+> }
+>
+> bank = env %>%
+>   add_generator("customer", customer, at(17, 17.5), mon=2, preemptible = 10) %>%
+>   add_generator("priority_customer", customer, at(17.75), mon = 2,
+>                priority = 11, preemptible = 20) %>%
+>   add_generator("closing", closeResources(resources),
+>                 from_to(18, 100, function() 24), priority = 5) %>%
+>   add_generator("opening", openResources(resources, capacities),
+>                 from_to(7, 100, function() 24), priority = 5)
+>
+> bank %>% run(until = 100)
+>
+>
+> Also, perhaps this is getting too complicated and it would be better to add two closing generators: one at the exact closing time that does not preempt the customer (priority=5) and one 3 hours after that with a high priority (priority=30) that makes sure that the resources are closed. That would represent a more realistic case where the employee would refuse to do more than 3 hours of overtime.
+>
+> What do you think? I am just exploring the possibilities here.
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/429b1b9e-bbb2-407d-93d9-1566f5357ce2%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From ua563d31d07937fcb at groups.google.com  Sun Feb  3 22:00:26 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sun, 03 Feb 2019 22:00:26 +0000
+Subject: Re: [simmer-devel] Re: preemption of trajectory but not of resource
+Message-ID: <BjzFmLarGRA.RoLa1LmbGgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <BjzFmLarGRA.cKxpfceZAgAJ@simmer-devel.groups.google.com>
+References: <BjzFmLarGRA.GFjDth2LAgAJ@simmer-devel.groups.google.com> <BjzFmLarGRA.cKxpfceZAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/BjzFmLarGRA/m/RoLa1LmbGgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+Very nice idea. Nice to see how different types of behavior can be obtained using only basic features.
+
+Op zo 3 feb. 2019 19:45 schreef Iñaki Ucar <iu...@fedoraproject.org:
+
+> On Fri, 1 Feb 2019 at 22:59, Erik Brakkee <erik.b...@gmail.com> wrote:
+> >
+> > I think I might not have answered my original question. I am now defining the resource as preemptive and using the 'premptive' option in the add_generator call to make sure that only priority customers can preempt customers and that the timeout logic does not preempt.
+> >
+> > This should lead to the situation where a high priority customer (priority=10) is immediately handled, even when that requires handling after the normal closing hours (18:00). Then the closing trajectory which has higher priority (priority=5) than the normal customer (priority=0) should take over, causing the closing of the bank and the continued handling of the customer the next day. However, what I am seeing is that the original low prio customer is preempted by the high prio customer. Then the low prio customer is handled, and after that the bank is closed. Is this the expected behavior?
+>
+> It is. By default, preempted customers eventually finish their work,
+> and for that effect, they are handled in a special queue, different
+> from the main one. If you want to override this behaviour, you need to
+> set the queue_size_strict parameter to TRUE. Note that, in this way,
+> preemption may cause rejection (if there is no space left in the
+> regular queue).
+>
+> For this problem you are describing, consider increasing the priority
+> of low-priority customers after seizing the resource (see
+> set_prioritization), so that they can be preempted by high-priority
+> customers, but not by the closing process, and at the same time the
+> closing process has a higher priority than low-priority customers
+> *before* being served.
+>
+> Hope it helps.
+>
+> >
+> >
+> > Here is the code:
+> >
+> > resources = c("counter")
+> > capacities = c(1)
+> >
+> > env = simmer("bank")
+> > for (i in seq_along(resources)) {
+> >   env = env %>% add_resource(resources[[i]], preemptive=TRUE, capacity = capacities[[i]])
+> > }
+> >
+> > customer =
+> >   trajectory("customer") %>%
+> >   log_("Entering") %>%
+> >   set_attribute("t0", function() now(env)) %>%
+> >   seize("counter", 1) %>%
+> >   set_attribute("t1", function() now(env) - get_attribute(env, "t0"), mod = "+") %>%
+> >   log_("being served") %>%
+> >   timeout(5) %>%
+> >   release("counter") %>%
+> >   log_("leaving")
+> >
+> >
+> > openResources = function(resources, capacities) {
+> >   traj = trajectory("open resources")
+> >   for (i in seq_along(resources)) {
+> >     resource = resources[[i]]
+> >     capacity = capacities[[i]]
+> >     traj = traj %>%
+> >       log_(paste("Opening", resource, "capacity", capacity, "\n")) %>%
+> >       set_capacity(resource, capacity)
+> >   }
+> >   traj
+> > }
+> >
+> > closeResources = function(resources) {
+> >   # closing resources in parallel so that closing will start for
+> >   # all resources at the same time.
+> >   closeResourceTrajectory = function(resource) {
+> >     trajectory(paste("close", resource)) %>%
+> >       log_(paste("closing", resource)) %>%
+> >       seize(resource, function() get_capacity(env, resource)) %>%
+> >       log_(paste("closed", resource)) %>%
+> >       set_capacity(resource, 0) %>%
+> >       release_all(resource)
+> >   }
+> >
+> >   args = lapply(resources, function(resource) {
+> >     closeResourceTrajectory(resource)
+> >   })
+> >   trajectory("close resource") %>%
+> >     do_parallel(args, .env = env, wait = TRUE)
+> > }
+> >
+> > bank = env %>%
+> >   add_generator("customer", customer, at(17, 17.5), mon=2, preemptible = 10) %>%
+> >   add_generator("priority_customer", customer, at(17.75), mon = 2,
+> >                priority = 11, preemptible = 20) %>%
+> >   add_generator("closing", closeResources(resources),
+> >                 from_to(18, 100, function() 24), priority = 5) %>%
+> >   add_generator("opening", openResources(resources, capacities),
+> >                 from_to(7, 100, function() 24), priority = 5)
+> >
+> > bank %>% run(until = 100)
+> >
+> >
+> > Also, perhaps this is getting too complicated and it would be better to add two closing generators: one at the exact closing time that does not preempt the customer (priority=5) and one 3 hours after that with a high priority (priority=30) that makes sure that the resources are closed. That would represent a more realistic case where the employee would refuse to do more than 3 hours of overtime.
+> >
+> > What do you think? I am just exploring the possibilities here.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/429b1b9e-bbb2-407d-93d9-1566f5357ce2%40googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq1M11NHwCV8R-noeV2eF_WveVe-NkA%3D5wa_wmOiRuVEFQ%40mail.gmail.com.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From ua3c2c665afe78bd9 at groups.google.com  Mon Feb  4 14:34:59 2019
+From: ua3c2c665afe78bd9 at groups.google.com (Sandor Bende)
+Date: Mon, 04 Feb 2019 14:34:59 +0000
+Subject: simulating a pull process
+Message-ID: <LOUvU0Lrg1M.KHl8gRVtAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/LOUvU0Lrg1M/m/KHl8gRVtAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+I try to simulate a manufacturing process that works on the basis of pull, that is a new entity enters the process only if there is capacity to handle it. Imagine a press that is pulling material from a container: if the press is down, no material is pulled so no "product" enters the system..
+
+My first idea, that works but it is not very elegant is to generate an unrealistically high number of entries and use a branch at the start of the trajectory to immediately reject the entity if there is no free capacity. I use the "get_server count" to see how many servers are busy and if all, then the entry is rejected.
+
+This is quite wasteful in terms of computing, most of the time I just get entities thatflow  in and out of the system. Is there a more elegant way?
+
+Basically the idea would be in pseudo_code like this:
+
+        FOR(;;){
+              WHILE (all systems busy) {
+                     Do nothing
+              }
+            Generate new entry
+        }
+
+What I am doing instead is:
+
+       FOR(once in a second){
+          Generate new entry
+          IF(system busy)
+               Reject immediately
+          ELSE
+              Run trajectory
+       }
+
+Kind regards
+Sandor
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Feb  4 15:57:55 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 04 Feb 2019 15:57:55 +0000
+Subject: Re: [simmer-devel] simulating a pull process
+Message-ID: <LOUvU0Lrg1M.chGD-oXWGgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <LOUvU0Lrg1M.KHl8gRVtAwAJ@simmer-devel.groups.google.com>
+References: <LOUvU0Lrg1M.KHl8gRVtAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/LOUvU0Lrg1M/m/chGD-oXWGgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+See activate() and the helper function when_activated():
+
+https://www.enchufa2.es/archives/simmer-4-0-1.html
+
+Iñaki
+
+On Mon, 4 Feb 2019 at 15:35, Sandor Bende <rog...@gmail.com> wrote:
+>
+> Hi,
+> I try to simulate a manufacturing process that works on the basis of pull, that is a new entity enters the process only if there is capacity to handle it. Imagine a press that is pulling material from a container: if the press is down, no material is pulled so no "product" enters the system..
+>
+> My first idea, that works but it is not very elegant is to generate an unrealistically high number of entries and use a branch at the start of the trajectory to immediately reject the entity if there is no free capacity. I use the "get_server count" to see how many servers are busy and if all, then the entry is rejected.
+>
+> This is quite wasteful in terms of computing, most of the time I just get entities thatflow  in and out of the system. Is there a more elegant way?
+>
+> Basically the idea would be in pseudo_code like this:
+>
+>         FOR(;;){
+>               WHILE (all systems busy) {
+>                      Do nothing
+>               }
+>             Generate new entry
+>         }
+>
+> What I am doing instead is:
+>
+>        FOR(once in a second){
+>           Generate new entry
+>           IF(system busy)
+>                Reject immediately
+>           ELSE
+>               Run trajectory
+>        }
+>
+> Kind regards
+> Sandor
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/f143f616-9d8a-4fdd-adbb-a94a27acf1e2%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From ua3c2c665afe78bd9 at groups.google.com  Tue Feb  5 09:10:29 2019
+From: ua3c2c665afe78bd9 at groups.google.com (Sandor Bende)
+Date: Tue, 05 Feb 2019 09:10:29 +0000
+Subject: Re: simulating a pull process
+Message-ID: <LOUvU0Lrg1M.5bLRw_SpAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <LOUvU0Lrg1M.KHl8gRVtAwAJ@simmer-devel.groups.google.com>
+References: <LOUvU0Lrg1M.KHl8gRVtAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/LOUvU0Lrg1M/m/5bLRw_SpAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi
+
+2019. február 4., hétfő 15:34:59 UTC+1 időpontban Sandor Bende a következőt írta:
+> Hi,
+> I try to simulate a manufacturing process that works on the basis of pull, that is a new entity enters the process only if there is capacity to handle it. Imagine a press that is pulling material from a container: if the press is down, no material is pulled so no "product" enters the system..
+>
+> My first idea, that works but it is not very elegant is to generate an unrealistically high number of entries and use a branch at the start of the trajectory to immediately reject the entity if there is no free capacity. I use the "get_server count" to see how many servers are busy and if all, then the entry is rejected.
+>
+> This is quite wasteful in terms of computing, most of the time I just get entities thatflow  in and out of the system. Is there a more elegant way?
+>
+> Basically the idea would be in pseudo_code like this:
+>
+>         FOR(;;){
+>               WHILE (all systems busy) {
+>                      Do nothing
+>               }
+>             Generate new entry
+>         }
+>
+> What I am doing instead is:
+>
+>        FOR(once in a second){
+>           Generate new entry
+>           IF(system busy)
+>                Reject immediately
+>           ELSE
+>               Run trajectory
+>        }
+>
+> Kind regards
+> Sandor
+
+From ua3c2c665afe78bd9 at groups.google.com  Tue Feb  5 09:11:58 2019
+From: ua3c2c665afe78bd9 at groups.google.com (Sandor Bende)
+Date: Tue, 05 Feb 2019 09:11:58 +0000
+Subject: Re: simulating a pull process
+Message-ID: <LOUvU0Lrg1M.O76_fAmqAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <LOUvU0Lrg1M.KHl8gRVtAwAJ@simmer-devel.groups.google.com>
+References: <LOUvU0Lrg1M.KHl8gRVtAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/LOUvU0Lrg1M/m/O76_fAmqAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+thanks a lot!! This solves most of my problems.
+Kind regards
+Sandor
+
+2019. február 4., hétfő 15:34:59 UTC+1 időpontban Sandor Bende a következőt írta:
+
+> Hi,
+> I try to simulate a manufacturing process that works on the basis of pull, that is a new entity enters the process only if there is capacity to handle it. Imagine a press that is pulling material from a container: if the press is down, no material is pulled so no "product" enters the system..
+>
+> My first idea, that works but it is not very elegant is to generate an unrealistically high number of entries and use a branch at the start of the trajectory to immediately reject the entity if there is no free capacity. I use the "get_server count" to see how many servers are busy and if all, then the entry is rejected.
+>
+> This is quite wasteful in terms of computing, most of the time I just get entities thatflow  in and out of the system. Is there a more elegant way?
+>
+> Basically the idea would be in pseudo_code like this:
+>
+>         FOR(;;){
+>               WHILE (all systems busy) {
+>                      Do nothing
+>               }
+>             Generate new entry
+>         }
+>
+> What I am doing instead is:
+>
+>        FOR(once in a second){
+>           Generate new entry
+>           IF(system busy)
+>                Reject immediately
+>           ELSE
+>               Run trajectory
+>        }
+>
+> Kind regards
+> Sandor
+
+From u1b2c2ff22fb6659c at groups.google.com  Wed Feb  6 20:10:48 2019
+From: u1b2c2ff22fb6659c at groups.google.com (david.j...@gmail.com)
+Date: Wed, 06 Feb 2019 20:10:48 +0000
+Subject: add_dataframe and add_generator different behaviout
+Message-ID: <1Lxs5AtAkfY.-GgU3QV0GgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/1Lxs5AtAkfY/m/-GgU3QV0GgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I have a DES with 200 arrivals, when generating arrivals I am getting different behaviour with add_dataframe (), add_dataframe(, batch = Inf) and add_generator(). Unable to isolate issue in a reprex would appreciate any info on what might be causing this.
+
+t1  <-  cumsum(runif(1,1,5))
+dfArr <- dataframe( t1 = t1)
+
+add_dataframe
+
+sim1 %>%
+  add_dataframe("test",testtraj, dfArr, col_time = "t1", time = "absolute", mon = 2)
+
+when running get_mon_arrivals(sim1) finished == TRUE for 24.  I expect finished == FALSE for all due to a leave() function.
+
+add_dataframe w/ batch = Inf
+
+sim1 %>%
+  add_dataframe("test",testtraj, dfArr, col_time = "t1", time = "absolute", mon = 2, batch = Inf)
+
+finished == FALSE for all
+
+ add_generator
+
+sim1 %>%
+  add_dataframe("test",testtraj, at(t1), mon = 2)
+
+finished == False for all
+
+Given that t1 is the same for all (I set seed earlier in the script) shouldn't i get similar behaviour.
+
+Thanks in advance and apologies for not having a reproducible example.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Feb  6 21:01:42 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 06 Feb 2019 21:01:42 +0000
+Subject: Re: [simmer-devel] add_dataframe and add_generator different behaviout
+Message-ID: <1Lxs5AtAkfY.GvevIM12GgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <1Lxs5AtAkfY.-GgU3QV0GgAJ@simmer-devel.groups.google.com>
+References: <1Lxs5AtAkfY.-GgU3QV0GgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/1Lxs5AtAkfY/m/GvevIM12GgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The three methods are completely equivalent, and I can't think of any
+way for them to produce different results. So without a reproducible
+example, I'm inclined to think that there's an issue in your script,
+and some variable in your environment probably is causing the trouble.
+
+Iñaki
+
+On Wed, 6 Feb 2019 at 21:10, <david.j...@gmail.com> wrote:
+>
+> Hi,
+>
+> I have a DES with 200 arrivals, when generating arrivals I am getting different behaviour with add_dataframe (), add_dataframe(, batch = Inf) and add_generator(). Unable to isolate issue in a reprex would appreciate any info on what might be causing this.
+>
+> t1  <-  cumsum(runif(1,1,5))
+> dfArr <- dataframe( t1 = t1)
+>
+> add_dataframe
+>
+> sim1 %>%
+>   add_dataframe("test",testtraj, dfArr, col_time = "t1", time = "absolute", mon = 2)
+>
+> when running get_mon_arrivals(sim1) finished == TRUE for 24.  I expect finished == FALSE for all due to a leave() function.
+>
+> add_dataframe w/ batch = Inf
+>
+> sim1 %>%
+>   add_dataframe("test",testtraj, dfArr, col_time = "t1", time = "absolute", mon = 2, batch = Inf)
+>
+> finished == FALSE for all
+>
+>  add_generator
+>
+> sim1 %>%
+>   add_dataframe("test",testtraj, at(t1), mon = 2)
+>
+> finished == False for all
+>
+> Given that t1 is the same for all (I set seed earlier in the script) shouldn't i get similar behaviour.
+>
+> Thanks in advance and apologies for not having a reproducible example.
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/da865d85-08d0-48d6-9e1e-e7ac68080a2b%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From ua563d31d07937fcb at groups.google.com  Sat Feb  9 19:32:47 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sat, 09 Feb 2019 19:32:47 +0000
+Subject: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/JdZ4nfnJHgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+There is a nice example on in the Bank Tutorial II (https://r-simmer.org/articles/simmer-04-bank-2.html) where a signal is handled while doing a timeout. The intention is to continue after handling the trap using the same timeout as before. The solution used is to record the start time and timeout value in attributes and use these to compute the time left for a new timeout() call at the end of handling the trap.
+
+However, I am looking at a problem where the bank closes and before closing it sends a signal. The aim of the trap is to increase the priority of the arrival and then to continue with the timeout. However, in my case the resource is also preemptible so when subtracting the current time from the original end time (start_time + delay), end time might be too low since the arrival could have been preempted earlier.
+
+Example:
+arrive at 17:00, timeout is 2 hours
+preemption by other arrival from 17:30-17:45
+bank closes at 18:00 -> signal is sent.
+trap computes remaining delay as  17:00 + 2 hours - 18:00 = 1 hour. This is incorrect since only 45 minutes were spent so the remaining time is 1:45.
+Is there a way to get the current activity time in a trajectory? This way a similar computation can be done using
+activity times and I can write an interuptible timeout method
+
+Cheers
+  Erik
+
+From ua563d31d07937fcb at groups.google.com  Sat Feb  9 19:40:55 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sat, 09 Feb 2019 19:40:55 +0000
+Subject: Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.56zfRWvKHgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/56zfRWvKHgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Below is some code. I want to achieve the behavior that when the depot closes, arrivals will still continue. However, I want them to be preemptible during opening hours. This is why I increase the priority as part of the trap.
+
+Also, I think I might have found an issue (see the line marked "POSSIBLE BUG" below). When I send the trap and immediately after that seize the resource (remove the timeout on that line), I get times that are out of order.
+
+> 7: openDepot0: Opening counter capacity 1
+> 17: customer0: Entering
+> 17: customer0: being served
+> 18: closeDepot0: closing counter
+> 18: closeDepot0: closed counter
+> 31: openDepot1: Opening counter capacity 1
+> 13: customer0: Received notification that bank is closing
+> 17: customer0: leaving
+> 42: closeDepot1: closing counter
+
+Code:
+
+> library(simmer)
+> library(simmer.bricks)
+>
+> # define resources and capacities only once.
+> resources = c("counter")
+> capacities = c(1)
+>
+> env = simmer("bank")
+> for (i in seq_along(resources)) {
+>   env = env %>%
+>     add_resource(resources[[i]], preemptive = TRUE, capacity = 0)
+> }
+>
+> bank_is_closing = trajectory("bank_closing") %>%
+>   log_("Received notification that bank is closing") %>%
+>   set_prioritization(c(100, 100, FALSE)) %>%
+>   timeout(4) # need to compute remaining timeout here.
+>
+> customer =
+>   trajectory("customer") %>%
+>   log_("Entering") %>%
+>   seize("counter", 1) %>%
+>   set_attribute("end_time", function() now(env) + 5) %>%
+>   trap("closing", handler = bank_is_closing) %>%
+>   log_("being served") %>%
+>   timeout(5) %>%
+>   release("counter") %>%
+>   log_("leaving")
+>
+>
+> openResources = function(resources, capacities) {
+>   traj = trajectory("open resources")
+>   for (i in seq_along(resources)) {
+>     resource = resources[[i]]
+>     capacity = capacities[[i]]
+>     traj = traj %>%
+>       log_(paste("Opening", resource, "capacity", capacity)) %>%
+>       set_capacity(resource, capacity)
+>   }
+>   traj
+> }
+>
+> closeResources = function(resources) {
+>   # closing resources in parallel so that closing will start for
+>   # all resources at the same time.
+>   closeResourceTrajectory = function(resource) {
+>     trajectory(paste("close", resource)) %>%
+>       send(signals = "closing") %>%
+>       timeout(0.0001) %>%  ###### POSSIBLE BUG ?
+>       log_(paste("closing", resource)) %>%
+>       seize(resource, function() get_capacity(env, resource)) %>%
+>       log_(paste("closed", resource)) %>%
+>       set_capacity(resource, 0) %>%
+>       release_all(resource)
+>   }
+>
+>   args = lapply(resources, function(resource) {
+>     closeResourceTrajectory(resource)
+>   })
+>   trajectory("close resource") %>%
+>     do_parallel(args, .env = env, wait = TRUE)
+> }
+>
+> bank = env %>%
+>   add_generator("customer", customer, at(17), mon=2, priority = 10) %>%
+>   add_generator("openDepot", openResources(resources, capacities),
+>                 from_to(7, 100, function() 24)) %>%
+>   add_generator("closeDepot", closeResources(resources),
+>                 from_to(18, 100, function() 24), priority = 30)
+>   #add_generator("priority_customer", customer, at(17.75), mon = 2,
+>   #             priority = 11, preemptible = 20)
+>   #add_generator("closing", closeResources(resources),
+>   #              from_to(18, 100, function() 24), priority = 5) %>%
+>   #add_generator("closingForcefully", closeResources(resources),
+>   #              from_to(21, 100, function() 24), priority = 30) %>%
+>   #add_generator("opening", openResources(resources, capacities),
+>   #              from_to(7, 100, function() 24), priority = 5)
+>
+>
+>
+> bank %>% run(until = 100)
+
+Op zaterdag 9 februari 2019 20:32:47 UTC+1 schreef Erik Brakkee:
+
+> Hi,
+>
+> There is a nice example on in the Bank Tutorial II (https://r-simmer.org/articles/simmer-04-bank-2.html) where a signal is handled while doing a timeout. The intention is to continue after handling the trap using the same timeout as before. The solution used is to record the start time and timeout value in attributes and use these to compute the time left for a new timeout() call at the end of handling the trap.
+>
+> However, I am looking at a problem where the bank closes and before closing it sends a signal. The aim of the trap is to increase the priority of the arrival and then to continue with the timeout. However, in my case the resource is also preemptible so when subtracting the current time from the original end time (start_time + delay), end time might be too low since the arrival could have been preempted earlier.
+>
+> Example:
+> arrive at 17:00, timeout is 2 hours
+> preemption by other arrival from 17:30-17:45
+> bank closes at 18:00 -> signal is sent.
+> trap computes remaining delay as  17:00 + 2 hours - 18:00 = 1 hour. This is incorrect since only 45 minutes were spent so the remaining time is 1:45.
+> Is there a way to get the current activity time in a trajectory? This way a similar computation can be done using
+> activity times and I can write an interuptible timeout method
+>
+> Cheers
+>   Erik
+>
+
+From ua563d31d07937fcb at groups.google.com  Sat Feb  9 19:55:55 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sat, 09 Feb 2019 19:55:55 +0000
+Subject: Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.A53J1DzLHgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/A53J1DzLHgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+NOTE: remaining time is 1:15 of course, not 1:45
+
+Op zaterdag 9 februari 2019 20:32:47 UTC+1 schreef Erik Brakkee:
+
+> Hi,
+
+>
+> There is a nice example on in the Bank Tutorial II (https://r-simmer.org/articles/simmer-04-bank-2.html) where a signal is handled while doing a timeout. The intention is to continue after handling the trap using the same timeout as before. The solution used is to record the start time and timeout value in attributes and use these to compute the time left for a new timeout() call at the end of handling the trap.
+>
+> However, I am looking at a problem where the bank closes and before closing it sends a signal. The aim of the trap is to increase the priority of the arrival and then to continue with the timeout. However, in my case the resource is also preemptible so when subtracting the current time from the original end time (start_time + delay), end time might be too low since the arrival could have been preempted earlier.
+>
+> Example:
+> arrive at 17:00, timeout is 2 hours
+> preemption by other arrival from 17:30-17:45
+> bank closes at 18:00 -> signal is sent.
+> trap computes remaining delay as  17:00 + 2 hours - 18:00 = 1 hour. This is incorrect since only 45 minutes were spent so the remaining time is 1:45.
+> Is there a way to get the current activity time in a trajectory? This way a similar computation can be done using
+> activity times and I can write an interuptible timeout method
+>
+> Cheers
+>   Erik
+>
+
+From ua563d31d07937fcb at groups.google.com  Sat Feb  9 20:26:46 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sat, 09 Feb 2019 20:26:46 +0000
+Subject: Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.K3Hq0uvMHgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/K3Hq0uvMHgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I can think of at least on workaround, which would be to split the timeout into a number of equal parts and keep track of the remaining time. E.g. for a timeout of 5 I could use:
+
+> set_attribute("remaining_time", 4.5) %>%
+> timeout(1) %>%
+> set_attribute("remaining_time", 3.5) %>%
+> timeout(1) %>%
+> set_attribute("remaining_time", 2.5) %>%
+> timeout(1) %>%
+> set_attribute("remaining_time", 1.5) %>%
+> timeout(1) %>%
+> set_attribute("remaining_time", 0.5) %>%
+> timeout(1)
+
+Then the remaining_time attribute can be used in the trap. DIsadvantage is that for a few arrivals there could be some inaccuracy in the timeout when the bank closes. However, the above code compensates that by estimating that on average the interruption will be in the middle of a time interval.
+
+Op zaterdag 9 februari 2019 20:32:47 UTC+1 schreef Erik Brakkee:
+
+> Hi,
+
+>
+> There is a nice example on in the Bank Tutorial II (https://r-simmer.org/articles/simmer-04-bank-2.html) where a signal is handled while doing a timeout. The intention is to continue after handling the trap using the same timeout as before. The solution used is to record the start time and timeout value in attributes and use these to compute the time left for a new timeout() call at the end of handling the trap.
+>
+> However, I am looking at a problem where the bank closes and before closing it sends a signal. The aim of the trap is to increase the priority of the arrival and then to continue with the timeout. However, in my case the resource is also preemptible so when subtracting the current time from the original end time (start_time + delay), end time might be too low since the arrival could have been preempted earlier.
+>
+> Example:
+> arrive at 17:00, timeout is 2 hours
+> preemption by other arrival from 17:30-17:45
+> bank closes at 18:00 -> signal is sent.
+> trap computes remaining delay as  17:00 + 2 hours - 18:00 = 1 hour. This is incorrect since only 45 minutes were spent so the remaining time is 1:45.
+> Is there a way to get the current activity time in a trajectory? This way a similar computation can be done using
+> activity times and I can write an interuptible timeout method
+>
+> Cheers
+>   Erik
+>
+
+From ua563d31d07937fcb at groups.google.com  Sat Feb  9 20:50:02 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sat, 09 Feb 2019 20:50:02 +0000
+Subject: Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.Ur3IuDDOHgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/Ur3IuDDOHgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+There was an error in my thinking earlier. There is no need for the attribute. It can all be encapsulated in a few functions:
+
+>
+> bank_is_closing = function(timeoutValue) {
+
+>   trajectory("bank_closing") %>%
+>     log_("Received notification that bank is closing") %>%
+>     set_prioritization(c(100, 100, FALSE)) %>%
+
+>     timeout(timeoutValue)
+> }
+>
+> interruptibleTimeout = function(trajectory, timeoutValue) {
+>   n = 100
+>   trajectory = trajectory %>%
+>      trap("closing", handler = bank_is_closing(timeoutValue/n/2))
+>   for (i in 1:n) {
+>     trajectory = trajectory %>%
+>       timeout(timeoutValue/n)
+>   }
+>   trajectory %>% untrap("closing")
+> }
+
+Then use interruptibleTimeout instead of timeout.
+
+Cheers
+  Erik
+
+Op zaterdag 9 februari 2019 20:32:47 UTC+1 schreef Erik Brakkee:
+
+> Hi,
+
+>
+> There is a nice example on in the Bank Tutorial II (https://r-simmer.org/articles/simmer-04-bank-2.html) where a signal is handled while doing a timeout. The intention is to continue after handling the trap using the same timeout as before. The solution used is to record the start time and timeout value in attributes and use these to compute the time left for a new timeout() call at the end of handling the trap.
+>
+> However, I am looking at a problem where the bank closes and before closing it sends a signal. The aim of the trap is to increase the priority of the arrival and then to continue with the timeout. However, in my case the resource is also preemptible so when subtracting the current time from the original end time (start_time + delay), end time might be too low since the arrival could have been preempted earlier.
+>
+> Example:
+> arrive at 17:00, timeout is 2 hours
+> preemption by other arrival from 17:30-17:45
+> bank closes at 18:00 -> signal is sent.
+> trap computes remaining delay as  17:00 + 2 hours - 18:00 = 1 hour. This is incorrect since only 45 minutes were spent so the remaining time is 1:45.
+> Is there a way to get the current activity time in a trajectory? This way a similar computation can be done using
+> activity times and I can write an interuptible timeout method
+>
+> Cheers
+>   Erik
+>
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sat Feb  9 23:48:23 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sat, 09 Feb 2019 23:48:23 +0000
+Subject: Re: [simmer-devel] resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.ggKN-VdtAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.Ur3IuDDOHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com> <kkBwIowfEao.Ur3IuDDOHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/ggKN-VdtAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sat, 9 Feb 2019 at 20:32, Erik Brakkee <erik.b...@gmail.com> wrote:
+>
+> Hi,
+>
+> There is a nice example on in the Bank Tutorial II (https://r-simmer.org/articles/simmer-04-bank-2.html) where a signal is handled while doing a timeout. The intention is to continue after handling the trap using the same timeout as before. The solution used is to record the start time and timeout value in attributes and use these to compute the time left for a new timeout() call at the end of handling the trap.
+>
+> However, I am looking at a problem where the bank closes and before closing it sends a signal. The aim of the trap is to increase the priority of the arrival and then to continue with the timeout. However, in my case the resource is also preemptible so when subtracting the current time from the original end time (start_time + delay), end time might be too low since the arrival could have been preempted earlier.
+>
+> Example:
+>
+> arrive at 17:00, timeout is 2 hours
+> preemption by other arrival from 17:30-17:45
+> bank closes at 18:00 -> signal is sent.
+> trap computes remaining delay as  17:00 + 2 hours - 18:00 = 1 hour. This is incorrect since only 45 minutes were spent so the remaining time is 1:45.
+>
+> Is there a way to get the current activity time in a trajectory? This way a similar computation can be done using
+> activity times and I can write an interuptible timeout method
+
+There's no way currently, but it may be a nice addition. I'll look into it.
+
+Iñaki
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sat Feb  9 23:50:01 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sat, 09 Feb 2019 23:50:01 +0000
+Subject: Re: [simmer-devel] Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.2pj00m5tAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.Ur3IuDDOHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com> <kkBwIowfEao.Ur3IuDDOHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/2pj00m5tAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sat, 9 Feb 2019 at 20:40, Erik Brakkee <erik.b...@gmail.com> wrote:
+>
+> Below is some code. I want to achieve the behavior that when the depot closes, arrivals will still continue. However, I want them to be preemptible during opening hours. This is why I increase the priority as part of the trap.
+>
+> Also, I think I might have found an issue (see the line marked "POSSIBLE BUG" below). When I send the trap and immediately after that seize the resource (remove the timeout on that line), I get times that are out of order.
+
+I get an ordered output when I execute your code.
+
+Iñaki
+
+>
+> 7: openDepot0: Opening counter capacity 1
+>
+> 17: customer0: Entering
+>
+> 17: customer0: being served
+>
+> 18: closeDepot0: closing counter
+>
+> 18: closeDepot0: closed counter
+>
+> 31: openDepot1: Opening counter capacity 1
+>
+> 13: customer0: Received notification that bank is closing
+>
+> 17: customer0: leaving
+>
+> 42: closeDepot1: closing counter
+>
+>
+> Code:
+>
+>
+> library(simmer)
+> library(simmer.bricks)
+>
+> # define resources and capacities only once.
+> resources = c("counter")
+> capacities = c(1)
+>
+> env = simmer("bank")
+> for (i in seq_along(resources)) {
+>   env = env %>%
+>     add_resource(resources[[i]], preemptive = TRUE, capacity = 0)
+> }
+>
+> bank_is_closing = trajectory("bank_closing") %>%
+>   log_("Received notification that bank is closing") %>%
+>   set_prioritization(c(100, 100, FALSE)) %>%
+>   timeout(4) # need to compute remaining timeout here.
+>
+> customer =
+>   trajectory("customer") %>%
+>   log_("Entering") %>%
+>   seize("counter", 1) %>%
+>   set_attribute("end_time", function() now(env) + 5) %>%
+>   trap("closing", handler = bank_is_closing) %>%
+>   log_("being served") %>%
+>   timeout(5) %>%
+>   release("counter") %>%
+>   log_("leaving")
+>
+>
+> openResources = function(resources, capacities) {
+>   traj = trajectory("open resources")
+>   for (i in seq_along(resources)) {
+>     resource = resources[[i]]
+>     capacity = capacities[[i]]
+>     traj = traj %>%
+>       log_(paste("Opening", resource, "capacity", capacity)) %>%
+>       set_capacity(resource, capacity)
+>   }
+>   traj
+> }
+>
+> closeResources = function(resources) {
+>   # closing resources in parallel so that closing will start for
+>   # all resources at the same time.
+>   closeResourceTrajectory = function(resource) {
+>     trajectory(paste("close", resource)) %>%
+>       send(signals = "closing") %>%
+>       timeout(0.0001) %>%  ###### POSSIBLE BUG ?
+>       log_(paste("closing", resource)) %>%
+>       seize(resource, function() get_capacity(env, resource)) %>%
+>       log_(paste("closed", resource)) %>%
+>       set_capacity(resource, 0) %>%
+>       release_all(resource)
+>   }
+>
+>   args = lapply(resources, function(resource) {
+>     closeResourceTrajectory(resource)
+>   })
+>   trajectory("close resource") %>%
+>     do_parallel(args, .env = env, wait = TRUE)
+> }
+>
+> bank = env %>%
+>   add_generator("customer", customer, at(17), mon=2, priority = 10) %>%
+>   add_generator("openDepot", openResources(resources, capacities),
+>                 from_to(7, 100, function() 24)) %>%
+>   add_generator("closeDepot", closeResources(resources),
+>                 from_to(18, 100, function() 24), priority = 30)
+>   #add_generator("priority_customer", customer, at(17.75), mon = 2,
+>   #             priority = 11, preemptible = 20)
+>   #add_generator("closing", closeResources(resources),
+>   #              from_to(18, 100, function() 24), priority = 5) %>%
+>   #add_generator("closingForcefully", closeResources(resources),
+>   #              from_to(21, 100, function() 24), priority = 30) %>%
+>   #add_generator("opening", openResources(resources, capacities),
+>   #              from_to(7, 100, function() 24), priority = 5)
+>
+>
+>
+> bank %>% run(until = 100)
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sat Feb  9 23:51:57 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sat, 09 Feb 2019 23:51:57 +0000
+Subject: Re: [simmer-devel] Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.wgzcxYltAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.Ur3IuDDOHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com> <kkBwIowfEao.Ur3IuDDOHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/wgzcxYltAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sat, 9 Feb 2019 at 21:50, Erik Brakkee <erik.b...@gmail.com> wrote:
+>
+> There was an error in my thinking earlier. There is no need for the attribute. It can all be encapsulated in a few functions:
+>
+>
+> bank_is_closing = function(timeoutValue) {
+>   trajectory("bank_closing") %>%
+>     log_("Received notification that bank is closing") %>%
+>     set_prioritization(c(100, 100, FALSE)) %>%
+>     timeout(timeoutValue)
+> }
+>
+> interruptibleTimeout = function(trajectory, timeoutValue) {
+>   n = 100
+>   trajectory = trajectory %>%
+>      trap("closing", handler = bank_is_closing(timeoutValue/n/2))
+>   for (i in 1:n) {
+>     trajectory = trajectory %>%
+>       timeout(timeoutValue/n)
+>   }
+>   trajectory %>% untrap("closing")
+> }
+>
+>
+> Then use interruptibleTimeout instead of timeout.
+
+Yes, this is a possible workaround.
+
+Iñaki
+
+From ua563d31d07937fcb at groups.google.com  Sun Feb 10 10:10:27 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sun, 10 Feb 2019 10:10:27 +0000
+Subject: Re: [simmer-devel] Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.S-jkJ0qPAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/S-jkJ0qPAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is weird. I am executing the code below with the timeout commented out. The problem still exists if I update all packages.
+
+> closeResources = function(resources) {
+>   # closing resources in parallel so that closing will start for
+>   # all resources at the same time.
+>   closeResourceTrajectory = function(resource) {
+>     trajectory(paste("close", resource)) %>%
+>       send(signals = "closing") %>%
+
+>       #timeout(0.0001) %>%  ###### POSSIBLE BUG ?
+
+>       log_(paste("closing", resource)) %>%
+>       seize(resource, function() get_capacity(env, resource)) %>%
+>       log_(paste("closed", resource)) %>%
+>       set_capacity(resource, 0) %>%
+>       release_all(resource)
+>   }
+>
+>   args = lapply(resources, function(resource) {
+>     closeResourceTrajectory(resource)
+>   })
+>   trajectory("close resource") %>%
+>     do_parallel(args, .env = env, wait = TRUE)
+> }
+
+This my R environment when running this simulation:
+> cat('R version', paste0(R.version), '\n')
+> pkgs = (.packages())
+> for (pkg in pkgs) {
+>   cat('packages ', pkg, ' ', paste0(packageVersion(pkg)), '\n')
+> }
+
+R version: x86_64-redhat-linux-gnu x86_64 linux-gnu x86_64, linux-gnu  3 5.1 2018 07 02 74947 R R version 3.5.1 (2018-07-02) Feather Spray
+packages  simmer.bricks   0.2.1
+packages  simmer   4.2.1
+packages  stats   3.5.1
+packages  graphics   3.5.1
+packages  grDevices   3.5.1
+packages  utils   3.5.1
+packages  datasets   3.5.1
+packages  methods   3.5.1
+packages  base   3.5.1
+
+From ua563d31d07937fcb at groups.google.com  Sun Feb 10 21:27:32 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sun, 10 Feb 2019 21:27:32 +0000
+Subject: Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.b9r4WNEeHwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/b9r4WNEeHwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> I now have another issue which relates to the interruptible timeout method I posted earlier:
+
+is_closing = function(attributeName, n) {
+
+  trajectory("bank_closing") %>%
+
+    log_("Received closing notification") %>%
+    set_prioritization(c(PRIO_OVERTIME, PRIO_OVERTIME, FALSE)) %>%
+    timeout(function() { get_attribute(env, attributeName)/n/2 }) %>%
+    log_("Finished handling trap")
+}
+
+ interruptible_timeout_from_schedule = function(trajectory, attributeName) {
+  n = 10
+
+  trajectory = trajectory %>%
+
+     trap("closing", handler = is_closing(attributeName, n))
+
+  for (i in 1:n) {
+
+    args = list(trajectory, paste("timeout step", i))
+    trajectory = do.call("dtlog", args)
+
+    trajectory = trajectory %>%
+
+      timeout(function() { get_attribute(env, attributeName)/n })
+  }
+  trajectory %>%
+    log_("resetting priority") %>%
+    set_prioritization(function() {
+      prio = get_attribute(env, "original_priority")
+      c(prio, prio, FALSE)
+    }) %>%
+    untrap("closing")
+}
+
+Now, upon receiving the signal, I see that after processing the signal it resumes at the wrong timeout. Specifically, I see this in the logs:
+
+1.47705e+09: parcel140: 1477052932.5 Fri 2016-10-21 12:28:52 timeout step 1
+1.47706e+09: parcel140: 1477055020.5 Fri 2016-10-21 13:03:40 timeout step 2
+1.47706e+09: parcel140: 1477057108.5 Fri 2016-10-21 13:38:28 timeout step 3
+1.47706e+09: parcel140: 1477059196.5 Fri 2016-10-21 14:13:16 timeout step 4
+1.47706e+09: parcel140: 1477061284.5 Fri 2016-10-21 14:48:04 timeout step 5
+1.47706e+09: parcel140: 1477063372.5 Fri 2016-10-21 15:22:52 timeout step 6
+1.47707e+09: parcel140: 1477065460.5 Fri 2016-10-21 15:57:40 timeout step 7
+1.47707e+09: parcel140: 1477067548.5 Fri 2016-10-21 16:32:28 timeout step 8
+1.47707e+09: parcel140: 1477069636.5 Fri 2016-10-21 17:07:16 timeout step 9
+1.47707e+09: parcel140: 1477071724.5 Fri 2016-10-21 17:42:04 timeout step 10
+1.47707e+09: parcel140: 1477072800 Fri 2016-10-21 18:00:00 Received closing notification
+1.47707e+09: parcel140: 1477073844 Fri 2016-10-21 18:17:24 Finished handling trap
+1.47707e+09: parcel140: 1477073844 Fri 2016-10-21 18:17:24 timeout step 8
+1.47708e+09: parcel140: 1477075932 Fri 2016-10-21 18:52:12 timeout step 9
+1.47708e+09: parcel140: 1477078020 Fri 2016-10-21 19:27:00 timeout step 10
+1.47708e+09: parcel140: 1477080108 Fri 2016-10-21 20:01:48 resetting priority
+
+Is this intended to happen? Shouldn't it always skip the timeout that was interrupted?
+
+Cheers
+  Erik
+
+From ua563d31d07937fcb at groups.google.com  Sun Feb 10 21:36:53 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Sun, 10 Feb 2019 21:36:53 +0000
+Subject: Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.oPAd-VMfHwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/oPAd-VMfHwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+And, as usual, I am responding to my own mail. There is a workaround for this problem which is to register the trap before each timeout and untrap() it afterwards:
+
+> interruptible_timeout_from_schedule = function(trajectory, attributeName) {
+>   n = 10
+
+>   for (i in 1:n) {
+>     args = list(trajectory, paste("timeout step", i))
+
+>     trajectory = do.call("log_", args)
+
+>     trajectory = trajectory %>%
+
+>       trap("closing", handler = is_closing(attributeName, n)) %>%
+>       timeout(function() { get_attribute(env, attributeName)/n }) %>%
+>       untrap("closing")
+>   }
+>   trajectory %>%
+>     dtlog("resetting priority") %>%
+
+>     set_prioritization(function() {
+>       prio = get_attribute(env, "original_priority")
+>       c(prio, prio, FALSE)
+>     })
+> }
+
+Cheers
+  Erik
+
+Op zaterdag 9 februari 2019 20:32:47 UTC+1 schreef Erik Brakkee:
+
+> Hi,
+
+>
+> There is a nice example on in the Bank Tutorial II (https://r-simmer.org/articles/simmer-04-bank-2.html) where a signal is handled while doing a timeout. The intention is to continue after handling the trap using the same timeout as before. The solution used is to record the start time and timeout value in attributes and use these to compute the time left for a new timeout() call at the end of handling the trap.
+>
+> However, I am looking at a problem where the bank closes and before closing it sends a signal. The aim of the trap is to increase the priority of the arrival and then to continue with the timeout. However, in my case the resource is also preemptible so when subtracting the current time from the original end time (start_time + delay), end time might be too low since the arrival could have been preempted earlier.
+>
+> Example:
+> arrive at 17:00, timeout is 2 hours
+> preemption by other arrival from 17:30-17:45
+> bank closes at 18:00 -> signal is sent.
+> trap computes remaining delay as  17:00 + 2 hours - 18:00 = 1 hour. This is incorrect since only 45 minutes were spent so the remaining time is 1:45.
+> Is there a way to get the current activity time in a trajectory? This way a similar computation can be done using
+> activity times and I can write an interuptible timeout method
+>
+> Cheers
+>   Erik
+>
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Feb 11 09:39:08 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 11 Feb 2019 09:39:08 +0000
+Subject: Re: [simmer-devel] Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.Ya8YQSncAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.oPAd-VMfHwAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com> <kkBwIowfEao.oPAd-VMfHwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/Ya8YQSncAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I didn't notice that I should have to comment the timeout before
+running the code to reproduce the issue. Definitely, that shouldn't
+happen. I'll investigate. Thanks for the report!
+
+Iñaki
+
+On Sun, 10 Feb 2019 at 11:10, Erik Brakkee <erik.b...@gmail.com> wrote:
+>
+> This is weird. I am executing the code below with the timeout commented out. The problem still exists if I update all packages.
+>
+> closeResources = function(resources) {
+>   # closing resources in parallel so that closing will start for
+>   # all resources at the same time.
+>   closeResourceTrajectory = function(resource) {
+>     trajectory(paste("close", resource)) %>%
+>       send(signals = "closing") %>%
+>       #timeout(0.0001) %>%  ###### POSSIBLE BUG ?
+>       log_(paste("closing", resource)) %>%
+>       seize(resource, function() get_capacity(env, resource)) %>%
+>       log_(paste("closed", resource)) %>%
+>       set_capacity(resource, 0) %>%
+>       release_all(resource)
+>   }
+>
+>   args = lapply(resources, function(resource) {
+>     closeResourceTrajectory(resource)
+>   })
+>   trajectory("close resource") %>%
+>     do_parallel(args, .env = env, wait = TRUE)
+> }
+>
+>
+>
+> This my R environment when running this simulation:
+>
+> cat('R version', paste0(R.version), '\n')
+> pkgs = (.packages())
+> for (pkg in pkgs) {
+>   cat('packages ', pkg, ' ', paste0(packageVersion(pkg)), '\n')
+> }
+>
+>
+> R version: x86_64-redhat-linux-gnu x86_64 linux-gnu x86_64, linux-gnu  3 5.1 2018 07 02 74947 R R version 3.5.1 (2018-07-02) Feather Spray
+> packages  simmer.bricks   0.2.1
+> packages  simmer   4.2.1
+> packages  stats   3.5.1
+> packages  graphics   3.5.1
+> packages  grDevices   3.5.1
+> packages  utils   3.5.1
+> packages  datasets   3.5.1
+> packages  methods   3.5.1
+> packages  base   3.5.1
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALTmpijWvFD47scqYcufoRi6Zs%2BKUma-FqX9daZoH8qCt_Dtcg%40mail.gmail.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Feb 11 09:42:32 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 11 Feb 2019 09:42:32 +0000
+Subject: Re: [simmer-devel] Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.bC7fqVjcAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.oPAd-VMfHwAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com> <kkBwIowfEao.oPAd-VMfHwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/bC7fqVjcAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sun, 10 Feb 2019 at 22:27, Erik Brakkee <erik.b...@gmail.com> wrote:
+>>
+>> I now have another issue which relates to the interruptible timeout method I posted earlier:
+
+Sorry, but I'm not able to track so many self-replies. Could you post
+the entire code for this particular issue?
+
+Iñaki
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Feb 11 17:12:43 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 11 Feb 2019 17:12:43 +0000
+Subject: Re: [simmer-devel] Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.u8Vkx-n0AAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.bC7fqVjcAAAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com> <kkBwIowfEao.bC7fqVjcAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/u8Vkx-n0AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is fixed in the master branch. See
+https://github.com/r-simmer/simmer/issues/187
+
+Iñaki
+
+On Mon, 11 Feb 2019 at 10:38, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+>
+> I didn't notice that I should have to comment the timeout before
+> running the code to reproduce the issue. Definitely, that shouldn't
+> happen. I'll investigate. Thanks for the report!
+>
+> Iñaki
+>
+> On Sun, 10 Feb 2019 at 11:10, Erik Brakkee <erik.b...@gmail.com> wrote:
+> >
+> > This is weird. I am executing the code below with the timeout commented out. The problem still exists if I update all packages.
+> >
+> > closeResources = function(resources) {
+> >   # closing resources in parallel so that closing will start for
+> >   # all resources at the same time.
+> >   closeResourceTrajectory = function(resource) {
+> >     trajectory(paste("close", resource)) %>%
+> >       send(signals = "closing") %>%
+> >       #timeout(0.0001) %>%  ###### POSSIBLE BUG ?
+> >       log_(paste("closing", resource)) %>%
+> >       seize(resource, function() get_capacity(env, resource)) %>%
+> >       log_(paste("closed", resource)) %>%
+> >       set_capacity(resource, 0) %>%
+> >       release_all(resource)
+> >   }
+> >
+> >   args = lapply(resources, function(resource) {
+> >     closeResourceTrajectory(resource)
+> >   })
+> >   trajectory("close resource") %>%
+> >     do_parallel(args, .env = env, wait = TRUE)
+> > }
+> >
+> >
+> >
+> > This my R environment when running this simulation:
+> >
+> > cat('R version', paste0(R.version), '\n')
+> > pkgs = (.packages())
+> > for (pkg in pkgs) {
+> >   cat('packages ', pkg, ' ', paste0(packageVersion(pkg)), '\n')
+> > }
+> >
+> >
+> > R version: x86_64-redhat-linux-gnu x86_64 linux-gnu x86_64, linux-gnu  3 5.1 2018 07 02 74947 R R version 3.5.1 (2018-07-02) Feather Spray
+> > packages  simmer.bricks   0.2.1
+> > packages  simmer   4.2.1
+> > packages  stats   3.5.1
+> > packages  graphics   3.5.1
+> > packages  grDevices   3.5.1
+> > packages  utils   3.5.1
+> > packages  datasets   3.5.1
+> > packages  methods   3.5.1
+> > packages  base   3.5.1
+> >
+> >
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALTmpijWvFD47scqYcufoRi6Zs%2BKUma-FqX9daZoH8qCt_Dtcg%40mail.gmail.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+
+--
+Iñaki Úcar
+
+From ua563d31d07937fcb at groups.google.com  Mon Feb 11 21:49:33 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Mon, 11 Feb 2019 21:49:33 +0000
+Subject: Re: [simmer-devel] Re: resuming a timeout after a trap
+Message-ID: <kkBwIowfEao.AlYVIAUEAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <kkBwIowfEao.u8Vkx-n0AAAJ@simmer-devel.groups.google.com>
+References: <kkBwIowfEao.JdZ4nfnJHgAJ@simmer-devel.groups.google.com> <kkBwIowfEao.u8Vkx-n0AAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/kkBwIowfEao/m/AlYVIAUEAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi  Iñaki
+
+Thanks for fixing it so quickly.
+
+Cheers
+  Erik
+
+On Mon, Feb 11, 2019, 18:12 Iñaki Ucar <iu...@fedoraproject.org wrote:
+
+> This is fixed in the master branch. See
+> https://github.com/r-simmer/simmer/issues/187
+>
+> Iñaki
+>
+> On Mon, 11 Feb 2019 at 10:38, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> >
+> > I didn't notice that I should have to comment the timeout before
+> > running the code to reproduce the issue. Definitely, that shouldn't
+> > happen. I'll investigate. Thanks for the report!
+> >
+> > Iñaki
+> >
+> > On Sun, 10 Feb 2019 at 11:10, Erik Brakkee <erik.b...@gmail.com> wrote:
+> > >
+> > > This is weird. I am executing the code below with the timeout commented out. The problem still exists if I update all packages.
+> > >
+> > > closeResources = function(resources) {
+> > >   # closing resources in parallel so that closing will start for
+> > >   # all resources at the same time.
+> > >   closeResourceTrajectory = function(resource) {
+> > >     trajectory(paste("close", resource)) %>%
+> > >       send(signals = "closing") %>%
+> > >       #timeout(0.0001) %>%  ###### POSSIBLE BUG ?
+> > >       log_(paste("closing", resource)) %>%
+> > >       seize(resource, function() get_capacity(env, resource)) %>%
+> > >       log_(paste("closed", resource)) %>%
+> > >       set_capacity(resource, 0) %>%
+> > >       release_all(resource)
+> > >   }
+> > >
+> > >   args = lapply(resources, function(resource) {
+> > >     closeResourceTrajectory(resource)
+> > >   })
+> > >   trajectory("close resource") %>%
+> > >     do_parallel(args, .env = env, wait = TRUE)
+> > > }
+> > >
+> > >
+> > >
+> > > This my R environment when running this simulation:
+> > >
+> > > cat('R version', paste0(R.version), '\n')
+> > > pkgs = (.packages())
+> > > for (pkg in pkgs) {
+> > >   cat('packages ', pkg, ' ', paste0(packageVersion(pkg)), '\n')
+> > > }
+> > >
+> > >
+> > > R version: x86_64-redhat-linux-gnu x86_64 linux-gnu x86_64, linux-gnu  3 5.1 2018 07 02 74947 R R version 3.5.1 (2018-07-02) Feather Spray
+> > > packages  simmer.bricks   0.2.1
+> > > packages  simmer   4.2.1
+> > > packages  stats   3.5.1
+> > > packages  graphics   3.5.1
+> > > packages  grDevices   3.5.1
+> > > packages  utils   3.5.1
+> > > packages  datasets   3.5.1
+> > > packages  methods   3.5.1
+> > > packages  base   3.5.1
+> > >
+> > >
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To post to this group, send email to simmer...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALTmpijWvFD47scqYcufoRi6Zs%2BKUma-FqX9daZoH8qCt_Dtcg%40mail.gmail.com.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > Iñaki Úcar
+>
+>
+>
+> --
+> Iñaki Úcar
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq0i_n67zAQdpEytYYwOQ5KH%2BTC9c2Q2OuBWXbCOE7k%2BuQ%40mail.gmail.com.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From ua563d31d07937fcb at groups.google.com  Mon Feb 11 21:59:42 2019
+From: ua563d31d07937fcb at groups.google.com (Erik Brakkee)
+Date: Mon, 11 Feb 2019 21:59:42 +0000
+Subject: Sending the same signal twice in a row leads to trap firing more than two times ...
+Message-ID: <GDaI0p0rZb4.d9yfPCdvHwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/GDaI0p0rZb4/m/d9yfPCdvHwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I made a mistake in one of my earlier experiments and sent the same signal twice. This led however to some confusing behavior where it seems that the signal keeps on being received (i.e. much more than 2 times). In the code below the closeResources() function sends the "closing" signal twice at 18:00 but it is received much more than two times.
+
+>
+> library(simmer)
+> library(simmer.bricks)
+>
+> # define resources and capacities only once.
+> resources = c("counter")
+> capacities = c(1)
+>
+>
+>
+> env = simmer("bank")
+> for (i in seq_along(resources)) {
+>   env = env %>%
+>     add_resource(resources[[i]], preemptive = TRUE, capacity = 0)
+> }
+>
+>
+> bank_is_closing = function(timeoutValue) {
+>   trajectory("bank_closing") %>%
+>     log_("Received notification that bank is closing") %>%
+>     set_prioritization(c(100, 100, FALSE)) %>%
+>     timeout(timeoutValue)
+> }
+>
+> interruptibleTimeout = function(trajectory, timeoutValue) {
+>   n = 100
+>   trajectory = trajectory %>%
+>      trap("closing", handler = bank_is_closing(timeoutValue/n/2))
+>   for (i in 1:n) {
+>     trajectory = trajectory %>%
+>       timeout(timeoutValue/n)
+>   }
+>   trajectory %>% untrap("closing")
+> }
+>
+>
+> customer = function(timeoutValue) {
+>   trajectory(paste0("customer", timeoutValue)) %>%
+>   log_("Entering") %>%
+>   seize("counter", 1) %>%
+>   set_attribute("end_time", function() now(env) + 5) %>%
+>   log_("being served") %>%
+>   interruptibleTimeout(timeoutValue) %>%
+>   release("counter") %>%
+>   log_("leaving")
+> }
+>
+> openResources = function(resources, capacities) {
+>   traj = trajectory("open resources")
+>   for (i in seq_along(resources)) {
+>     resource = resources[[i]]
+>     capacity = capacities[[i]]
+>     traj = traj %>%
+>       log_(paste("Opening", resource, "capacity", capacity)) %>%
+>       set_capacity(resource, capacity)
+>   }
+>   traj
+> }
+>
+> closeResources = function(resources) {
+>   # closing resources in parallel so that closing will start for
+>   # all resources at the same time.
+>   closeResourceTrajectory = function(resource) {
+>     trajectory(paste("close", resource)) %>%
+>       send(signals = "closing") %>%
+>       send(signals = "closing") %>%
+>       timeout(0.0001) %>%  ###### POSSIBLE BUG ?
+>       log_(paste("closing", resource)) %>%
+>       seize(resource, function() get_capacity(env, resource)) %>%
+>       log_(paste("closed", resource)) %>%
+>       set_capacity(resource, 0) %>%
+>       release_all(resource)
+>   }
+>
+>   args = lapply(resources, function(resource) {
+>     closeResourceTrajectory(resource)
+>   })
+>   trajectory("close resource") %>%
+>     do_parallel(args, .env = env, wait = TRUE)
+> }
+>
+> bank = env %>%
+>   add_generator("customer", customer(5), at(17), mon=2, priority = 10) %>%
+>   add_generator("openDepot", openResources(resources, capacities),
+>                 from_to(7, 100, function() 24)) %>%
+>   add_generator("closeDepot", closeResources(resources),
+>                 at(18), priority = 30) %>%
+>   add_generator("priority_customer", customer(0.25), at(17.5), mon = 2,
+>                priority = 20)
+>   #add_generator("closing", closeResources(resources),
+>   #              from_to(18, 100, function() 24), priority = 5) %>%
+>   #add_generator("closingForcefully", closeResources(resources),
+>   #              from_to(21, 100, function() 24), priority = 30) %>%
+>   #add_generator("opening", openResources(resources, capacities),
+>   #              from_to(7, 100, function() 24), priority = 5)
+>
+>
+>
+> bank %>% run(until = 24)
+
+The output for the above code is:
+
+> 7: openDepot0: Opening counter capacity 1
+> 17: customer0: Entering
+> 17: customer0: being served
+> 17.5: priority_customer0: Entering
+> 17.5: priority_customer0: being served
+> 17.75: priority_customer0: leaving
+> 18: customer0: Received notification that bank is closing
+> 18.0001: closeDepot0: closing counter
+> 18.025: customer0: Received notification that bank is closing
+> 18.05: customer0: Received notification that bank is closing
+> 18.075: customer0: Received notification that bank is closing
+> 18.1: customer0: Received notification that bank is closing
+> 18.125: customer0: Received notification that bank is closing
+> 18.15: customer0: Received notification that bank is closing
+> 18.175: customer0: Received notification that bank is closing
+> 18.2: customer0: Received notification that bank is closing
+> 18.225: customer0: Received notification that bank is closing
+> 18.25: customer0: Received notification that bank is closing
+> 18.275: customer0: Received notification that bank is closing
+> 18.3: customer0: Received notification that bank is closing
+> 18.325: customer0: Received notification that bank is closing
+> 18.35: customer0: Received notification that bank is closing
+> 18.375: customer0: Received notification that bank is closing
+> 18.4: customer0: Received notification that bank is closing
+> 18.425: customer0: Received notification that bank is closing
+> 18.45: customer0: Received notification that bank is closing
+> 18.475: customer0: Received notification that bank is closing
+> 18.5: customer0: Received notification that bank is closing
+> 18.525: customer0: Received notification that bank is closing
+> 18.55: customer0: Received notification that bank is closing
+> 18.575: customer0: Received notification that bank is closing
+> 18.6: customer0: Received notification that bank is closing
+> 18.625: customer0: Received notification that bank is closing
+> 18.65: customer0: Received notification that bank is closing
+> 18.675: customer0: Received notification that bank is closing
+> 18.7: customer0: Received notification that bank is closing
+> 18.725: customer0: Received notification that bank is closing
+> 18.75: customer0: Received notification that bank is closing
+> 18.775: customer0: Received notification that bank is closing
+> 18.8: customer0: Received notification that bank is closing
+> 18.825: customer0: Received notification that bank is closing
+> 18.85: customer0: Received notification that bank is closing
+> 18.875: customer0: Received notification that bank is closing
+> 18.9: customer0: Received notification that bank is closing
+> 18.925: customer0: Received notification that bank is closing
+> 18.95: customer0: Received notification that bank is closing
+> 18.975: customer0: Received notification that bank is closing
+> 19: customer0: Received notification that bank is closing
+> 19.025: customer0: Received notification that bank is closing
+> 19.05: customer0: Received notification that bank is closing
+> 19.075: customer0: Received notification that bank is closing
+> 19.1: customer0: Received notification that bank is closing
+> 19.125: customer0: Received notification that bank is closing
+> 19.15: customer0: Received notification that bank is closing
+> 19.175: customer0: Received notification that bank is closing
+> 19.2: customer0: Received notification that bank is closing
+> 19.225: customer0: Received notification that bank is closing
+> 19.25: customer0: Received notification that bank is closing
+> 19.275: customer0: Received notification that bank is closing
+> 19.3: customer0: Received notification that bank is closing
+> 19.325: customer0: Received notification that bank is closing
+> 19.35: customer0: Received notification that bank is closing
+> 19.375: customer0: Received notification that bank is closing
+> 19.4: customer0: Received notification that bank is closing
+> 19.425: customer0: Received notification that bank is closing
+> 19.45: customer0: Received notification that bank is closing
+> 19.475: customer0: Received notification that bank is closing
+> 19.5: customer0: Received notification that bank is closing
+> 19.525: customer0: Received notification that bank is closing
+
+From u32ca34ebc225cb13 at groups.google.com  Tue Feb 12 19:04:36 2019
+From: u32ca34ebc225cb13 at groups.google.com (Stuart Dykes)
+Date: Tue, 12 Feb 2019 19:04:36 +0000
+Subject: Simulating a process where units are consolidated (packaged)
+Message-ID: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/DAlxZWWbBKQ/m/rVk-ji20HwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am very new to simmer but familiar with R.  Thus far the package has been excellent in understanding the the front end of the apple packing operation.
+
+I am trying to run a simluation whereby the basic units are apples.  These apples are graded and sorted by diameter (which I have done successfully - using multiple branches).  The next step is they enter a queue (accumulation) and get packaged into tubes (3,4 and 5 apples per tube depending on the size).  These are then packaged into shipping cartons (16 tubes per carton).  The cartons are palletised and the pallets loaded into shipping cartons.
+
+My question is how do I trigger an arrival of a tube to shipping carton to pallet (128 cartons per pallet) and the shipping container (21 pallets per container) (I feel that using a if loop with a modulus approach would work but am unsure how to code it within a trajectory?)  I have attached my code below for reference.  Just a general approach to consolidated units would be useful for me at this stage.
+
+Best regards
+Stuart Dykes
+
+library(simmer)
+
+env <- simmer()
+
+set.seed(1234)
+
+traj <- trajectory() %>%
+#
+# assign a diameter as a trribute to each arrival
+#
+  set_attribute("diameter",function() rnorm(1,58.3,5.2)) %>%
+#
+# This intial branch partitions off the 15% rejects which go for juicing
+#
+  branch(
+    option=function() sample(c(1, 2), 1, prob=c(0.85, 0.15)), continue=c(T,F),
+    trajectory("export") %>%
+      seize("INV_export",1) %>%
+      timeout(function() (0.05)) %>%
+      release("INV_export",1),
+    trajectory("reject") %>%
+      seize("INV_reject",1) %>%
+      timeout(function() (0.05)) %>%
+      release("INV_reject",1)
+  ) %>%
+#
+# Send the apples to their appropriate drop based on their diameter
+#
+  branch(
+    option= function() if(get_attribute(env,"diameter") >=71.6) 1 else 2, continue=c(T,T),
+    trajectory("oversize_apples") %>%
+      seize("os_packline",1) %>%
+      timeout(function() rnorm(1, 0.8, .2)) %>%
+      release("os_packline",1),
+    trajectory("smaller_apples_1") %>%
+      branch(
+        function() if(get_attribute(env,"diameter") >=65.3) 1 else 2, continue=c(T,T),
+        trajectory("72_tube_drop") %>%
+          seize("72/4_packline",1) %>%
+          timeout(function() rnorm(1, 0.8, .2)) %>%
+          release("72/4_packline",1) %>%
+          count72 <- count72 + 1,
+        trajectory("smaller_apples_2") %>%
+          branch(
+            function() if(get_attribute(env,"diameter") >=60.8) 1 else 2, continue=c(T,T),
+            trajectory("67_tube_drop") %>%
+              seize("67/4/5_packline",1) %>%
+              timeout(function() rnorm(1, 0.8, .2)) %>%
+              release("67/4/5_packline",1),
+            trajectory("smaller_apples_3") %>%
+              branch(
+                function() if(get_attribute(env,"diameter") >=59.6) 1 else 2, continue=c(T,T),
+                trajectory("63/4_tube_drop") %>%
+                  seize("63/4_packline",1) %>%
+                  timeout(function() rnorm(1, 0.8, .2)) %>%
+                  release("63/4_packline",1),
+                trajectory("smaller_apples_4") %>%
+                  branch(
+                    function() if(get_attribute(env,"diameter") >=56.1) 1 else 2, continue=c(T,T),
+                    trajectory("63/0/3/5T_tube_drop") %>%
+                      seize("63/0/3/5T_packline",1) %>%
+                      timeout(function() rnorm(1, 0.8, .2)) %>%
+                      release("63/0/3/5T_packline",1),
+                    trajectory("smaller_apples_5") %>%
+                      branch(
+                        function() if(get_attribute(env,"diameter") >=55) 1 else 2, continue=c(T,T),
+                        trajectory("63/5_tube_drop") %>%
+                          seize("63/5_packline",1) %>%
+                          timeout(function() rnorm(1, 0.8, .2)) %>%
+                          release("63/5_packline",1),
+                        trajectory("smaller_apples_5") %>%
+                          branch(
+                            function() if(get_attribute(env,"diameter") >=50.6) 1 else 2, continue=c(T,T),
+                            trajectory("58/5_tube_drop") %>%
+                              seize("58/5_packline",1) %>%
+                              timeout(function() rnorm(1, 0.8, .2)) %>%
+                              release("58/5_packline",1),
+                            trajectory("smaller_apples_6") %>%
+                              branch(
+                                function() if(get_attribute(env,"diameter") >=45.9) 1 else 2, continue=c(T,T),
+                                trajectory("53/5_tube_drop") %>%
+                                  seize("53/5_packline",1) %>%
+                                  timeout(function() rnorm(1, 0.8, .2)) %>%
+                                  release("53/5_packline",1),
+                                trajectory("undersize_apples") %>%
+                                  seize("us_packline",1) %>%
+                                  timeout(function() rnorm(1, 0.8, .2)) %>%
+                                  release("us_packline",1)
+                              )
+                          )
+                      )
+                  )
+              )
+          )
+      )
+  )
+#
+env %>%
+#
+  add_resource("os_packline",1) %>%
+  add_resource("72/4_packline",1) %>%
+  add_resource("67/4/5_packline",3) %>%
+  add_resource("63/4_packline",1) %>%
+  add_resource("63/0/3/5T_packline",4) %>%
+  add_resource("63/5_packline",1) %>%
+  add_resource("58/5_packline",2) %>%
+  add_resource("53/5_packline",1) %>%
+  add_resource("us_packline",1) %>%
+#
+  add_resource("INV_export", 1) %>%
+  add_resource("INV_reject", 1) %>%
+  add_generator("apple", traj, at(seq(0,100,by=0.0625)),mon=2)
+#
+env %>%
+ run() %>% invisible
+
+arrivals <- get_mon_arrivals(env, per_resource = T)
+attribute <- get_mon_attributes(env)
+resources <- get_mon_resources(env)
+
+table(arrivals$resource)
+#
+capture.output(env)
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Feb 12 19:40:27 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Tue, 12 Feb 2019 19:40:27 +0000
+Subject: Re: [simmer-devel] Simulating a process where units are consolidated (packaged)
+Message-ID: <DAlxZWWbBKQ.A8adIY5LAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+References: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/DAlxZWWbBKQ/m/A8adIY5LAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tue, 12 Feb 2019 at 20:04, Stuart Dykes <sdyk...@gmail.com> wrote:
+>
+> I am very new to simmer but familiar with R.  Thus far the package has been excellent in understanding the the front end of the apple packing operation.
+>
+> I am trying to run a simluation whereby the basic units are apples.  These apples are graded and sorted by diameter (which I have done successfully - using multiple branches).  The next step is they enter a queue (accumulation) and get packaged into tubes (3,4 and 5 apples per tube depending on the size).  These are then packaged into shipping cartons (16 tubes per carton).  The cartons are palletised and the pallets loaded into shipping cartons.
+>
+> My question is how do I trigger an arrival of a tube to shipping carton to pallet (128 cartons per pallet) and the shipping container (21 pallets per container) (I feel that using a if loop with a modulus approach would work but am unsure how to code it within a trajectory?)  I have attached my code below for reference.  Just a general approach to consolidated units would be useful for me at this stage.
+
+So are you modelling tubes, cartons and pallets as resources? This
+sounds like a perfect job for batch() to me.
+
+Iñaki
+
+>
+> Best regards
+> Stuart Dykes
+>
+> library(simmer)
+>
+> env <- simmer()
+>
+> set.seed(1234)
+>
+> traj <- trajectory() %>%
+> #
+> # assign a diameter as a trribute to each arrival
+> #
+>   set_attribute("diameter",function() rnorm(1,58.3,5.2)) %>%
+> #
+> # This intial branch partitions off the 15% rejects which go for juicing
+> #
+>   branch(
+>     option=function() sample(c(1, 2), 1, prob=c(0.85, 0.15)), continue=c(T,F),
+>     trajectory("export") %>%
+>       seize("INV_export",1) %>%
+>       timeout(function() (0.05)) %>%
+>       release("INV_export",1),
+>     trajectory("reject") %>%
+>       seize("INV_reject",1) %>%
+>       timeout(function() (0.05)) %>%
+>       release("INV_reject",1)
+>   ) %>%
+> #
+> # Send the apples to their appropriate drop based on their diameter
+> #
+>   branch(
+>     option= function() if(get_attribute(env,"diameter") >=71.6) 1 else 2, continue=c(T,T),
+>     trajectory("oversize_apples") %>%
+>       seize("os_packline",1) %>%
+>       timeout(function() rnorm(1, 0.8, .2)) %>%
+>       release("os_packline",1),
+>     trajectory("smaller_apples_1") %>%
+>       branch(
+>         function() if(get_attribute(env,"diameter") >=65.3) 1 else 2, continue=c(T,T),
+>         trajectory("72_tube_drop") %>%
+>           seize("72/4_packline",1) %>%
+>           timeout(function() rnorm(1, 0.8, .2)) %>%
+>           release("72/4_packline",1) %>%
+>           count72 <- count72 + 1,
+>         trajectory("smaller_apples_2") %>%
+>           branch(
+>             function() if(get_attribute(env,"diameter") >=60.8) 1 else 2, continue=c(T,T),
+>             trajectory("67_tube_drop") %>%
+>               seize("67/4/5_packline",1) %>%
+>               timeout(function() rnorm(1, 0.8, .2)) %>%
+>               release("67/4/5_packline",1),
+>             trajectory("smaller_apples_3") %>%
+>               branch(
+>                 function() if(get_attribute(env,"diameter") >=59.6) 1 else 2, continue=c(T,T),
+>                 trajectory("63/4_tube_drop") %>%
+>                   seize("63/4_packline",1) %>%
+>                   timeout(function() rnorm(1, 0.8, .2)) %>%
+>                   release("63/4_packline",1),
+>                 trajectory("smaller_apples_4") %>%
+>                   branch(
+>                     function() if(get_attribute(env,"diameter") >=56.1) 1 else 2, continue=c(T,T),
+>                     trajectory("63/0/3/5T_tube_drop") %>%
+>                       seize("63/0/3/5T_packline",1) %>%
+>                       timeout(function() rnorm(1, 0.8, .2)) %>%
+>                       release("63/0/3/5T_packline",1),
+>                     trajectory("smaller_apples_5") %>%
+>                       branch(
+>                         function() if(get_attribute(env,"diameter") >=55) 1 else 2, continue=c(T,T),
+>                         trajectory("63/5_tube_drop") %>%
+>                           seize("63/5_packline",1) %>%
+>                           timeout(function() rnorm(1, 0.8, .2)) %>%
+>                           release("63/5_packline",1),
+>                         trajectory("smaller_apples_5") %>%
+>                           branch(
+>                             function() if(get_attribute(env,"diameter") >=50.6) 1 else 2, continue=c(T,T),
+>                             trajectory("58/5_tube_drop") %>%
+>                               seize("58/5_packline",1) %>%
+>                               timeout(function() rnorm(1, 0.8, .2)) %>%
+>                               release("58/5_packline",1),
+>                             trajectory("smaller_apples_6") %>%
+>                               branch(
+>                                 function() if(get_attribute(env,"diameter") >=45.9) 1 else 2, continue=c(T,T),
+>                                 trajectory("53/5_tube_drop") %>%
+>                                   seize("53/5_packline",1) %>%
+>                                   timeout(function() rnorm(1, 0.8, .2)) %>%
+>                                   release("53/5_packline",1),
+>                                 trajectory("undersize_apples") %>%
+>                                   seize("us_packline",1) %>%
+>                                   timeout(function() rnorm(1, 0.8, .2)) %>%
+>                                   release("us_packline",1)
+>                               )
+>                           )
+>                       )
+>                   )
+>               )
+>           )
+>       )
+>   )
+> #
+> env %>%
+> #
+>   add_resource("os_packline",1) %>%
+>   add_resource("72/4_packline",1) %>%
+>   add_resource("67/4/5_packline",3) %>%
+>   add_resource("63/4_packline",1) %>%
+>   add_resource("63/0/3/5T_packline",4) %>%
+>   add_resource("63/5_packline",1) %>%
+>   add_resource("58/5_packline",2) %>%
+>   add_resource("53/5_packline",1) %>%
+>   add_resource("us_packline",1) %>%
+> #
+>   add_resource("INV_export", 1) %>%
+>   add_resource("INV_reject", 1) %>%
+>   add_generator("apple", traj, at(seq(0,100,by=0.0625)),mon=2)
+> #
+> env %>%
+>  run() %>% invisible
+>
+> arrivals <- get_mon_arrivals(env, per_resource = T)
+> attribute <- get_mon_attributes(env)
+> resources <- get_mon_resources(env)
+>
+> table(arrivals$resource)
+> #
+> capture.output(env)
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/4bc53a25-5665-41cb-885a-0b5fcc38a927%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From u32ca34ebc225cb13 at groups.google.com  Tue Feb 12 20:52:30 2019
+From: u32ca34ebc225cb13 at groups.google.com (Stuart Dykes)
+Date: Tue, 12 Feb 2019 20:52:30 +0000
+Subject: Re: [simmer-devel] Simulating a process where units are consolidated (packaged)
+Message-ID: <DAlxZWWbBKQ.-vLnFBG6HwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+References: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/DAlxZWWbBKQ/m/-vLnFBG6HwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+My original thinking was to model them as new arrivals (i.e. 1 tube = 5 apples).  I hadn't thought of modelling them as resources...I will research the batch() command....do you have any relevant example code I could use to get some idea?
+
+Many thanks
+Stuart
+
+On Wednesday, February 13, 2019 at 8:40:27 AM UTC+13, Iñaki Úcar wrote:
+> On Tue, 12 Feb 2019 at 20:04, Stuart Dykes <sdyk...@gmail.com> wrote:
+> >
+> > I am very new to simmer but familiar with R.  Thus far the package has been excellent in understanding the the front end of the apple packing operation.
+> >
+> > I am trying to run a simluation whereby the basic units are apples.  These apples are graded and sorted by diameter (which I have done successfully - using multiple branches).  The next step is they enter a queue (accumulation) and get packaged into tubes (3,4 and 5 apples per tube depending on the size).  These are then packaged into shipping cartons (16 tubes per carton).  The cartons are palletised and the pallets loaded into shipping cartons.
+> >
+> > My question is how do I trigger an arrival of a tube to shipping carton to pallet (128 cartons per pallet) and the shipping container (21 pallets per container) (I feel that using a if loop with a modulus approach would work but am unsure how to code it within a trajectory?)  I have attached my code below for reference.  Just a general approach to consolidated units would be useful for me at this stage.
+>
+> So are you modelling tubes, cartons and pallets as resources? This
+> sounds like a perfect job for batch() to me.
+>
+> Iñaki
+>
+> >
+> > Best regards
+> > Stuart Dykes
+> >
+> > library(simmer)
+> >
+> > env <- simmer()
+> >
+> > set.seed(1234)
+> >
+> > traj <- trajectory() %>%
+> > #
+> > # assign a diameter as a trribute to each arrival
+> > #
+> >   set_attribute("diameter",function() rnorm(1,58.3,5.2)) %>%
+> > #
+> > # This intial branch partitions off the 15% rejects which go for juicing
+> > #
+> >   branch(
+> >     option=function() sample(c(1, 2), 1, prob=c(0.85, 0.15)), continue=c(T,F),
+> >     trajectory("export") %>%
+> >       seize("INV_export",1) %>%
+> >       timeout(function() (0.05)) %>%
+> >       release("INV_export",1),
+> >     trajectory("reject") %>%
+> >       seize("INV_reject",1) %>%
+> >       timeout(function() (0.05)) %>%
+> >       release("INV_reject",1)
+> >   ) %>%
+> > #
+> > # Send the apples to their appropriate drop based on their diameter
+> > #
+> >   branch(
+> >     option= function() if(get_attribute(env,"diameter") >=71.6) 1 else 2, continue=c(T,T),
+> >     trajectory("oversize_apples") %>%
+> >       seize("os_packline",1) %>%
+> >       timeout(function() rnorm(1, 0.8, .2)) %>%
+> >       release("os_packline",1),
+> >     trajectory("smaller_apples_1") %>%
+> >       branch(
+> >         function() if(get_attribute(env,"diameter") >=65.3) 1 else 2, continue=c(T,T),
+> >         trajectory("72_tube_drop") %>%
+> >           seize("72/4_packline",1) %>%
+> >           timeout(function() rnorm(1, 0.8, .2)) %>%
+> >           release("72/4_packline",1) %>%
+> >           count72 <- count72 + 1,
+> >         trajectory("smaller_apples_2") %>%
+> >           branch(
+> >             function() if(get_attribute(env,"diameter") >=60.8) 1 else 2, continue=c(T,T),
+> >             trajectory("67_tube_drop") %>%
+> >               seize("67/4/5_packline",1) %>%
+> >               timeout(function() rnorm(1, 0.8, .2)) %>%
+> >               release("67/4/5_packline",1),
+> >             trajectory("smaller_apples_3") %>%
+> >               branch(
+> >                 function() if(get_attribute(env,"diameter") >=59.6) 1 else 2, continue=c(T,T),
+> >                 trajectory("63/4_tube_drop") %>%
+> >                   seize("63/4_packline",1) %>%
+> >                   timeout(function() rnorm(1, 0.8, .2)) %>%
+> >                   release("63/4_packline",1),
+> >                 trajectory("smaller_apples_4") %>%
+> >                   branch(
+> >                     function() if(get_attribute(env,"diameter") >=56.1) 1 else 2, continue=c(T,T),
+> >                     trajectory("63/0/3/5T_tube_drop") %>%
+> >                       seize("63/0/3/5T_packline",1) %>%
+> >                       timeout(function() rnorm(1, 0.8, .2)) %>%
+> >                       release("63/0/3/5T_packline",1),
+> >                     trajectory("smaller_apples_5") %>%
+> >                       branch(
+> >                         function() if(get_attribute(env,"diameter") >=55) 1 else 2, continue=c(T,T),
+> >                         trajectory("63/5_tube_drop") %>%
+> >                           seize("63/5_packline",1) %>%
+> >                           timeout(function() rnorm(1, 0.8, .2)) %>%
+> >                           release("63/5_packline",1),
+> >                         trajectory("smaller_apples_5") %>%
+> >                           branch(
+> >                             function() if(get_attribute(env,"diameter") >=50.6) 1 else 2, continue=c(T,T),
+> >                             trajectory("58/5_tube_drop") %>%
+> >                               seize("58/5_packline",1) %>%
+> >                               timeout(function() rnorm(1, 0.8, .2)) %>%
+> >                               release("58/5_packline",1),
+> >                             trajectory("smaller_apples_6") %>%
+> >                               branch(
+> >                                 function() if(get_attribute(env,"diameter") >=45.9) 1 else 2, continue=c(T,T),
+> >                                 trajectory("53/5_tube_drop") %>%
+> >                                   seize("53/5_packline",1) %>%
+> >                                   timeout(function() rnorm(1, 0.8, .2)) %>%
+> >                                   release("53/5_packline",1),
+> >                                 trajectory("undersize_apples") %>%
+> >                                   seize("us_packline",1) %>%
+> >                                   timeout(function() rnorm(1, 0.8, .2)) %>%
+> >                                   release("us_packline",1)
+> >                               )
+> >                           )
+> >                       )
+> >                   )
+> >               )
+> >           )
+> >       )
+> >   )
+> > #
+> > env %>%
+> > #
+> >   add_resource("os_packline",1) %>%
+> >   add_resource("72/4_packline",1) %>%
+> >   add_resource("67/4/5_packline",3) %>%
+> >   add_resource("63/4_packline",1) %>%
+> >   add_resource("63/0/3/5T_packline",4) %>%
+> >   add_resource("63/5_packline",1) %>%
+> >   add_resource("58/5_packline",2) %>%
+> >   add_resource("53/5_packline",1) %>%
+> >   add_resource("us_packline",1) %>%
+> > #
+> >   add_resource("INV_export", 1) %>%
+> >   add_resource("INV_reject", 1) %>%
+> >   add_generator("apple", traj, at(seq(0,100,by=0.0625)),mon=2)
+> > #
+> > env %>%
+> >  run() %>% invisible
+> >
+> > arrivals <- get_mon_arrivals(env, per_resource = T)
+> > attribute <- get_mon_attributes(env)
+> > resources <- get_mon_resources(env)
+> >
+> > table(arrivals$resource)
+> > #
+> > capture.output(env)
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/4bc53a25-5665-41cb-885a-0b5fcc38a927%40googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Feb 12 23:15:59 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Tue, 12 Feb 2019 23:15:59 +0000
+Subject: Re: [simmer-devel] Sending the same signal twice in a row leads to trap firing more than two times ...
+Message-ID: <GDaI0p0rZb4.9ZAQKFFXAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <GDaI0p0rZb4.d9yfPCdvHwAJ@simmer-devel.groups.google.com>
+References: <GDaI0p0rZb4.d9yfPCdvHwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/GDaI0p0rZb4/m/9ZAQKFFXAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Fixed in master, along with the issue you had resuming at the wrong
+timeout. Thanks!
+
+Iñaki
+
+On Mon, 11 Feb 2019 at 22:59, Erik Brakkee <erik.b...@gmail.com> wrote:
+>
+> Hi,
+>
+>
+> I made a mistake in one of my earlier experiments and sent the same signal twice. This led however to some confusing behavior where it seems that the signal keeps on being received (i.e. much more than 2 times). In the code below the closeResources() function sends the "closing" signal twice at 18:00 but it is received much more than two times.
+>
+>
+> library(simmer)
+> library(simmer.bricks)
+>
+> # define resources and capacities only once.
+> resources = c("counter")
+> capacities = c(1)
+>
+>
+>
+> env = simmer("bank")
+> for (i in seq_along(resources)) {
+>   env = env %>%
+>     add_resource(resources[[i]], preemptive = TRUE, capacity = 0)
+> }
+>
+>
+> bank_is_closing = function(timeoutValue) {
+>   trajectory("bank_closing") %>%
+>     log_("Received notification that bank is closing") %>%
+>     set_prioritization(c(100, 100, FALSE)) %>%
+>     timeout(timeoutValue)
+> }
+>
+> interruptibleTimeout = function(trajectory, timeoutValue) {
+>   n = 100
+>   trajectory = trajectory %>%
+>      trap("closing", handler = bank_is_closing(timeoutValue/n/2))
+>   for (i in 1:n) {
+>     trajectory = trajectory %>%
+>       timeout(timeoutValue/n)
+>   }
+>   trajectory %>% untrap("closing")
+> }
+>
+>
+> customer = function(timeoutValue) {
+>   trajectory(paste0("customer", timeoutValue)) %>%
+>   log_("Entering") %>%
+>   seize("counter", 1) %>%
+>   set_attribute("end_time", function() now(env) + 5) %>%
+>   log_("being served") %>%
+>   interruptibleTimeout(timeoutValue) %>%
+>   release("counter") %>%
+>   log_("leaving")
+> }
+>
+> openResources = function(resources, capacities) {
+>   traj = trajectory("open resources")
+>   for (i in seq_along(resources)) {
+>     resource = resources[[i]]
+>     capacity = capacities[[i]]
+>     traj = traj %>%
+>       log_(paste("Opening", resource, "capacity", capacity)) %>%
+>       set_capacity(resource, capacity)
+>   }
+>   traj
+> }
+>
+> closeResources = function(resources) {
+>   # closing resources in parallel so that closing will start for
+>   # all resources at the same time.
+>   closeResourceTrajectory = function(resource) {
+>     trajectory(paste("close", resource)) %>%
+>       send(signals = "closing") %>%
+>       send(signals = "closing") %>%
+>       timeout(0.0001) %>%  ###### POSSIBLE BUG ?
+>       log_(paste("closing", resource)) %>%
+>       seize(resource, function() get_capacity(env, resource)) %>%
+>       log_(paste("closed", resource)) %>%
+>       set_capacity(resource, 0) %>%
+>       release_all(resource)
+>   }
+>
+>   args = lapply(resources, function(resource) {
+>     closeResourceTrajectory(resource)
+>   })
+>   trajectory("close resource") %>%
+>     do_parallel(args, .env = env, wait = TRUE)
+> }
+>
+> bank = env %>%
+>   add_generator("customer", customer(5), at(17), mon=2, priority = 10) %>%
+>   add_generator("openDepot", openResources(resources, capacities),
+>                 from_to(7, 100, function() 24)) %>%
+>   add_generator("closeDepot", closeResources(resources),
+>                 at(18), priority = 30) %>%
+>   add_generator("priority_customer", customer(0.25), at(17.5), mon = 2,
+>                priority = 20)
+>   #add_generator("closing", closeResources(resources),
+>   #              from_to(18, 100, function() 24), priority = 5) %>%
+>   #add_generator("closingForcefully", closeResources(resources),
+>   #              from_to(21, 100, function() 24), priority = 30) %>%
+>   #add_generator("opening", openResources(resources, capacities),
+>   #              from_to(7, 100, function() 24), priority = 5)
+>
+>
+>
+> bank %>% run(until = 24)
+>
+>
+> The output for the above code is:
+>
+> 7: openDepot0: Opening counter capacity 1
+>
+> 17: customer0: Entering
+>
+> 17: customer0: being served
+>
+> 17.5: priority_customer0: Entering
+>
+> 17.5: priority_customer0: being served
+>
+> 17.75: priority_customer0: leaving
+>
+> 18: customer0: Received notification that bank is closing
+>
+> 18.0001: closeDepot0: closing counter
+>
+> 18.025: customer0: Received notification that bank is closing
+>
+> 18.05: customer0: Received notification that bank is closing
+>
+> 18.075: customer0: Received notification that bank is closing
+>
+> 18.1: customer0: Received notification that bank is closing
+>
+> 18.125: customer0: Received notification that bank is closing
+>
+> 18.15: customer0: Received notification that bank is closing
+>
+> 18.175: customer0: Received notification that bank is closing
+>
+> 18.2: customer0: Received notification that bank is closing
+>
+> 18.225: customer0: Received notification that bank is closing
+>
+> 18.25: customer0: Received notification that bank is closing
+>
+> 18.275: customer0: Received notification that bank is closing
+>
+> 18.3: customer0: Received notification that bank is closing
+>
+> 18.325: customer0: Received notification that bank is closing
+>
+> 18.35: customer0: Received notification that bank is closing
+>
+> 18.375: customer0: Received notification that bank is closing
+>
+> 18.4: customer0: Received notification that bank is closing
+>
+> 18.425: customer0: Received notification that bank is closing
+>
+> 18.45: customer0: Received notification that bank is closing
+>
+> 18.475: customer0: Received notification that bank is closing
+>
+> 18.5: customer0: Received notification that bank is closing
+>
+> 18.525: customer0: Received notification that bank is closing
+>
+> 18.55: customer0: Received notification that bank is closing
+>
+> 18.575: customer0: Received notification that bank is closing
+>
+> 18.6: customer0: Received notification that bank is closing
+>
+> 18.625: customer0: Received notification that bank is closing
+>
+> 18.65: customer0: Received notification that bank is closing
+>
+> 18.675: customer0: Received notification that bank is closing
+>
+> 18.7: customer0: Received notification that bank is closing
+>
+> 18.725: customer0: Received notification that bank is closing
+>
+> 18.75: customer0: Received notification that bank is closing
+>
+> 18.775: customer0: Received notification that bank is closing
+>
+> 18.8: customer0: Received notification that bank is closing
+>
+> 18.825: customer0: Received notification that bank is closing
+>
+> 18.85: customer0: Received notification that bank is closing
+>
+> 18.875: customer0: Received notification that bank is closing
+>
+> 18.9: customer0: Received notification that bank is closing
+>
+> 18.925: customer0: Received notification that bank is closing
+>
+> 18.95: customer0: Received notification that bank is closing
+>
+> 18.975: customer0: Received notification that bank is closing
+>
+> 19: customer0: Received notification that bank is closing
+>
+> 19.025: customer0: Received notification that bank is closing
+>
+> 19.05: customer0: Received notification that bank is closing
+>
+> 19.075: customer0: Received notification that bank is closing
+>
+> 19.1: customer0: Received notification that bank is closing
+>
+> 19.125: customer0: Received notification that bank is closing
+>
+> 19.15: customer0: Received notification that bank is closing
+>
+> 19.175: customer0: Received notification that bank is closing
+>
+> 19.2: customer0: Received notification that bank is closing
+>
+> 19.225: customer0: Received notification that bank is closing
+>
+> 19.25: customer0: Received notification that bank is closing
+>
+> 19.275: customer0: Received notification that bank is closing
+>
+> 19.3: customer0: Received notification that bank is closing
+>
+> 19.325: customer0: Received notification that bank is closing
+>
+> 19.35: customer0: Received notification that bank is closing
+>
+> 19.375: customer0: Received notification that bank is closing
+>
+> 19.4: customer0: Received notification that bank is closing
+>
+> 19.425: customer0: Received notification that bank is closing
+>
+> 19.45: customer0: Received notification that bank is closing
+>
+> 19.475: customer0: Received notification that bank is closing
+>
+> 19.5: customer0: Received notification that bank is closing
+>
+> 19.525: customer0: Received notification that bank is closing
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/786105fa-f593-4e3a-a6c0-5f85b0bdef5b%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Feb 12 23:19:32 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Tue, 12 Feb 2019 23:19:32 +0000
+Subject: Re: [simmer-devel] Simulating a process where units are consolidated (packaged)
+Message-ID: <DAlxZWWbBKQ.znMjwoJXAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <DAlxZWWbBKQ.-vLnFBG6HwAJ@simmer-devel.groups.google.com>
+References: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com> <DAlxZWWbBKQ.-vLnFBG6HwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/DAlxZWWbBKQ/m/znMjwoJXAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The rollercoaster is the typical toy example for batch processing.
+It's demonstrated here:
+
+https://r-simmer.org/articles/simmer-03-trajectories.html#batch-separate
+
+Iñaki
+
+On Tue, 12 Feb 2019 at 21:52, Stuart Dykes <sdyk...@gmail.com> wrote:
+>
+> My original thinking was to model them as new arrivals (i.e. 1 tube = 5 apples).  I hadn't thought of modelling them as resources...I will research the batch() command....do you have any relevant example code I could use to get some idea?
+>
+> Many thanks
+> Stuart
+>
+> On Wednesday, February 13, 2019 at 8:40:27 AM UTC+13, Iñaki Úcar wrote:
+>>
+>> On Tue, 12 Feb 2019 at 20:04, Stuart Dykes <sdyk...@gmail.com> wrote:
+>> >
+>> > I am very new to simmer but familiar with R.  Thus far the package has been excellent in understanding the the front end of the apple packing operation.
+>> >
+>> > I am trying to run a simluation whereby the basic units are apples.  These apples are graded and sorted by diameter (which I have done successfully - using multiple branches).  The next step is they enter a queue (accumulation) and get packaged into tubes (3,4 and 5 apples per tube depending on the size).  These are then packaged into shipping cartons (16 tubes per carton).  The cartons are palletised and the pallets loaded into shipping cartons.
+>> >
+>> > My question is how do I trigger an arrival of a tube to shipping carton to pallet (128 cartons per pallet) and the shipping container (21 pallets per container) (I feel that using a if loop with a modulus approach would work but am unsure how to code it within a trajectory?)  I have attached my code below for reference.  Just a general approach to consolidated units would be useful for me at this stage.
+>>
+>> So are you modelling tubes, cartons and pallets as resources? This
+>> sounds like a perfect job for batch() to me.
+>>
+>> Iñaki
+>>
+>> >
+>> > Best regards
+>> > Stuart Dykes
+>> >
+>> > library(simmer)
+>> >
+>> > env <- simmer()
+>> >
+>> > set.seed(1234)
+>> >
+>> > traj <- trajectory() %>%
+>> > #
+>> > # assign a diameter as a trribute to each arrival
+>> > #
+>> >   set_attribute("diameter",function() rnorm(1,58.3,5.2)) %>%
+>> > #
+>> > # This intial branch partitions off the 15% rejects which go for juicing
+>> > #
+>> >   branch(
+>> >     option=function() sample(c(1, 2), 1, prob=c(0.85, 0.15)), continue=c(T,F),
+>> >     trajectory("export") %>%
+>> >       seize("INV_export",1) %>%
+>> >       timeout(function() (0.05)) %>%
+>> >       release("INV_export",1),
+>> >     trajectory("reject") %>%
+>> >       seize("INV_reject",1) %>%
+>> >       timeout(function() (0.05)) %>%
+>> >       release("INV_reject",1)
+>> >   ) %>%
+>> > #
+>> > # Send the apples to their appropriate drop based on their diameter
+>> > #
+>> >   branch(
+>> >     option= function() if(get_attribute(env,"diameter") >=71.6) 1 else 2, continue=c(T,T),
+>> >     trajectory("oversize_apples") %>%
+>> >       seize("os_packline",1) %>%
+>> >       timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >       release("os_packline",1),
+>> >     trajectory("smaller_apples_1") %>%
+>> >       branch(
+>> >         function() if(get_attribute(env,"diameter") >=65.3) 1 else 2, continue=c(T,T),
+>> >         trajectory("72_tube_drop") %>%
+>> >           seize("72/4_packline",1) %>%
+>> >           timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >           release("72/4_packline",1) %>%
+>> >           count72 <- count72 + 1,
+>> >         trajectory("smaller_apples_2") %>%
+>> >           branch(
+>> >             function() if(get_attribute(env,"diameter") >=60.8) 1 else 2, continue=c(T,T),
+>> >             trajectory("67_tube_drop") %>%
+>> >               seize("67/4/5_packline",1) %>%
+>> >               timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >               release("67/4/5_packline",1),
+>> >             trajectory("smaller_apples_3") %>%
+>> >               branch(
+>> >                 function() if(get_attribute(env,"diameter") >=59.6) 1 else 2, continue=c(T,T),
+>> >                 trajectory("63/4_tube_drop") %>%
+>> >                   seize("63/4_packline",1) %>%
+>> >                   timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >                   release("63/4_packline",1),
+>> >                 trajectory("smaller_apples_4") %>%
+>> >                   branch(
+>> >                     function() if(get_attribute(env,"diameter") >=56.1) 1 else 2, continue=c(T,T),
+>> >                     trajectory("63/0/3/5T_tube_drop") %>%
+>> >                       seize("63/0/3/5T_packline",1) %>%
+>> >                       timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >                       release("63/0/3/5T_packline",1),
+>> >                     trajectory("smaller_apples_5") %>%
+>> >                       branch(
+>> >                         function() if(get_attribute(env,"diameter") >=55) 1 else 2, continue=c(T,T),
+>> >                         trajectory("63/5_tube_drop") %>%
+>> >                           seize("63/5_packline",1) %>%
+>> >                           timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >                           release("63/5_packline",1),
+>> >                         trajectory("smaller_apples_5") %>%
+>> >                           branch(
+>> >                             function() if(get_attribute(env,"diameter") >=50.6) 1 else 2, continue=c(T,T),
+>> >                             trajectory("58/5_tube_drop") %>%
+>> >                               seize("58/5_packline",1) %>%
+>> >                               timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >                               release("58/5_packline",1),
+>> >                             trajectory("smaller_apples_6") %>%
+>> >                               branch(
+>> >                                 function() if(get_attribute(env,"diameter") >=45.9) 1 else 2, continue=c(T,T),
+>> >                                 trajectory("53/5_tube_drop") %>%
+>> >                                   seize("53/5_packline",1) %>%
+>> >                                   timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >                                   release("53/5_packline",1),
+>> >                                 trajectory("undersize_apples") %>%
+>> >                                   seize("us_packline",1) %>%
+>> >                                   timeout(function() rnorm(1, 0.8, .2)) %>%
+>> >                                   release("us_packline",1)
+>> >                               )
+>> >                           )
+>> >                       )
+>> >                   )
+>> >               )
+>> >           )
+>> >       )
+>> >   )
+>> > #
+>> > env %>%
+>> > #
+>> >   add_resource("os_packline",1) %>%
+>> >   add_resource("72/4_packline",1) %>%
+>> >   add_resource("67/4/5_packline",3) %>%
+>> >   add_resource("63/4_packline",1) %>%
+>> >   add_resource("63/0/3/5T_packline",4) %>%
+>> >   add_resource("63/5_packline",1) %>%
+>> >   add_resource("58/5_packline",2) %>%
+>> >   add_resource("53/5_packline",1) %>%
+>> >   add_resource("us_packline",1) %>%
+>> > #
+>> >   add_resource("INV_export", 1) %>%
+>> >   add_resource("INV_reject", 1) %>%
+>> >   add_generator("apple", traj, at(seq(0,100,by=0.0625)),mon=2)
+>> > #
+>> > env %>%
+>> >  run() %>% invisible
+>> >
+>> > arrivals <- get_mon_arrivals(env, per_resource = T)
+>> > attribute <- get_mon_attributes(env)
+>> > resources <- get_mon_resources(env)
+>> >
+>> > table(arrivals$resource)
+>> > #
+>> > capture.output(env)
+>> >
+>> > --
+>> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+>> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+>> > To post to this group, send email to simmer...@googlegroups.com.
+>> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/4bc53a25-5665-41cb-885a-0b5fcc38a927%40googlegroups.com.
+>> > For more options, visit https://groups.google.com/d/optout.
+>>
+>>
+>>
+>> --
+>> Iñaki Úcar
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/135ef26b-6194-4483-970d-43357e25d031%40googlegroups.com.
+
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From u32ca34ebc225cb13 at groups.google.com  Tue Feb 12 23:25:20 2019
+From: u32ca34ebc225cb13 at groups.google.com (Stuart Dykes)
+Date: Tue, 12 Feb 2019 23:25:20 +0000
+Subject: Re: [simmer-devel] Simulating a process where units are consolidated (packaged)
+Message-ID: <DAlxZWWbBKQ.sogS_mfCHwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+References: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/DAlxZWWbBKQ/m/sogS_mfCHwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is great and gives me what I need.  I wonder whether there is a way of identifying the individual batches for further downstream consolidation into cartons, pallets and containers?
+
+Cheers
+Stuart
+
+On Wednesday, February 13, 2019 at 12:19:32 PM UTC+13, Iñaki Úcar wrote:
+> The rollercoaster is the typical toy example for batch processing.
+> It's demonstrated here:
+>
+> https://r-simmer.org/articles/simmer-03-trajectories.html#batch-separate
+>
+> Iñaki
+>
+> On Tue, 12 Feb 2019 at 21:52, Stuart Dykes <sdyk...@gmail.com> wrote:
+> >
+> > My original thinking was to model them as new arrivals (i.e. 1 tube = 5 apples).  I hadn't thought of modelling them as resources...I will research the batch() command....do you have any relevant example code I could use to get some idea?
+> >
+> > Many thanks
+> > Stuart
+> >
+> > On Wednesday, February 13, 2019 at 8:40:27 AM UTC+13, Iñaki Úcar wrote:
+> >>
+> >> On Tue, 12 Feb 2019 at 20:04, Stuart Dykes <sdyk...@gmail.com> wrote:
+> >> >
+> >> > I am very new to simmer but familiar with R.  Thus far the package has been excellent in understanding the the front end of the apple packing operation.
+> >> >
+> >> > I am trying to run a simluation whereby the basic units are apples.  These apples are graded and sorted by diameter (which I have done successfully - using multiple branches).  The next step is they enter a queue (accumulation) and get packaged into tubes (3,4 and 5 apples per tube depending on the size).  These are then packaged into shipping cartons (16 tubes per carton).  The cartons are palletised and the pallets loaded into shipping cartons.
+> >> >
+> >> > My question is how do I trigger an arrival of a tube to shipping carton to pallet (128 cartons per pallet) and the shipping container (21 pallets per container) (I feel that using a if loop with a modulus approach would work but am unsure how to code it within a trajectory?)  I have attached my code below for reference.  Just a general approach to consolidated units would be useful for me at this stage.
+> >>
+> >> So are you modelling tubes, cartons and pallets as resources? This
+> >> sounds like a perfect job for batch() to me.
+> >>
+> >> Iñaki
+> >>
+> >> >
+>
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Feb 13 08:58:38 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 13 Feb 2019 08:58:38 +0000
+Subject: Re: [simmer-devel] Simulating a process where units are consolidated (packaged)
+Message-ID: <DAlxZWWbBKQ.6VInkBx3AQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <DAlxZWWbBKQ.sogS_mfCHwAJ@simmer-devel.groups.google.com>
+References: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com> <DAlxZWWbBKQ.sogS_mfCHwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/DAlxZWWbBKQ/m/6VInkBx3AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wed, 13 Feb 2019 at 00:25, Stuart Dykes <sdyk...@gmail.com> wrote:
+>
+> This is great and gives me what I need.  I wonder whether there is a way of identifying the individual batches for further downstream consolidation into cartons, pallets and containers?
+
+By design, any process not defined by the user does not appear in the
+output (i.e., get_mon_arrivals), which includes batches. To account
+for individual batches, I would use global attributes (see
+set_global). Some examples here (not related to batches though):
+
+https://r-simmer.org/articles/simmer-03-trajectories.html#set_attribute-set_global
+
+Iñaki
+
+>
+> Cheers
+> Stuart
+>
+> On Wednesday, February 13, 2019 at 12:19:32 PM UTC+13, Iñaki Úcar wrote:
+>>
+>> The rollercoaster is the typical toy example for batch processing.
+>> It's demonstrated here:
+>>
+>> https://r-simmer.org/articles/simmer-03-trajectories.html#batch-separate
+>>
+>> Iñaki
+>>
+>> On Tue, 12 Feb 2019 at 21:52, Stuart Dykes <sdyk...@gmail.com> wrote:
+>> >
+>> > My original thinking was to model them as new arrivals (i.e. 1 tube = 5 apples).  I hadn't thought of modelling them as resources...I will research the batch() command....do you have any relevant example code I could use to get some idea?
+>> >
+>> > Many thanks
+>> > Stuart
+>> >
+>> > On Wednesday, February 13, 2019 at 8:40:27 AM UTC+13, Iñaki Úcar wrote:
+>> >>
+>> >> On Tue, 12 Feb 2019 at 20:04, Stuart Dykes <sdyk...@gmail.com> wrote:
+>> >> >
+>> >> > I am very new to simmer but familiar with R.  Thus far the package has been excellent in understanding the the front end of the apple packing operation.
+>> >> >
+>> >> > I am trying to run a simluation whereby the basic units are apples.  These apples are graded and sorted by diameter (which I have done successfully - using multiple branches).  The next step is they enter a queue (accumulation) and get packaged into tubes (3,4 and 5 apples per tube depending on the size).  These are then packaged into shipping cartons (16 tubes per carton).  The cartons are palletised and the pallets loaded into shipping cartons.
+>> >> >
+>> >> > My question is how do I trigger an arrival of a tube to shipping carton to pallet (128 cartons per pallet) and the shipping container (21 pallets per container) (I feel that using a if loop with a modulus approach would work but am unsure how to code it within a trajectory?)  I have attached my code below for reference.  Just a general approach to consolidated units would be useful for me at this stage.
+>> >>
+>> >> So are you modelling tubes, cartons and pallets as resources? This
+>> >> sounds like a perfect job for batch() to me.
+>> >>
+>> >> Iñaki
+>> >>
+>> >> >
+>>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/ad1c218a-c0ad-428f-9827-e4af2c95a365%40googlegroups.com.
+
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From u32ca34ebc225cb13 at groups.google.com  Thu Feb 14 00:10:48 2019
+From: u32ca34ebc225cb13 at groups.google.com (Stuart Dykes)
+Date: Thu, 14 Feb 2019 00:10:48 +0000
+Subject: Re: [simmer-devel] Simulating a process where units are consolidated (packaged)
+Message-ID: <DAlxZWWbBKQ._0b3E8WBAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+References: <DAlxZWWbBKQ.rVk-ji20HwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/DAlxZWWbBKQ/m/_0b3E8WBAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thankyou Inaki I have the simulation running well (notwithstanding some efficiency issues).  I appreciate your advice
+
+Regards
+
+On Wednesday, February 13, 2019 at 9:58:38 PM UTC+13, Iñaki Úcar wrote:
+> On Wed, 13 Feb 2019 at 00:25, Stuart Dykes <sdyk...@gmail.com> wrote:
+> >
+> > This is great and gives me what I need.  I wonder whether there is a way of identifying the individual batches for further downstream consolidation into cartons, pallets and containers?
+>
+> By design, any process not defined by the user does not appear in the
+> output (i.e., get_mon_arrivals), which includes batches. To account
+> for individual batches, I would use global attributes (see
+> set_global). Some examples here (not related to batches though):
+>
+> https://r-simmer.org/articles/simmer-03-trajectories.html#set_attribute-set_global
+>
+> Iñaki
+>
+> >
+> > Cheers
+> > Stuart
+> >
+> > On Wednesday, February 13, 2019 at 12:19:32 PM UTC+13, Iñaki Úcar wrote:
+> >>
+> >> The rollercoaster is the typical toy example for batch processing.
+> >> It's demonstrated here:
+> >>
+> >> https://r-simmer.org/articles/simmer-03-trajectories.html#batch-separate
+> >>
+> >> Iñaki
+> >>
+> >> On Tue, 12 Feb 2019 at 21:52, Stuart Dykes <sdyk...@gmail.com> wrote:
+> >> >
+> >> > My original thinking was to model them as new arrivals (i.e. 1 tube = 5 apples).  I hadn't thought of modelling them as resources...I will research the batch() command....do you have any relevant example code I could use to get some idea?
+> >> >
+> >> > Many thanks
+> >> > Stuart
+> >> >
+> >> > On Wednesday, February 13, 2019 at 8:40:27 AM UTC+13, Iñaki Úcar wrote:
+> >> >>
+> >> >> On Tue, 12 Feb 2019 at 20:04, Stuart Dykes <sdyk...@gmail.com> wrote:
+> >> >> >
+> >> >> > I am very new to simmer but familiar with R.  Thus far the package has been excellent in understanding the the front end of the apple packing operation.
+> >> >> >
+> >> >> > I am trying to run a simluation whereby the basic units are apples.  These apples are graded and sorted by diameter (which I have done successfully - using multiple branches).  The next step is they enter a queue (accumulation) and get packaged into tubes (3,4 and 5 apples per tube depending on the size).  These are then packaged into shipping cartons (16 tubes per carton).  The cartons are palletised and the pallets loaded into shipping cartons.
+> >> >> >
+> >> >> > My question is how do I trigger an arrival of a tube to shipping carton to pallet (128 cartons per pallet) and the shipping container (21 pallets per container) (I feel that using a if loop with a modulus approach would work but am unsure how to code it within a trajectory?)  I have attached my code below for reference.  Just a general approach to consolidated units would be useful for me at this stage.
+> >> >>
+> >> >> So are you modelling tubes, cartons and pallets as resources? This
+> >> >> sounds like a perfect job for batch() to me.
+> >> >>
+> >> >> Iñaki
+> >> >>
+> >> >> >
+> >>
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/ad1c218a-c0ad-428f-9827-e4af2c95a365%40googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+
+From u32ca34ebc225cb13 at groups.google.com  Tue Feb 19 22:03:13 2019
+From: u32ca34ebc225cb13 at groups.google.com (Stuart Dykes)
+Date: Tue, 19 Feb 2019 22:03:13 +0000
+Subject: More on the apple processing problem
+Message-ID: <LAVTzuEAcAE.hdK6SkpSAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/LAVTzuEAcAE/m/hdK6SkpSAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am still on the apple grading/sorting/packing process.  My question this time is on the front end of the process.
+
+1. The apples are delivered in bins of ~4525 apples and they are tipped into a water bath.  They are then accumulated (queued) in the water bath and progressively conveyed into a washer.
+2.  From the washer they are singulated, graded, sorted, packed and paletised [this was covered in the previous post which was handled really well using the Batch() function]
+
+My question is:
+
+1.  How do I handle the bins (do I use batch and separate??) when they are dumped?
+2. How do I code the add_generator statement when I want 4525 apples to be dumped every 6 minutes into the water bath?
+
+I know the answer is probably very straightforward, I just cannot think of a way forward
+
+Regards
+Stuart
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Feb 19 22:21:27 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Tue, 19 Feb 2019 22:21:27 +0000
+Subject: Re: [simmer-devel] More on the apple processing problem
+Message-ID: <LAVTzuEAcAE.bYbhBvfLBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <LAVTzuEAcAE.hdK6SkpSAgAJ@simmer-devel.groups.google.com>
+References: <LAVTzuEAcAE.hdK6SkpSAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/LAVTzuEAcAE/m/bYbhBvfLBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tue, 19 Feb 2019 at 23:03, Stuart Dykes <sdyk...@gmail.com> wrote:
+>
+> I am still on the apple grading/sorting/packing process.  My question this time is on the front end of the process.
+>
+> 1. The apples are delivered in bins of ~4525 apples and they are tipped into a water bath.  They are then accumulated (queued) in the water bath and progressively conveyed into a washer.
+> 2.  From the washer they are singulated, graded, sorted, packed and paletised [this was covered in the previous post which was handled really well using the Batch() function]
+>
+> My question is:
+>
+> 1.  How do I handle the bins (do I use batch and separate??) when they are dumped?
+> 2. How do I code the add_generator statement when I want 4525 apples to be dumped every 6 minutes into the water bath?
+
+If you use the simple generator "function() 1", one arrival is
+generated every minute (if you are using minutes as the base time
+unit). If you instead use "function() c(1, 0)", then one arrival is
+generated in one minute and another one right afterwards (null
+interarrival time), so 2 arrivals are generated every minute.
+Therefore,
+
+function() c(rnorm(1, 6), rep(0, rnorm(1, 4525)))
+
+generates around 4525 arrivals approx. every 6 minutes. You can adjust
+the standard deviations to fit your needs or even choose other
+distributions.
+
+Iñaki
+
+From u32ca34ebc225cb13 at groups.google.com  Tue Feb 19 22:50:44 2019
+From: u32ca34ebc225cb13 at groups.google.com (Stuart Dykes)
+Date: Tue, 19 Feb 2019 22:50:44 +0000
+Subject: Re: [simmer-devel] More on the apple processing problem
+Message-ID: <LAVTzuEAcAE.zqXrHeJUAgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <LAVTzuEAcAE.hdK6SkpSAgAJ@simmer-devel.groups.google.com>
+References: <LAVTzuEAcAE.hdK6SkpSAgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/LAVTzuEAcAE/m/zqXrHeJUAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Again,
+
+Thankyou Inaki...That approach is an excellent way of dealing with the real life situation
+
+Regards
+
+On Wednesday, February 20, 2019 at 11:21:27 AM UTC+13, Iñaki Úcar wrote:
+> On Tue, 19 Feb 2019 at 23:03, Stuart Dykes <sdyk...@gmail.com> wrote:
+> >
+> > I am still on the apple grading/sorting/packing process.  My question this time is on the front end of the process.
+> >
+> > 1. The apples are delivered in bins of ~4525 apples and they are tipped into a water bath.  They are then accumulated (queued) in the water bath and progressively conveyed into a washer.
+> > 2.  From the washer they are singulated, graded, sorted, packed and paletised [this was covered in the previous post which was handled really well using the Batch() function]
+> >
+> > My question is:
+> >
+> > 1.  How do I handle the bins (do I use batch and separate??) when they are dumped?
+> > 2. How do I code the add_generator statement when I want 4525 apples to be dumped every 6 minutes into the water bath?
+>
+> If you use the simple generator "function() 1", one arrival is
+> generated every minute (if you are using minutes as the base time
+> unit). If you instead use "function() c(1, 0)", then one arrival is
+> generated in one minute and another one right afterwards (null
+> interarrival time), so 2 arrivals are generated every minute.
+> Therefore,
+>
+> function() c(rnorm(1, 6), rep(0, rnorm(1, 4525)))
+>
+> generates around 4525 arrivals approx. every 6 minutes. You can adjust
+> the standard deviations to fit your needs or even choose other
+> distributions.
+>
+> Iñaki
+
+From ubf65c0e4657848f5 at groups.google.com  Tue Feb 26 06:53:39 2019
+From: ubf65c0e4657848f5 at groups.google.com (An Tal)
+Date: Tue, 26 Feb 2019 06:53:39 +0000
+Subject: Batching pnly when a resource becomes available
+Message-ID: <aiapEwSfvGI.uP-c1SqKBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/aiapEwSfvGI/m/uP-c1SqKBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Is it possible to batch when a resource becomes available?
+
+For example, you have two or more different types of objects queueing for a single process. The process can handle 4 at a time, but only a single type of object can run in each load.
+
+Batching presents issues because if I use the timeout function, if a similar object joins the queue it isn't added to the batch after the batch occurs.
+
+I would like items to batch based on the object that has been queueing the longest, taking any like items in the queue with it (FIFO while utilizing all available capacity). Is it possible to batch one batch at a time right before the batch goes through the process?
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Feb 26 11:08:44 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Tue, 26 Feb 2019 11:08:44 +0000
+Subject: Re: [simmer-devel] Batching pnly when a resource becomes available
+Message-ID: <aiapEwSfvGI.fgu3IjWpAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <aiapEwSfvGI.uP-c1SqKBQAJ@simmer-devel.groups.google.com>
+References: <aiapEwSfvGI.uP-c1SqKBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/aiapEwSfvGI/m/fgu3IjWpAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tue, 26 Feb 2019 at 07:53, An Tal <a6m7...@gmail.com> wrote:
+>
+> Is it possible to batch when a resource becomes available?
+
+No, it's not.
+
+> For example, you have two or more different types of objects queueing for a single process. The process can handle 4 at a time, but only a single type of object can run in each load.
+>
+> Batching presents issues because if I use the timeout function, if a similar object joins the queue it isn't added to the batch after the batch occurs.
+>
+> I would like items to batch based on the object that has been queueing the longest, taking any like items in the queue with it (FIFO while utilizing all available capacity). Is it possible to batch one batch at a time right before the batch goes through the process?
+
+I don't think that batching is an option here, because batches block
+arrivals and you don't want that. But I would need an example to
+understand exactly what you are up to. Let's suppose we have the
+following queue with arrivals of types A, B:
+
+server <- A1, A2, A3, B1, A4, A5
+
+How do you process them?
+
+- A1, A2, A3, then B1, then A4, A5
+- A1, A2, A3, A4, then B1, then A5
+- A1, A2, A3, A4, then A5, then B1
+- other?
+
+Iñaki
+
+From ubf65c0e4657848f5 at groups.google.com  Tue Feb 26 15:10:27 2019
+From: ubf65c0e4657848f5 at groups.google.com (An Tal)
+Date: Tue, 26 Feb 2019 15:10:27 +0000
+Subject: Re: [simmer-devel] Batching pnly when a resource becomes available
+Message-ID: <aiapEwSfvGI.RlHj3GW2AwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <aiapEwSfvGI.fgu3IjWpAwAJ@simmer-devel.groups.google.com>
+References: <aiapEwSfvGI.uP-c1SqKBQAJ@simmer-devel.groups.google.com> <aiapEwSfvGI.fgu3IjWpAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/aiapEwSfvGI/m/RlHj3GW2AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+A1, A2, A3, A4,    B1    A5
+
+On Tue, Feb 26, 2019 at 5:08 AM Iñaki Ucar <iu...@fedoraproject.org> wrote:
+
+> On Tue, 26 Feb 2019 at 07:53, An Tal <a6m7...@gmail.com> wrote:
+> >
+> > Is it possible to batch when a resource becomes available?
+>
+> No, it's not.
+>
+> > For example, you have two or more different types of objects queueing for a single process. The process can handle 4 at a time, but only a single type of object can run in each load.
+> >
+> > Batching presents issues because if I use the timeout function, if a similar object joins the queue it isn't added to the batch after the batch occurs.
+> >
+> > I would like items to batch based on the object that has been queueing the longest, taking any like items in the queue with it (FIFO while utilizing all available capacity). Is it possible to batch one batch at a time right before the batch goes through the process?
+>
+> I don't think that batching is an option here, because batches block
+> arrivals and you don't want that. But I would need an example to
+> understand exactly what you are up to. Let's suppose we have the
+> following queue with arrivals of types A, B:
+>
+> server <- A1, A2, A3, B1, A4, A5
+>
+> How do you process them?
+>
+> - A1, A2, A3, then B1, then A4, A5
+> - A1, A2, A3, A4, then B1, then A5
+> - A1, A2, A3, A4, then A5, then B1
+> - other?
+>
+> Iñaki
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2bp1NJN5STJg8%2Bf5Nj%3DfZefyfPXQs6ZGsSqFmP5VY3sw%40mail.gmail.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Feb 26 16:04:00 2019
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Tue, 26 Feb 2019 16:04:00 +0000
+Subject: Re: [simmer-devel] Batching pnly when a resource becomes available
+Message-ID: <aiapEwSfvGI.J4LBCFK5AwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <aiapEwSfvGI.RlHj3GW2AwAJ@simmer-devel.groups.google.com>
+References: <aiapEwSfvGI.uP-c1SqKBQAJ@simmer-devel.groups.google.com> <aiapEwSfvGI.RlHj3GW2AwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/aiapEwSfvGI/m/J4LBCFK5AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tue, 26 Feb 2019 at 16:10, An Tal <a6m7...@gmail.com> wrote:
+>
+> A1, A2, A3, A4,    B1    A5
+
+Then it's clear that you don't need batching, but a kind of custom
+priority queue that changes dynamically. I think that this can be
+achieved with simmer, but requires a careful design. You'll need, at
+least, the following elements:
+
+1) Every arrival must have a private attribute establishing the type or class.
+
+2) The first arrival that seizes the empty server must set its type as
+a global attribute, meaning that this type of arrival is being
+processed.
+
+3) Then you need to "rotate" the whole queue: the next arrival enters
+the server, and the type is checked (this is obviously a branch). If
+the type is the same, it continues and proceeds to the timeout
+function; otherwise, it must release immediately and be inserted into
+the queue again. This happens until the server is full or the whole
+queue has been checked ("rotated").
+
+4) To be able to re-insert arrivals, you need to increase the priority
+(so that they are inserted before eventual new arrivals) and then
+simply roll back to the seize activity.
+
+5) But they can't roll back straight away, because it would cause an
+infinite loop. They need to wait there until the server is released
+(the trap-wait-send mechanism is ideal for this).
+
+In fact, on second thought, if you don't set a maximum capacity for
+the resource and instead you control this through the check in step
+3), then you don't need to increase the priority in step 4), because
+you don't even need the queue at all.
+
+Iñaki
+

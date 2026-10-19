@@ -1,0 +1,144 @@
+From u9111bf22cf91bb31 at groups.google.com  Thu Dec 22 08:13:59 2016
+From: u9111bf22cf91bb31 at groups.google.com (Juan Ossa-Moreno)
+Date: Thu, 22 Dec 2016 08:13:59 +0000
+Subject: Monitoring arrivals in asynchronous programming
+Message-ID: <Z6xkuBtlgfM.AQEc6JpFDwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/Z6xkuBtlgfM/m/AQEc6JpFDwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello
+
+I am doing asynchronous programming and am struggling to solve the following:
+
+I have some loaders that have to pick some material and then have to deliver the material to some trucks. Trucks are waiting in a waiting_area until there are three loaders ready to give them material, they cannot move if there are less than three. I modelled this using trap and wait. Each loader has a trajectory and when they are ready to deliver the material they add 1 to a global attribute ("loader_Ready"), when this global attribute is 3 or more, the truck will send a signal to untrap the loaders. However, only three of them can be processed at a time, thus if there are more than three loaders waiting, the first three will seize a resource and then the rest will be rejected as this resource has no queue. My issue is that each one of the loaders that delivers the material has to wait some time while delivers the material, and this time is a function of the loaders that are delivering. Each loader has a different priority and this determines the order in which the three of them will deliver the material, and the amount of time they will take to do this. This is my code up to now
+
+This is the truck. There could be 1 or more than one in the simulation.
+
+Truck <- create_trajectory() %>%
+set_attribute("loader_Ready", 0, global = TRUE)%>%
+seize("truck_tramming",1)%>%timeout(function() rnorm(1,10,2))%>%release("truck_tramming",1)%>%
+seize("waiting_area",1)%>%timeout(2)%>%rollback(amount=1,check=function(attr,glb) glb[["loader_Ready"]]<3)%>%
+send("Collect_Material")%>%
+timeout(function() rnorm(1,5))%>%
+set_attribute("loader_Ready" ,function(attrs,glb) max(0,glb[["loader_Ready"]] - 3), global = TRUE)%>%
+release("waiting_area",1)%>%
+rollback(amount=10,times=Inf)
+
+These are the loaders. There are up to 8 of them
+
+loader120<-create_trajectory("drive120")%>%
+.............................. # more activities
+set_attribute("loader_Ready" ,function(attrs,glb) glb[["loader_Ready"]] + 1, global = TRUE)%>%
+trap("Collect_Material")%>%
+wait()%>%
+seize("dumping_access",1,continue = FALSE,
+reject = create_trajectory("Truck_Full") %>%
+rollback(amount=3,times=Inf))%>%
+timeout(function() rnorm(1,5,1)/0.813+34)%>%       #<------- The amount of time in this timeout depends on what loaders managed to deliver material to the truck (thus were able to seize dumping_access and were not rejected"). Lets say, if loader 120, loader 122 and loader 128 were accepted, the times they waste in the timeout is different than if loader 120, loader 124 and loader 130 were accepted. Thus I want to identify which ones of them were able to seize dumping_access.
+        release("dumping_access",1)%>%
+.............................. # more activities
+
+.............................
+add_resource("dumping_access",capacity=3,queue_size = 0)%>%
+
+To solve this I have tried using get_Server_count inside the simulation, but it only gives the quantity and not the name of the arrivals. Anyone has any idea in how to solve this?
+
+Thanks a lot in advance
+
+REgards
+
+Juan
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Dec 22 10:18:40 2016
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Thu, 22 Dec 2016 10:18:40 +0000
+Subject: Re: [simmer-devel] Monitoring arrivals in asynchronous programming
+Message-ID: <Z6xkuBtlgfM.e9ObzGhMDwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <Z6xkuBtlgfM.AQEc6JpFDwAJ@simmer-devel.groups.google.com>
+References: <Z6xkuBtlgfM.AQEc6JpFDwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/Z6xkuBtlgfM/m/e9ObzGhMDwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+A couple of side notes:
+The truck has a timeout after signaling "Collect Material", but no wait mechanism. Does it mean that a truck may leave while the loaders are still dumping stuff?
+The rollback in the loader trajectory can be also of "amount=2", to point to wait instead of trap, because you are already subscribed to that signal and you don't need to retrap.
+And now to the point: "There are up to 8 of them"... use bits in a global! At the beginning, you should put the global to zero:
+
+set_attribute("flags", 0, global = TRUE)
+
+Now suppose that truck number 5 seizes the dumping access, so it needs to set its bit:
+
+set_attribute("flags", function(a, g) g["flags"] | bitShiftL(1, a["loader"]), global = TRUE)
+
+where a["loader"] stores 5 and bitShiftL is provided by the package bitops. The operations you need are:
+Setting a bit: variable = variable | bitShiftL(1, n), as shown above.
+Clearing a bit: variable = variable & bitFlip(bitShiftL(1, n), bitWidth=8), when the loader leaves the dumping access.
+Checking a bit: variable & bitShiftL(1, n), to check whether loader "n" is in the dumping access.
+Regards,
+Iñaki
+
+2016-12-22 9:13 GMT+01:00 Juan Ossa-Moreno <js.os...@gmail.com>:
+
+> Hello
+>
+> I am doing asynchronous programming and am struggling to solve the following:
+>
+> I have some loaders that have to pick some material and then have to deliver the material to some trucks. Trucks are waiting in a waiting_area until there are three loaders ready to give them material, they cannot move if there are less than three. I modelled this using trap and wait. Each loader has a trajectory and when they are ready to deliver the material they add 1 to a global attribute ("loader_Ready"), when this global attribute is 3 or more, the truck will send a signal to untrap the loaders. However, only three of them can be processed at a time, thus if there are more than three loaders waiting, the first three will seize a resource and then the rest will be rejected as this resource has no queue. My issue is that each one of the loaders that delivers the material has to wait some time while delivers the material, and this time is a function of the loaders that are delivering. Each loader has a different priority and this determines the order in which the three of them will deliver the material, and the amount of time they will take to do this. This is my code up to now
+>
+> This is the truck. There could be 1 or more than one in the simulation.
+>
+> Truck <- create_trajectory() %>%
+> set_attribute("loader_Ready", 0, global = TRUE)%>%
+> seize("truck_tramming",1)%>%timeout(function() rnorm(1,10,2))%>%release("truck_tramming",1)%>%
+> seize("waiting_area",1)%>%timeout(2)%>%rollback(amount=1,check=function(attr,glb) glb[["loader_Ready"]]<3)%>%
+> send("Collect_Material")%>%
+> timeout(function() rnorm(1,5))%>%
+> set_attribute("loader_Ready" ,function(attrs,glb) max(0,glb[["loader_Ready"]] - 3), global = TRUE)%>%
+> release("waiting_area",1)%>%
+> rollback(amount=10,times=Inf)
+>
+> These are the loaders. There are up to 8 of them
+>
+> loader120<-create_trajectory("drive120")%>%
+> .............................. # more activities
+> set_attribute("loader_Ready" ,function(attrs,glb) glb[["loader_Ready"]] + 1, global = TRUE)%>%
+> trap("Collect_Material")%>%
+> wait()%>%
+> seize("dumping_access",1,continue = FALSE,
+> reject = create_trajectory("Truck_Full") %>%
+> rollback(amount=3,times=Inf))%>%
+> timeout(function() rnorm(1,5,1)/0.813+34)%>%       #<------- The amount of time in this timeout depends on what loaders managed to deliver material to the truck (thus were able to seize dumping_access and were not rejected"). Lets say, if loader 120, loader 122 and loader 128 were accepted, the times they waste in the timeout is different than if loader 120, loader 124 and loader 130 were accepted. Thus I want to identify which ones of them were able to seize dumping_access.
+>         release("dumping_access",1)%>%
+> .............................. # more activities
+>
+>
+>
+> .............................
+> add_resource("dumping_access",capacity=3,queue_size = 0)%>%
+>
+> To solve this I have tried using get_Server_count inside the simulation, but it only gives the quantity and not the name of the arrivals. Anyone has any idea in how to solve this?
+>
+> Thanks a lot in advance
+>
+> REgards
+>
+> Juan
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/8b4f04a9-1f85-44d2-9b84-b3e2984819b1%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/8b4f04a9-1f85-44d2-9b84-b3e2984819b1%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+

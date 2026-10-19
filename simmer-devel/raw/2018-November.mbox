@@ -1,0 +1,923 @@
+From u7840f0c79a42cce9 at groups.google.com  Fri Nov 23 12:18:12 2018
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Fri, 23 Nov 2018 12:18:12 +0000
+Subject: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/U2Ch8U9UCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+ I'm pretty new to r-simmer - I've been simulating a hospital using my own code for now, and am trying to move to this package.
+
+ When a hospital bed (resource) closes, the patient will have to be transferred elsewhere, but I'm not sure how best to detect that using r-simmer. By default it appears, if a resource is occupied when set_capacity reduces the resource availability, the actor is not "kicked off" and continues to occupy the resource as normal.
+
+ Can anyone suggest a good way to model this within r-simmer? I've enclosed an example below based on one of the bank vignettes. Ideally I need some way of detecting that Customer0 and Customer1 need to find themselves some other resource until time 126.
+
+Thanks for any advice!
+
+> library(simmer)
+> set.seed(1234)
+> bank <- simmer()
+> customer <-
+>   trajectory("Customer's path") %>%
+>   log_("Here I am") %>%
+>   set_attribute("start_time", function() {now(bank)}) %>%
+>   seize("counter") %>%
+>   log_(function() {paste("Waited: ", now(bank) - get_attribute(bank, "start_time"))}) %>%
+>   timeout(120) %>%
+>   release("counter") %>%
+>   log_(function() {paste("Finished: ", now(bank))})
+> bank <-
+>   simmer("bank") %>%
+>   add_resource("counter",capacity=2) %>%
+>   add_generator("Customer", customer, function() {c(0, rexp(4, 1/10), -1)}) %>%
+>   add_generator("Blocker",blocker,at(26))
+> blocker <-
+>   trajectory("Blocker") %>%
+>   set_capacity(resource="counter",0) %>%
+>   log_("blocked") %>%
+>   timeout(100) %>%
+>   set_capacity(resource="counter",1) %>%
+>   log_("unblocked")
+> bank %>% run(until = 400)
+
+From u84da51813582b567 at groups.google.com  Sat Nov 24 10:26:18 2018
+From: u84da51813582b567 at groups.google.com (Cwei)
+Date: Sat, 24 Nov 2018 10:26:18 +0000
+Subject: resource availability after seize but no timeout
+Message-ID: <6y91LQNqZo4.yPtgaMmcCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/6y91LQNqZo4/m/yPtgaMmcCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+In the example below, patient requires three resources  before timeout. If  'bed' becomes unavailable, and therefore timeout cannot occur, can patientB seize 'nurse' which is currently seized by patient?
+
+a_traj<- trajectory() %>%
+  seize("bed", 1)%>%
+  timeout(30) %>%
+  release("bed", 1)
+
+b_traj<- trajectory() %>%
+  seize("nurse", 1) %>%
+  timeout(10) %>%
+  release("nurse", 1)
+
+new_traj<-trajectory("traj") %>%
+  seize("doctor", 1) %>%
+  seize("nurse", 1) %>%
+  seize("bed", 1) %>%
+  timeout(10) %>%
+  release("doctor", 1) %>%
+  release("nurse", 1) %>%
+  release("bed", 1)
+
+env<-lapply(1:1, function(i) {
+  simmer() %>%
+    add_resource("doctor", 1) %>%
+    add_resource("nurse", 1) %>%
+    add_resource("bed", 1) %>%
+
+    add_generator("patientA", a_traj, at(0) ) %>%
+    add_generator("patient", new_traj, at(5) ) %>%
+    add_generator("patientB", b_traj, at(10) ) %>%
+    run(30)
+})
+
+resources<- get_mon_resources(env)
+arrivals<- get_mon_arrivals(env, per_resource =TRUE)
+plot(resources, metric ="usage", c( "doctor", "nurse", "bed"),items=c("queue", "server"), steps = TRUE)
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sat Nov 24 14:31:55 2018
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Sat, 24 Nov 2018 14:31:55 +0000
+Subject: Re: [simmer-devel] resource availability after seize but no timeout
+Message-ID: <6y91LQNqZo4.a_-pARpIBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <6y91LQNqZo4.yPtgaMmcCAAJ@simmer-devel.groups.google.com>
+References: <6y91LQNqZo4.yPtgaMmcCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/6y91LQNqZo4/m/a_-pARpIBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sat, 24 Nov 2018 at 11:26, Cwei <slende...@gmail.com> wrote:
+>
+> Hello,
+> In the example below, patient requires three resources  before timeout. If  'bed' becomes unavailable, and therefore timeout cannot occur, can patientB seize 'nurse' which is currently seized by patient?
+
+In this case, the correct order would be bed > nurse > doctor, which
+solves your problem. And in any case, you can always use auxiliary
+resources with no queue and play with the "reject" subtrajectories.
+
+Iñaki
+
+> a_traj<- trajectory() %>%
+>   seize("bed", 1)%>%
+>   timeout(30) %>%
+>   release("bed", 1)
+>
+> b_traj<- trajectory() %>%
+>   seize("nurse", 1) %>%
+>   timeout(10) %>%
+>   release("nurse", 1)
+>
+> new_traj<-trajectory("traj") %>%
+>   seize("doctor", 1) %>%
+>   seize("nurse", 1) %>%
+>   seize("bed", 1) %>%
+>   timeout(10) %>%
+>   release("doctor", 1) %>%
+>   release("nurse", 1) %>%
+>   release("bed", 1)
+>
+> env<-lapply(1:1, function(i) {
+>   simmer() %>%
+>     add_resource("doctor", 1) %>%
+>     add_resource("nurse", 1) %>%
+>     add_resource("bed", 1) %>%
+>
+>     add_generator("patientA", a_traj, at(0) ) %>%
+>     add_generator("patient", new_traj, at(5) ) %>%
+>     add_generator("patientB", b_traj, at(10) ) %>%
+>     run(30)
+> })
+>
+> resources<- get_mon_resources(env)
+> arrivals<- get_mon_arrivals(env, per_resource =TRUE)
+> plot(resources, metric ="usage", c( "doctor", "nurse", "bed"),items=c("queue", "server"), steps = TRUE)
+>
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/8cba5908-8077-43dd-aa85-62c94d2cd484%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From u6cc0fd77b5c1b0a7 at groups.google.com  Sat Nov 24 23:08:10 2018
+From: u6cc0fd77b5c1b0a7 at groups.google.com (brettg)
+Date: Sat, 24 Nov 2018 23:08:10 +0000
+Subject: Branch Returning Two Values When it is Expecting 1
+Message-ID: <xjsJeRzOkvc.h8OeXlzGCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/xjsJeRzOkvc/m/h8OeXlzGCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+Thanks in advance for the help.  I'm trying to get a grasp on all of the features here
+
+I figured to teach myself I would try to recreate the dice game they explain in the book The Goal which demonstrates process bottlenecks (https://maaw.info/MatchBowlExperiment.htm) .  The basic principle of the game is that a player rolls a dice and they pass the rolled number of whatever object people are using into an inventory buffer to show the work done that day.  The next player rolls the die and they move that number of objects, if they are available in the upstream inventory buffer;  if there enough objects available as the dice roll, the downstream player can only move the number of objects in the upstream buffer.  This trend can continue for however many turns and players as one wants.
+
+The following code was basically what I came up with.  The first dice roll sets an attribute which is used to control the number of objects passed to Player 1.  At this point I cannot figure out how to control the release of the objects, so Player 2 will only seize the available inventory of Player 1 if the second die roll exceeds the available inventory of Player 1.  I thought I could use a branch to control the two tasks, but I am creating something that is accidentally evaluating 2 values and I get the following error:
+
+Error: 'Turn1' at 2.00 in 'Branch':
+ Expecting a single value: [extent=2].
+
+Anyway, Here is the R code. Thanks so much for the help.  There is probably a much easier method for recreating this simulation.
+------------------------------------------------------------------
+
+library(tidyverse)
+library(simmer)
+library(simmer.plot)
+library(simmer.bricks)
+
+die.size <- 6
+
+coin.sim <- simmer()
+
+coin <- trajectory() %>%
+  set_attribute("Roll 1", function(){sample(1:die.size, 1)}) %>%
+  seize("Player 1", amount = function() {get_attribute(coin.sim, "Roll 1")}) %>%
+  set_attribute("Roll 2", function(){sample(1:die.size, 1)}) %>%
+  branch(option = function() {
+
+    p1.sys <- coin.sim %>%
+      get_mon_resources() %>%
+      filter(resource == "Player 1",
+             time == now(coin.sim)) %>%
+      .$system
+
+    ifelse(p1.sys > get_attribute(coin.sim, "Roll 2"), 1, 2)
+  },
+  continue = c(T, T),
+
+  trajectory("enough") %>%
+    timeout(1) %>%
+    release("Player 1", amount = function() {get_attribute(coin.sim, "Roll 2")}),
+
+  trajectory("not enough") %>%
+    timeout(1) %>%
+    release("Player 1", amount = function(){
+
+      p1.sys <- coin.sim %>%
+        get_mon_resources() %>%
+        filter(resource == "Player 1",
+               time == now(coin.sim)) %>%
+        .$system
+      })) %>%
+  timeout(1)
+
+coin.sim <- simmer() %>%
+  add_resource("Player 1", capacity = Inf) %>%
+  add_resource("Player 2", capacity = Inf) %>%
+  add_generator("Turn", coin, at(1:10), mon = 2)
+
+coin.sim %>%
+  run(5)
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Nov 26 09:46:27 2018
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Mon, 26 Nov 2018 09:46:27 +0000
+Subject: Re: [simmer-devel] Branch Returning Two Values When it is Expecting 1
+Message-ID: <xjsJeRzOkvc.rVXhRq_VBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <xjsJeRzOkvc.h8OeXlzGCAAJ@simmer-devel.groups.google.com>
+References: <xjsJeRzOkvc.h8OeXlzGCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/xjsJeRzOkvc/m/rVXhRq_VBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Sun, 25 Nov 2018 at 00:08, brettg <bret...@gmail.com> wrote:
+>
+> Hi,
+>
+> Thanks in advance for the help.  I'm trying to get a grasp on all of the features here
+>
+> I figured to teach myself I would try to recreate the dice game they explain in the book The Goal which demonstrates process bottlenecks (https://maaw.info/MatchBowlExperiment.htm) .  The basic principle of the game is that a player rolls a dice and they pass the rolled number of whatever object people are using into an inventory buffer to show the work done that day.  The next player rolls the die and they move that number of objects, if they are available in the upstream inventory buffer;  if there enough objects available as the dice roll, the downstream player can only move the number of objects in the upstream buffer.  This trend can continue for however many turns and players as one wants.
+>
+> The following code was basically what I came up with.  The first dice roll sets an attribute which is used to control the number of objects passed to Player 1.  At this point I cannot figure out how to control the release of the objects, so Player 2 will only seize the available inventory of Player 1 if the second die roll exceeds the available inventory of Player 1.  I thought I could use a branch to control the two tasks, but I am creating something that is accidentally evaluating 2 values and I get the following error:
+>
+> Error: 'Turn1' at 2.00 in 'Branch':
+>  Expecting a single value: [extent=2].
+
+As you observed, the 'option' function returned 2 values at some
+point, while only one is expected. This is because you are using
+ifelse, which is vectorised and thus the output length depends on the
+condition length.
+
+But there are other more important issues in your simulation. For
+instance, 'get_mon_*' functions are not meant to be used during a
+simulation, because they return the whole history, and this is very
+inefficient. Yes, you can call them there, but that's definitely a bad
+pattern.
+
+At a higher abstraction level, you could simulate this problem in
+several ways using simmer. But if you want to use resources, then you
+cannot define a coin turn as an arrival process, because 1) coin turns
+would leave seized resources behind (another bad pattern that will
+raise a warning), and more importantly 2) they would try to release
+resources from previous coin turns, which is not permitted in simmer
+and raises an error. Instead, you need a single process and a looped
+trajectory (see 'rollback').
+
+But here there are no queues and no limits in the number of resources,
+and therefore this problem involves no contention: you don't need
+resources at all. You can implement this just using simple global
+variables or attributes. But then, you don't need a DES!: the
+definition of this problem is overly simplistic, and IMO using a DES
+is completely overkilling.
+
+In fact, you don't even need a loop. The simulation can be done very
+efficiently in plain R as follows:
+
+set.seed(42)
+n_bowls <- 5
+n_days <- 10
+bowls <- rep(0, n_bowls)
+
+out <- do.call(rbind, replicate(n_days, {
+  dice <- sample(6, n_bowls + 1, TRUE)
+  bowls <<- -diff(cummin(dice + c(0, -cumsum(bowls))))
+  list(dice, bowls)
+}, simplify=FALSE))
+
+dice <- do.call(rbind, out[,1])
+bowls <- do.call(rbind, out[,2])
+
+There you have a matrix of dice rolls for n_days and the status of the
+bowls at the end of each day.
+
+My advice: if you want to learn simmer, pick a more complex problem
+(there are plenty of them in the vignettes); otherwise, you'll find
+yourself trying to kill a fly with a gun.
+
+Iñaki
+
+> Anyway, Here is the R code. Thanks so much for the help.  There is probably a much easier method for recreating this simulation.
+> ------------------------------------------------------------------
+>
+> library(tidyverse)
+> library(simmer)
+> library(simmer.plot)
+> library(simmer.bricks)
+>
+> die.size <- 6
+>
+> coin.sim <- simmer()
+>
+> coin <- trajectory() %>%
+>   set_attribute("Roll 1", function(){sample(1:die.size, 1)}) %>%
+>   seize("Player 1", amount = function() {get_attribute(coin.sim, "Roll 1")}) %>%
+>   set_attribute("Roll 2", function(){sample(1:die.size, 1)}) %>%
+>   branch(option = function() {
+>
+>     p1.sys <- coin.sim %>%
+>       get_mon_resources() %>%
+>       filter(resource == "Player 1",
+>              time == now(coin.sim)) %>%
+>       .$system
+>
+>     ifelse(p1.sys > get_attribute(coin.sim, "Roll 2"), 1, 2)
+>   },
+>   continue = c(T, T),
+>
+>   trajectory("enough") %>%
+>     timeout(1) %>%
+>     release("Player 1", amount = function() {get_attribute(coin.sim, "Roll 2")}),
+>
+>   trajectory("not enough") %>%
+>     timeout(1) %>%
+>     release("Player 1", amount = function(){
+>
+>       p1.sys <- coin.sim %>%
+>         get_mon_resources() %>%
+>         filter(resource == "Player 1",
+>                time == now(coin.sim)) %>%
+>         .$system
+>       })) %>%
+>   timeout(1)
+>
+> coin.sim <- simmer() %>%
+>   add_resource("Player 1", capacity = Inf) %>%
+>   add_resource("Player 2", capacity = Inf) %>%
+>   add_generator("Turn", coin, at(1:10), mon = 2)
+>
+> coin.sim %>%
+>   run(5)
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/9b595f8d-f097-4b10-ad77-1f30ccfaa6e8%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+
+From u7840f0c79a42cce9 at groups.google.com  Wed Nov 28 14:37:50 2018
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Wed, 28 Nov 2018 14:37:50 +0000
+Subject: Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.Eyt-mcV5CgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/Eyt-mcV5CgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+>  When a hospital bed (resource) closes, the patient will have to be transferred elsewhere, but I'm not sure how best to detect that using r-simmer. By default it appears, if a resource is occupied when set_capacity reduces the resource availability, the actor is not "kicked off" and continues to occupy the resource as normal.
+>
+>  Can anyone suggest a good way to model this within r-simmer? I've enclosed an example below based on one of the bank vignettes. Ideally I need some way of detecting that Customer0 and Customer1 need to find themselves some other resource until time 126.
+
+It strikes me that an alternative way to do this would be to avoid using set_capacity, and instead leave capacity at whatever its maximum value will be, and seize resources (with pre-emption) to represent beds being closed etc. This should kick patients out as expected. I gather there's a queue_size_strict option to prevent those patients joining a queue (we have to put them somewhere!) - will they then just go down the "reject" trajectory as if they'd been denied the bed in the first place?
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Nov 28 15:32:22 2018
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 28 Nov 2018 15:32:22 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.c4JPRsRVBgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.Eyt-mcV5CgAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com> <-KWhDnPuBSQ.Eyt-mcV5CgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/c4JPRsRVBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+> On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+>>
+>>  When a hospital bed (resource) closes, the patient will have to be transferred elsewhere, but I'm not sure how best to detect that using r-simmer. By default it appears, if a resource is occupied when set_capacity reduces the resource availability, the actor is not "kicked off" and continues to occupy the resource as normal.
+>>
+>>  Can anyone suggest a good way to model this within r-simmer? I've enclosed an example below based on one of the bank vignettes. Ideally I need some way of detecting that Customer0 and Customer1 need to find themselves some other resource until time 126.
+
+For some reason I didn't receive your previous email.
+
+> It strikes me that an alternative way to do this would be to avoid using set_capacity, and instead leave capacity at whatever its maximum value will be, and seize resources (with pre-emption) to represent beds being closed etc. This should kick patients out as expected. I gather there's a queue_size_strict option to prevent those patients joining a queue (we have to put them somewhere!) - will they then just go down the "reject" trajectory as if they'd been denied the bed in the first place?
+
+There should be no difference between using set_capacity to close a
+resource and seizing the whole resource with a higher priority. I.e.,
+if preemption is enabled and queue_size_strict is set to true,
+everything is rejected.
+
+The problem (for your use case) is that the "reject" trajectory is not
+honored in such cases, as it would be if the resource is denied in the
+first place. But now that you put it in that way, maybe this is
+confusing, and maybe the "reject" trajectory should be followed by
+rejections due to preemption too. I have to think about it.
+
+Meanwhile, you can use signals and you don't need preemption:
+
+library(simmer)
+
+kicked <- trajectory() %>%
+  log_("I've been kicked!")
+
+patient <- trajectory() %>%
+  seize("bed") %>%
+  trap("bed closed", handler=kicked, interruptible=FALSE) %>%
+  timeout(10) %>%
+  release("bed")
+
+blocker <- trajectory() %>%
+  set_capacity("bed", 0) %>%
+  send("bed closed")
+
+env <- simmer() %>%
+  add_resource("bed") %>%
+  add_generator("patient", patient, at(0)) %>%
+  add_generator("blocker", blocker, at(5)) %>%
+  run()
+#> 5: patient0: I've been kicked!
+
+Iñaki
+
+From u7840f0c79a42cce9 at groups.google.com  Wed Nov 28 15:45:30 2018
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Wed, 28 Nov 2018 15:45:30 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.1TDT4nZ9CgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/1TDT4nZ9CgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wednesday, November 28, 2018 at 3:32:22 PM UTC, Iñaki Úcar wrote:
+> On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+> > On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+>
+> The problem (for your use case) is that the "reject" trajectory is not
+> honored in such cases, as it would be if the resource is denied in the
+> first place. But now that you put it in that way, maybe this is
+> confusing, and maybe the "reject" trajectory should be followed by
+> rejections due to preemption too. I have to think about it.
+
+ Thanks for the quick response - I've just been looking through the C code and realised the same! In my original "blocker" example the two pre-empted customers just vanish and never complete. It would certainly make sense to me to have some way of defining a trajectory for preemption. Though presumably some of the "success" trajectory gets followed too. A new set of functions working like the way "renege" works might cover all bases?
+
+> Meanwhile, you can use signals and you don't need preemption:
+
+I looked at using signals, but it seemed complex in terms of situations where I have multiple wards and am closing a subset of beds on each ward (ie not all patients need kicking!) It did strike me that it might be possible to assign all patients already in beds to have a very high priority, and each time a bed closure occurs to kick them all out using a signal, and let them scramble to get back in!
+
+tom
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Nov 28 16:11:18 2018
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 28 Nov 2018 16:11:18 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.utuFM-RXBgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.1TDT4nZ9CgAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com> <-KWhDnPuBSQ.1TDT4nZ9CgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/utuFM-RXBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wed, 28 Nov 2018 at 16:45, Tom Lawton <t...@t-lawton.org> wrote:
+> On Wednesday, November 28, 2018 at 3:32:22 PM UTC, Iñaki Úcar wrote:
+>>
+>> On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+>> > On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+>>
+>> The problem (for your use case) is that the "reject" trajectory is not
+>> honored in such cases, as it would be if the resource is denied in the
+>> first place. But now that you put it in that way, maybe this is
+>> confusing, and maybe the "reject" trajectory should be followed by
+>> rejections due to preemption too. I have to think about it.
+>
+>
+>  Thanks for the quick response - I've just been looking through the C code and realised the same! In my original "blocker" example the two pre-empted customers just vanish and never complete. It would certainly make sense to me to have some way of defining a trajectory for preemption. Though presumably some of the "success" trajectory gets followed too. A new set of functions working like the way "renege" works might cover all bases?
+
+A new set of functions would be overkilling. I was thinking about
+letting them retry the "seize" activity.
+
+>> Meanwhile, you can use signals and you don't need preemption:
+>
+>
+> I looked at using signals, but it seemed complex in terms of situations where I have multiple wards and am closing a subset of beds on each ward (ie not all patients need kicking!) It did strike me that it might be possible to assign all patients already in beds to have a very high priority, and each time a bed closure occurs to kick them all out using a signal, and let them scramble to get back in!
+
+Yeap, a "rollback" inside the signal handler would do the trick.
+
+Iñaki
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Nov 28 17:03:27 2018
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 28 Nov 2018 17:03:27 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.ONecs7xaBgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.utuFM-RXBgAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com> <-KWhDnPuBSQ.utuFM-RXBgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/ONecs7xaBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wed, 28 Nov 2018 at 17:11, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+>
+> On Wed, 28 Nov 2018 at 16:45, Tom Lawton <t...@t-lawton.org> wrote:
+> > On Wednesday, November 28, 2018 at 3:32:22 PM UTC, Iñaki Úcar wrote:
+> >>
+> >> On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+> >> > On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+> >>
+> >> The problem (for your use case) is that the "reject" trajectory is not
+> >> honored in such cases, as it would be if the resource is denied in the
+> >> first place. But now that you put it in that way, maybe this is
+> >> confusing, and maybe the "reject" trajectory should be followed by
+> >> rejections due to preemption too. I have to think about it.
+> >
+> >
+> >  Thanks for the quick response - I've just been looking through the C code and realised the same! In my original "blocker" example the two pre-empted customers just vanish and never complete. It would certainly make sense to me to have some way of defining a trajectory for preemption. Though presumably some of the "success" trajectory gets followed too. A new set of functions working like the way "renege" works might cover all bases?
+>
+> A new set of functions would be overkilling. I was thinking about
+> letting them retry the "seize" activity.
+
+After some thought, I don't think we should change the current
+behaviour. Once the seize is executed, either the arrival is enqueued
+or served, the execution advances to the next activity. This means
+that, in general, we can't go back, because the seize activity may not
+be reachable anymore (for example, if it is inside a branch and the
+next activity is outside that branch). Furthermore, if we have
+something like this:
+
+trajectory() %>%
+  seize("bed", continue=FALSE, reject=some_trajectory) %>%
+  timeout(12) %>%
+  ... %>%
+  timeout(5) %>%
+  release("bed")
+
+And preemption (and rejection) occurs in the last timeout, I don't
+think that anybody should expect that the "reject" trajectory
+n-activities behind should be honored.
+
+Instead, there are signaling mechanisms (trap > send, or renege_if >
+send) that allows us to implement your use case and redirect the
+arrivals in a controlled way (even to retry seizing with different
+priorities, as you said).
+
+Iñaki
+
+From u7840f0c79a42cce9 at groups.google.com  Wed Nov 28 17:40:28 2018
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Wed, 28 Nov 2018 17:40:28 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.FnV57ryDCgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/FnV57ryDCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wednesday, November 28, 2018 at 5:03:27 PM UTC, Iñaki Úcar wrote:
+> On Wed, 28 Nov 2018 at 17:11, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> > On Wed, 28 Nov 2018 at 16:45, Tom Lawton <t...@t-lawton.org> wrote:
+> > > On Wednesday, November 28, 2018 at 3:32:22 PM UTC, Iñaki Úcar wrote:
+> > >> On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+> > >> > On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+
+>  I don't
+> think that anybody should expect that the "reject" trajectory
+> n-activities behind should be honored.
+
+I agree - that's why I was wondering about something similar to the renege functions to let me specifically set a reject trajectory. However, if it can be done reasonably with signals I'm up for trying that!
+
+> Instead, there are signaling mechanisms (trap > send, or renege_if >
+> send) that allows us to implement your use case and redirect the
+> arrivals in a controlled way (even to retry seizing with different
+> priorities, as you said).
+
+ Do you have any recommendations on best practice here? I'm trying to avoid using my "everyone releases and seizes the bed on a signal" because it seems wrong (plus, what's the effect of trying to release a resource that's been pre-empted off you?) I don't really want to risk my patients sitting in queues as they always need to occupy a resource, but if I use a strict zero queue size then patient trajectories just get terminated when they have their bed closed. I need some way of allowing the pre-empted patients to head off down a new trajectory (where they select a new bed to move into, representing a transfer) whilst all the ones still in beds get left alone as much as is possible.
+
+tom
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Nov 28 20:28:34 2018
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 28 Nov 2018 20:28:34 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.9isw7fEgCwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.FnV57ryDCgAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com> <-KWhDnPuBSQ.FnV57ryDCgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/9isw7fEgCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wed, 28 Nov 2018 at 18:40, Tom Lawton <t...@t-lawton.org> wrote:
+>
+> On Wednesday, November 28, 2018 at 5:03:27 PM UTC, Iñaki Úcar wrote:
+>>
+>> On Wed, 28 Nov 2018 at 17:11, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+>> > On Wed, 28 Nov 2018 at 16:45, Tom Lawton <t...@t-lawton.org> wrote:
+>> > > On Wednesday, November 28, 2018 at 3:32:22 PM UTC, Iñaki Úcar wrote:
+>> > >> On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+>> > >> > On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+>
+>
+>>
+>>  I don't
+>> think that anybody should expect that the "reject" trajectory
+>> n-activities behind should be honored.
+>
+>
+> I agree - that's why I was wondering about something similar to the renege functions to let me specifically set a reject trajectory. However, if it can be done reasonably with signals I'm up for trying that!
+>
+>>
+>> Instead, there are signaling mechanisms (trap > send, or renege_if >
+>> send) that allows us to implement your use case and redirect the
+>> arrivals in a controlled way (even to retry seizing with different
+>> priorities, as you said).
+>
+>
+>  Do you have any recommendations on best practice here? I'm trying to avoid using my "everyone releases and seizes the bed on a signal" because it seems wrong (plus, what's the effect of trying to release a resource that's been pre-empted off you?) I don't really want to risk my patients sitting in queues as they always need to occupy a resource, but if I use a strict zero queue size then patient trajectories just get terminated when they have their bed closed. I need some way of allowing the pre-empted patients to head off down a new trajectory (where they select a new bed to move into, representing a transfer) whilst all the ones still in beds get left alone as much as is possible.
+
+Did you take a look at the C++ core? When an arrival is rejected, the
+"terminate" method is called with the "finished" parameter set to
+false. What we could do would be to implement a new activity to set a
+global rejection trajectory. In this way, whenever terminate(false) is
+called, the arrival would follow that trajectory. I think this is the
+cleanest solution, because the resource logic doesn't need to be
+touched.
+
+It would work as follows:
+
+rejected <- trajectory() %>%
+  log_("I've been kicked")
+
+patient <- trajectory() %>%
+
+  new_activity(rejected) %>%
+
+  seize("bed") %>%
+
+  timeout(10) %>%
+  release("bed")
+
+What do you think? We would need a good name for the new activity though...
+
+Iñaki
+
+From u7840f0c79a42cce9 at groups.google.com  Wed Nov 28 21:18:59 2018
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Wed, 28 Nov 2018 21:18:59 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.ff8XVpiBCgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/ff8XVpiBCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wednesday, November 28, 2018 at 8:28:34 PM UTC, Iñaki Úcar wrote:
+> On Wed, 28 Nov 2018 at 18:40, Tom Lawton <t...@t-lawton.org> wrote:
+> > On Wednesday, November 28, 2018 at 5:03:27 PM UTC, Iñaki Úcar wrote:
+> >> On Wed, 28 Nov 2018 at 17:11, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> >> > On Wed, 28 Nov 2018 at 16:45, Tom Lawton <t...@t-lawton.org> wrote:
+> >> > > On Wednesday, November 28, 2018 at 3:32:22 PM UTC, Iñaki Úcar wrote:
+> >> > >> On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+> >> > >> > On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+>
+> It would work as follows:
+>
+> rejected <- trajectory() %>%
+>   log_("I've been kicked")
+>
+> patient <- trajectory() %>%
+>   new_activity(rejected) %>%
+>   seize("bed") %>%
+>   timeout(10) %>%
+>   release("bed")
+>
+> What do you think? We would need a good name for the new activity though...
+
+This looks perfect for my needs - definitely in support.
+In terms of names for the activity - preempted()  kicked() terminated() if_preempted()  if_kicked()  if_terminated()  preempted_trajectory()  kicked_trajectory()  terminated_trajectory()  ?
+
+tom
+
+From u6cc0fd77b5c1b0a7 at groups.google.com  Wed Nov 28 22:31:47 2018
+From: u6cc0fd77b5c1b0a7 at groups.google.com (brettg)
+Date: Wed, 28 Nov 2018 22:31:47 +0000
+Subject: Re: Branch Returning Two Values When it is Expecting 1
+Message-ID: <xjsJeRzOkvc.Fbb8SpGFCgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <xjsJeRzOkvc.h8OeXlzGCAAJ@simmer-devel.groups.google.com>
+References: <xjsJeRzOkvc.h8OeXlzGCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/xjsJeRzOkvc/m/Fbb8SpGFCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you very much for the thorough response!
+
+On Saturday, November 24, 2018 at 3:08:10 PM UTC-8, brettg wrote:
+> Hi,
+>
+> Thanks in advance for the help.  I'm trying to get a grasp on all of the features here
+>
+> I figured to teach myself I would try to recreate the dice game they explain in the book The Goal which demonstrates process bottlenecks (https://maaw.info/MatchBowlExperiment.htm) .  The basic principle of the game is that a player rolls a dice and they pass the rolled number of whatever object people are using into an inventory buffer to show the work done that day.  The next player rolls the die and they move that number of objects, if they are available in the upstream inventory buffer;  if there enough objects available as the dice roll, the downstream player can only move the number of objects in the upstream buffer.  This trend can continue for however many turns and players as one wants.
+>
+> The following code was basically what I came up with.  The first dice roll sets an attribute which is used to control the number of objects passed to Player 1.  At this point I cannot figure out how to control the release of the objects, so Player 2 will only seize the available inventory of Player 1 if the second die roll exceeds the available inventory of Player 1.  I thought I could use a branch to control the two tasks, but I am creating something that is accidentally evaluating 2 values and I get the following error:
+>
+> Error: 'Turn1' at 2.00 in 'Branch':
+>  Expecting a single value: [extent=2].
+>
+> Anyway, Here is the R code. Thanks so much for the help.  There is probably a much easier method for recreating this simulation.
+> ------------------------------------------------------------------
+>
+> library(tidyverse)
+> library(simmer)
+> library(simmer.plot)
+> library(simmer.bricks)
+>
+> die.size <- 6
+>
+> coin.sim <- simmer()
+>
+> coin <- trajectory() %>%
+>   set_attribute("Roll 1", function(){sample(1:die.size, 1)}) %>%
+>   seize("Player 1", amount = function() {get_attribute(coin.sim, "Roll 1")}) %>%
+>   set_attribute("Roll 2", function(){sample(1:die.size, 1)}) %>%
+>   branch(option = function() {
+>
+>     p1.sys <- coin.sim %>%
+>       get_mon_resources() %>%
+>       filter(resource == "Player 1",
+>              time == now(coin.sim)) %>%
+>       .$system
+>
+>     ifelse(p1.sys > get_attribute(coin.sim, "Roll 2"), 1, 2)
+>   },
+>   continue = c(T, T),
+>
+>   trajectory("enough") %>%
+>     timeout(1) %>%
+>     release("Player 1", amount = function() {get_attribute(coin.sim, "Roll 2")}),
+>
+>   trajectory("not enough") %>%
+>     timeout(1) %>%
+>     release("Player 1", amount = function(){
+>
+>       p1.sys <- coin.sim %>%
+>         get_mon_resources() %>%
+>         filter(resource == "Player 1",
+>                time == now(coin.sim)) %>%
+>         .$system
+>       })) %>%
+>   timeout(1)
+>
+> coin.sim <- simmer() %>%
+>   add_resource("Player 1", capacity = Inf) %>%
+>   add_resource("Player 2", capacity = Inf) %>%
+>   add_generator("Turn", coin, at(1:10), mon = 2)
+>
+> coin.sim %>%
+>   run(5)
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Nov 29 09:28:53 2018
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Thu, 29 Nov 2018 09:28:53 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.jzOf0YZLCwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/jzOf0YZLCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+El mié., 28 nov. 2018 22:19, Tom Lawton <t...@t-lawton.org> escribió:
+> On Wednesday, November 28, 2018 at 8:28:34 PM UTC, Iñaki Úcar wrote:
+> > On Wed, 28 Nov 2018 at 18:40, Tom Lawton <t...@t-lawton.org> wrote:
+> > > On Wednesday, November 28, 2018 at 5:03:27 PM UTC, Iñaki Úcar wrote:
+> > >> On Wed, 28 Nov 2018 at 17:11, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> > >> > On Wed, 28 Nov 2018 at 16:45, Tom Lawton <t...@t-lawton.org> wrote:
+> > >> > > On Wednesday, November 28, 2018 at 3:32:22 PM UTC, Iñaki Úcar wrote:
+> > >> > >> On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+> > >> > >> > On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+> >
+> > It would work as follows:
+> >
+> > rejected <- trajectory() %>%
+> >   log_("I've been kicked")
+> >
+> > patient <- trajectory() %>%
+> >   new_activity(rejected) %>%
+> >   seize("bed") %>%
+> >   timeout(10) %>%
+> >   release("bed")
+> >
+> > What do you think? We would need a good name for the new activity though...
+>
+> This looks perfect for my needs - definitely in support.
+> In terms of names for the activity - preempted()  kicked() terminated() if_preempted()  if_kicked()  if_terminated()  preempted_trajectory()  kicked_trajectory()  terminated_trajectory()  ?
+
+Thanks. A verb would be better, like other activities, and something more general. Moreover, "terminated" alludes to the internal API, which doesn't need to be known by users. And "kicked" and "preempted" is very resource specific. There is another case that should take that trajectory: after the "leave" activity. And in the future may be more cases, so I would pick a more generic name.
+
+I was thinking that this is like a "catch" block in a try-catch, but maybe "catch" is too generic? What about "handle_exception", "handle_rejection"...? Any more ideas in this line?
+
+Iñaki
+
+From u7840f0c79a42cce9 at groups.google.com  Thu Nov 29 10:41:30 2018
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Thu, 29 Nov 2018 10:41:30 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.Hc2pPGOtCgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.jzOf0YZLCwAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com> <-KWhDnPuBSQ.jzOf0YZLCwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/Hc2pPGOtCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Thursday, November 29, 2018 at 9:28:53 AM UTC, Iñaki Úcar wrote:
+> El mié., 28 nov. 2018 22:19, Tom Lawton <t...@t-lawton.org> escribió:
+> > On Wednesday, November 28, 2018 at 8:28:34 PM UTC, Iñaki Úcar wrote:
+> > > On Wed, 28 Nov 2018 at 18:40, Tom Lawton <t...@t-lawton.org> wrote:
+> > > > On Wednesday, November 28, 2018 at 5:03:27 PM UTC, Iñaki Úcar wrote:
+> > > >> On Wed, 28 Nov 2018 at 17:11, Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> > > >> > On Wed, 28 Nov 2018 at 16:45, Tom Lawton <t...@t-lawton.org> wrote:
+> > > >> > > On Wednesday, November 28, 2018 at 3:32:22 PM UTC, Iñaki Úcar wrote:
+> > > >> > >> On Wed, 28 Nov 2018 at 15:37, Tom Lawton <t...@t-lawton.org> wrote:
+> > > >> > >> > On Friday, November 23, 2018 at 12:18:12 PM UTC, Tom Lawton wrote:
+>
+> I was thinking that this is like a "catch" block in a try-catch, but maybe "catch" is too generic? What about "handle_exception", "handle_rejection"...? Any more ideas in this line?
+
+Thanks for looking into this!
+
+I have to say I quite like "catch", though is there any risk people might confuse it for a more generic (ie R-based) error handler? "handle_exception" makes sense to me too. "handle_rejection" seems confusing as we can already handle some forms of rejection by passing a trajectory to seize()
+
+Along similar lines - handle_exit  handle_unfinished  cleanup  finalise (which would have to be even more generic and allow people to specify a trajectory even if 'finished')
+
+Whilst I agree with you about it being generic, I think it would be important to either be able to set flags to show what events you're interested in, or specify trajectories for different events, or have variables available to show what's happened (or a combination). Though I guess it depends on how many routes into it there are (for now it seems to be leave() and being pre-empted without a queue to fall into? And for leave() we can set an attribute immediately prior)
+
+tom
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Nov 29 11:01:07 2018
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Thu, 29 Nov 2018 11:01:07 +0000
+Subject: Re: [simmer-devel] Re: Detecting when capacity exceeded after set_capacity
+Message-ID: <-KWhDnPuBSQ.HDuEfo9QCwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <-KWhDnPuBSQ.Hc2pPGOtCgAJ@simmer-devel.groups.google.com>
+References: <-KWhDnPuBSQ.U2Ch8U9UCAAJ@simmer-devel.groups.google.com> <-KWhDnPuBSQ.Hc2pPGOtCgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/-KWhDnPuBSQ/m/HDuEfo9QCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Thu, 29 Nov 2018 at 11:41, Tom Lawton <t...@t-lawton.org> wrote:
+>
+> I have to say I quite like "catch", though is there any risk people might confuse it for a more generic (ie R-based) error handler? "handle_exception" makes sense to me too. "handle_rejection" seems confusing as we can already handle some forms of rejection by passing a trajectory to seize()
+
+Agree.
+
+> Along similar lines - handle_exit  handle_unfinished  cleanup  finalise (which would have to be even more generic and allow people to specify a trajectory even if 'finished')
+
+I particularly like handle_unfinished. Unless we come up with a
+brilliant idea, I think this one is the best.
+
+> Whilst I agree with you about it being generic, I think it would be important to either be able to set flags to show what events you're interested in, or specify trajectories for different events, or have variables available to show what's happened (or a combination). Though I guess it depends on how many routes into it there are (for now it seems to be leave() and being pre-empted without a queue to fall into? And for leave() we can set an attribute immediately prior)
+
+There are already flags to show what happened. If the arrival was
+preempted or dropped from a queue, get_mon_arrivals(per_resource=TRUE)
+will show the seize event, and from the activity time you know whether
+it was a preemption or a queue drop. If there is no info in such a
+table, then the arrival left the trajectory using "leave".
+
+I've opened a new issue on GitHub to track this:
+
+https://github.com/r-simmer/simmer/issues/177
+
+If you have any further comments or suggestions, please put them
+there. And thanks for your feedback!
+
+Iñaki
+

@@ -1,0 +1,2229 @@
+From ucc9ad6130d21e6c8 at groups.google.com  Fri Dec  1 13:45:01 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Fri, 01 Dec 2017 13:45:01 +0000
+Subject: Optimization of the pause times
+Message-ID: <vkdI_Q4ZbjM.I1oE8gj2AAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/vkdI_Q4ZbjM/m/I1oE8gj2AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I used the example on GitHub for the parameter optimization(simmer.optim) for the pause breaks that I asked on the other topic, but I'm getting very strange results. Maybe I'm missing some conceptual thing here or my code has some mistake.
+
+The questions is, given a set times for the resources to have a break, what combination would give more finished arrivals (completed events)?
+So, for the example, I set that the nurse and cardiologist would be allowed to take a 5min break, every hour. The break could be at 1:20 or 1:25,1:30...1:50 and so on for each hour that I'm simulating. The code is this:
+
+library(simmer)
+library(simmer.optim)
+
+sim_model<-function(){
+
+  t0<-create_trajectory() %>%
+    seize("nurse") %>%
+    timeout(function() rpois(1, 10)) %>%
+    release("nurse") %>%
+    seize("cardiologist") %>%
+    timeout(function() rpois(1, 20)) %>%
+    release("cardiologist")
+
+  pause1<- trajectory("Pause") %>%
+    seize("nurse") %>%
+    timeout(5) %>%
+    release("nurse")
+
+  pause2<- trajectory("Pause") %>%
+    seize("cardiologist") %>%
+    timeout(5) %>%
+    release("cardiologist")
+
+  env<-simmer() %>%
+    add_generator("patient", t0, function() .opt("interarrival_time")) %>%
+    add_generator("pause1", pause1, from(.opt("pause1_time"), function() 60),priority=1,mon=0)%>%
+    add_generator("pause2", pause2, from(.opt("pause2_time"), function() 60),priority=1,mon=0)%>%
+    add_resource("nurse", .opt("nr_nurses"),preemptive=TRUE) %>%
+    add_resource("cardiologist", .opt("nr_cardiologists"))
+
+  env
+}
+
+assert_within_budget<-function(envs, budget){
+  runtime_hrs <- (msr_runtime(envs)-40) / 60
+  number_nurses <- msr_resource_capacity(envs, "nurse")
+  number_cardiologists <- msr_resource_capacity(envs, "cardiologist")
+
+  (number_nurses * runtime_hrs * 50 +
+      number_cardiologists * runtime_hrs * 100 ) <= budget
+}
+
+r<- simmer_optim(
+  model = sim_model,
+  method = de_optim,
+  direction = "max",
+  objective = msr_arrivals_finished,
+  constraints = list(with_args(assert_within_budget, budget = 1000),
+                     with_args(assert_avg_waiting_time_max, max_val = 30)),
+  params = list(nr_nurses = par_discrete(1:4),
+                nr_cardiologists = par_discrete(1:4),
+                interarrival_time = par_discrete(c(10, 15, 20, 25)),
+                pause1_time=par_discrete(c(20,25,30,35,40,45,50)), # here the starting times for the breaks
+                pause2_time=par_discrete(c(20,25,30,35,40,45,50))
+                ),
+  control = optim_control(run_args = list(until=4*60),
+                          de_optim = RcppDE::DEoptim.control(itermax = 10,trace = T)))
+r
+
+The problem is, every time I run the simulation, I get different results for the pause time.
+Does that mean the function has multiple minimums? What am I doing something wrong on the code?
+
+From u0f5b7adb7e70bd8b at groups.google.com  Fri Dec  1 14:14:25 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Fri, 01 Dec 2017 14:14:25 +0000
+Subject: Re: [simmer-devel] Optimization of the pause times
+Message-ID: <vkdI_Q4ZbjM.R5l-HkxOBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <vkdI_Q4ZbjM.I1oE8gj2AAAJ@simmer-devel.groups.google.com>
+References: <vkdI_Q4ZbjM.I1oE8gj2AAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/vkdI_Q4ZbjM/m/R5l-HkxOBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+2017-12-01 14:45 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+
+> Hello,
+>
+> I used the example on GitHub for the parameter optimization(simmer.optim)
+> for the pause breaks that I asked on the other topic, but I'm getting very
+> strange results. Maybe I'm missing some conceptual thing here or my code has
+> some mistake.
+>
+> The questions is, given a set times for the resources to have a break, what
+> combination would give more finished arrivals (completed events)?
+> So, for the example, I set that the nurse and cardiologist would be allowed
+> to take a 5min break, every hour. The break could be at 1:20 or
+> 1:25,1:30...1:50 and so on for each hour that I'm simulating. The code is
+> this:
+
+> ...
+
+> The problem is, every time I run the simulation, I get different results for
+> the pause time.
+> Does that mean the function has multiple minimums? What am I doing something
+> wrong on the code?
+
+At first glance, I see a couple of problems. First, minor, is that
+your cardiologists are not preemptive, so they are not taking their
+pause when they are supposed to. Secondly, the pauseX_time variables
+just set the starting time for the pauses, so I would say that they
+shouldn't impact the results in the long run. In other words, once the
+algorithm finds optimals for nr_nurses, nr_cardiologists and
+interarrival_time, you are basically searching in a more or less flat
+space for pauseX_time.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From ucc9ad6130d21e6c8 at groups.google.com  Wed Dec 13 07:49:29 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Wed, 13 Dec 2017 07:49:29 +0000
+Subject: Re: [simmer-devel] Optimization of the pause times
+Message-ID: <vkdI_Q4ZbjM.8eovY5cbBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <vkdI_Q4ZbjM.R5l-HkxOBwAJ@simmer-devel.groups.google.com>
+References: <vkdI_Q4ZbjM.I1oE8gj2AAAJ@simmer-devel.groups.google.com> <vkdI_Q4ZbjM.R5l-HkxOBwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/vkdI_Q4ZbjM/m/8eovY5cbBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for clarifying!
+I suspected this could be the problem and I confirmed by doing the substitution of the starting time for the pause one by one. It doesn't change the final result at all. It means that it doesn't matter when you start the pause, it will have the same effect on the result, in terms of completions or service time.
+
+On Friday, December 1, 2017 at 3:14:25 PM UTC+1, Iñaki Úcar wrote:
+> 2017-12-01 14:45 GMT+01:00 Victor Hugo Nassau Batista
+> <victor.hu...@gmail.com>:
+> > Hello,
+> >
+> > I used the example on GitHub for the parameter optimization(simmer.optim)
+> > for the pause breaks that I asked on the other topic, but I'm getting very
+> > strange results. Maybe I'm missing some conceptual thing here or my code has
+> > some mistake.
+> >
+> > The questions is, given a set times for the resources to have a break, what
+> > combination would give more finished arrivals (completed events)?
+> > So, for the example, I set that the nurse and cardiologist would be allowed
+> > to take a 5min break, every hour. The break could be at 1:20 or
+> > 1:25,1:30...1:50 and so on for each hour that I'm simulating. The code is
+> > this:
+> > ...
+> > The problem is, every time I run the simulation, I get different results for
+> > the pause time.
+> > Does that mean the function has multiple minimums? What am I doing something
+> > wrong on the code?
+>
+> At first glance, I see a couple of problems. First, minor, is that
+> your cardiologists are not preemptive, so they are not taking their
+> pause when they are supposed to. Secondly, the pauseX_time variables
+> just set the starting time for the pauses, so I would say that they
+> shouldn't impact the results in the long run. In other words, once the
+> algorithm finds optimals for nr_nurses, nr_cardiologists and
+> interarrival_time, you are basically searching in a more or less flat
+> space for pauseX_time.
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2
+
+From ucc9ad6130d21e6c8 at groups.google.com  Wed Dec 13 07:58:04 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Wed, 13 Dec 2017 07:58:04 +0000
+Subject: Re: [simmer-devel] Multiple Branches
+Message-ID: <9E0qXAVEGX4.5F3MOA8cBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9E0qXAVEGX4.GCVJVVeOAQAJ@simmer-devel.groups.google.com>
+References: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com> <9E0qXAVEGX4.GCVJVVeOAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9E0qXAVEGX4/m/5F3MOA8cBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I'm trying to do a branch now with a if statement for a certain value.
+
+The thing is that I have a database with times that I want to use as input for the simulation. Each entry has some variables that I also want to check inside the trajectory. Is there a way I can pass this values to the simulation?
+
+For example:
+time warehouse
+1        1
+4        1
+5        2
+6        3
+
+The input is at(df$time) and I think I should use set_attribute() to pass df$warehouse to each arrival but I don't know how exactly.
+
+And then I want:
+If warehouse=1
+join(trajWH1)
+and so on...
+
+Thanks,
+
+On Friday, November 10, 2017 at 2:23:44 PM UTC+1, Victor Hugo Nassau Batista wrote:
+> It works fine!
+>
+> Thanks Inaki!
+>
+> On Friday, November 10, 2017 at 2:14:58 PM UTC+1, Iñaki Úcar wrote:
+> > 2017-11-10 13:46 GMT+01:00 Victor Hugo Nassau Batista
+> > <victor.hu...@gmail.com>:
+> > > Hello,
+> > >
+> > > I want to define percentages for 3 branches, say 30%,20% and 50%
+> > > respectively. What function should I use?
+> > >
+> > > With this function they are sorted with the same percentage, that would be
+> > > 33,3%
+> > >
+> > > branch(function() sample(1:3, 1),continue=c(T,T,T),
+> > >          trajectory()%>%
+> > >            WH_(1),
+> > >          trajectory()%>%
+> > >            WH_(2),
+> > >          trajectory()%>%
+> > >            WH_(3)
+> > >          )
+> >
+> > The sample function is just fine. Check its documentation: there is a
+> > "prob" argument you may find useful.
+> >
+> > >
+> > > Regards,
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups
+> > > "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an
+> > > email to simmer-devel...@googlegroups.com.
+> > > To post to this group, send email to simmer...@googlegroups.com.
+> > > To view this discussion on the web visit
+> > > https://groups.google.com/d/msgid/simmer-devel/1a4fc4c2-a933-4530-bf7d-5d1d85f9c3af%40googlegroups.com.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > Iñaki Úcar
+> > http://www.enchufa2.es
+> > @Enchufa2
+
+From ucc9ad6130d21e6c8 at groups.google.com  Wed Dec 13 08:43:47 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Wed, 13 Dec 2017 08:43:47 +0000
+Subject: Re: [simmer-devel] Multiple Branches
+Message-ID: <9E0qXAVEGX4.ZL6XCo4eBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9E0qXAVEGX4.5F3MOA8cBAAJ@simmer-devel.groups.google.com>
+References: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com> <9E0qXAVEGX4.5F3MOA8cBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9E0qXAVEGX4/m/ZL6XCo4eBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I found a helper function in
+
+https://stackoverflow.com/questions/44865924/using-simmer-to-build-a-specific-model/44870559#44870559
+
+I'm still trying to understand it, but I think it should work.
+
+On Wednesday, December 13, 2017 at 8:58:04 AM UTC+1, Victor Hugo Nassau Batista wrote:
+> Hello,
+>
+> I'm trying to do a branch now with a if statement for a certain value.
+>
+> The thing is that I have a database with times that I want to use as input for the simulation. Each entry has some variables that I also want to check inside the trajectory. Is there a way I can pass this values to the simulation?
+>
+> For example:
+> time warehouse
+> 1        1
+> 4        1
+> 5        2
+> 6        3
+>
+> The input is at(df$time) and I think I should use set_attribute() to pass df$warehouse to each arrival but I don't know how exactly.
+>
+> And then I want:
+> If warehouse=1
+> join(trajWH1)
+> and so on...
+>
+>
+> Thanks,
+>
+> On Friday, November 10, 2017 at 2:23:44 PM UTC+1, Victor Hugo Nassau Batista wrote:
+> > It works fine!
+> >
+> > Thanks Inaki!
+> >
+> > On Friday, November 10, 2017 at 2:14:58 PM UTC+1, Iñaki Úcar wrote:
+> > > 2017-11-10 13:46 GMT+01:00 Victor Hugo Nassau Batista
+> > > <victor.hu...@gmail.com>:
+> > > > Hello,
+> > > >
+> > > > I want to define percentages for 3 branches, say 30%,20% and 50%
+> > > > respectively. What function should I use?
+> > > >
+> > > > With this function they are sorted with the same percentage, that would be
+> > > > 33,3%
+> > > >
+> > > > branch(function() sample(1:3, 1),continue=c(T,T,T),
+> > > >          trajectory()%>%
+> > > >            WH_(1),
+> > > >          trajectory()%>%
+> > > >            WH_(2),
+> > > >          trajectory()%>%
+> > > >            WH_(3)
+> > > >          )
+> > >
+> > > The sample function is just fine. Check its documentation: there is a
+> > > "prob" argument you may find useful.
+> > >
+> > > >
+> > > > Regards,
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups
+> > > > "simmer-devel" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an
+> > > > email to simmer-devel...@googlegroups.com.
+> > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > To view this discussion on the web visit
+> > > > https://groups.google.com/d/msgid/simmer-devel/1a4fc4c2-a933-4530-bf7d-5d1d85f9c3af%40googlegroups.com.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> > > http://www.enchufa2.es
+> > > @Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Dec 13 10:12:40 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Wed, 13 Dec 2017 10:12:40 +0000
+Subject: Re: [simmer-devel] Multiple Branches
+Message-ID: <9E0qXAVEGX4.o5NpY0TTBgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com>
+References: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9E0qXAVEGX4/m/o5NpY0TTBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes, I have this issue in mind [1], and there will be a more
+convenient way of doing this in future versions. Until then, the
+helper I provided in StackOverflow is the best way to go.
+
+[1] https://github.com/r-simmer/simmer/issues/123
+
+2017-12-13 9:43 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+> I found a helper function in
+>
+> https://stackoverflow.com/questions/44865924/using-simmer-to-build-a-specific-model/44870559#44870559
+>
+> I'm still trying to understand it, but I think it should work.
+>
+>
+> On Wednesday, December 13, 2017 at 8:58:04 AM UTC+1, Victor Hugo Nassau
+> Batista wrote:
+>>
+>> Hello,
+>>
+>> I'm trying to do a branch now with a if statement for a certain value.
+>>
+>> The thing is that I have a database with times that I want to use as input
+>> for the simulation. Each entry has some variables that I also want to check
+>> inside the trajectory. Is there a way I can pass this values to the
+>> simulation?
+>>
+>> For example:
+>> time warehouse
+>> 1        1
+>> 4        1
+>> 5        2
+>> 6        3
+>>
+>> The input is at(df$time) and I think I should use set_attribute() to pass
+>> df$warehouse to each arrival but I don't know how exactly.
+>>
+>> And then I want:
+>> If warehouse=1
+>> join(trajWH1)
+>> and so on...
+>>
+>>
+>> Thanks,
+>>
+>> On Friday, November 10, 2017 at 2:23:44 PM UTC+1, Victor Hugo Nassau
+>> Batista wrote:
+>>>
+>>> It works fine!
+>>>
+>>> Thanks Inaki!
+>>>
+>>> On Friday, November 10, 2017 at 2:14:58 PM UTC+1, Iñaki Úcar wrote:
+>>>>
+>>>> 2017-11-10 13:46 GMT+01:00 Victor Hugo Nassau Batista
+>>>> <victor.hu...@gmail.com>:
+>>>> > Hello,
+>>>> >
+>>>> > I want to define percentages for 3 branches, say 30%,20% and 50%
+>>>> > respectively. What function should I use?
+>>>> >
+>>>> > With this function they are sorted with the same percentage, that
+>>>> > would be
+>>>> > 33,3%
+>>>> >
+>>>> > branch(function() sample(1:3, 1),continue=c(T,T,T),
+>>>> >          trajectory()%>%
+>>>> >            WH_(1),
+>>>> >          trajectory()%>%
+>>>> >            WH_(2),
+>>>> >          trajectory()%>%
+>>>> >            WH_(3)
+>>>> >          )
+>>>>
+>>>> The sample function is just fine. Check its documentation: there is a
+>>>> "prob" argument you may find useful.
+>>>>
+>>>> >
+>>>> > Regards,
+>>>> >
+>>>> > --
+>>>> > You received this message because you are subscribed to the Google
+>>>> > Groups
+>>>> > "simmer-devel" group.
+>>>> > To unsubscribe from this group and stop receiving emails from it, send
+>>>> > an
+>>>> > email to simmer-devel...@googlegroups.com.
+>>>> > To post to this group, send email to simmer...@googlegroups.com.
+>>>> > To view this discussion on the web visit
+>>>> >
+>>>> > https://groups.google.com/d/msgid/simmer-devel/1a4fc4c2-a933-4530-bf7d-5d1d85f9c3af%40googlegroups.com.
+>>>> > For more options, visit https://groups.google.com/d/optout.
+>>>>
+>>>>
+>>>>
+>>>> --
+>>>> Iñaki Úcar
+>>>> http://www.enchufa2.es
+>>>> @Enchufa2
+>
+> --
+> You received this message because you are subscribed to the Google Groups
+> "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit
+
+> https://groups.google.com/d/msgid/simmer-devel/2df4eba4-7ca3-4154-b83e-dc1da5c1c5f9%40googlegroups.com.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From ucc9ad6130d21e6c8 at groups.google.com  Wed Dec 13 16:00:49 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Wed, 13 Dec 2017 16:00:49 +0000
+Subject: Re: [simmer-devel] Multiple Branches
+Message-ID: <9E0qXAVEGX4.VybNP2c2BAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9E0qXAVEGX4.o5NpY0TTBgAJ@simmer-devel.groups.google.com>
+References: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com> <9E0qXAVEGX4.o5NpY0TTBgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9E0qXAVEGX4/m/VybNP2c2BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The helper function works good, despite I didn't get exactly how it works. Now, could help me to code this if statement...
+
+I want to do a separation of the arrivals (packages) by warehouse based on the attribute they receive from the dataframe. So there should be a step to check the value for the warehouse and then send the package to the respective trajectory. Now the code looks like this:
+
+library(simmer)
+set.seed(654)
+env <- simmer()
+workerCount <- 2
+
+actualData <- data.frame(arrTime = c(1:10,1:5),
+                         warehouse = 1:3,
+                         duration = rnorm(15, 50, 5)) %>%
+  dplyr::arrange(arrTime)
+
+consume <- function(x, prio=FALSE) {
+  i <- 0
+  function() {
+    i <<- i + 1
+    if (prio) c(x[[i]], x[[i]], FALSE)
+    else x[[i]]
+  }
+}
+
+AR1<-trajectory()%>%
+  seize('worker') %>%
+  timeout(function() get_attribute(env,"duration")) %>%
+  release('worker')
+
+AR2<-trajectory()%>%
+  seize('worker') %>%
+  timeout(function() get_attribute(env,"duration")) %>%
+  release('worker')
+
+activityTraj <- trajectory() %>%
+  #set_prioritization(consume(actualData$priority, TRUE)) %>%
+  set_attribute("duration", consume(actualData$duration)) %>%
+  set_attribute("warehouse", consume(actualData$warehouse)) %>%
+  join(function(){
+    if (get_attribute(env,"warehouse")==1)  AR1
+    else AR2
+  })
+
+env %>%
+  add_resource('worker', workerCount, Inf, preemptive = TRUE) %>%
+  add_generator('worker_', activityTraj, at(actualData$arrTime)) %>%
+  run()
+​
+
+Thanks,
+
+On Wednesday, December 13, 2017 at 11:12:40 AM UTC+1, Iñaki Úcar wrote:
+> Yes, I have this issue in mind [1], and there will be a more
+> convenient way of doing this in future versions. Until then, the
+> helper I provided in StackOverflow is the best way to go.
+>
+> [1] https://github.com/r-simmer/simmer/issues/123
+>
+> 2017-12-13 9:43 GMT+01:00 Victor Hugo Nassau Batista
+> <victor.hu...@gmail.com>:
+> > I found a helper function in
+> >
+> > https://stackoverflow.com/questions/44865924/using-simmer-to-build-a-specific-model/44870559#44870559
+> >
+> > I'm still trying to understand it, but I think it should work.
+> >
+> >
+> > On Wednesday, December 13, 2017 at 8:58:04 AM UTC+1, Victor Hugo Nassau
+> > Batista wrote:
+> >>
+> >> Hello,
+> >>
+> >> I'm trying to do a branch now with a if statement for a certain value.
+> >>
+> >> The thing is that I have a database with times that I want to use as input
+> >> for the simulation. Each entry has some variables that I also want to check
+> >> inside the trajectory. Is there a way I can pass this values to the
+> >> simulation?
+> >>
+> >> For example:
+> >> time warehouse
+> >> 1        1
+> >> 4        1
+> >> 5        2
+> >> 6        3
+> >>
+> >> The input is at(df$time) and I think I should use set_attribute() to pass
+> >> df$warehouse to each arrival but I don't know how exactly.
+> >>
+> >> And then I want:
+> >> If warehouse=1
+> >> join(trajWH1)
+> >> and so on...
+> >>
+> >>
+> >> Thanks,
+> >>
+> >> On Friday, November 10, 2017 at 2:23:44 PM UTC+1, Victor Hugo Nassau
+> >> Batista wrote:
+> >>>
+> >>> It works fine!
+> >>>
+> >>> Thanks Inaki!
+> >>>
+> >>> On Friday, November 10, 2017 at 2:14:58 PM UTC+1, Iñaki Úcar wrote:
+> >>>>
+> >>>> 2017-11-10 13:46 GMT+01:00 Victor Hugo Nassau Batista
+> >>>> <victor.hu...@gmail.com>:
+> >>>> > Hello,
+> >>>> >
+> >>>> > I want to define percentages for 3 branches, say 30%,20% and 50%
+> >>>> > respectively. What function should I use?
+> >>>> >
+> >>>> > With this function they are sorted with the same percentage, that
+> >>>> > would be
+> >>>> > 33,3%
+> >>>> >
+> >>>> > branch(function() sample(1:3, 1),continue=c(T,T,T),
+> >>>> >          trajectory()%>%
+> >>>> >            WH_(1),
+> >>>> >          trajectory()%>%
+> >>>> >            WH_(2),
+> >>>> >          trajectory()%>%
+> >>>> >            WH_(3)
+> >>>> >          )
+> >>>>
+> >>>> The sample function is just fine. Check its documentation: there is a
+> >>>> "prob" argument you may find useful.
+> >>>>
+> >>>> >
+> >>>> > Regards,
+> >>>> >
+> >>>> > --
+> >>>> > You received this message because you are subscribed to the Google
+> >>>> > Groups
+> >>>> > "simmer-devel" group.
+> >>>> > To unsubscribe from this group and stop receiving emails from it, send
+> >>>> > an
+> >>>> > email to simmer-devel...@googlegroups.com.
+> >>>> > To post to this group, send email to simmer...@googlegroups.com.
+> >>>> > To view this discussion on the web visit
+> >>>> >
+> >>>> > https://groups.google.com/d/msgid/simmer-devel/1a4fc4c2-a933-4530-bf7d-5d1d85f9c3af%40googlegroups.com.
+> >>>> > For more options, visit https://groups.google.com/d/optout.
+> >>>>
+> >>>>
+> >>>>
+> >>>> --
+> >>>> Iñaki Úcar
+> >>>> http://www.enchufa2.es
+> >>>> @Enchufa2
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msgid/simmer-devel/2df4eba4-7ca3-4154-b83e-dc1da5c1c5f9%40googlegroups.com.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Dec 13 17:25:02 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Wed, 13 Dec 2017 17:25:02 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.gqj5odzqBgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/gqj5odzqBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+About the delayed release... this comment [1] and my response may be
+of interest.
+
+[1] https://github.com/r-simmer/simmer/issues/124#issuecomment-351421681
+
+2017-11-13 14:12 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+
+> Hello,
+>
+> I'm having some trouble to simulate one step of my process. My current
+> simulation looks like this:
+>
+> package<- trajectory("Package transport") %>%
+>
+>   ##FLT Loading
+>   #log_("Transporting")%>%
+>   seize("FLT_Loading",1)%>%
+>   timeout(function() rexp(1, 1/FLT_LoadingTime))%>%
+>   release("FLT_Loading",1)%>%
+>
+>   #Shuttle
+>   batch(20, timeout=40, permanent=F)%>%
+>   #log_("Shuttle")%>%
+>   seize("Shuttle",1)%>%
+>   timeout(function() rexp(1, 1/ShuttleTime))%>%
+>   release("Shuttle",1)
+>
+>   #Shuttles go to 3 warehouses...
+>
+> In this code a shuttle is batched and released at every 20 packages that
+> arrives. But in the real process, multiple shuttles, say 10, are being
+> filled until it completes 20 packages. After the loading is complete, there
+> are 4 available drivers to take 4 of them to the warehouses. The other
+> shuttles, even if loaded, have to wait for a driver to come back. I want to
+> how I can put these multiple shuttles at the simulation. I could consider
+> them as new resources, with a capacity of 20, but still I have the problem
+> to simulate that they are transported in batches. There is also a question
+> with the time the empty shuttle takes to come back from the warehouse, while
+> the packages continue their trajectories. Any idea?
+>
+> Thanks,
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/simmer-devel/b06ea7d1-ad8f-4c70-bec2-0c3514cc1dff%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Dec 13 18:56:06 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Wed, 13 Dec 2017 18:56:06 +0000
+Subject: Re: [simmer-devel] Multiple Branches
+Message-ID: <9E0qXAVEGX4.AMC3otTvBgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com>
+References: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9E0qXAVEGX4/m/AMC3otTvBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+2017-12-13 17:00 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+
+> The helper function works good, despite I didn't get exactly how it works.
+> Now, could help me to code this if statement...
+
+Given that you don't need to assign priorities, just attributes, the
+helper function can be simplified as follows:
+
+consume <- function(x) {
+
+  i <- 0
+  function() {
+    i <<- i + 1
+
+    x[[i]]
+  }
+}
+
+This helper returns a closure. Each call increments the index and
+returns the corresponding element from the x vector. That's how it
+works.
+
+> I want to do a separation of the arrivals (packages) by warehouse based on
+> the attribute they receive from the dataframe. So there should be a step to
+> check the value for the warehouse and then send the package to the
+> respective trajectory.
+
+The join() method does not accept a function as input. You need a branch():
+
+branch(
+  get_attribute(env,"warehouse")==1,
+  continue=c(TRUE, TRUE),
+  AR1, AR2
+)
+
+>
+> library(simmer)
+> set.seed(654)
+> env <- simmer()
+> workerCount <- 2
+>
+> actualData <- data.frame(arrTime = c(1:10,1:5),
+>                          warehouse = 1:3,
+>                          duration = rnorm(15, 50, 5)) %>%
+>   dplyr::arrange(arrTime)
+>
+> consume <- function(x, prio=FALSE) {
+>   i <- 0
+>   function() {
+>     i <<- i + 1
+>     if (prio) c(x[[i]], x[[i]], FALSE)
+>     else x[[i]]
+>   }
+> }
+>
+> AR1<-trajectory()%>%
+>   seize('worker') %>%
+>   timeout(function() get_attribute(env,"duration")) %>%
+>   release('worker')
+>
+> AR2<-trajectory()%>%
+>   seize('worker') %>%
+>   timeout(function() get_attribute(env,"duration")) %>%
+>   release('worker')
+>
+> activityTraj <- trajectory() %>%
+>   #set_prioritization(consume(actualData$priority, TRUE)) %>%
+>   set_attribute("duration", consume(actualData$duration)) %>%
+>   set_attribute("warehouse", consume(actualData$warehouse)) %>%
+>   join(function(){
+>     if (get_attribute(env,"warehouse")==1)  AR1
+>     else AR2
+>   })
+>
+> env %>%
+>   add_resource('worker', workerCount, Inf, preemptive = TRUE) %>%
+>   add_generator('worker_', activityTraj, at(actualData$arrTime)) %>%
+>   run()
+>
+>
+> Thanks,
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From ucc9ad6130d21e6c8 at groups.google.com  Thu Dec 14 08:08:23 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Thu, 14 Dec 2017 08:08:23 +0000
+Subject: Re: [simmer-devel] Multiple Branches
+Message-ID: <9E0qXAVEGX4.EJZc8TNrBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9E0qXAVEGX4.AMC3otTvBgAJ@simmer-devel.groups.google.com>
+References: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com> <9E0qXAVEGX4.AMC3otTvBgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9E0qXAVEGX4/m/EJZc8TNrBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for clarifying!
+
+I suspected I needed a branch instead, but didn't figure out it could be so simple. Now the code looks like this:
+activityTraj <- trajectory() %>%
+  #set_prioritization(consume(actualData$priority, TRUE)) %>%
+  set_attribute("duration", consume(actualData$duration)) %>%
+  set_attribute("warehouse", consume(actualData$warehouse)) %>%
+  branch( function()
+    get_attribute(env,"warehouse"),
+    continue=c(TRUE, TRUE,TRUE),
+    AR1, AR2, AR3
+  )
+​
+I'm not that good in R programming but I'll check what does a closure mean, or why there is one function inside the other..
+
+Thank you very much!!
+
+On Wednesday, December 13, 2017 at 7:56:06 PM UTC+1, Iñaki Úcar wrote:
+> 2017-12-13 17:00 GMT+01:00 Victor Hugo Nassau Batista
+> <victor.hu...@gmail.com>:
+> > The helper function works good, despite I didn't get exactly how it works.
+> > Now, could help me to code this if statement...
+>
+> Given that you don't need to assign priorities, just attributes, the
+> helper function can be simplified as follows:
+>
+> consume <- function(x) {
+>   i <- 0
+>   function() {
+>     i <<- i + 1
+>     x[[i]]
+>   }
+> }
+>
+> This helper returns a closure. Each call increments the index and
+> returns the corresponding element from the x vector. That's how it
+> works.
+>
+> > I want to do a separation of the arrivals (packages) by warehouse based on
+> > the attribute they receive from the dataframe. So there should be a step to
+> > check the value for the warehouse and then send the package to the
+> > respective trajectory.
+>
+> The join() method does not accept a function as input. You need a branch():
+>
+> branch(
+>   get_attribute(env,"warehouse")==1,
+>   continue=c(TRUE, TRUE),
+>   AR1, AR2
+> )
+>
+> >
+> > library(simmer)
+> > set.seed(654)
+> > env <- simmer()
+> > workerCount <- 2
+> >
+> > actualData <- data.frame(arrTime = c(1:10,1:5),
+> >                          warehouse = 1:3,
+> >                          duration = rnorm(15, 50, 5)) %>%
+> >   dplyr::arrange(arrTime)
+> >
+> > consume <- function(x, prio=FALSE) {
+> >   i <- 0
+> >   function() {
+> >     i <<- i + 1
+> >     if (prio) c(x[[i]], x[[i]], FALSE)
+> >     else x[[i]]
+> >   }
+> > }
+> >
+> > AR1<-trajectory()%>%
+> >   seize('worker') %>%
+> >   timeout(function() get_attribute(env,"duration")) %>%
+> >   release('worker')
+> >
+> > AR2<-trajectory()%>%
+> >   seize('worker') %>%
+> >   timeout(function() get_attribute(env,"duration")) %>%
+> >   release('worker')
+> >
+> > activityTraj <- trajectory() %>%
+> >   #set_prioritization(consume(actualData$priority, TRUE)) %>%
+> >   set_attribute("duration", consume(actualData$duration)) %>%
+> >   set_attribute("warehouse", consume(actualData$warehouse)) %>%
+> >   join(function(){
+> >     if (get_attribute(env,"warehouse")==1)  AR1
+> >     else AR2
+> >   })
+> >
+> > env %>%
+> >   add_resource('worker', workerCount, Inf, preemptive = TRUE) %>%
+> >   add_generator('worker_', activityTraj, at(actualData$arrTime)) %>%
+> >   run()
+> >
+> >
+> > Thanks,
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Dec 14 08:11:31 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Thu, 14 Dec 2017 08:11:31 +0000
+Subject: Re: [simmer-devel] Multiple Branches
+Message-ID: <9E0qXAVEGX4.Q-vzpjwbBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com>
+References: <9E0qXAVEGX4.8LV2bE-MAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9E0qXAVEGX4/m/Q-vzpjwbBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+2017-12-14 9:08 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+>
+
+> I'm not that good in R programming but I'll check what does a closure mean,
+> or why there is one function inside the other..
+
+The following reference may be clarifying in that regard:
+http://adv-r.had.co.nz/Functional-programming.html#closures
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Dec 14 15:55:14 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Thu, 14 Dec 2017 15:55:14 +0000
+Subject: Re: Helpers for common activity patterns
+Message-ID: <ONOkd0b4T_A.ckPenoo0BwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <ONOkd0b4T_A.PbKgAAjEBgAJ@simmer-devel.groups.google.com>
+References: <ONOkd0b4T_A.PbKgAAjEBgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/ONOkd0b4T_A/m/ckPenoo0BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I've created a new package called 'simmer.bricks'. It is aimed to
+provide wrappers for common activity patterns. This initial version
+implements visit(), wait_until() and delayed_release(). To test it,
+you need to install it from GitHub (using remotes or devtools) along
+with the development version of simmer:
+
+remotes::install_github(c("simmer", "simmer.bricks"))
+
+Any feedback would be very welcome.
+
+Iñaki
+
+2017-11-28 11:37 GMT+01:00 Iñaki Úcar <i.uc...@gmail.com>:
+> Hi all,
+>
+> I've opened a thread on GitHub [1] to identify common activity
+> patterns and propose the implementation of helpers for them. Quick
+> example: it is quite common to set an attribute as a counter or
+> identifier that needs to be incremented/decremented over time. So
+> instead of
+>
+> trajectory() %>%
+>   set_attribute("parts", function() get_attribute(env, "parts") + 1)
+>
+> it would be nice having something like
+>
+> trajectory() %>%
+>   add_to_attribute("parts", 1)
+>
+> There are other examples in [1]. I invite everyone to discuss here and
+> propose there (please, do not discuss on GitHub to keep the issue
+> clean) other patterns you may use. Any idea would be greatly
+> appreciated.
+>
+> [1] https://github.com/r-simmer/simmer/issues/124
+>
+> Regards,
+> Iñaki
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Dec 14 15:57:02 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Thu, 14 Dec 2017 15:57:02 +0000
+Subject: Re: Helpers for common activity patterns
+Message-ID: <ONOkd0b4T_A.cNXN1KM0BwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <ONOkd0b4T_A.PbKgAAjEBgAJ@simmer-devel.groups.google.com>
+References: <ONOkd0b4T_A.PbKgAAjEBgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/ONOkd0b4T_A/m/cNXN1KM0BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Sorry, the installation command should be:
+
+remotes::install_github(paste0("r-simmer/", c("simmer", "simmer.bricks")))
+
+2017-12-14 16:55 GMT+01:00 Iñaki Úcar <i.uc...@gmail.com>:
+> I've created a new package called 'simmer.bricks'. It is aimed to
+> provide wrappers for common activity patterns. This initial version
+> implements visit(), wait_until() and delayed_release(). To test it,
+> you need to install it from GitHub (using remotes or devtools) along
+> with the development version of simmer:
+>
+> remotes::install_github(c("simmer", "simmer.bricks"))
+>
+> Any feedback would be very welcome.
+>
+> Iñaki
+>
+> 2017-11-28 11:37 GMT+01:00 Iñaki Úcar <i.uc...@gmail.com>:
+>> Hi all,
+>>
+>> I've opened a thread on GitHub [1] to identify common activity
+>> patterns and propose the implementation of helpers for them. Quick
+>> example: it is quite common to set an attribute as a counter or
+>> identifier that needs to be incremented/decremented over time. So
+>> instead of
+>>
+>> trajectory() %>%
+>>   set_attribute("parts", function() get_attribute(env, "parts") + 1)
+>>
+>> it would be nice having something like
+>>
+>> trajectory() %>%
+>>   add_to_attribute("parts", 1)
+>>
+>> There are other examples in [1]. I invite everyone to discuss here and
+>> propose there (please, do not discuss on GitHub to keep the issue
+>> clean) other patterns you may use. Any idea would be greatly
+>> appreciated.
+>>
+>> [1] https://github.com/r-simmer/simmer/issues/124
+>>
+>> Regards,
+>> Iñaki
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From ucc9ad6130d21e6c8 at groups.google.com  Fri Dec 15 13:26:11 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Fri, 15 Dec 2017 13:26:11 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.ENJLOCDLBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.gqj5odzqBgAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com> <FhtpTAzerh4.gqj5odzqBgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/ENJLOCDLBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello Inaki,
+
+I tried your code with my simulation but it returns that same error as before, when I insert the pauses as priority and the resource as preemptive.
+clone(
+      2,
+      trajectory() %>%
+        release("Shuttle")%>%
+        release("Driver_Shuttle"),
+      trajectory() %>%
+        set_prioritization(function()
+          get_prioritization(env) + c(.Machine$integer.max, .Machine$integer.max, 0)) %>%
+        seize("Shuttle") %>%
+        seize("Driver_Shuttle")%>%
+        timeout(10) %>%
+        release("Shuttle")%>%
+        release("Driver_Shuttle")
+    ) %>%
+    synchronize(wait=FALSE) %>%
+​
+In my case there is the question that the Shuttle and the Driver(or the machine) are detachable. That means that while the Shuttle is unloading, the driver can be free to come back and pick another full Shuttle at the mill or bring an empty Shuttle back. So there are 2 possible states for the Driver to comeback from the warehouses, without a Shuttle or with an empty one. I'm still trying to figure out the conditions for this states and how to simulate it.
+
+I just saw your post about the simmer.bricks and I will also try it. But so far I'm having an error from the installation...
+
+ERROR: lazy loading failed for package 'simmer.bricks'
+​
+I will check another method.
+
+Greetings,
+
+On Wednesday, December 13, 2017 at 6:25:02 PM UTC+1, Iñaki Úcar wrote:
+> About the delayed release... this comment [1] and my response may be
+> of interest.
+>
+> [1] https://github.com/r-simmer/simmer/issues/124#issuecomment-351421681
+>
+> 2017-11-13 14:12 GMT+01:00 Victor Hugo Nassau Batista
+> <victor.hu...@gmail.com>:
+> > Hello,
+> >
+> > I'm having some trouble to simulate one step of my process. My current
+> > simulation looks like this:
+> >
+> > package<- trajectory("Package transport") %>%
+> >
+> >   ##FLT Loading
+> >   #log_("Transporting")%>%
+> >   seize("FLT_Loading",1)%>%
+> >   timeout(function() rexp(1, 1/FLT_LoadingTime))%>%
+> >   release("FLT_Loading",1)%>%
+> >
+> >   #Shuttle
+> >   batch(20, timeout=40, permanent=F)%>%
+> >   #log_("Shuttle")%>%
+> >   seize("Shuttle",1)%>%
+> >   timeout(function() rexp(1, 1/ShuttleTime))%>%
+> >   release("Shuttle",1)
+> >
+> >   #Shuttles go to 3 warehouses...
+> >
+> > In this code a shuttle is batched and released at every 20 packages that
+> > arrives. But in the real process, multiple shuttles, say 10, are being
+> > filled until it completes 20 packages. After the loading is complete, there
+> > are 4 available drivers to take 4 of them to the warehouses. The other
+> > shuttles, even if loaded, have to wait for a driver to come back. I want to
+> > how I can put these multiple shuttles at the simulation. I could consider
+> > them as new resources, with a capacity of 20, but still I have the problem
+> > to simulate that they are transported in batches. There is also a question
+> > with the time the empty shuttle takes to come back from the warehouse, while
+> > the packages continue their trajectories. Any idea?
+> >
+> > Thanks,
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msgid/simmer-devel/b06ea7d1-ad8f-4c70-bec2-0c3514cc1dff%40googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Fri Dec 15 14:30:51 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Fri, 15 Dec 2017 14:30:51 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.mndTbIR-BwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/mndTbIR-BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+2017-12-15 14:26 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+
+> Hello Inaki,
+>
+> I tried your code with my simulation but it returns that same error as
+> before, when I insert the pauses as priority and the resource as preemptive.
+>
+> clone(
+>       2,
+>       trajectory() %>%
+>         release("Shuttle")%>%
+>         release("Driver_Shuttle"),
+>       trajectory() %>%
+>         set_prioritization(function()
+>           get_prioritization(env) + c(.Machine$integer.max,
+> .Machine$integer.max, 0)) %>%
+
+Minor detail, but I've simplified the actiity above as follows:
+
+set_prioritization(c(.Machine$integer.max, .Machine$integer.max, 0))
+
+The function wasn't really needed there.
+
+>         seize("Shuttle") %>%
+>         seize("Driver_Shuttle")%>%
+>         timeout(10) %>%
+>         release("Shuttle")%>%
+>         release("Driver_Shuttle")
+>     ) %>%
+>     synchronize(wait=FALSE) %>%
+>
+> In my case there is the question that the Shuttle and the Driver(or the
+> machine) are detachable. That means that while the Shuttle is unloading, the
+> driver can be free to come back and pick another full Shuttle at the mill or
+> bring an empty Shuttle back. So there are 2 possible states for the Driver
+> to comeback from the warehouses, without a Shuttle or with an empty one. I'm
+> still trying to figure out the conditions for this states and how to
+> simulate it.
+
+I suppose that driver and shuttle have independent delays after
+release, so you should separate them:
+
+...
+delayed_release(env, "Shuttle", 10) %>%
+delayed_release(env, "Driver_Shuttle", 10) %>%
+...
+
+which produces clone > sync > clone > sync.
+
+> I just saw your post about the simmer.bricks and I will also try it. But so
+> far I'm having an error from the installation...
+>
+> ERROR: lazy loading failed for package 'simmer.bricks'
+
+Maybe the installation of simmer from GitHub failed?
+
+Iñaki
+
+From ucc9ad6130d21e6c8 at groups.google.com  Mon Dec 18 10:00:31 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Mon, 18 Dec 2017 10:00:31 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.uKv13107DQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.mndTbIR-BwAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com> <FhtpTAzerh4.mndTbIR-BwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/uKv13107DQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+There was a problem with my installation and I solved during the weekend.
+
+Now, with the new functions, the code is returning this error:
+Error in !is_preemptive(.env, resource) : invalid argument type
+Called from: eval(lhs, parent, parent)
+​
+And the question about the independent delay is that the Shuttle and the driver come together to the wayback. So that makes a 10min delay on both resources. I think the way it is now, makes a 20min delay, with the resources being released at different times. I think I would need something like
+
+delayed_release(env,c("Shuttle","Driver_Shuttle"),10)
+​
+Thanks,
+
+On Friday, December 15, 2017 at 3:30:51 PM UTC+1, Iñaki Úcar wrote:
+> 2017-12-15 14:26 GMT+01:00 Victor Hugo Nassau Batista
+> <victor.hu...@gmail.com>:
+> > Hello Inaki,
+> >
+> > I tried your code with my simulation but it returns that same error as
+> > before, when I insert the pauses as priority and the resource as preemptive.
+> >
+> > clone(
+> >       2,
+> >       trajectory() %>%
+> >         release("Shuttle")%>%
+> >         release("Driver_Shuttle"),
+> >       trajectory() %>%
+> >         set_prioritization(function()
+> >           get_prioritization(env) + c(.Machine$integer.max,
+> > .Machine$integer.max, 0)) %>%
+>
+> Minor detail, but I've simplified the actiity above as follows:
+>
+> set_prioritization(c(.Machine$integer.max, .Machine$integer.max, 0))
+>
+> The function wasn't really needed there.
+>
+> >         seize("Shuttle") %>%
+> >         seize("Driver_Shuttle")%>%
+> >         timeout(10) %>%
+> >         release("Shuttle")%>%
+> >         release("Driver_Shuttle")
+> >     ) %>%
+> >     synchronize(wait=FALSE) %>%
+> >
+> > In my case there is the question that the Shuttle and the Driver(or the
+> > machine) are detachable. That means that while the Shuttle is unloading, the
+> > driver can be free to come back and pick another full Shuttle at the mill or
+> > bring an empty Shuttle back. So there are 2 possible states for the Driver
+> > to comeback from the warehouses, without a Shuttle or with an empty one. I'm
+> > still trying to figure out the conditions for this states and how to
+> > simulate it.
+>
+> I suppose that driver and shuttle have independent delays after
+> release, so you should separate them:
+>
+> ...
+> delayed_release(env, "Shuttle", 10) %>%
+> delayed_release(env, "Driver_Shuttle", 10) %>%
+> ...
+>
+> which produces clone > sync > clone > sync.
+>
+> > I just saw your post about the simmer.bricks and I will also try it. But so
+> > far I'm having an error from the installation...
+> >
+> > ERROR: lazy loading failed for package 'simmer.bricks'
+>
+> Maybe the installation of simmer from GitHub failed?
+>
+> Iñaki
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Dec 18 10:15:33 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Mon, 18 Dec 2017 10:15:33 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.7Xy-zC88DQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.mndTbIR-BwAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com> <FhtpTAzerh4.mndTbIR-BwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/7Xy-zC88DQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+2017-12-18 11:00 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+
+> There was a problem with my installation and I solved during the weekend.
+>
+> Now, with the new functions, the code is returning this error:
+>
+> Error in !is_preemptive(.env, resource) : invalid argument type
+> Called from: eval(lhs, parent, parent)
+
+delayed_release() uses a new function, is_preemptive(), to check
+whether the resource is preemptive or not, thus producing the right
+sequence of activities. Therefore, you need to add your resources to
+the environment *before* calling delayed_release.
+
+>
+> And the question about the independent delay is that the Shuttle and the
+> driver come together to the wayback. So that makes a 10min delay on both
+> resources. I think the way it is now, makes a 20min delay, with the
+> resources being released at different times. I think I would need something
+> like
+>
+> delayed_release(env,c("Shuttle","Driver_Shuttle"),10)
+
+That won't work. You need one delayed_release for the shuttle, one for
+the driver. That makes 10 min each and the resources are released at
+the same time if the times are equal.
+
+>
+> Thanks,
+>
+> On Friday, December 15, 2017 at 3:30:51 PM UTC+1, Iñaki Úcar wrote:
+>>
+>> 2017-12-15 14:26 GMT+01:00 Victor Hugo Nassau Batista
+>> <victor.hu...@gmail.com>:
+>> > Hello Inaki,
+>> >
+>> > I tried your code with my simulation but it returns that same error as
+>> > before, when I insert the pauses as priority and the resource as
+>> > preemptive.
+>> >
+>> > clone(
+>> >       2,
+>> >       trajectory() %>%
+>> >         release("Shuttle")%>%
+>> >         release("Driver_Shuttle"),
+>> >       trajectory() %>%
+>> >         set_prioritization(function()
+>> >           get_prioritization(env) + c(.Machine$integer.max,
+>> > .Machine$integer.max, 0)) %>%
+>>
+>> Minor detail, but I've simplified the actiity above as follows:
+>>
+>> set_prioritization(c(.Machine$integer.max, .Machine$integer.max, 0))
+>>
+>> The function wasn't really needed there.
+>>
+>> >         seize("Shuttle") %>%
+>> >         seize("Driver_Shuttle")%>%
+>> >         timeout(10) %>%
+>> >         release("Shuttle")%>%
+>> >         release("Driver_Shuttle")
+>> >     ) %>%
+>> >     synchronize(wait=FALSE) %>%
+>> >
+>> > In my case there is the question that the Shuttle and the Driver(or the
+>> > machine) are detachable. That means that while the Shuttle is unloading,
+>> > the
+>> > driver can be free to come back and pick another full Shuttle at the
+>> > mill or
+>> > bring an empty Shuttle back. So there are 2 possible states for the
+>> > Driver
+>> > to comeback from the warehouses, without a Shuttle or with an empty one.
+>> > I'm
+>> > still trying to figure out the conditions for this states and how to
+>> > simulate it.
+>>
+>> I suppose that driver and shuttle have independent delays after
+>> release, so you should separate them:
+>>
+>> ...
+>> delayed_release(env, "Shuttle", 10) %>%
+>> delayed_release(env, "Driver_Shuttle", 10) %>%
+>> ...
+>>
+>> which produces clone > sync > clone > sync.
+>>
+>> > I just saw your post about the simmer.bricks and I will also try it. But
+>> > so
+>> > far I'm having an error from the installation...
+>> >
+>> > ERROR: lazy loading failed for package 'simmer.bricks'
+>>
+>> Maybe the installation of simmer from GitHub failed?
+>>
+>> Iñaki
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit
+
+> https://groups.google.com/d/msgid/simmer-devel/fd006baa-3c5c-49a8-88f8-3af52dde129b%40googlegroups.com.
+
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From ucc9ad6130d21e6c8 at groups.google.com  Mon Dec 18 10:52:23 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Mon, 18 Dec 2017 10:52:23 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.mpDZgzI-DQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.7Xy-zC88DQAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com> <FhtpTAzerh4.7Xy-zC88DQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/mpDZgzI-DQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I rearranged the code and it seems to work.
+WH_ <- function(., id){
+
+  seize(.,"Shuttle")%>%
+    seize(.,"Driver_Shuttle")%>%
+    log_("going")%>%
+    timeout(10)%>% #time spent to come to the warehouse
+    delayed_release(env,"Driver_Shuttle",10)%>%
+
+    seize(., paste0("FLT_UL_", id), 1) %>%
+    timeout(50) %>%
+    release(.,paste0("FLT_UL_", id), 1)%>%
+
+    seize("Driver_Shuttle")%>%
+    delayed_release(env,"Shuttle",10)%>%
+    delayed_release(env,"Driver_Shuttle",10)%>%
+
+    separate(.)%>% #is the equivalent of opening the shuttle
+    log_("in the WH")
+}
+
+packstück<- trajectory("packstück transport") %>%
+  batch(10, timeout=15, permanent=F)%>%
+
+  #Shuttles go to 3 warehouses
+  branch(function() sample(1:3, 1,prob = c(0.43,0.33,0.24)),continue=c(T,T,T),
+         trajectory()%>%
+           WH_(1),
+         trajectory()%>%
+           WH_(2),
+         trajectory()%>%
+           WH_(3)
+  )
+​
+But now I have another question. I used the delayed release 2 times, for the wayback of the driver alone and the wayback of the shuttle. Since there is a separate() after the second delayed release, for some reason I have an end_time for the package taking into account also the delayed_release() time. Curiously, that doesn't happen with the batch time in the first delayed release. Why does that happen?
+
+On Monday, December 18, 2017 at 11:15:33 AM UTC+1, Iñaki Úcar wrote:
+> 2017-12-18 11:00 GMT+01:00 Victor Hugo Nassau Batista
+> <victor.hu...@gmail.com>:
+> > There was a problem with my installation and I solved during the weekend.
+> >
+> > Now, with the new functions, the code is returning this error:
+> >
+> > Error in !is_preemptive(.env, resource) : invalid argument type
+> > Called from: eval(lhs, parent, parent)
+>
+> delayed_release() uses a new function, is_preemptive(), to check
+> whether the resource is preemptive or not, thus producing the right
+> sequence of activities. Therefore, you need to add your resources to
+> the environment *before* calling delayed_release.
+>
+> >
+> > And the question about the independent delay is that the Shuttle and the
+> > driver come together to the wayback. So that makes a 10min delay on both
+> > resources. I think the way it is now, makes a 20min delay, with the
+> > resources being released at different times. I think I would need something
+> > like
+> >
+> > delayed_release(env,c("Shuttle","Driver_Shuttle"),10)
+>
+> That won't work. You need one delayed_release for the shuttle, one for
+> the driver. That makes 10 min each and the resources are released at
+> the same time if the times are equal.
+>
+> >
+> > Thanks,
+> >
+> > On Friday, December 15, 2017 at 3:30:51 PM UTC+1, Iñaki Úcar wrote:
+> >>
+> >> 2017-12-15 14:26 GMT+01:00 Victor Hugo Nassau Batista
+> >> <victor.hu...@gmail.com>:
+> >> > Hello Inaki,
+> >> >
+> >> > I tried your code with my simulation but it returns that same error as
+> >> > before, when I insert the pauses as priority and the resource as
+> >> > preemptive.
+> >> >
+> >> > clone(
+> >> >       2,
+> >> >       trajectory() %>%
+> >> >         release("Shuttle")%>%
+> >> >         release("Driver_Shuttle"),
+> >> >       trajectory() %>%
+> >> >         set_prioritization(function()
+> >> >           get_prioritization(env) + c(.Machine$integer.max,
+> >> > .Machine$integer.max, 0)) %>%
+> >>
+> >> Minor detail, but I've simplified the actiity above as follows:
+> >>
+> >> set_prioritization(c(.Machine$integer.max, .Machine$integer.max, 0))
+> >>
+> >> The function wasn't really needed there.
+> >>
+> >> >         seize("Shuttle") %>%
+> >> >         seize("Driver_Shuttle")%>%
+> >> >         timeout(10) %>%
+> >> >         release("Shuttle")%>%
+> >> >         release("Driver_Shuttle")
+> >> >     ) %>%
+> >> >     synchronize(wait=FALSE) %>%
+> >> >
+> >> > In my case there is the question that the Shuttle and the Driver(or the
+> >> > machine) are detachable. That means that while the Shuttle is unloading,
+> >> > the
+> >> > driver can be free to come back and pick another full Shuttle at the
+> >> > mill or
+> >> > bring an empty Shuttle back. So there are 2 possible states for the
+> >> > Driver
+> >> > to comeback from the warehouses, without a Shuttle or with an empty one.
+> >> > I'm
+> >> > still trying to figure out the conditions for this states and how to
+> >> > simulate it.
+> >>
+> >> I suppose that driver and shuttle have independent delays after
+> >> release, so you should separate them:
+> >>
+> >> ...
+> >> delayed_release(env, "Shuttle", 10) %>%
+> >> delayed_release(env, "Driver_Shuttle", 10) %>%
+> >> ...
+> >>
+> >> which produces clone > sync > clone > sync.
+> >>
+> >> > I just saw your post about the simmer.bricks and I will also try it. But
+> >> > so
+> >> > far I'm having an error from the installation...
+> >> >
+> >> > ERROR: lazy loading failed for package 'simmer.bricks'
+> >>
+> >> Maybe the installation of simmer from GitHub failed?
+> >>
+> >> Iñaki
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msgid/simmer-devel/fd006baa-3c5c-49a8-88f8-3af52dde129b%40googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Dec 18 13:26:30 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Mon, 18 Dec 2017 13:26:30 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.owrhfJtGDQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.7Xy-zC88DQAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com> <FhtpTAzerh4.7Xy-zC88DQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/owrhfJtGDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+2017-12-18 11:52 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+
+> I rearranged the code and it seems to work.
+>
+> WH_ <- function(., id){
+>
+>   seize(.,"Shuttle")%>%
+>     seize(.,"Driver_Shuttle")%>%
+>     log_("going")%>%
+>     timeout(10)%>% #time spent to come to the warehouse
+>     delayed_release(env,"Driver_Shuttle",10)%>%
+>
+>     seize(., paste0("FLT_UL_", id), 1) %>%
+>     timeout(50) %>%
+>     release(.,paste0("FLT_UL_", id), 1)%>%
+>
+>     seize("Driver_Shuttle")%>%
+>     delayed_release(env,"Shuttle",10)%>%
+>     delayed_release(env,"Driver_Shuttle",10)%>%
+>
+>     separate(.)%>% #is the equivalent of opening the shuttle
+>     log_("in the WH")
+> }
+>
+> packstück<- trajectory("packstück transport") %>%
+>   batch(10, timeout=15, permanent=F)%>%
+>
+>   #Shuttles go to 3 warehouses
+>   branch(function() sample(1:3, 1,prob =
+> c(0.43,0.33,0.24)),continue=c(T,T,T),
+>          trajectory()%>%
+>            WH_(1),
+>          trajectory()%>%
+>            WH_(2),
+>          trajectory()%>%
+>            WH_(3)
+>   )
+>
+> But now I have another question. I used the delayed release 2 times, for the
+> wayback of the driver alone and the wayback of the shuttle. Since there is a
+> separate() after the second delayed release, for some reason I have an
+> end_time for the package taking into account also the delayed_release()
+> time. Curiously, that doesn't happen with the batch time in the first
+> delayed release. Why does that happen?
+
+>From get_mon_arrivals(env), I see activity_time=60, which is 10 (time
+spent to come to the warehouse) + 50.
+
+You may want get_mon_arrivals(env, per_resource=TRUE)
+
+>
+>
+> On Monday, December 18, 2017 at 11:15:33 AM UTC+1, Iñaki Úcar wrote:
+>>
+>> 2017-12-18 11:00 GMT+01:00 Victor Hugo Nassau Batista
+>> <victor.hu...@gmail.com>:
+>> > There was a problem with my installation and I solved during the
+>> > weekend.
+>> >
+>> > Now, with the new functions, the code is returning this error:
+>> >
+>> > Error in !is_preemptive(.env, resource) : invalid argument type
+>> > Called from: eval(lhs, parent, parent)
+>>
+>> delayed_release() uses a new function, is_preemptive(), to check
+>> whether the resource is preemptive or not, thus producing the right
+>> sequence of activities. Therefore, you need to add your resources to
+>> the environment *before* calling delayed_release.
+>>
+>> >
+>> > And the question about the independent delay is that the Shuttle and the
+>> > driver come together to the wayback. So that makes a 10min delay on both
+>> > resources. I think the way it is now, makes a 20min delay, with the
+>> > resources being released at different times. I think I would need
+>> > something
+>> > like
+>> >
+>> > delayed_release(env,c("Shuttle","Driver_Shuttle"),10)
+>>
+>> That won't work. You need one delayed_release for the shuttle, one for
+>> the driver. That makes 10 min each and the resources are released at
+>> the same time if the times are equal.
+>>
+>> >
+>> > Thanks,
+>> >
+>> > On Friday, December 15, 2017 at 3:30:51 PM UTC+1, Iñaki Úcar wrote:
+>> >>
+>> >> 2017-12-15 14:26 GMT+01:00 Victor Hugo Nassau Batista
+>> >> <victor.hu...@gmail.com>:
+>> >> > Hello Inaki,
+>> >> >
+>> >> > I tried your code with my simulation but it returns that same error
+>> >> > as
+>> >> > before, when I insert the pauses as priority and the resource as
+>> >> > preemptive.
+>> >> >
+>> >> > clone(
+>> >> >       2,
+>> >> >       trajectory() %>%
+>> >> >         release("Shuttle")%>%
+>> >> >         release("Driver_Shuttle"),
+>> >> >       trajectory() %>%
+>> >> >         set_prioritization(function()
+>> >> >           get_prioritization(env) + c(.Machine$integer.max,
+>> >> > .Machine$integer.max, 0)) %>%
+>> >>
+>> >> Minor detail, but I've simplified the actiity above as follows:
+>> >>
+>> >> set_prioritization(c(.Machine$integer.max, .Machine$integer.max, 0))
+>> >>
+>> >> The function wasn't really needed there.
+>> >>
+>> >> >         seize("Shuttle") %>%
+>> >> >         seize("Driver_Shuttle")%>%
+>> >> >         timeout(10) %>%
+>> >> >         release("Shuttle")%>%
+>> >> >         release("Driver_Shuttle")
+>> >> >     ) %>%
+>> >> >     synchronize(wait=FALSE) %>%
+>> >> >
+>> >> > In my case there is the question that the Shuttle and the Driver(or
+>> >> > the
+>> >> > machine) are detachable. That means that while the Shuttle is
+>> >> > unloading,
+>> >> > the
+>> >> > driver can be free to come back and pick another full Shuttle at the
+>> >> > mill or
+>> >> > bring an empty Shuttle back. So there are 2 possible states for the
+>> >> > Driver
+>> >> > to comeback from the warehouses, without a Shuttle or with an empty
+>> >> > one.
+>> >> > I'm
+>> >> > still trying to figure out the conditions for this states and how to
+>> >> > simulate it.
+>> >>
+>> >> I suppose that driver and shuttle have independent delays after
+>> >> release, so you should separate them:
+>> >>
+>> >> ...
+>> >> delayed_release(env, "Shuttle", 10) %>%
+>> >> delayed_release(env, "Driver_Shuttle", 10) %>%
+>> >> ...
+>> >>
+>> >> which produces clone > sync > clone > sync.
+>> >>
+>> >> > I just saw your post about the simmer.bricks and I will also try it.
+>> >> > But
+>> >> > so
+>> >> > far I'm having an error from the installation...
+>> >> >
+>> >> > ERROR: lazy loading failed for package 'simmer.bricks'
+>> >>
+>> >> Maybe the installation of simmer from GitHub failed?
+>> >>
+>> >> Iñaki
+>> >
+>> > --
+>> > You received this message because you are subscribed to the Google
+>> > Groups
+>> > "simmer-devel" group.
+>> > To unsubscribe from this group and stop receiving emails from it, send
+>> > an
+>> > email to simmer-devel...@googlegroups.com.
+>> > To post to this group, send email to simmer...@googlegroups.com.
+>> > To view this discussion on the web visit
+>> >
+>> > https://groups.google.com/d/msgid/simmer-devel/fd006baa-3c5c-49a8-88f8-3af52dde129b%40googlegroups.com.
+>> > For more options, visit https://groups.google.com/d/optout.
+>>
+>>
+>>
+>> --
+>> Iñaki Úcar
+>> http://www.enchufa2.es
+>> @Enchufa2
+>
+> --
+> You received this message because you are subscribed to the Google Groups
+> "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit
+
+> https://groups.google.com/d/msgid/simmer-devel/835715c8-8cd1-41c6-8e1c-d418ce8936c6%40googlegroups.com.
+
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+
+From ucc9ad6130d21e6c8 at groups.google.com  Tue Dec 19 08:17:00 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Tue, 19 Dec 2017 08:17:00 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.xQVebkyEDQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.owrhfJtGDQAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com> <FhtpTAzerh4.owrhfJtGDQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/xQVebkyEDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes, I was looking for this possibility for a long time, now that opens a new way for me to validate the simulation with the real data I have.
+
+Is there a way to get only the finished arrivals using this?
+
+​
+
+On Monday, December 18, 2017 at 2:26:30 PM UTC+1, Iñaki Úcar wrote:
+> 2017-12-18 11:52 GMT+01:00 Victor Hugo Nassau Batista
+> <victor.hu...@gmail.com>:
+> > I rearranged the code and it seems to work.
+> >
+> > WH_ <- function(., id){
+> >
+> >   seize(.,"Shuttle")%>%
+> >     seize(.,"Driver_Shuttle")%>%
+> >     log_("going")%>%
+> >     timeout(10)%>% #time spent to come to the warehouse
+> >     delayed_release(env,"Driver_Shuttle",10)%>%
+> >
+> >     seize(., paste0("FLT_UL_", id), 1) %>%
+> >     timeout(50) %>%
+> >     release(.,paste0("FLT_UL_", id), 1)%>%
+> >
+> >     seize("Driver_Shuttle")%>%
+> >     delayed_release(env,"Shuttle",10)%>%
+> >     delayed_release(env,"Driver_Shuttle",10)%>%
+> >
+> >     separate(.)%>% #is the equivalent of opening the shuttle
+> >     log_("in the WH")
+> > }
+> >
+> > packstück<- trajectory("packstück transport") %>%
+> >   batch(10, timeout=15, permanent=F)%>%
+> >
+> >   #Shuttles go to 3 warehouses
+> >   branch(function() sample(1:3, 1,prob =
+> > c(0.43,0.33,0.24)),continue=c(T,T,T),
+> >          trajectory()%>%
+> >            WH_(1),
+> >          trajectory()%>%
+> >            WH_(2),
+> >          trajectory()%>%
+> >            WH_(3)
+> >   )
+> >
+> > But now I have another question. I used the delayed release 2 times, for the
+> > wayback of the driver alone and the wayback of the shuttle. Since there is a
+> > separate() after the second delayed release, for some reason I have an
+> > end_time for the package taking into account also the delayed_release()
+> > time. Curiously, that doesn't happen with the batch time in the first
+> > delayed release. Why does that happen?
+>
+> From get_mon_arrivals(env), I see activity_time=60, which is 10 (time
+> spent to come to the warehouse) + 50.
+>
+> You may want get_mon_arrivals(env, per_resource=TRUE)
+>
+> >
+> >
+> > On Monday, December 18, 2017 at 11:15:33 AM UTC+1, Iñaki Úcar wrote:
+> >>
+> >> 2017-12-18 11:00 GMT+01:00 Victor Hugo Nassau Batista
+> >> <victor.hu...@gmail.com>:
+> >> > There was a problem with my installation and I solved during the
+> >> > weekend.
+> >> >
+> >> > Now, with the new functions, the code is returning this error:
+> >> >
+> >> > Error in !is_preemptive(.env, resource) : invalid argument type
+> >> > Called from: eval(lhs, parent, parent)
+> >>
+> >> delayed_release() uses a new function, is_preemptive(), to check
+> >> whether the resource is preemptive or not, thus producing the right
+> >> sequence of activities. Therefore, you need to add your resources to
+> >> the environment *before* calling delayed_release.
+> >>
+> >> >
+> >> > And the question about the independent delay is that the Shuttle and the
+> >> > driver come together to the wayback. So that makes a 10min delay on both
+> >> > resources. I think the way it is now, makes a 20min delay, with the
+> >> > resources being released at different times. I think I would need
+> >> > something
+> >> > like
+> >> >
+> >> > delayed_release(env,c("Shuttle","Driver_Shuttle"),10)
+> >>
+> >> That won't work. You need one delayed_release for the shuttle, one for
+> >> the driver. That makes 10 min each and the resources are released at
+> >> the same time if the times are equal.
+> >>
+> >> >
+> >> > Thanks,
+> >> >
+> >> > On Friday, December 15, 2017 at 3:30:51 PM UTC+1, Iñaki Úcar wrote:
+> >> >>
+> >> >> 2017-12-15 14:26 GMT+01:00 Victor Hugo Nassau Batista
+> >> >> <victor.hu...@gmail.com>:
+> >> >> > Hello Inaki,
+> >> >> >
+> >> >> > I tried your code with my simulation but it returns that same error
+> >> >> > as
+> >> >> > before, when I insert the pauses as priority and the resource as
+> >> >> > preemptive.
+> >> >> >
+> >> >> > clone(
+> >> >> >       2,
+> >> >> >       trajectory() %>%
+> >> >> >         release("Shuttle")%>%
+> >> >> >         release("Driver_Shuttle"),
+> >> >> >       trajectory() %>%
+> >> >> >         set_prioritization(function()
+> >> >> >           get_prioritization(env) + c(.Machine$integer.max,
+> >> >> > .Machine$integer.max, 0)) %>%
+> >> >>
+> >> >> Minor detail, but I've simplified the actiity above as follows:
+> >> >>
+> >> >> set_prioritization(c(.Machine$integer.max, .Machine$integer.max, 0))
+> >> >>
+> >> >> The function wasn't really needed there.
+> >> >>
+> >> >> >         seize("Shuttle") %>%
+> >> >> >         seize("Driver_Shuttle")%>%
+> >> >> >         timeout(10) %>%
+> >> >> >         release("Shuttle")%>%
+> >> >> >         release("Driver_Shuttle")
+> >> >> >     ) %>%
+> >> >> >     synchronize(wait=FALSE) %>%
+> >> >> >
+> >> >> > In my case there is the question that the Shuttle and the Driver(or
+> >> >> > the
+> >> >> > machine) are detachable. That means that while the Shuttle is
+> >> >> > unloading,
+> >> >> > the
+> >> >> > driver can be free to come back and pick another full Shuttle at the
+> >> >> > mill or
+> >> >> > bring an empty Shuttle back. So there are 2 possible states for the
+> >> >> > Driver
+> >> >> > to comeback from the warehouses, without a Shuttle or with an empty
+> >> >> > one.
+> >> >> > I'm
+> >> >> > still trying to figure out the conditions for this states and how to
+> >> >> > simulate it.
+> >> >>
+> >> >> I suppose that driver and shuttle have independent delays after
+> >> >> release, so you should separate them:
+> >> >>
+> >> >> ...
+> >> >> delayed_release(env, "Shuttle", 10) %>%
+> >> >> delayed_release(env, "Driver_Shuttle", 10) %>%
+> >> >> ...
+> >> >>
+> >> >> which produces clone > sync > clone > sync.
+> >> >>
+> >> >> > I just saw your post about the simmer.bricks and I will also try it.
+> >> >> > But
+> >> >> > so
+> >> >> > far I'm having an error from the installation...
+> >> >> >
+> >> >> > ERROR: lazy loading failed for package 'simmer.bricks'
+> >> >>
+> >> >> Maybe the installation of simmer from GitHub failed?
+> >> >>
+> >> >> Iñaki
+> >> >
+> >> > --
+> >> > You received this message because you are subscribed to the Google
+> >> > Groups
+> >> > "simmer-devel" group.
+> >> > To unsubscribe from this group and stop receiving emails from it, send
+> >> > an
+> >> > email to simmer-devel...@googlegroups.com.
+> >> > To post to this group, send email to simmer...@googlegroups.com.
+> >> > To view this discussion on the web visit
+> >> >
+> >> > https://groups.google.com/d/msgid/simmer-devel/fd006baa-3c5c-49a8-88f8-3af52dde129b%40googlegroups.com.
+> >> > For more options, visit https://groups.google.com/d/optout.
+> >>
+> >>
+> >>
+> >> --
+> >> Iñaki Úcar
+> >> http://www.enchufa2.es
+> >> @Enchufa2
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups
+> > "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an
+> > email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msgid/simmer-devel/835715c8-8cd1-41c6-8e1c-d418ce8936c6%40googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Dec 19 09:23:05 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Tue, 19 Dec 2017 09:23:05 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.HwjkfOeHDQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/HwjkfOeHDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+2017-12-19 9:17 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+
+> Yes, I was looking for this possibility for a long time, now that opens a
+> new way for me to validate the simulation with the real data I have.
+>
+> Is there a way to get only the finished arrivals using this?
+
+You can filter the output of get_mon_arrivals(per_resource=TRUE) by
+finished arrivals as reported by get_mon_arrivals(per_resource=FALSE).
+
+From ucc9ad6130d21e6c8 at groups.google.com  Tue Dec 19 12:55:49 2017
+From: ucc9ad6130d21e6c8 at groups.google.com (Victor Hugo Nassau Batista)
+Date: Tue, 19 Dec 2017 12:55:49 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.82OhbYOTDQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.HwjkfOeHDQAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com> <FhtpTAzerh4.HwjkfOeHDQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/82OhbYOTDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Sorry, I didn't get this.
+
+The problem is that get_mon_arrivals(per_resource=TRUE) doesn't have a column with the finished status. The way I managed was to get one table filtered by the other. Since I'm interested in the time spent from start (generation) to the end of the unloading process the code looks like this:
+
+x<-get_mon_arrivals(env,per_resource=TRUE)%>%
+  tidyr::spread(resource,start_time)
+y<-filter(get_mon_arrivals(env),finished==T)
+
+left_join(x,y,by="name")%>%
+  group_by(name)%>%
+  filter(finished==T)%>%
+  summarise(total_time=max(Driver_Shuttle,na.rm=T)-max(start_time,na.rm=T))
+​
+Now with this time I can validate the simulation better, because it includes the waiting times but doesn't consider the effect of the clone.
+
+Looks much better now, thanks a lot!!
+
+On Tuesday, December 19, 2017 at 10:23:05 AM UTC+1, Iñaki Úcar wrote:
+> 2017-12-19 9:17 GMT+01:00 Victor Hugo Nassau Batista
+> <victor.hu...@gmail.com>:
+> > Yes, I was looking for this possibility for a long time, now that opens a
+> > new way for me to validate the simulation with the real data I have.
+> >
+> > Is there a way to get only the finished arrivals using this?
+>
+> You can filter the output of get_mon_arrivals(per_resource=TRUE) by
+> finished arrivals as reported by get_mon_arrivals(per_resource=FALSE).
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue Dec 19 13:06:18 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Tue, 19 Dec 2017 13:06:18 +0000
+Subject: Re: [simmer-devel] Help with shuttle simulation
+Message-ID: <FhtpTAzerh4.vyHcrhWUDQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com>
+References: <FhtpTAzerh4.doiZAHd5AgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/FhtpTAzerh4/m/vyHcrhWUDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+2017-12-19 13:55 GMT+01:00 Victor Hugo Nassau Batista
+<victor.hu...@gmail.com>:
+
+> Sorry, I didn't get this.
+>
+> The problem is that get_mon_arrivals(per_resource=TRUE) doesn't have a
+> column with the finished status. The way I managed was to get one table
+> filtered by the other.
+
+Yes, that's what I meant.
+
+Iñaki
+
+From u95bc3fcfcf35d674 at groups.google.com  Mon Dec 25 21:25:33 2017
+From: u95bc3fcfcf35d674 at groups.google.com (Leonardo Grando)
+Date: Mon, 25 Dec 2017 21:25:33 +0000
+Subject: R-Simmer Tutorial
+Message-ID: <RDiXHoRwtKc.MQU-1dvtBgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/RDiXHoRwtKc/m/MQU-1dvtBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, everybody.
+
+I´m a new user in the R-simmer environment, I am a former user from JaamSim (a great GUI DES software), and I want to change to the R-Simmer.
+
+What the best way to learning and understand this package usage. I´m are studying the http://r-simmer.org/index.html articles tutorials (on going), but anybody can suggest me more learning resources about this great package?
+
+Best Regards!
+
+Leonardo
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon Dec 25 21:58:27 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Mon, 25 Dec 2017 21:58:27 +0000
+Subject: Re: [simmer-devel] R-Simmer Tutorial
+Message-ID: <RDiXHoRwtKc.dlzi0uLCAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <RDiXHoRwtKc.MQU-1dvtBgAJ@simmer-devel.groups.google.com>
+References: <RDiXHoRwtKc.MQU-1dvtBgAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/RDiXHoRwtKc/m/dlzi0uLCAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Leonardo,
+
+Welcome to this community. Those articles are the main resource. In
+case you were wondering, this is a relatively young package and there
+are no books; yet. There is a journal paper though which will be added
+to the list of articles as soon as it gets published (it has been
+already accepted). You can find the e-print on arXiv:
+https://arxiv.org/abs/1705.09746
+
+Of course, any questions, thoughts, bug reports or requests for
+improvements are always welcome.
+
+Regards,
+Iñaki
+
+2017-12-25 22:25 GMT+01:00 Leonardo Grando <lgr...@gmail.com>:
+> Hi, everybody.
+>
+> I´m a new user in the R-simmer environment, I am a former user from JaamSim
+> (a great GUI DES software), and I want to change to the R-Simmer.
+>
+> What the best way to learning and understand this package usage. I´m are
+> studying the http://r-simmer.org/index.html articles tutorials (on going),
+> but anybody can suggest me more learning resources about this great package?
+>
+> Best Regards!
+>
+> Leonardo
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups
+> "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to simmer-devel...@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/simmer-devel/24810fec-0916-4789-84ad-3c88b9be78a1%40googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2
+

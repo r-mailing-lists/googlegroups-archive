@@ -1,0 +1,714 @@
+From ua5e3b92663a86505 at groups.google.com  Thu Oct 14 13:58:20 2021
+From: ua5e3b92663a86505 at groups.google.com (Arnoud Plantinga)
+Date: Thu, 14 Oct 2021 13:58:20 +0000
+Subject: Monitor resources by attribute
+Message-ID: <sRuvxVHCvh4.Wo2LnZLaAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/sRuvxVHCvh4/m/Wo2LnZLaAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone,
+
+At our hospital, we're simulating patient flow through several resources (clinic, IC, day treatment, OR). The patients have an attribute patient_group, which determines arrival rate, length of stay, and trajectories.
+
+Does simmer have a way to monitor the usage of the four resources by attribute? For example, I might be interested in how many patients from group 1 are using the clinic resource.
+
+Currently, I extract arrivals and attributes, join them together, and use the code below to calculate resource usage. This works, but it's pretty slow.
+
+Thanks in advance!
+Arnoud Plantinga
+
+# Create one row per patient per hour
+ind_usage <- arrivals_attributes %>%
+mutate.(time = map2.(start_time, end_time, `:`)) %>%
+unnest.(time)
+
+# Count usage
+usage_counts <- ind_usage %>%
+count.(replication, time, resource, patient_group,
+  name = "usage"
+)
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Oct 14 14:34:21 2021
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Thu, 14 Oct 2021 14:34:21 +0000
+Subject: Re: [simmer-devel] Monitor resources by attribute
+Message-ID: <sRuvxVHCvh4.sckry4ncAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <sRuvxVHCvh4.Wo2LnZLaAQAJ@simmer-devel.groups.google.com>
+References: <sRuvxVHCvh4.Wo2LnZLaAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/sRuvxVHCvh4/m/sckry4ncAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+On Thu, 14 Oct 2021 at 15:58, Arnoud Plantinga <arno...@gmail.com> wrote:
+> Hi everyone,
+>
+> At our hospital, we're simulating patient flow through several resources (clinic, IC, day treatment, OR). The patients have an attribute patient_group, which determines arrival rate, length of stay, and trajectories.
+>
+> Does simmer have a way to monitor the usage of the four resources by attribute? For example, I might be interested in how many patients from group 1 are using the clinic resource.
+
+# Option 1: auxiliary resources. For example:
+
+group <- function(n) trajectory() %>%
+  seize(paste0("some_resource_queue_", n)) %>%
+  seize("some_resource") %>%
+  release(paste0("some_resource_queue_", n)) %>%
+  seize(paste0("some_resource_server_", n)) %>%
+  timeout(function() rexp(1, 1)) %>%
+  release_all()
+
+env <- simmer() %>%
+  add_resource("some_resource", 1) %>%
+  add_resource(paste0("some_resource_queue_", 1:2), Inf) %>%
+  add_resource(paste0("some_resource_server_", 1:2), Inf) %>%
+  add_generator("group1_", group(1), function() rexp(1, 0.2)) %>%
+  add_generator("group2_", group(2), function() rexp(1, 0.3)) %>%
+  run(1000)
+
+get_mon_resources(env)
+
+# Option 2: auxiliary globals. For example:
+
+group <- function(n) trajectory() %>%
+  set_global(paste0("some_resource_queue_", n), 1, mod="+") %>%
+  seize("some_resource") %>%
+  set_global(paste0("some_resource_queue_", n), -1, mod="+") %>%
+  set_global(paste0("some_resource_server_", n), 1, mod="+") %>%
+  timeout(function() rexp(1, 1)) %>%
+  set_global(paste0("some_resource_server_", n), -1, mod="+") %>%
+  release("some_resource")
+
+env <- simmer() %>%
+  add_resource("some_resource", 1) %>%
+  add_generator("group1_", group(1), function() rexp(1, 0.2), mon=2) %>%
+  add_generator("group2_", group(2), function() rexp(1, 0.3), mon=2) %>%
+  run(1000)
+
+get_mon_attributes(env)
+
+---
+
+Of course, if you are only interested in the queue or in the server, the code above can be further simplified.
+
+Hope it helps,
+Iñaki
+
+> Currently, I extract arrivals and attributes, join them together, and use the code below to calculate resource usage. This works, but it's pretty slow.
+>
+> Thanks in advance!
+> Arnoud Plantinga
+>
+> # Create one row per patient per hour
+> ind_usage <- arrivals_attributes %>%
+> mutate.(time = map2.(start_time, end_time, `:`)) %>%
+> unnest.(time)
+>
+> # Count usage
+> usage_counts <- ind_usage %>%
+> count.(replication, time, resource, patient_group,
+>   name = "usage"
+> )
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/8effa303-f260-4afa-ad43-6f2c0c1ebfc5n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/8effa303-f260-4afa-ad43-6f2c0c1ebfc5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
+From ua5e3b92663a86505 at groups.google.com  Mon Oct 18 07:03:39 2021
+From: ua5e3b92663a86505 at groups.google.com (Arnoud Plantinga)
+Date: Mon, 18 Oct 2021 07:03:39 +0000
+Subject: Re: [simmer-devel] Monitor resources by attribute
+Message-ID: <sRuvxVHCvh4.G5d-0EP-AgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <sRuvxVHCvh4.Wo2LnZLaAQAJ@simmer-devel.groups.google.com>
+References: <sRuvxVHCvh4.Wo2LnZLaAQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/sRuvxVHCvh4/m/G5d-0EP-AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you so much for your quick reply! I'm going to try incorporating one of the approaches in our code, and I'll let you know whether I've figured it out.
+
+Best regards,
+Arnoud
+
+Op donderdag 14 oktober 2021 om 16:34:21 UTC+2 schreef iu...@fedoraproject.org:
+
+> Hi,
+>
+> On Thu, 14 Oct 2021 at 15:58, Arnoud Plantinga <arno...@gmail.com> wrote:
+> > Hi everyone,
+> >
+> > At our hospital, we're simulating patient flow through several resources (clinic, IC, day treatment, OR). The patients have an attribute patient_group, which determines arrival rate, length of stay, and trajectories.
+> >
+> > Does simmer have a way to monitor the usage of the four resources by attribute? For example, I might be interested in how many patients from group 1 are using the clinic resource.
+>
+> # Option 1: auxiliary resources. For example:
+>
+> group <- function(n) trajectory() %>%
+>   seize(paste0("some_resource_queue_", n)) %>%
+>   seize("some_resource") %>%
+>   release(paste0("some_resource_queue_", n)) %>%
+>   seize(paste0("some_resource_server_", n)) %>%
+>   timeout(function() rexp(1, 1)) %>%
+>   release_all()
+>
+> env <- simmer() %>%
+>   add_resource("some_resource", 1) %>%
+>   add_resource(paste0("some_resource_queue_", 1:2), Inf) %>%
+>   add_resource(paste0("some_resource_server_", 1:2), Inf) %>%
+>   add_generator("group1_", group(1), function() rexp(1, 0.2)) %>%
+>   add_generator("group2_", group(2), function() rexp(1, 0.3)) %>%
+>   run(1000)
+>
+> get_mon_resources(env)
+>
+> # Option 2: auxiliary globals. For example:
+>
+> group <- function(n) trajectory() %>%
+>   set_global(paste0("some_resource_queue_", n), 1, mod="+") %>%
+>   seize("some_resource") %>%
+>   set_global(paste0("some_resource_queue_", n), -1, mod="+") %>%
+>   set_global(paste0("some_resource_server_", n), 1, mod="+") %>%
+>   timeout(function() rexp(1, 1)) %>%
+>   set_global(paste0("some_resource_server_", n), -1, mod="+") %>%
+>   release("some_resource")
+>
+> env <- simmer() %>%
+>   add_resource("some_resource", 1) %>%
+>   add_generator("group1_", group(1), function() rexp(1, 0.2), mon=2) %>%
+>   add_generator("group2_", group(2), function() rexp(1, 0.3), mon=2) %>%
+>   run(1000)
+>
+> get_mon_attributes(env)
+>
+> ---
+>
+> Of course, if you are only interested in the queue or in the server, the code above can be further simplified.
+>
+> Hope it helps,
+> Iñaki
+>
+> > Currently, I extract arrivals and attributes, join them together, and use the code below to calculate resource usage. This works, but it's pretty slow.
+> >
+> > Thanks in advance!
+> > Arnoud Plantinga
+> >
+> > # Create one row per patient per hour
+> > ind_usage <- arrivals_attributes %>%
+> > mutate.(time = map2.(start_time, end_time, `:`)) %>%
+> > unnest.(time)
+> >
+> > # Count usage
+> > usage_counts <- ind_usage %>%
+> > count.(replication, time, resource, patient_group,
+> >   name = "usage"
+> > )
+> >
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/8effa303-f260-4afa-ad43-6f2c0c1ebfc5n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/8effa303-f260-4afa-ad43-6f2c0c1ebfc5n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> Iñaki Úcar
+
+From u7840f0c79a42cce9 at groups.google.com  Wed Oct 20 16:49:01 2021
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Wed, 20 Oct 2021 16:49:01 +0000
+Subject: Renege-Timer releasing wrong resource?
+Message-ID: <CgGB5bv7Hcs.nPiMdV67AwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/CgGB5bv7Hcs/m/nPiMdV67AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+ I'm tearing my hair out and struggling to debug this one.
+
+ I have extended my ICU model (
+https://github.com/ConnectedBradford/ICU-Model ) to have multiple ICUs
+(each with their own "halfnurse" resource)
+
+ I am getting errors like:
+
+Error: 'Renege-Timer' at 19001.71:
+ 'BRI halfnurse' not previously seized
+
+(from variable trajectories, and with variable halfnurses)
+I can't tell exactly which arrival it's coming from, but I can see
+that there is no arrival at that point that should have "BRI
+halfnurse" seized - the most recent attempts to seize a halfnurse are
+from other ICUs.
+
+ Halfnurses are seized as either 1 or 2 halfnurses depending on the
+needs of the patient.
+ If I set the capacity to infinite the problem goes away
+
+The halfnurses are seized by:
+    seize_selected( function() {
+      print(paste0(sources[get_attribute(env,"source")]," halfnurse"))
+      if (get_attribute(env,"lvl_start")==3) 2 else 1
+    })
+(the print is part of debugging attempts)
+
+Any ideas where to look? I'm trying to create a reproducible example
+but it's data-driven and the data is unfortunately not publishable.
+
+thanks!
+
+tom
+
+From u7840f0c79a42cce9 at groups.google.com  Wed Oct 20 20:14:17 2021
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Wed, 20 Oct 2021 20:14:17 +0000
+Subject: Re: Renege-Timer releasing wrong resource?
+Message-ID: <CgGB5bv7Hcs.TQHdUZMiBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <CgGB5bv7Hcs.nPiMdV67AwAJ@simmer-devel.groups.google.com>
+References: <CgGB5bv7Hcs.nPiMdV67AwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/CgGB5bv7Hcs/m/TQHdUZMiBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm very confused - I switched round the order of the seizing and now
+it works fine.
+
+For my understanding - does the fact that the error comes from
+"Renege-Timer" mean that it's produced when reneging tries to release
+all resources?
+
+On Wed, Oct 20, 2021 at 5:48 PM Tom Lawton <t...@t-lawton.org> wrote:
+>
+> Hi,
+>
+>  I'm tearing my hair out and struggling to debug this one.
+>
+>  I have extended my ICU model (
+> https://github.com/ConnectedBradford/ICU-Model ) to have multiple ICUs
+> (each with their own "halfnurse" resource)
+>
+>  I am getting errors like:
+>
+> Error: 'Renege-Timer' at 19001.71:
+>  'BRI halfnurse' not previously seized
+>
+> (from variable trajectories, and with variable halfnurses)
+> I can't tell exactly which arrival it's coming from, but I can see
+> that there is no arrival at that point that should have "BRI
+> halfnurse" seized - the most recent attempts to seize a halfnurse are
+> from other ICUs.
+>
+>  Halfnurses are seized as either 1 or 2 halfnurses depending on the
+> needs of the patient.
+>  If I set the capacity to infinite the problem goes away
+>
+> The halfnurses are seized by:
+>     seize_selected( function() {
+>       print(paste0(sources[get_attribute(env,"source")]," halfnurse"))
+>       if (get_attribute(env,"lvl_start")==3) 2 else 1
+>     })
+> (the print is part of debugging attempts)
+>
+> Any ideas where to look? I'm trying to create a reproducible example
+> but it's data-driven and the data is unfortunately not publishable.
+>
+> thanks!
+>
+> tom
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Oct 21 08:54:03 2021
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Thu, 21 Oct 2021 08:54:03 +0000
+Subject: Re: [simmer-devel] Re: Renege-Timer releasing wrong resource?
+Message-ID: <CgGB5bv7Hcs.I900IAlMBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <CgGB5bv7Hcs.TQHdUZMiBAAJ@simmer-devel.groups.google.com>
+References: <CgGB5bv7Hcs.nPiMdV67AwAJ@simmer-devel.groups.google.com> <CgGB5bv7Hcs.TQHdUZMiBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/CgGB5bv7Hcs/m/I900IAlMBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Tom,
+
+On Wed, 20 Oct 2021 at 22:14, Tom Lawton <t...@t-lawton.org> wrote:
+>
+> I'm very confused - I switched round the order of the seizing and now
+> it works fine.
+
+Great!
+
+> For my understanding - does the fact that the error comes from
+> "Renege-Timer" mean that it's produced when reneging tries to release
+> all resources?
+
+Yes, it does. The "not previously seized" messages, in general,
+shouldn't happen (unless you actively call release without a previous
+seize), which indicates that there may be a bug. It would be nice to
+have a reproducible example.
+
+> On Wed, Oct 20, 2021 at 5:48 PM Tom Lawton <t...@t-lawton.org> wrote:
+> >
+> > Hi,
+> >
+> >  I'm tearing my hair out and struggling to debug this one.
+> >
+> >  I have extended my ICU model (
+> > https://github.com/ConnectedBradford/ICU-Model ) to have multiple ICUs
+> > (each with their own "halfnurse" resource)
+
+Are there clone() instructions involved in this extended model? We
+have seen there are some issues with clones, especially with nested
+clones (clone of a clone), but it may not be the case here.
+
+> >  [snip]
+
+> >
+> > Any ideas where to look? I'm trying to create a reproducible example
+> > but it's data-driven and the data is unfortunately not publishable.
+
+Is the model shareable? At least the specific part involved and the
+surroundings. You can set simmer(verbose=TRUE) to get a trace of the
+low-level events. It would be nice if you could share the last part of
+that (not the entire trace, because the data *could* be reconstructed
+using that).
+
+--
+Iñaki Úcar
+
+From u7840f0c79a42cce9 at groups.google.com  Thu Oct 21 09:38:31 2021
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Thu, 21 Oct 2021 09:38:31 +0000
+Subject: Re: [simmer-devel] Re: Renege-Timer releasing wrong resource?
+Message-ID: <CgGB5bv7Hcs.gmJtUHZOBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <CgGB5bv7Hcs.I900IAlMBAAJ@simmer-devel.groups.google.com>
+References: <CgGB5bv7Hcs.nPiMdV67AwAJ@simmer-devel.groups.google.com> <CgGB5bv7Hcs.I900IAlMBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/CgGB5bv7Hcs/m/gmJtUHZOBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks - glad I'm not going insane! No clones used (though if #207 is
+added then I'd like to have parallel queueing one day)
+
+Verbose trace attached - from the initial arrival of Patient505 who
+appears to be the one with the issue. I've also attached the code,
+though unfortunately not the data it uses. The crash is pretty
+reliable so I could probably produce some fake data that would trigger
+it.
+Interestingly the crash doesn't occur if I change the order of seizing
+in the initial_seize trajectory
+Presently - bed, L3bed, halfnurse = crash
+Change to bed, halfnurse, L3bed = no crash
+
+Halfnurse is the only resource that an arrival will ever seize two of
+- then releasing them one at a time
+
+tom
+
+On Thu, Oct 21, 2021 at 9:54 AM Iñaki Ucar <iu...@fedoraproject.org> wrote:
+>
+> Hi Tom,
+>
+> On Wed, 20 Oct 2021 at 22:14, Tom Lawton <t...@t-lawton.org> wrote:
+> >
+> > I'm very confused - I switched round the order of the seizing and now
+> > it works fine.
+>
+> Great!
+>
+> > For my understanding - does the fact that the error comes from
+> > "Renege-Timer" mean that it's produced when reneging tries to release
+> > all resources?
+>
+> Yes, it does. The "not previously seized" messages, in general,
+> shouldn't happen (unless you actively call release without a previous
+> seize), which indicates that there may be a bug. It would be nice to
+> have a reproducible example.
+>
+> > On Wed, Oct 20, 2021 at 5:48 PM Tom Lawton <t...@t-lawton.org> wrote:
+> > >
+> > > Hi,
+> > >
+> > >  I'm tearing my hair out and struggling to debug this one.
+> > >
+> > >  I have extended my ICU model (
+> > > https://github.com/ConnectedBradford/ICU-Model ) to have multiple ICUs
+> > > (each with their own "halfnurse" resource)
+>
+> Are there clone() instructions involved in this extended model? We
+> have seen there are some issues with clones, especially with nested
+> clones (clone of a clone), but it may not be the case here.
+>
+> > >  [snip]
+> > >
+> > > Any ideas where to look? I'm trying to create a reproducible example
+> > > but it's data-driven and the data is unfortunately not publishable.
+>
+> Is the model shareable? At least the specific part involved and the
+> surroundings. You can set simmer(verbose=TRUE) to get a trace of the
+> low-level events. It would be nice if you could share the last part of
+> that (not the entire trace, because the data *could* be reconstructed
+> using that).
+>
+> --
+> Iñaki Úcar
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2UST3GY9CQjUf%2BRLiuwSnsxH9icT3Cyr%3Dh9KSkgVGW7g%40mail.gmail.com.
+
+From u7840f0c79a42cce9 at groups.google.com  Thu Oct 21 11:46:56 2021
+From: u7840f0c79a42cce9 at groups.google.com (Tom Lawton)
+Date: Thu, 21 Oct 2021 11:46:56 +0000
+Subject: Re: [simmer-devel] Re: Renege-Timer releasing wrong resource?
+Message-ID: <CgGB5bv7Hcs.ZRzvc3hVBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <CgGB5bv7Hcs.gmJtUHZOBAAJ@simmer-devel.groups.google.com>
+References: <CgGB5bv7Hcs.nPiMdV67AwAJ@simmer-devel.groups.google.com> <CgGB5bv7Hcs.gmJtUHZOBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/CgGB5bv7Hcs/m/ZRzvc3hVBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I've managed to create a reproducible example and have opened a ticket
+at https://github.com/r-simmer/simmer/issues/268
+
+tom
+
+On Thu, Oct 21, 2021 at 10:38 AM Tom Lawton <t...@t-lawton.org> wrote:
+>
+> Thanks - glad I'm not going insane! No clones used (though if #207 is
+> added then I'd like to have parallel queueing one day)
+>
+> Verbose trace attached - from the initial arrival of Patient505 who
+> appears to be the one with the issue. I've also attached the code,
+> though unfortunately not the data it uses. The crash is pretty
+> reliable so I could probably produce some fake data that would trigger
+> it.
+> Interestingly the crash doesn't occur if I change the order of seizing
+> in the initial_seize trajectory
+> Presently - bed, L3bed, halfnurse = crash
+> Change to bed, halfnurse, L3bed = no crash
+>
+> Halfnurse is the only resource that an arrival will ever seize two of
+> - then releasing them one at a time
+>
+> tom
+>
+> On Thu, Oct 21, 2021 at 9:54 AM Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> >
+> > Hi Tom,
+> >
+> > On Wed, 20 Oct 2021 at 22:14, Tom Lawton <t...@t-lawton.org> wrote:
+> > >
+> > > I'm very confused - I switched round the order of the seizing and now
+> > > it works fine.
+> >
+> > Great!
+> >
+> > > For my understanding - does the fact that the error comes from
+> > > "Renege-Timer" mean that it's produced when reneging tries to release
+> > > all resources?
+> >
+> > Yes, it does. The "not previously seized" messages, in general,
+> > shouldn't happen (unless you actively call release without a previous
+> > seize), which indicates that there may be a bug. It would be nice to
+> > have a reproducible example.
+> >
+> > > On Wed, Oct 20, 2021 at 5:48 PM Tom Lawton <t...@t-lawton.org> wrote:
+> > > >
+> > > > Hi,
+> > > >
+> > > >  I'm tearing my hair out and struggling to debug this one.
+> > > >
+> > > >  I have extended my ICU model (
+> > > > https://github.com/ConnectedBradford/ICU-Model ) to have multiple ICUs
+> > > > (each with their own "halfnurse" resource)
+> >
+> > Are there clone() instructions involved in this extended model? We
+> > have seen there are some issues with clones, especially with nested
+> > clones (clone of a clone), but it may not be the case here.
+> >
+> > > >  [snip]
+> > > >
+> > > > Any ideas where to look? I'm trying to create a reproducible example
+> > > > but it's data-driven and the data is unfortunately not publishable.
+> >
+> > Is the model shareable? At least the specific part involved and the
+> > surroundings. You can set simmer(verbose=TRUE) to get a trace of the
+> > low-level events. It would be nice if you could share the last part of
+> > that (not the entire trace, because the data *could* be reconstructed
+> > using that).
+> >
+> > --
+> > Iñaki Úcar
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2UST3GY9CQjUf%2BRLiuwSnsxH9icT3Cyr%3Dh9KSkgVGW7g%40mail.gmail.com.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu Oct 21 11:59:55 2021
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Thu, 21 Oct 2021 11:59:55 +0000
+Subject: Re: [simmer-devel] Re: Renege-Timer releasing wrong resource?
+Message-ID: <CgGB5bv7Hcs.WS5Rzi1WBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <CgGB5bv7Hcs.ZRzvc3hVBAAJ@simmer-devel.groups.google.com>
+References: <CgGB5bv7Hcs.nPiMdV67AwAJ@simmer-devel.groups.google.com> <CgGB5bv7Hcs.ZRzvc3hVBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/CgGB5bv7Hcs/m/WS5Rzi1WBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Thu, 21 Oct 2021 at 13:47, Tom Lawton <t...@t-lawton.org> wrote:
+>
+> I've managed to create a reproducible example and have opened a ticket
+> at https://github.com/r-simmer/simmer/issues/268
+
+Perfect, thanks!
+Iñaki
+
+>
+> tom
+>
+> On Thu, Oct 21, 2021 at 10:38 AM Tom Lawton <t...@t-lawton.org> wrote:
+> >
+> > Thanks - glad I'm not going insane! No clones used (though if #207 is
+> > added then I'd like to have parallel queueing one day)
+> >
+> > Verbose trace attached - from the initial arrival of Patient505 who
+> > appears to be the one with the issue. I've also attached the code,
+> > though unfortunately not the data it uses. The crash is pretty
+> > reliable so I could probably produce some fake data that would trigger
+> > it.
+> > Interestingly the crash doesn't occur if I change the order of seizing
+> > in the initial_seize trajectory
+> > Presently - bed, L3bed, halfnurse = crash
+> > Change to bed, halfnurse, L3bed = no crash
+> >
+> > Halfnurse is the only resource that an arrival will ever seize two of
+> > - then releasing them one at a time
+> >
+> > tom
+> >
+> > On Thu, Oct 21, 2021 at 9:54 AM Iñaki Ucar <iu...@fedoraproject.org> wrote:
+> > >
+> > > Hi Tom,
+> > >
+> > > On Wed, 20 Oct 2021 at 22:14, Tom Lawton <t...@t-lawton.org> wrote:
+> > > >
+> > > > I'm very confused - I switched round the order of the seizing and now
+> > > > it works fine.
+> > >
+> > > Great!
+> > >
+> > > > For my understanding - does the fact that the error comes from
+> > > > "Renege-Timer" mean that it's produced when reneging tries to release
+> > > > all resources?
+> > >
+> > > Yes, it does. The "not previously seized" messages, in general,
+> > > shouldn't happen (unless you actively call release without a previous
+> > > seize), which indicates that there may be a bug. It would be nice to
+> > > have a reproducible example.
+> > >
+> > > > On Wed, Oct 20, 2021 at 5:48 PM Tom Lawton <t...@t-lawton.org> wrote:
+> > > > >
+> > > > > Hi,
+> > > > >
+> > > > >  I'm tearing my hair out and struggling to debug this one.
+> > > > >
+> > > > >  I have extended my ICU model (
+> > > > > https://github.com/ConnectedBradford/ICU-Model ) to have multiple ICUs
+> > > > > (each with their own "halfnurse" resource)
+> > >
+> > > Are there clone() instructions involved in this extended model? We
+> > > have seen there are some issues with clones, especially with nested
+> > > clones (clone of a clone), but it may not be the case here.
+> > >
+> > > > >  [snip]
+> > > > >
+> > > > > Any ideas where to look? I'm trying to create a reproducible example
+> > > > > but it's data-driven and the data is unfortunately not publishable.
+> > >
+> > > Is the model shareable? At least the specific part involved and the
+> > > surroundings. You can set simmer(verbose=TRUE) to get a trace of the
+> > > low-level events. It would be nice if you could share the last part of
+> > > that (not the entire trace, because the data *could* be reconstructed
+> > > using that).
+> > >
+> > > --
+> > > Iñaki Úcar
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2UST3GY9CQjUf%2BRLiuwSnsxH9icT3Cyr%3Dh9KSkgVGW7g%40mail.gmail.com.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAK3_18%2BJ1R5B%2B1aKo59Ri_FkVU7rdEdxRgCXnjWqPab8KnKZ2Q%40mail.gmail.com.
+
+--
+Iñaki Úcar
+
+From uc9573d5f110a3778 at groups.google.com  Wed Oct 27 04:08:28 2021
+From: uc9573d5f110a3778 at groups.google.com (Ralph Asher)
+Date: Wed, 27 Oct 2021 04:08:28 +0000
+Subject: Utilization calculation
+Message-ID: <e7wI-b6KXFA.gMBGZntoAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/e7wI-b6KXFA/m/gMBGZntoAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+How is resource utilization calculated in plot(resources,metric='utilization') ? I did a little dplyr / ggplot work to make boxplots of utilization by resource, and I am coming up with close, but not exactly the same, values.
+
+Thanks
+Ralph
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed Oct 27 08:18:34 2021
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Wed, 27 Oct 2021 08:18:34 +0000
+Subject: Re: [simmer-devel] Utilization calculation
+Message-ID: <e7wI-b6KXFA.z-AsRyR2AAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <e7wI-b6KXFA.gMBGZntoAAAJ@simmer-devel.groups.google.com>
+References: <e7wI-b6KXFA.gMBGZntoAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/e7wI-b6KXFA/m/z-AsRyR2AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, here's the code: https://github.com/r-simmer/simmer.plot/blob/74ed7dccc0ca6731ac68337a1c6d0e7620178bdd/R/plot.resources.R#L80
+
+As always, suggestions for improvement are welcome.
+
+Iñaki
+
+El mié., 27 oct. 2021 6:08, Ralph Asher <ralph....@gmail.com> escribió:
+
+> How is resource utilization calculated in plot(resources,metric='utilization') ? I did a little dplyr / ggplot work to make boxplots of utilization by resource, and I am coming up with close, but not exactly the same, values.
+>
+> Thanks
+> Ralph
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/8881ab55-1e4c-4e0f-8b48-b88bc630e97en%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/8881ab55-1e4c-4e0f-8b48-b88bc630e97en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+

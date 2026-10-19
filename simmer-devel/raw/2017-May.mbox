@@ -1,0 +1,2543 @@
+From ua6bda949fbb66786 at groups.google.com  Fri May  5 08:38:18 2017
+From: ua6bda949fbb66786 at groups.google.com (Dominique Cirkel)
+Date: Fri, 05 May 2017 08:38:18 +0000
+Subject: queue with group delay
+Message-ID: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9wCyocdRSag/m/sscGiQSaAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+I am doing a simulation of the patient-path to an outpatient clinic:
+
+Whenever a patient requests to be submitted to the clinic, a letter from a physician with this request will be sent to the clinic. Administrative staff will print out this letter and put it in a certain mailbox. This mailbox is emptied by a doctor in order to perform triage (i.e. determining the priority of patients' treatments based on the severity of their condition). This usually happens once every 1 to 3 days, and takes no more than a couple of hours. After this, the patient is called by the administrative staff and is scheduled for an appointment.
+
+I am pretty new to this package and my problem is the following:
+
+How can I make sure the mailbox is emptied with a timeout=(function() rgamma(1, shape = 2, rate = 0.1)), which should vary every time?
+I feel as if I should use batch() as I've done below, but it obviously doesn't work since batch() only accepts a numeric (10000 could be any number that is big enough to ensure it is only emptied when the doctor arrives).
+
+triage <- trajectory("Patient's path") %>%
+  log_("arrive at queue") %>%
+  batch(10000, timeout=(function() rgamma(1, shape = 2, rate = 0.1))) %>%
+  log_("triage") %>%
+  seize("triage_doctor", 1) %>%
+  timeout(function() rgamma(1, shape = 2, rate = 0.8)) %>%
+  release("triage_doctor", 1) %>%
+  separate() %>%
+  seize("administrative_empl",1) %>%
+  log_("patient is being called") %>%
+  timeout(0.1) %>%
+  log_("Appointment is made") %>%
+  release("administrative_empl", 1)
+
+env <- simmer()  %>%
+  add_resource("triage_doctor", capacity = 1) %>%
+  add_resource("administrative_empl", capacity = 1) %>%
+  add_generator("person", triage, function() rpois(1, 2)) %>%
+  run(800)
+
+I've also tried the following things:
+- Taking the function out of batch(): but that either results in a constant timeout for every batch, or in a constant delay for every patient.
+- Using synchronize(): I don't even know what I was thinking while using this.
+- Doint something with send(), trap() and wait(): got no clue how though.
+
+Does anyone have an idea how to solve this?
+
+Thanks in advance,
+
+Kind regards,
+
+Dominique
+
+From u0f5b7adb7e70bd8b at groups.google.com  Fri May  5 09:06:56 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Fri, 05 May 2017 09:06:56 +0000
+Subject: Re: [simmer-devel] queue with group delay
+Message-ID: <9wCyocdRSag.q9OipZSbAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+References: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9wCyocdRSag/m/q9OipZSbAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Dominique,
+
+You have a couple of options. Both of them involve the definition of a secondary trajectory for managing the mailbox. Given your description, and assuming that, whenever it is checked, the mailbox is emptied completely, I would use trap-wait-send as follows:
+
+triage <- trajectory("Patient's path") %>%
+  log_("arrive at queue"
+
+) %>%
+  trap("check mailbox") %>%
+  wait() %>%
+  log_("triage")
+  # etc.
+
+mailbox <- trajectory() %>%
+  timeout(function() rgamma(1, shape = 2, rate = 0.1)) %>%
+  send("check mailbox") %>%
+  rollback(2, Inf)
+
+env <- simmer()  %>%
+  add_resource("triage_doctor", capacity = 1) %>%
+  add_resource("administrative_empl", capacity = 1) %>%
+  add_generator("person", triage, function() rpois(1, 2)) %>%
+  add_generator("mailbox", mailbox, at(0)) %>%
+  run(800)
+
+If at some point you need a finer-grained control of the number of letters read at a time, then I would define a new resource for the mailbox with capacity=0. Then, the trap-wait would be replaced by a seize-set_capacity(0) of that resource, and the send activity, by a set_capacity(n), where n is the required number of letters.
+
+Regards,
+Iñaki
+​
+
+2017-05-05 10:38 GMT+02:00 Dominique Cirkel <dominiq...@gmail.com>:
+
+> Hi!
+>
+> I am doing a simulation of the patient-path to an outpatient clinic:
+>
+> Whenever a patient requests to be submitted to the clinic, a letter from a physician with this request will be sent to the clinic. Administrative staff will print out this letter and put it in a certain mailbox. This mailbox is emptied by a doctor in order to perform triage (i.e. determining the priority of patients' treatments based on the severity of their condition). This usually happens once every 1 to 3 days, and takes no more than a couple of hours. After this, the patient is called by the administrative staff and is scheduled for an appointment.
+>
+> I am pretty new to this package and my problem is the following:
+>
+> How can I make sure the mailbox is emptied with a timeout=(function() rgamma(1, shape = 2, rate = 0.1)), which should vary every time?
+> I feel as if I should use batch() as I've done below, but it obviously doesn't work since batch() only accepts a numeric (10000 could be any number that is big enough to ensure it is only emptied when the doctor arrives).
+>
+> triage <- trajectory("Patient's path") %>%
+>   log_("arrive at queue") %>%
+>   batch(10000, timeout=(function() rgamma(1, shape = 2, rate = 0.1))) %>%
+>   log_("triage") %>%
+>   seize("triage_doctor", 1) %>%
+>   timeout(function() rgamma(1, shape = 2, rate = 0.8)) %>%
+>   release("triage_doctor", 1) %>%
+>   separate() %>%
+>   seize("administrative_empl",1) %>%
+>   log_("patient is being called") %>%
+>   timeout(0.1) %>%
+>   log_("Appointment is made") %>%
+>   release("administrative_empl", 1)
+>
+> env <- simmer()  %>%
+>   add_resource("triage_doctor", capacity = 1) %>%
+>   add_resource("administrative_empl", capacity = 1) %>%
+>   add_generator("person", triage, function() rpois(1, 2)) %>%
+>   run(800)
+>
+> I've also tried the following things:
+> - Taking the function out of batch(): but that either results in a constant timeout for every batch, or in a constant delay for every patient.
+> - Using synchronize(): I don't even know what I was thinking while using this.
+> - Doint something with send(), trap() and wait(): got no clue how though.
+>
+> Does anyone have an idea how to solve this?
+>
+> Thanks in advance,
+>
+> Kind regards,
+>
+> Dominique
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/dc9f7114-432e-4e6d-bcab-f0adf1f7c5ab%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/dc9f7114-432e-4e6d-bcab-f0adf1f7c5ab%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From ua6bda949fbb66786 at groups.google.com  Fri May  5 09:33:29 2017
+From: ua6bda949fbb66786 at groups.google.com (Dominique Cirkel)
+Date: Fri, 05 May 2017 09:33:29 +0000
+Subject: Re: [simmer-devel] queue with group delay
+Message-ID: <9wCyocdRSag.lQ33fAedAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+References: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9wCyocdRSag/m/lQ33fAedAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for your fast and helpfull response!
+This is exactly what I needed.
+
+Kind Regards,
+
+Dominique
+
+Op vrijdag 5 mei 2017 11:06:56 UTC+2 schreef Iñaki Úcar:
+
+> Hi Dominique,
+>
+> You have a couple of options. Both of them involve the definition of a secondary trajectory for managing the mailbox. Given your description, and assuming that, whenever it is checked, the mailbox is emptied completely, I would use trap-wait-send as follows:
+> triage <- trajectory("Patient's path") %>%
+>   log_("arrive at queue") %>%
+>   trap("check mailbox") %>%
+>   wait() %>%
+>   log_("triage")
+>   # etc.
+>
+> mailbox <- trajectory() %>%
+>   timeout(function() rgamma(1, shape = 2, rate = 0.1)) %>%
+>   send("check mailbox") %>%
+>   rollback(2, Inf)
+>
+> env <- simmer()  %>%
+>   add_resource("triage_doctor", capacity = 1) %>%
+>   add_resource("administrative_empl", capacity = 1) %>%
+>   add_generator("person", triage, function() rpois(1, 2)) %>%
+>   add_generator("mailbox", mailbox, at(0)) %>%
+>   run(800)
+>
+> If at some point you need a finer-grained control of the number of letters read at a time, then I would define a new resource for the mailbox with capacity=0. Then, the trap-wait would be replaced by a seize-set_capacity(0) of that resource, and the send activity, by a set_capacity(n), where n is the required number of letters.
+>
+> Regards,
+> Iñaki
+> ​
+
+> 2017-05-05 10:38 GMT+02:00 Dominique Cirkel <dominiq...@gmail.com>:
+
+> > Hi!
+> >
+> > I am doing a simulation of the patient-path to an outpatient clinic:
+> >
+> > Whenever a patient requests to be submitted to the clinic, a letter from a physician with this request will be sent to the clinic. Administrative staff will print out this letter and put it in a certain mailbox. This mailbox is emptied by a doctor in order to perform triage (i.e. determining the priority of patients' treatments based on the severity of their condition). This usually happens once every 1 to 3 days, and takes no more than a couple of hours. After this, the patient is called by the administrative staff and is scheduled for an appointment.
+> >
+> > I am pretty new to this package and my problem is the following:
+> >
+> > How can I make sure the mailbox is emptied with a timeout=(function() rgamma(1, shape = 2, rate = 0.1)), which should vary every time?
+> > I feel as if I should use batch() as I've done below, but it obviously doesn't work since batch() only accepts a numeric (10000 could be any number that is big enough to ensure it is only emptied when the doctor arrives).
+> >
+> > triage <- trajectory("Patient's path") %>%
+> >   log_("arrive at queue") %>%
+> >   batch(10000, timeout=(function() rgamma(1, shape = 2, rate = 0.1))) %>%
+> >   log_("triage") %>%
+> >   seize("triage_doctor", 1) %>%
+> >   timeout(function() rgamma(1, shape = 2, rate = 0.8)) %>%
+> >   release("triage_doctor", 1) %>%
+> >   separate() %>%
+> >   seize("administrative_empl",1) %>%
+> >   log_("patient is being called") %>%
+> >   timeout(0.1) %>%
+> >   log_("Appointment is made") %>%
+> >   release("administrative_empl", 1)
+> >
+> > env <- simmer()  %>%
+> >   add_resource("triage_doctor", capacity = 1) %>%
+> >   add_resource("administrative_empl", capacity = 1) %>%
+> >   add_generator("person", triage, function() rpois(1, 2)) %>%
+> >   run(800)
+> >
+> > I've also tried the following things:
+> > - Taking the function out of batch(): but that either results in a constant timeout for every batch, or in a constant delay for every patient.
+> > - Using synchronize(): I don't even know what I was thinking while using this.
+> > - Doint something with send(), trap() and wait(): got no clue how though.
+> >
+> > Does anyone have an idea how to solve this?
+> >
+> > Thanks in advance,
+> >
+> > Kind regards,
+> >
+> > Dominique
+> >
+> >
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+
+> >
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/dc9f7114-432e-4e6d-bcab-f0adf1f7c5ab%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/dc9f7114-432e-4e6d-bcab-f0adf1f7c5ab%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From u0f5b7adb7e70bd8b at groups.google.com  Fri May  5 22:05:36 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Fri, 05 May 2017 22:05:36 +0000
+Subject: Re: [simmer-devel] queue with group delay
+Message-ID: <9wCyocdRSag.V28XghLGAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+References: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9wCyocdRSag/m/V28XghLGAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+BTW, I’ve implemented this enhancement <https://github.com/r-simmer/simmer/issues/93>. Therefore, with the next release, you’ll be able to do this:
+
+triage <- trajectory("Patient's path") %>%
+  log_("arrive at queue"
+
+) %>%
+  batch(Inf, timeout=function() rgamma(1, shape = 2, rate = 0.1)) %>%
+  separate() %>%
+  log_("triage")
+  # etc.
+
+env <- simmer()  %>%
+  add_generator("person", triage, function() rpois(1, 2)) %>%
+  run(25)
+
+Regards,
+Iñaki
+​
+
+2017-05-05 11:33 GMT+02:00 Dominique Cirkel <dominiq...@gmail.com>:
+
+> Thanks for your fast and helpfull response!
+> This is exactly what I needed.
+>
+> Kind Regards,
+>
+> Dominique
+>
+>
+> Op vrijdag 5 mei 2017 11:06:56 UTC+2 schreef Iñaki Úcar:
+> >
+> > Hi Dominique,
+> >
+> > You have a couple of options. Both of them involve the definition of a secondary trajectory for managing the mailbox. Given your description, and assuming that, whenever it is checked, the mailbox is emptied completely, I would use trap-wait-send as follows:
+> > triage <- trajectory("Patient's path") %>%
+> >   log_("arrive at queue") %>%
+> >   trap("check mailbox") %>%
+> >   wait() %>%
+> >   log_("triage")
+> >   # etc.
+> >
+> > mailbox <- trajectory() %>%
+> >   timeout(function() rgamma(1, shape = 2, rate = 0.1)) %>%
+> >   send("check mailbox") %>%
+> >   rollback(2, Inf)
+> >
+> > env <- simmer()  %>%
+> >   add_resource("triage_doctor", capacity = 1) %>%
+> >   add_resource("administrative_empl", capacity = 1) %>%
+> >   add_generator("person", triage, function() rpois(1, 2)) %>%
+> >   add_generator("mailbox", mailbox, at(0)) %>%
+> >   run(800)
+> >
+> > If at some point you need a finer-grained control of the number of letters read at a time, then I would define a new resource for the mailbox with capacity=0. Then, the trap-wait would be replaced by a seize-set_capacity(0) of that resource, and the send activity, by a set_capacity(n), where n is the required number of letters.
+> >
+> > Regards,
+> > Iñaki
+> > ​
+> >
+> > 2017-05-05 10:38 GMT+02:00 Dominique Cirkel <dominiq...@gmail.com>:
+> > > Hi!
+> > >
+> > > I am doing a simulation of the patient-path to an outpatient clinic:
+> > >
+> > > Whenever a patient requests to be submitted to the clinic, a letter from a physician with this request will be sent to the clinic. Administrative staff will print out this letter and put it in a certain mailbox. This mailbox is emptied by a doctor in order to perform triage (i.e. determining the priority of patients' treatments based on the severity of their condition). This usually happens once every 1 to 3 days, and takes no more than a couple of hours. After this, the patient is called by the administrative staff and is scheduled for an appointment.
+> > >
+> > > I am pretty new to this package and my problem is the following:
+> > >
+> > > How can I make sure the mailbox is emptied with a timeout=(function() rgamma(1, shape = 2, rate = 0.1)), which should vary every time?
+> > > I feel as if I should use batch() as I've done below, but it obviously doesn't work since batch() only accepts a numeric (10000 could be any number that is big enough to ensure it is only emptied when the doctor arrives).
+> > >
+> > > triage <- trajectory("Patient's path") %>%
+> > >   log_("arrive at queue") %>%
+> > >   batch(10000, timeout=(function() rgamma(1, shape = 2, rate = 0.1))) %>%
+> > >   log_("triage") %>%
+> > >   seize("triage_doctor", 1) %>%
+> > >   timeout(function() rgamma(1, shape = 2, rate = 0.8)) %>%
+> > >   release("triage_doctor", 1) %>%
+> > >   separate() %>%
+> > >   seize("administrative_empl",1) %>%
+> > >   log_("patient is being called") %>%
+> > >   timeout(0.1) %>%
+> > >   log_("Appointment is made") %>%
+> > >   release("administrative_empl", 1)
+> > >
+> > > env <- simmer()  %>%
+> > >   add_resource("triage_doctor", capacity = 1) %>%
+> > >   add_resource("administrative_empl", capacity = 1) %>%
+> > >   add_generator("person", triage, function() rpois(1, 2)) %>%
+> > >   run(800)
+> > >
+> > > I've also tried the following things:
+> > > - Taking the function out of batch(): but that either results in a constant timeout for every batch, or in a constant delay for every patient.
+> > > - Using synchronize(): I don't even know what I was thinking while using this.
+> > > - Doint something with send(), trap() and wait(): got no clue how though.
+> > >
+> > > Does anyone have an idea how to solve this?
+> > >
+> > > Thanks in advance,
+> > >
+> > > Kind regards,
+> > >
+> > > Dominique
+> > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To post to this group, send email to simmer...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/dc9f7114-432e-4e6d-bcab-f0adf1f7c5ab%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/dc9f7114-432e-4e6d-bcab-f0adf1f7c5ab%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > Iñaki Úcar
+> > http://www.enchufa2.es
+> > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/a0e53e0f-57bd-4a0e-a124-536d6b94f2a5%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/a0e53e0f-57bd-4a0e-a124-536d6b94f2a5%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From ua6bda949fbb66786 at groups.google.com  Sat May  6 12:01:44 2017
+From: ua6bda949fbb66786 at groups.google.com (Dominique Cirkel)
+Date: Sat, 06 May 2017 12:01:44 +0000
+Subject: Re: [simmer-devel] queue with group delay
+Message-ID: <9wCyocdRSag.njV3HrPzAwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+References: <9wCyocdRSag.sscGiQSaAwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/9wCyocdRSag/m/njV3HrPzAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+That's great!
+
+Op zaterdag 6 mei 2017 00:05:36 UTC+2 schreef Iñaki Úcar:
+
+> BTW, I’ve implemented this enhancement <https://github.com/r-simmer/simmer/issues/93>. Therefore, with the next release, you’ll be able to do this:
+> triage <- trajectory("Patient's path") %>%
+>   log_("arrive at queue") %>%
+>   batch(Inf, timeout=function() rgamma(1, shape = 2, rate = 0.1)) %>%
+>   separate() %>%
+>   log_("triage")
+>   # etc.
+>
+> env <- simmer()  %>%
+>   add_generator("person", triage, function() rpois(1, 2)) %>%
+>   run(25)
+>
+> Regards,
+> Iñaki
+> ​
+
+> 2017-05-05 11:33 GMT+02:00 Dominique Cirkel <dominiq...@gmail.com>:
+
+> > Thanks for your fast and helpfull response!
+> > This is exactly what I needed.
+> >
+> > Kind Regards,
+> >
+> > Dominique
+> >
+> >
+> > Op vrijdag 5 mei 2017 11:06:56 UTC+2 schreef Iñaki Úcar:
+> > >
+> > > Hi Dominique,
+> > >
+> > > You have a couple of options. Both of them involve the definition of a secondary trajectory for managing the mailbox. Given your description, and assuming that, whenever it is checked, the mailbox is emptied completely, I would use trap-wait-send as follows:
+> > > triage <- trajectory("Patient's path") %>%
+> > >   log_("arrive at queue") %>%
+> > >   trap("check mailbox") %>%
+> > >   wait() %>%
+> > >   log_("triage")
+> > >   # etc.
+> > >
+> > > mailbox <- trajectory() %>%
+> > >   timeout(function() rgamma(1, shape = 2, rate = 0.1)) %>%
+> > >   send("check mailbox") %>%
+> > >   rollback(2, Inf)
+> > >
+> > > env <- simmer()  %>%
+> > >   add_resource("triage_doctor", capacity = 1) %>%
+> > >   add_resource("administrative_empl", capacity = 1) %>%
+> > >   add_generator("person", triage, function() rpois(1, 2)) %>%
+> > >   add_generator("mailbox", mailbox, at(0)) %>%
+> > >   run(800)
+> > >
+> > > If at some point you need a finer-grained control of the number of letters read at a time, then I would define a new resource for the mailbox with capacity=0. Then, the trap-wait would be replaced by a seize-set_capacity(0) of that resource, and the send activity, by a set_capacity(n), where n is the required number of letters.
+> > >
+> > > Regards,
+> > > Iñaki
+> > > ​
+> > >
+> > > 2017-05-05 10:38 GMT+02:00 Dominique Cirkel <dominiq...@gmail.com>:
+> > > > Hi!
+> > > >
+> > > > I am doing a simulation of the patient-path to an outpatient clinic:
+> > > >
+> > > > Whenever a patient requests to be submitted to the clinic, a letter from a physician with this request will be sent to the clinic. Administrative staff will print out this letter and put it in a certain mailbox. This mailbox is emptied by a doctor in order to perform triage (i.e. determining the priority of patients' treatments based on the severity of their condition). This usually happens once every 1 to 3 days, and takes no more than a couple of hours. After this, the patient is called by the administrative staff and is scheduled for an appointment.
+> > > >
+> > > > I am pretty new to this package and my problem is the following:
+> > > >
+> > > > How can I make sure the mailbox is emptied with a timeout=(function() rgamma(1, shape = 2, rate = 0.1)), which should vary every time?
+> > > > I feel as if I should use batch() as I've done below, but it obviously doesn't work since batch() only accepts a numeric (10000 could be any number that is big enough to ensure it is only emptied when the doctor arrives).
+> > > >
+> > > > triage <- trajectory("Patient's path") %>%
+> > > >   log_("arrive at queue") %>%
+> > > >   batch(10000, timeout=(function() rgamma(1, shape = 2, rate = 0.1))) %>%
+> > > >   log_("triage") %>%
+> > > >   seize("triage_doctor", 1) %>%
+> > > >   timeout(function() rgamma(1, shape = 2, rate = 0.8)) %>%
+> > > >   release("triage_doctor", 1) %>%
+> > > >   separate() %>%
+> > > >   seize("administrative_empl",1) %>%
+> > > >   log_("patient is being called") %>%
+> > > >   timeout(0.1) %>%
+> > > >   log_("Appointment is made") %>%
+> > > >   release("administrative_empl", 1)
+> > > >
+> > > > env <- simmer()  %>%
+> > > >   add_resource("triage_doctor", capacity = 1) %>%
+> > > >   add_resource("administrative_empl", capacity = 1) %>%
+> > > >   add_generator("person", triage, function() rpois(1, 2)) %>%
+> > > >   run(800)
+> > > >
+> > > > I've also tried the following things:
+> > > > - Taking the function out of batch(): but that either results in a constant timeout for every batch, or in a constant delay for every patient.
+> > > > - Using synchronize(): I don't even know what I was thinking while using this.
+> > > > - Doint something with send(), trap() and wait(): got no clue how though.
+> > > >
+> > > > Does anyone have an idea how to solve this?
+> > > >
+> > > > Thanks in advance,
+> > > >
+> > > > Kind regards,
+> > > >
+> > > > Dominique
+> > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/dc9f7114-432e-4e6d-bcab-f0adf1f7c5ab%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/dc9f7114-432e-4e6d-bcab-f0adf1f7c5ab%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> > > http://www.enchufa2.es
+> > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/a0e53e0f-57bd-4a0e-a124-536d6b94f2a5%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/a0e53e0f-57bd-4a0e-a124-536d6b94f2a5%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From u3b42d51341a1adde at groups.google.com  Sun May  7 02:17:07 2017
+From: u3b42d51341a1adde at groups.google.com (Justin Howe)
+Date: Sun, 07 May 2017 02:17:07 +0000
+Subject: Re: How to branch based on which of 2 generators an entity comes from
+Message-ID: <0rqp6qT_dks.jM8rhWAiBAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <0rqp6qT_dks.2MNpUuDVAAAJ@simmer-devel.groups.google.com>
+References: <0rqp6qT_dks.fBeG4u52BAAJ@simmer-devel.groups.google.com> <0rqp6qT_dks.2MNpUuDVAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/0rqp6qT_dks/m/jM8rhWAiBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Just another point to note in your solution design (which happens to be a problem I'm running into).
+
+Since Markovian arrival distributions have additive means, it is MUCH simpler to NOT create different arrival generators for the same phenomena. For example, the arrival rate of emergency room patients = the weighted average of the arrival rates for gun shot wounds vs all non-gun shot wounds. This could be modeled in 2 ways:
+1) Create two trajectories.
+2) Create a single arrivel trajectory, and assign an attribute 'Gun Shot Wound' based on the historical proportion that gun shot wounds comprise of total emergency room patients.
+
+While option 1 is intuitive, it doesn't scale to multiple attributes. For example, if I had 10 'reasons' to visit the emergency room (attribute 1), and I wanted to model 10 phases of the moon (attribute 2), I would need to create 100 generators. (Not tenable)
+
+So it would be GREAT if we can reference the attribute for 'this' trajectory and use it as an input to functions.
+
+On Wednesday, May 4, 2016 at 10:58:09 AM UTC-7, L Mico wrote:
+> Hi friends,
+>
+> I'd like to have two generators (with different probability functions), whose entities go through the same trajectory but branch based on which generator they come from.  I am not sure how to access this info (i.e. which method to use) at the branch point about which gen they came from - in the example they are dogs or cats.   Basic code below, which needs the branch decision function to be modified.  Please let me know if any of this does not make sense.
+>
+> Thanks & Cheers,
+>
+> Lindsay
+>
+> ###########
+>
+> t0 <- create_trajectory("my trajectory") %>%
+>         seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+>         timeout(function() max(0,rnorm(1,5,2))) %>%
+>         release("receptionist", 1) %>%
+>         ##Here is where I want to branch depending on what generator made the entity
+>         branch(function() sample(1:2, 1), merge=c(TRUE, TRUE), ##Replace 'sample()' with a new function
+>                 create_trajectory("cats") %>%
+>                         seize("catDoc", 1) %>%
+>                         timeout(function() max(0,rnorm(1,30,10))) %>%
+>                         release("catDoc", 1),
+>                 create_trajectory("cats") %>%
+>                         seize("dogDoc", 1) %>%
+>                         timeout(function() max(0,rnorm(1,30,10))) %>%
+>                         release("dogDoc", 1)
+>        )
+>
+> env <- simmer("Lab6") %>%
+>         add_resource("receptionist", 1) %>%
+>         add_resource("catDoc", 1) %>%
+>         add_resource("dogDoc", 1) %>%
+>         add_generator("cat", t0, function() rexp(1,rate = (1/45)), mon = 2) %>%
+>         add_generator("dog", t0, function() rexp(1,rate = (1/30)), mon = 2) %>%
+>         run(until=720) #720 = 12 hours * 60 min
+>
+>
+> --
+> “The time will come when diligent research over long periods will bring to light things which now lie hidden."
+>
+> Seneca the Younger
+
+From u3b42d51341a1adde at groups.google.com  Sun May  7 03:00:32 2017
+From: u3b42d51341a1adde at groups.google.com (Justin Howe)
+Date: Sun, 07 May 2017 03:00:32 +0000
+Subject: Is there a get_attibute() function that I can call (during execution)?
+Message-ID: <VyFTDkYBqVo.nam1I78kBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/VyFTDkYBqVo/m/nam1I78kBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm looking through all of the documentation for a way to call get_attribute() on the current trajectory (during execution)? Maybe I'm misundersanding get_mon_attributes, but I can't think of how I can use it within the scope of the currently executing trajectory?
+
+For example, something that would make the following possible (although I realize in this simplified example, I could just use 2 generators):
+
+baby.generator <- trajectory() %>%
+         set_attribute(key = "naturalBirth", value= function() { trunc(runif(1,0,2)} %     >%
+         seize("doctor", amount=1) %>%
+         seize("nurse", amount = function() { 1 + 2*get_attribute("naturalBirth") })
+         timeout( function() { rexp(1, mu) } %>%
+         release ("doctor", amount=1 ) %>%
+         release("nurse", amount = function() { get_attribute("naturalBirth") })
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sun May  7 09:48:52 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Sun, 07 May 2017 09:48:52 +0000
+Subject: Re: [simmer-devel] Re: How to branch based on which of 2 generators an entity comes from
+Message-ID: <0rqp6qT_dks.Ymf3hQc7BAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <0rqp6qT_dks.2MNpUuDVAAAJ@simmer-devel.groups.google.com>
+References: <0rqp6qT_dks.fBeG4u52BAAJ@simmer-devel.groups.google.com> <0rqp6qT_dks.2MNpUuDVAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/0rqp6qT_dks/m/Ymf3hQc7BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Of course, it depends on the simulation. But from the performance point of view, it is always better to define multiple trajectories and multiple generators. You can create them in a very easy way, with very few lines of code, using lapply, and the performance gains are huge (see this example <http://r-simmer.org/articles/G-ctmc.html#example-2>).
+
+Iñaki
+​
+
+2017-05-07 4:17 GMT+02:00 Justin Howe <justi...@gmail.com>:
+
+> Just another point to note in your solution design (which happens to be a problem I'm running into).
+>
+> Since Markovian arrival distributions have additive means, it is MUCH simpler to NOT create different arrival generators for the same phenomena. For example, the arrival rate of emergency room patients = the weighted average of the arrival rates for gun shot wounds vs all non-gun shot wounds. This could be modeled in 2 ways:
+> 1) Create two trajectories.
+> 2) Create a single arrivel trajectory, and assign an attribute 'Gun Shot Wound' based on the historical proportion that gun shot wounds comprise of total emergency room patients.
+>
+> While option 1 is intuitive, it doesn't scale to multiple attributes. For example, if I had 10 'reasons' to visit the emergency room (attribute 1), and I wanted to model 10 phases of the moon (attribute 2), I would need to create 100 generators. (Not tenable)
+>
+> So it would be GREAT if we can reference the attribute for 'this' trajectory and use it as an input to functions.
+>
+>
+> On Wednesday, May 4, 2016 at 10:58:09 AM UTC-7, L Mico wrote:
+> > Hi friends,
+> >
+> > I'd like to have two generators (with different probability functions), whose entities go through the same trajectory but branch based on which generator they come from.  I am not sure how to access this info (i.e. which method to use) at the branch point about which gen they came from - in the example they are dogs or cats.   Basic code below, which needs the branch decision function to be modified.  Please let me know if any of this does not make sense.
+> >
+> > Thanks & Cheers,
+> >
+> > Lindsay
+> >
+> > ###########
+> >
+> > t0 <- create_trajectory("my trajectory") %>%
+> >         seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> >         timeout(function() max(0,rnorm(1,5,2))) %>%
+> >         release("receptionist", 1) %>%
+> >         ##Here is where I want to branch depending on what generator made the entity
+> >         branch(function() sample(1:2, 1), merge=c(TRUE, TRUE), ##Replace 'sample()' with a new function
+> >                 create_trajectory("cats") %>%
+> >                         seize("catDoc", 1) %>%
+> >                         timeout(function() max(0,rnorm(1,30,10))) %>%
+> >                         release("catDoc", 1),
+> >                 create_trajectory("cats") %>%
+> >                         seize("dogDoc", 1) %>%
+> >                         timeout(function() max(0,rnorm(1,30,10))) %>%
+> >                         release("dogDoc", 1)
+> >        )
+> >
+> > env <- simmer("Lab6") %>%
+> >         add_resource("receptionist", 1) %>%
+> >         add_resource("catDoc", 1) %>%
+> >         add_resource("dogDoc", 1) %>%
+> >         add_generator("cat", t0, function() rexp(1,rate = (1/45)), mon = 2) %>%
+> >         add_generator("dog", t0, function() rexp(1,rate = (1/30)), mon = 2) %>%
+> >         run(until=720) #720 = 12 hours * 60 min
+> >
+> >
+> > --
+> > “The time will come when diligent research over long periods will bring to light things which now lie hidden."
+> >
+> > Seneca the Younger
+
+> --
+
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/b3fb5a39-2371-4514-9a3b-8bdaab155f18%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/b3fb5a39-2371-4514-9a3b-8bdaab155f18%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sun May  7 09:52:51 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Sun, 07 May 2017 09:52:51 +0000
+Subject: Re: [simmer-devel] Is there a get_attibute() function that I can call (during execution)?
+Message-ID: <VyFTDkYBqVo.uG9hPz87BAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <VyFTDkYBqVo.nam1I78kBAAJ@simmer-devel.groups.google.com>
+References: <VyFTDkYBqVo.nam1I78kBAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/VyFTDkYBqVo/m/uG9hPz87BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Please, see this vignette <http://r-simmer.org/articles/C-trajectories.html#set_attribute>. You can access the attributes just by providing a function with one parameter:
+seize("nurse", amount = function(attr) { 1 + 2*attr["naturalBirth"] })
+​
+
+2017-05-07 5:00 GMT+02:00 Justin Howe <justi...@gmail.com>:
+
+> I'm looking through all of the documentation for a way to call get_attribute() on the current trajectory (during execution)? Maybe I'm misundersanding get_mon_attributes, but I can't think of how I can use it within the scope of the currently executing trajectory?
+>
+> For example, something that would make the following possible (although I realize in this simplified example, I could just use 2 generators):
+>
+> baby.generator <- trajectory() %>%
+>          set_attribute(key = "naturalBirth", value= function() { trunc(runif(1,0,2)} %     >%
+>          seize("doctor", amount=1) %>%
+>          seize("nurse", amount = function() { 1 + 2*get_attribute("naturalBirth") })
+>          timeout( function() { rexp(1, mu) } %>%
+>          release ("doctor", amount=1 ) %>%
+>          release("nurse", amount = function() { get_attribute("naturalBirth") })
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/cda4e3f0-7397-4288-8f30-e00cbbb52b4a%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/cda4e3f0-7397-4288-8f30-e00cbbb52b4a%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From ua6bda949fbb66786 at groups.google.com  Wed May 10 09:45:13 2017
+From: ua6bda949fbb66786 at groups.google.com (Dominique Cirkel)
+Date: Wed, 10 May 2017 09:45:13 +0000
+Subject: Re: [simmer-devel] How to branch based on which of 2 generators an entity comes from
+Message-ID: <0rqp6qT_dks.mZ4lQJImBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <0rqp6qT_dks.fBeG4u52BAAJ@simmer-devel.groups.google.com>
+References: <0rqp6qT_dks.fBeG4u52BAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/0rqp6qT_dks/m/mZ4lQJImBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'd have to say I find Barts include() a lot more intuitive.
+However, both would be easy to work with.
+
+Kind regards
+
+Op woensdag 4 mei 2016 23:27:53 UTC+2 schreef Iñaki Úcar:
+
+> I like your proposal for two reasons:
+> It’s easier to implement at R level (at C++ level, it’s still necessary to clone the whole chain of activities and it will be a mess; but that’s a future-Iñaki’s problem :-D ).
+> It’s cleaner when the common part is located just in the middle of a larger trajectory.
+>
+> So I vote for it. Do you think it would be preferable include(t.common) instead of concatenate(t.common)? Other? I’m just brainstorming. I have no favorite.
+> ​
+>
+> 2016-05-04 22:31 GMT+02:00 Bart Smeets <bartsm...@gmail.com>:
+> > Completely support this functionality. I would be nice however to keep the trajectory definition part out of the generators. For example:
+> >
+> > t.common <- create_trajectory("common") %>%
+> >   seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> >   timeout(function() max(0,rnorm(1,5,2))) %>%
+> >   release("receptionist", 1)
+> >
+> > t.cat <http://t.cat/> <- create_trajectory("cat") %>%
+> >   include(t.common) %>%
+> >   seize("catDoc", 1) %>%
+> >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> >   release("catDoc", 1)
+> >
+> > t.dog <- create_trajectory("dog") %>%
+> >   include(t.common) %>%
+> >   seize("dogDoc", 1) %>%
+> >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> >   release("dogDoc", 1)
+> >
+> > What do you think?
+> >
+> > Op woensdag 4 mei 2016 21:27:54 UTC+2 schreef Iñaki Úcar:
+> > >
+> > > I think the previous email answered the question. But, as a side discussion, certainly it would be nice not to have to repeat the common activities in each trajectory. So I’ll examine the possibility of adding trajectories, of trajectory concatenation, as a future feature. This way, we could define
+> > > t.common <- create_trajectory("common") %>%
+> > >   seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > >   timeout(function() max(0,rnorm(1,5,2))) %>%
+> > >   release("receptionist", 1)
+> > >
+> > > t.cat <http://t.cat> <- create_trajectory("cat") %>%
+> > >   seize("catDoc", 1) %>%
+> > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > >   release("catDoc", 1)
+> > >
+> > > t.dog <- create_trajectory("dog") %>%
+> > >   seize("dogDoc", 1) %>%
+> > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > >   release("dogDoc", 1)
+> > >
+> > > And then, we could simply concatenate them (tentative syntax follows):
+> > > env %>%
+> > >   add_generator("cat", t.common + t.cat <http://t.cat>, function() rexp(1,rate = (1/45)), mon = 2) %>%
+> > >   add_generator("dog", t.common + t.dog, function() rexp(1,rate = (1/30)), mon = 2)
+> > >
+> > > Opinions welcome!
+> > >
+> > > Regards,
+> > > Iñaki
+> > > ​
+> > >
+> > > 2016-05-04 21:17 GMT+02:00 Iñaki Úcar <i.uc...@gmail.com>:
+> > > >
+> > > > Hi Lindsay,
+> > > >
+> > > > The whole point behind the concept of trajectory is being a common path for arrivals of the same type. If you have two types of arrivals, cats and dogs, the natural way to model this problem with simmer is having two distinct trajectories, because they do different things even though they share some activities. In terms of your example,
+> > > > t.cat <http://t.cat> <- create_trajectory("cat") %>%
+> > > >   seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > > >   timeout(function() max(0,rnorm(1,5,2))) %>%
+> > > >   release("receptionist", 1) %>%
+> > > >   seize("catDoc", 1) %>%
+> > > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > >   release("catDoc", 1)
+> > > >
+> > > > t.dog <- create_trajectory("dog") %>%
+> > > >   seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > > >   timeout(function() max(0,rnorm(1,5,2))) %>%
+> > > >   release("receptionist", 1) %>%
+> > > >   seize("dogDoc", 1) %>%
+> > > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > >   release("dogDoc", 1)
+> > > >
+> > > > env <- simmer("Lab6") %>%
+> > > >   add_resource("receptionist", 1) %>%
+> > > >   add_resource("catDoc", 1) %>%
+> > > >   add_resource("dogDoc", 1) %>%
+> > > >   add_generator("cat", t.cat <http://t.cat>, function() rexp(1,rate = (1/45)), mon = 2) %>%
+> > > >   add_generator("dog", t.dog, function() rexp(1,rate = (1/30)), mon = 2) %>%
+> > > >   run(until=720) #720 = 12 hours * 60 min
+> > > >
+> > > > Regards,
+> > > > Iñaki
+> > > > ​
+> > > >
+> > > > 2016-05-04 19:58 GMT+02:00 L Mico <linds...@gmail.com>:
+> > > > > Hi friends,
+> > > > >
+> > > > > I'd like to have two generators (with different probability functions), whose entities go through the same trajectory but branch based on which generator they come from.  I am not sure how to access this info (i.e. which method to use) at the branch point about which gen they came from - in the example they are dogs or cats.   Basic code below, which needs the branch decision function to be modified.  Please let me know if any of this does not make sense.
+> > > > >
+> > > > > Thanks & Cheers,
+> > > > >
+> > > > > Lindsay
+> > > > >
+> > > > > ###########
+> > > > >
+> > > > > t0 <- create_trajectory("my trajectory") %>%
+> > > > >         seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > > > >         timeout(function() max(0,rnorm(1,5,2))) %>%
+> > > > >         release("receptionist", 1) %>%
+> > > > >         ##Here is where I want to branch depending on what generator made the entity
+> > > > >         branch(function() sample(1:2, 1), merge=c(TRUE, TRUE), ##Replace 'sample()' with a new function
+> > > > >                 create_trajectory("cats") %>%
+> > > > >                         seize("catDoc", 1) %>%
+> > > > >                         timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > > >                         release("catDoc", 1),
+> > > > >                 create_trajectory("cats") %>%
+> > > > >                         seize("dogDoc", 1) %>%
+> > > > >                         timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > > >                         release("dogDoc", 1)
+> > > > >        )
+> > > > >
+> > > > > env <- simmer("Lab6") %>%
+> > > > >         add_resource("receptionist", 1) %>%
+> > > > >         add_resource("catDoc", 1) %>%
+> > > > >         add_resource("dogDoc", 1) %>%
+> > > > >         add_generator("cat", t0, function() rexp(1,rate = (1/45)), mon = 2) %>%
+> > > > >         add_generator("dog", t0, function() rexp(1,rate = (1/30)), mon = 2) %>%
+> > > > >         run(until=720) #720 = 12 hours * 60 min
+> > > > >
+> > > > >
+> > > > > --
+> > > > > “The time will come when diligent research over long periods will bring to light things which now lie hidden."
+> > > > >
+> > > > > Seneca the Younger
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAC3jZor8OoXV9BOkOM-p%2Bg_uPLqU_5twqj4M9Snm9pRDM-RWVg%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAC3jZor8OoXV9BOkOM-p%2Bg_uPLqU_5twqj4M9Snm9pRDM-RWVg%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > Iñaki Úcar
+> > > > http://www.enchufa2.es
+> > > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > >
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> > > http://www.enchufa2.es
+> > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/30d379f6-901b-47cb-b7e9-eae40cc81090%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/30d379f6-901b-47cb-b7e9-eae40cc81090%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed May 10 09:50:55 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Wed, 10 May 2017 09:50:55 +0000
+Subject: Re: [simmer-devel] How to branch based on which of 2 generators an entity comes from
+Message-ID: <0rqp6qT_dks.fohkx-EmBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <0rqp6qT_dks.fBeG4u52BAAJ@simmer-devel.groups.google.com>
+References: <0rqp6qT_dks.fBeG4u52BAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/0rqp6qT_dks/m/fohkx-EmBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Finally, as you probably know, the selected verb for this functionality was "join()".
+
+Iñaki
+
+2017-05-10 11:45 GMT+02:00 Dominique Cirkel <dominiq...@gmail.com>:
+
+> I'd have to say I find Barts include() a lot more intuitive.
+> However, both would be easy to work with.
+>
+> Kind regards
+>
+> Op woensdag 4 mei 2016 23:27:53 UTC+2 schreef Iñaki Úcar:
+> >
+> > I like your proposal for two reasons:
+> > It’s easier to implement at R level (at C++ level, it’s still necessary to clone the whole chain of activities and it will be a mess; but that’s a future-Iñaki’s problem :-D ).
+> > It’s cleaner when the common part is located just in the middle of a larger trajectory.
+> >
+> > So I vote for it. Do you think it would be preferable include(t.common) instead of concatenate(t.common)? Other? I’m just brainstorming. I have no favorite.
+> > ​
+> >
+> > 2016-05-04 22:31 GMT+02:00 Bart Smeets <bartsm...@gmail.com>:
+> > > Completely support this functionality. I would be nice however to keep the trajectory definition part out of the generators. For example:
+> > >
+> > > t.common <- create_trajectory("common") %>%
+> > >   seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > >   timeout(function() max(0,rnorm(1,5,2))) %>%
+> > >   release("receptionist", 1)
+> > >
+> > > t.cat <http://t.cat/> <- create_trajectory("cat") %>%
+> > >   include(t.common) %>%
+> > >   seize("catDoc", 1) %>%
+> > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > >   release("catDoc", 1)
+> > >
+> > > t.dog <- create_trajectory("dog") %>%
+> > >   include(t.common) %>%
+> > >   seize("dogDoc", 1) %>%
+> > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > >   release("dogDoc", 1)
+> > >
+> > > What do you think?
+> > >
+> > > Op woensdag 4 mei 2016 21:27:54 UTC+2 schreef Iñaki Úcar:
+> > > >
+> > > > I think the previous email answered the question. But, as a side discussion, certainly it would be nice not to have to repeat the common activities in each trajectory. So I’ll examine the possibility of adding trajectories, of trajectory concatenation, as a future feature. This way, we could define
+> > > > t.common <- create_trajectory("common") %>%
+> > > >   seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > > >   timeout(function() max(0,rnorm(1,5,2))) %>%
+> > > >   release("receptionist", 1)
+> > > >
+> > > > t.cat <http://t.cat> <- create_trajectory("cat") %>%
+> > > >   seize("catDoc", 1) %>%
+> > > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > >   release("catDoc", 1)
+> > > >
+> > > > t.dog <- create_trajectory("dog") %>%
+> > > >   seize("dogDoc", 1) %>%
+> > > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > >   release("dogDoc", 1)
+> > > >
+> > > > And then, we could simply concatenate them (tentative syntax follows):
+> > > > env %>%
+> > > >   add_generator("cat", t.common + t.cat <http://t.cat>, function() rexp(1,rate = (1/45)), mon = 2) %>%
+> > > >   add_generator("dog", t.common + t.dog, function() rexp(1,rate = (1/30)), mon = 2)
+> > > >
+> > > > Opinions welcome!
+> > > >
+> > > > Regards,
+> > > > Iñaki
+> > > > ​
+> > > >
+> > > > 2016-05-04 21:17 GMT+02:00 Iñaki Úcar <i.uc...@gmail.com>:
+> > > > >
+> > > > > Hi Lindsay,
+> > > > >
+> > > > > The whole point behind the concept of trajectory is being a common path for arrivals of the same type. If you have two types of arrivals, cats and dogs, the natural way to model this problem with simmer is having two distinct trajectories, because they do different things even though they share some activities. In terms of your example,
+> > > > > t.cat <http://t.cat> <- create_trajectory("cat") %>%
+> > > > >   seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > > > >   timeout(function() max(0,rnorm(1,5,2))) %>%
+> > > > >   release("receptionist", 1) %>%
+> > > > >   seize("catDoc", 1) %>%
+> > > > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > > >   release("catDoc", 1)
+> > > > >
+> > > > > t.dog <- create_trajectory("dog") %>%
+> > > > >   seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > > > >   timeout(function() max(0,rnorm(1,5,2))) %>%
+> > > > >   release("receptionist", 1) %>%
+> > > > >   seize("dogDoc", 1) %>%
+> > > > >   timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > > >   release("dogDoc", 1)
+> > > > >
+> > > > > env <- simmer("Lab6") %>%
+> > > > >   add_resource("receptionist", 1) %>%
+> > > > >   add_resource("catDoc", 1) %>%
+> > > > >   add_resource("dogDoc", 1) %>%
+> > > > >   add_generator("cat", t.cat <http://t.cat>, function() rexp(1,rate = (1/45)), mon = 2) %>%
+> > > > >   add_generator("dog", t.dog, function() rexp(1,rate = (1/30)), mon = 2) %>%
+> > > > >   run(until=720) #720 = 12 hours * 60 min
+> > > > >
+> > > > > Regards,
+> > > > > Iñaki
+> > > > > ​
+> > > > >
+> > > > > 2016-05-04 19:58 GMT+02:00 L Mico <linds...@gmail.com>:
+> > > > > > Hi friends,
+> > > > > >
+> > > > > > I'd like to have two generators (with different probability functions), whose entities go through the same trajectory but branch based on which generator they come from.  I am not sure how to access this info (i.e. which method to use) at the branch point about which gen they came from - in the example they are dogs or cats.   Basic code below, which needs the branch decision function to be modified.  Please let me know if any of this does not make sense.
+> > > > > >
+> > > > > > Thanks & Cheers,
+> > > > > >
+> > > > > > Lindsay
+> > > > > >
+> > > > > > ###########
+> > > > > >
+> > > > > > t0 <- create_trajectory("my trajectory") %>%
+> > > > > >         seize("receptionist", 1) %>% #Both dogs and cats go to the receptionist
+> > > > > >         timeout(function() max(0,rnorm(1,5,2))) %>%
+> > > > > >         release("receptionist", 1) %>%
+> > > > > >         ##Here is where I want to branch depending on what generator made the entity
+> > > > > >         branch(function() sample(1:2, 1), merge=c(TRUE, TRUE), ##Replace 'sample()' with a new function
+> > > > > >                 create_trajectory("cats") %>%
+> > > > > >                         seize("catDoc", 1) %>%
+> > > > > >                         timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > > > >                         release("catDoc", 1),
+> > > > > >                 create_trajectory("cats") %>%
+> > > > > >                         seize("dogDoc", 1) %>%
+> > > > > >                         timeout(function() max(0,rnorm(1,30,10))) %>%
+> > > > > >                         release("dogDoc", 1)
+> > > > > >        )
+> > > > > >
+> > > > > > env <- simmer("Lab6") %>%
+> > > > > >         add_resource("receptionist", 1) %>%
+> > > > > >         add_resource("catDoc", 1) %>%
+> > > > > >         add_resource("dogDoc", 1) %>%
+> > > > > >         add_generator("cat", t0, function() rexp(1,rate = (1/45)), mon = 2) %>%
+> > > > > >         add_generator("dog", t0, function() rexp(1,rate = (1/30)), mon = 2) %>%
+> > > > > >         run(until=720) #720 = 12 hours * 60 min
+> > > > > >
+> > > > > >
+> > > > > > --
+> > > > > > “The time will come when diligent research over long periods will bring to light things which now lie hidden."
+> > > > > >
+> > > > > > Seneca the Younger
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAC3jZor8OoXV9BOkOM-p%2Bg_uPLqU_5twqj4M9Snm9pRDM-RWVg%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAC3jZor8OoXV9BOkOM-p%2Bg_uPLqU_5twqj4M9Snm9pRDM-RWVg%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > >
+> > > > >
+> > > > >
+> > > > > --
+> > > > > Iñaki Úcar
+> > > > > http://www.enchufa2.es
+> > > > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > Iñaki Úcar
+> > > > http://www.enchufa2.es
+> > > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> > > To post to this group, send email to simmer...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/30d379f6-901b-47cb-b7e9-eae40cc81090%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/30d379f6-901b-47cb-b7e9-eae40cc81090%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > Iñaki Úcar
+> > http://www.enchufa2.es
+> > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/651fc01f-3bfc-4b5e-8526-aa25b17add53%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/651fc01f-3bfc-4b5e-8526-aa25b17add53%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From uc38f3e078ba2e263 at groups.google.com  Wed May 10 20:49:02 2017
+From: uc38f3e078ba2e263 at groups.google.com (Franz Fuchs)
+Date: Wed, 10 May 2017 20:49:02 +0000
+Subject: Avoiding memory/reference leaks inside function (?)
+Message-ID: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/A4M7uP0Lmgw/m/f_0wkctKBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Good afternoon,
+
+I am attempting to wrap a simmer DES (in this case, a psychiatric hospital with a waiting list) inside a function which would pass various parameters (in this case, total number of incoming admissions, number of beds, average length of stay, and replications) to the simulation for modeling, and return the 5th, 50th and 95th percentile for results of interest.
+
+The simulation runs for 5 "years", but I truncate the last year of data, bind the list of simulation results together, and process the results in the function itself, so the actual result of the function is only a small data table.
+
+The end goal is to use mapply to start with a data table of these starting parameters, and build a data table of results from those parameters automatically.
+
+Everything seems to work fine, but I've noticed that RAM consistently creeps upward  -- to the point where, if I have enough parameters and replications, my 32 GB machine is completely consumed and the simulation aborts due to lack of memory.
+
+I'm suspecting that there is some kind of reference leak in the simulation environment. Definitely not an R expert, so I'm struggling to figure out how to clean these up -- i.e., presumably deleting the simulation results in the environment they are accumulating.
+
+For simplicity, I am not using lapply or mclapply in the function itself -- just a for loop. Simplified code is attached to demonstrate the issue.
+
+Thanks for your time and consideration.
+
+Very respectfully,
+Franz Fuchs
+franz...@wyo.gov
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu May 11 08:27:46 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Thu, 11 May 2017 08:27:46 +0000
+Subject: Re: [simmer-devel] Avoiding memory/reference leaks inside function (?)
+Message-ID: <A4M7uP0Lmgw.FKBux-xwBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com>
+References: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/A4M7uP0Lmgw/m/FKBux-xwBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Franz,
+
+I am pretty sure that there are no memory leaks. I did find some memory management problems though, namely, memory cleared but not deallocated. I will further investigate this issue and, hopefully, we will see this solved for the next release. Stay tuned.
+
+Regards,
+Iñaki
+
+2017-05-10 22:49 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+
+> Good afternoon,
+>
+> I am attempting to wrap a simmer DES (in this case, a psychiatric hospital with a waiting list) inside a function which would pass various parameters (in this case, total number of incoming admissions, number of beds, average length of stay, and replications) to the simulation for modeling, and return the 5th, 50th and 95th percentile for results of interest.
+>
+> The simulation runs for 5 "years", but I truncate the last year of data, bind the list of simulation results together, and process the results in the function itself, so the actual result of the function is only a small data table.
+>
+> The end goal is to use mapply to start with a data table of these starting parameters, and build a data table of results from those parameters automatically.
+>
+> Everything seems to work fine, but I've noticed that RAM consistently creeps upward  -- to the point where, if I have enough parameters and replications, my 32 GB machine is completely consumed and the simulation aborts due to lack of memory.
+>
+> I'm suspecting that there is some kind of reference leak in the simulation environment. Definitely not an R expert, so I'm struggling to figure out how to clean these up -- i.e., presumably deleting the simulation results in the environment they are accumulating.
+>
+> For simplicity, I am not using lapply or mclapply in the function itself -- just a for loop. Simplified code is attached to demonstrate the issue.
+>
+> Thanks for your time and consideration.
+>
+> Very respectfully,
+> Franz Fuchs
+> franz...@wyo.gov
+>
+>
+>
+
+> E-Mail to and from me, in connection with the transaction
+> of public business, is subject to the Wyoming Public Records
+> Act and may be disclosed to third parties.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From uc38f3e078ba2e263 at groups.google.com  Thu May 11 14:12:35 2017
+From: uc38f3e078ba2e263 at groups.google.com (Franz Fuchs)
+Date: Thu, 11 May 2017 14:12:35 +0000
+Subject: Re: [simmer-devel] Avoiding memory/reference leaks inside function (?)
+Message-ID: <A4M7uP0Lmgw.14fq372DBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <A4M7uP0Lmgw.FKBux-xwBQAJ@simmer-devel.groups.google.com>
+References: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com> <A4M7uP0Lmgw.FKBux-xwBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/A4M7uP0Lmgw/m/14fq372DBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi Iñaki,
+
+Thanks for checking it out. I'm 99% sure the issue is with my code, and so I appreciate the assistance. Very impressed with the package in general -- thanks for building it and putting it out there.
+
+Vr/
+Franz
+
+Policy Coordinator/Legislative Liaison
+
+Wyoming Department of Health
+Director's Unit for Policy, Research and Evaluation
+401 Hathaway Building
+Cheyenne, WY 82002
+
+(e) franz...@wyo.gov
+(o) 307-777-2865
+(c) 307-477-0112
+
+On Thu, May 11, 2017 at 2:27 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+
+> Hi Franz,
+>
+> I am pretty sure that there are no memory leaks. I did find some memory management problems though, namely, memory cleared but not deallocated. I will further investigate this issue and, hopefully, we will see this solved for the next release. Stay tuned.
+>
+> Regards,
+> Iñaki
+>
+> 2017-05-10 22:49 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > Good afternoon,
+> >
+> > I am attempting to wrap a simmer DES (in this case, a psychiatric hospital with a waiting list) inside a function which would pass various parameters (in this case, total number of incoming admissions, number of beds, average length of stay, and replications) to the simulation for modeling, and return the 5th, 50th and 95th percentile for results of interest.
+> >
+> > The simulation runs for 5 "years", but I truncate the last year of data, bind the list of simulation results together, and process the results in the function itself, so the actual result of the function is only a small data table.
+> >
+> > The end goal is to use mapply to start with a data table of these starting parameters, and build a data table of results from those parameters automatically.
+> >
+> > Everything seems to work fine, but I've noticed that RAM consistently creeps upward  -- to the point where, if I have enough parameters and replications, my 32 GB machine is completely consumed and the simulation aborts due to lack of memory.
+> >
+> > I'm suspecting that there is some kind of reference leak in the simulation environment. Definitely not an R expert, so I'm struggling to figure out how to clean these up -- i.e., presumably deleting the simulation results in the environment they are accumulating.
+> >
+> > For simplicity, I am not using lapply or mclapply in the function itself -- just a for loop. Simplified code is attached to demonstrate the issue.
+> >
+> > Thanks for your time and consideration.
+> >
+> > Very respectfully,
+> > Franz Fuchs
+> > franz...@wyo.gov
+> >
+> >
+> >
+> > E-Mail to and from me, in connection with the transaction
+> > of public business, is subject to the Wyoming Public Records
+> > Act and may be disclosed to third parties.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+E-Mail to and from me, in connection with the transaction
+of public business, is subject to the Wyoming Public Records
+Act and may be disclosed to third parties.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Thu May 11 15:12:44 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Thu, 11 May 2017 15:12:44 +0000
+Subject: Re: [simmer-devel] Avoiding memory/reference leaks inside function (?)
+Message-ID: <A4M7uP0Lmgw.Wa17MQaHBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <A4M7uP0Lmgw.FKBux-xwBQAJ@simmer-devel.groups.google.com>
+References: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com> <A4M7uP0Lmgw.FKBux-xwBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/A4M7uP0Lmgw/m/Wa17MQaHBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Franz, your code looks good to me. I've found the problem and it's related to how STL containers behave (the C++ part of the package). If you are familiarised with C++, basically it seems that clearing a vector does not deallocate the memory. I didn't know that, and that's why your memory keeps growing. Additionally, I've found another problem with the destructor of the simulator object. More details as soon as there is a working patch.
+
+Thanks for the report.
+
+2017-05-11 16:12 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+
+> hi Iñaki,
+>
+> Thanks for checking it out. I'm 99% sure the issue is with my code, and so I appreciate the assistance. Very impressed with the package in general -- thanks for building it and putting it out there.
+>
+> Vr/
+> Franz
+>
+> Policy Coordinator/Legislative Liaison
+>
+> Wyoming Department of Health
+> Director's Unit for Policy, Research and Evaluation
+> 401 Hathaway Building
+> Cheyenne, WY 82002
+>
+> (e) franz...@wyo.gov
+> (o) 307-777-2865
+> (c) 307-477-0112
+>
+>
+> On Thu, May 11, 2017 at 2:27 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+> > Hi Franz,
+> >
+> > I am pretty sure that there are no memory leaks. I did find some memory management problems though, namely, memory cleared but not deallocated. I will further investigate this issue and, hopefully, we will see this solved for the next release. Stay tuned.
+> >
+> > Regards,
+> > Iñaki
+> >
+> > 2017-05-10 22:49 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > > Good afternoon,
+> > >
+> > > I am attempting to wrap a simmer DES (in this case, a psychiatric hospital with a waiting list) inside a function which would pass various parameters (in this case, total number of incoming admissions, number of beds, average length of stay, and replications) to the simulation for modeling, and return the 5th, 50th and 95th percentile for results of interest.
+> > >
+> > > The simulation runs for 5 "years", but I truncate the last year of data, bind the list of simulation results together, and process the results in the function itself, so the actual result of the function is only a small data table.
+> > >
+> > > The end goal is to use mapply to start with a data table of these starting parameters, and build a data table of results from those parameters automatically.
+> > >
+> > > Everything seems to work fine, but I've noticed that RAM consistently creeps upward  -- to the point where, if I have enough parameters and replications, my 32 GB machine is completely consumed and the simulation aborts due to lack of memory.
+> > >
+> > > I'm suspecting that there is some kind of reference leak in the simulation environment. Definitely not an R expert, so I'm struggling to figure out how to clean these up -- i.e., presumably deleting the simulation results in the environment they are accumulating.
+> > >
+> > > For simplicity, I am not using lapply or mclapply in the function itself -- just a for loop. Simplified code is attached to demonstrate the issue.
+> > >
+> > > Thanks for your time and consideration.
+> > >
+> > > Very respectfully,
+> > > Franz Fuchs
+> > > franz...@wyo.gov
+> > >
+> > >
+> > >
+> > > E-Mail to and from me, in connection with the transaction
+> > > of public business, is subject to the Wyoming Public Records
+> > > Act and may be disclosed to third parties.
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > To post to this group, send email to simmer...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > Iñaki Úcar
+> > http://www.enchufa2.es
+> > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> >
+> > --
+> > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> > To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> E-Mail to and from me, in connection with the transaction
+> of public business, is subject to the Wyoming Public Records
+> Act and may be disclosed to third parties.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From u0f5b7adb7e70bd8b at groups.google.com  Sun May 14 12:08:38 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Sun, 14 May 2017 12:08:38 +0000
+Subject: Re: [simmer-devel] Avoiding memory/reference leaks inside function (?)
+Message-ID: <A4M7uP0Lmgw.IM1xugpQBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <A4M7uP0Lmgw.Wa17MQaHBQAJ@simmer-devel.groups.google.com>
+References: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com> <A4M7uP0Lmgw.Wa17MQaHBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/A4M7uP0Lmgw/m/IM1xugpQBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, this issue has been solved on GitHub. As I said in my last mail, I found another problem which prevents the object's destructor from being called in some circumstances. Unfortunately, there is nothing we can do about it right now, because the bug is in magrittr or Rcpp, not in simmer (see the report <https://github.com/tidyverse/magrittr/issues/146>).
+
+Now, what can you do to prevent your machine from running out of memory?
+Use the current master branch on GitHub (you can install it with devtools::install_github) until we roll out a new release (at the end of the month, probably).
+I recommend you to reset your environment once you've extracted the information needed inside your loop, that is: create the env, run it, call get_mon_whatever, and then call reset(env).
+Regards,
+Iñaki
+
+2017-05-11 17:12 GMT+02:00 Iñaki Úcar <i.uc...@gmail.com>:
+> Franz, your code looks good to me. I've found the problem and it's related to how STL containers behave (the C++ part of the package). If you are familiarised with C++, basically it seems that clearing a vector does not deallocate the memory. I didn't know that, and that's why your memory keeps growing. Additionally, I've found another problem with the destructor of the simulator object. More details as soon as there is a working patch.
+>
+> Thanks for the report.
+>
+>
+> 2017-05-11 16:12 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > hi Iñaki,
+> >
+> > Thanks for checking it out. I'm 99% sure the issue is with my code, and so I appreciate the assistance. Very impressed with the package in general -- thanks for building it and putting it out there.
+> >
+> > Vr/
+> > Franz
+> >
+> > Policy Coordinator/Legislative Liaison
+> >
+> > Wyoming Department of Health
+> > Director's Unit for Policy, Research and Evaluation
+> > 401 Hathaway Building
+> > Cheyenne, WY 82002
+> >
+> > (e) franz...@wyo.gov
+> > (o) 307-777-2865
+> > (c) 307-477-0112
+> >
+> >
+> > On Thu, May 11, 2017 at 2:27 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+> > > Hi Franz,
+> > >
+> > > I am pretty sure that there are no memory leaks. I did find some memory management problems though, namely, memory cleared but not deallocated. I will further investigate this issue and, hopefully, we will see this solved for the next release. Stay tuned.
+> > >
+> > > Regards,
+> > > Iñaki
+> > >
+> > > 2017-05-10 22:49 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > > > Good afternoon,
+> > > >
+> > > > I am attempting to wrap a simmer DES (in this case, a psychiatric hospital with a waiting list) inside a function which would pass various parameters (in this case, total number of incoming admissions, number of beds, average length of stay, and replications) to the simulation for modeling, and return the 5th, 50th and 95th percentile for results of interest.
+> > > >
+> > > > The simulation runs for 5 "years", but I truncate the last year of data, bind the list of simulation results together, and process the results in the function itself, so the actual result of the function is only a small data table.
+> > > >
+> > > > The end goal is to use mapply to start with a data table of these starting parameters, and build a data table of results from those parameters automatically.
+> > > >
+> > > > Everything seems to work fine, but I've noticed that RAM consistently creeps upward  -- to the point where, if I have enough parameters and replications, my 32 GB machine is completely consumed and the simulation aborts due to lack of memory.
+> > > >
+> > > > I'm suspecting that there is some kind of reference leak in the simulation environment. Definitely not an R expert, so I'm struggling to figure out how to clean these up -- i.e., presumably deleting the simulation results in the environment they are accumulating.
+> > > >
+> > > > For simplicity, I am not using lapply or mclapply in the function itself -- just a for loop. Simplified code is attached to demonstrate the issue.
+> > > >
+> > > > Thanks for your time and consideration.
+> > > >
+> > > > Very respectfully,
+> > > > Franz Fuchs
+> > > > franz...@wyo.gov
+> > > >
+> > > >
+> > > >
+> > > > E-Mail to and from me, in connection with the transaction
+> > > > of public business, is subject to the Wyoming Public Records
+> > > > Act and may be disclosed to third parties.
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> > > http://www.enchufa2.es
+> > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > >
+> > > --
+> > > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> > > To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > To post to this group, send email to simmer...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > E-Mail to and from me, in connection with the transaction
+> > of public business, is subject to the Wyoming Public Records
+> > Act and may be disclosed to third parties.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From uc38f3e078ba2e263 at groups.google.com  Mon May 15 14:24:11 2017
+From: uc38f3e078ba2e263 at groups.google.com (Franz Fuchs)
+Date: Mon, 15 May 2017 14:24:11 +0000
+Subject: Re: [simmer-devel] Avoiding memory/reference leaks inside function (?)
+Message-ID: <A4M7uP0Lmgw.EK4d-QSmBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <A4M7uP0Lmgw.IM1xugpQBwAJ@simmer-devel.groups.google.com>
+References: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com> <A4M7uP0Lmgw.IM1xugpQBwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/A4M7uP0Lmgw/m/EK4d-QSmBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Outstanding. Thanks for tracking down and addressing.
+
+vr/Franz
+
+Policy Coordinator/Legislative Liaison
+
+Wyoming Department of Health
+Director's Unit for Policy, Research and Evaluation
+401 Hathaway Building
+Cheyenne, WY 82002
+
+(e) franz...@wyo.gov
+(o) 307-777-2865
+(c) 307-477-0112
+
+On Sun, May 14, 2017 at 6:08 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+
+> Hi, this issue has been solved on GitHub. As I said in my last mail, I found another problem which prevents the object's destructor from being called in some circumstances. Unfortunately, there is nothing we can do about it right now, because the bug is in magrittr or Rcpp, not in simmer (see the report <https://github.com/tidyverse/magrittr/issues/146>).
+>
+> Now, what can you do to prevent your machine from running out of memory?
+> Use the current master branch on GitHub (you can install it with devtools::install_github) until we roll out a new release (at the end of the month, probably).
+> I recommend you to reset your environment once you've extracted the information needed inside your loop, that is: create the env, run it, call get_mon_whatever, and then call reset(env).
+> Regards,
+> Iñaki
+>
+> 2017-05-11 17:12 GMT+02:00 Iñaki Úcar <i.uc...@gmail.com>:
+> > Franz, your code looks good to me. I've found the problem and it's related to how STL containers behave (the C++ part of the package). If you are familiarised with C++, basically it seems that clearing a vector does not deallocate the memory. I didn't know that, and that's why your memory keeps growing. Additionally, I've found another problem with the destructor of the simulator object. More details as soon as there is a working patch.
+> >
+> > Thanks for the report.
+> >
+> >
+> > 2017-05-11 16:12 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > > hi Iñaki,
+> > >
+> > > Thanks for checking it out. I'm 99% sure the issue is with my code, and so I appreciate the assistance. Very impressed with the package in general -- thanks for building it and putting it out there.
+> > >
+> > > Vr/
+> > > Franz
+> > >
+> > > Policy Coordinator/Legislative Liaison
+> > >
+> > > Wyoming Department of Health
+> > > Director's Unit for Policy, Research and Evaluation
+> > > 401 Hathaway Building
+> > > Cheyenne, WY 82002
+> > >
+> > > (e) franz...@wyo.gov
+> > > (o) 307-777-2865
+> > > (c) 307-477-0112
+> > >
+> > >
+> > > On Thu, May 11, 2017 at 2:27 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+> > > > Hi Franz,
+> > > >
+> > > > I am pretty sure that there are no memory leaks. I did find some memory management problems though, namely, memory cleared but not deallocated. I will further investigate this issue and, hopefully, we will see this solved for the next release. Stay tuned.
+> > > >
+> > > > Regards,
+> > > > Iñaki
+> > > >
+> > > > 2017-05-10 22:49 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > > > > Good afternoon,
+> > > > >
+> > > > > I am attempting to wrap a simmer DES (in this case, a psychiatric hospital with a waiting list) inside a function which would pass various parameters (in this case, total number of incoming admissions, number of beds, average length of stay, and replications) to the simulation for modeling, and return the 5th, 50th and 95th percentile for results of interest.
+> > > > >
+> > > > > The simulation runs for 5 "years", but I truncate the last year of data, bind the list of simulation results together, and process the results in the function itself, so the actual result of the function is only a small data table.
+> > > > >
+> > > > > The end goal is to use mapply to start with a data table of these starting parameters, and build a data table of results from those parameters automatically.
+> > > > >
+> > > > > Everything seems to work fine, but I've noticed that RAM consistently creeps upward  -- to the point where, if I have enough parameters and replications, my 32 GB machine is completely consumed and the simulation aborts due to lack of memory.
+> > > > >
+> > > > > I'm suspecting that there is some kind of reference leak in the simulation environment. Definitely not an R expert, so I'm struggling to figure out how to clean these up -- i.e., presumably deleting the simulation results in the environment they are accumulating.
+> > > > >
+> > > > > For simplicity, I am not using lapply or mclapply in the function itself -- just a for loop. Simplified code is attached to demonstrate the issue.
+> > > > >
+> > > > > Thanks for your time and consideration.
+> > > > >
+> > > > > Very respectfully,
+> > > > > Franz Fuchs
+> > > > > franz...@wyo.gov
+> > > > >
+> > > > >
+> > > > >
+> > > > > E-Mail to and from me, in connection with the transaction
+> > > > > of public business, is subject to the Wyoming Public Records
+> > > > > Act and may be disclosed to third parties.
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > Iñaki Úcar
+> > > > http://www.enchufa2.es
+> > > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> > > > To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > > E-Mail to and from me, in connection with the transaction
+> > > of public business, is subject to the Wyoming Public Records
+> > > Act and may be disclosed to third parties.
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > To post to this group, send email to simmer...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > >
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > Iñaki Úcar
+> > http://www.enchufa2.es
+> > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+>
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq0x0ogRmNLmjkoLBJjGvfBydgCepQ7PWh0qNPDD5i0KOw%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq0x0ogRmNLmjkoLBJjGvfBydgCepQ7PWh0qNPDD5i0KOw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+E-Mail to and from me, in connection with the transaction
+of public business, is subject to the Wyoming Public Records
+Act and may be disclosed to third parties.
+
+From u4fd6ce2f355c7742 at groups.google.com  Tue May 16 02:21:15 2017
+From: u4fd6ce2f355c7742 at groups.google.com (joe.do...@gmail.com)
+Date: Tue, 16 May 2017 02:21:15 +0000
+Subject: Variable number of ongoing tasks
+Message-ID: <WOYDGShY9aI.8seBKmErBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/WOYDGShY9aI/m/8seBKmErBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I have a problem where the number of transactions changes and I cannot figure out how best to implement it in simmer.
+
+Let's say there are a lot of tasks waiting to be implemented, each taking an integer number of days (with a Poisson distribution).
+
+There are, say, 10 people available.
+
+A task may require more than one person (most require a single person).
+
+I want to keep all people busy every day.  The number of tasks on any given day is likely to vary.
+
+An example case: on a given day there may be 6 people already committed to tasks.  The remaining 4 people may start between 1 task (requiring 4 people), 4 tasks (each requiring one person) or some combination.
+
+The task duration and number of people required are chosen at random (this is not true in reality, but I am trying to keep things simple).
+
+I have created scripts with:
+
+add_resource("person", capacity=10)
+
+and with
+
+add_resource("person_1", capacity=1)
+add_resource("person_2", capacity=1)
+etc
+
+and a queue for cases where insufficient people are available for the task
+
+But I can never keep everybody occupied.
+
+I am trying to keep user written functions to a minimum, i.e., rely on simmer functions and options.  But this approach does not appear possible.
+
+Suggestions welcome.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue May 16 09:45:15 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Tue, 16 May 2017 09:45:15 +0000
+Subject: Re: [simmer-devel] Variable number of ongoing tasks
+Message-ID: <WOYDGShY9aI.ir4O6GDlBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <WOYDGShY9aI.8seBKmErBQAJ@simmer-devel.groups.google.com>
+References: <WOYDGShY9aI.8seBKmErBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/WOYDGShY9aI/m/ir4O6GDlBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+If people are chosen at random, you can use a single resource with capacity=10. Otherwise, you need to split it in individual resources, and then use select() with the policy that better suits your problem (or define your own). If you cannot keep everybody occupied, it means that there are not enough tasks. I see no other reason for this.
+
+Regards,
+Iñaki
+
+2017-05-16 4:21 GMT+02:00 <joe.do...@gmail.com>:
+
+> Hello,
+>
+> I have a problem where the number of transactions changes and I cannot figure out how best to implement it in simmer.
+>
+> Let's say there are a lot of tasks waiting to be implemented, each taking an integer number of days (with a Poisson distribution).
+>
+> There are, say, 10 people available.
+>
+> A task may require more than one person (most require a single person).
+>
+> I want to keep all people busy every day.  The number of tasks on any given day is likely to vary.
+>
+> An example case: on a given day there may be 6 people already committed to tasks.  The remaining 4 people may start between 1 task (requiring 4 people), 4 tasks (each requiring one person) or some combination.
+>
+> The task duration and number of people required are chosen at random (this is not true in reality, but I am trying to keep things simple).
+>
+> I have created scripts with:
+>
+> add_resource("person", capacity=10)
+>
+> and with
+>
+> add_resource("person_1", capacity=1)
+> add_resource("person_2", capacity=1)
+> etc
+>
+> and a queue for cases where insufficient people are available for the task
+>
+> But I can never keep everybody occupied.
+>
+> I am trying to keep user written functions to a minimum, i.e., rely on simmer functions and options.  But this approach does not appear possible.
+>
+> Suggestions welcome.
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/fe28994a-44dd-4e4e-8680-e9c147a06fef%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/fe28994a-44dd-4e4e-8680-e9c147a06fef%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From u4fd6ce2f355c7742 at groups.google.com  Tue May 16 13:15:49 2017
+From: u4fd6ce2f355c7742 at groups.google.com (joe.do...@gmail.com)
+Date: Tue, 16 May 2017 13:15:49 +0000
+Subject: Re: [simmer-devel] Variable number of ongoing tasks
+Message-ID: <WOYDGShY9aI.3mIBbBlPBQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <WOYDGShY9aI.8seBKmErBQAJ@simmer-devel.groups.google.com>
+References: <WOYDGShY9aI.8seBKmErBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/WOYDGShY9aI/m/3mIBbBlPBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Iñaki,
+
+Thanks for the prompt reply.
+
+There was a bug in my code caused by a misunderstanding on my part.  I thought the trajectory name was more of a comment.  In the Introduction to simmer Vignette, the code:
+
+patient <- trajectory("patients' path") %>%
+
+has patient with and without an s, but always uses it without an s
+
+add_generator("patient", patient, function() rnorm(1, 10, 2))
+
+Changing the code below to use add_generator("feature", feature, at(rep(0, 1e2))) produces very different behavior.
+
+Anyway major problem solved :-)
+It takes a couple of time steps for the queue to fill, but this is not a problem.
+
+Is there a way to create an infinite queue of pending tasks without flooding the pipeline at the start?
+
+library(gamlss.tr <http://gamlss.tr>)
+library("simmer")
+
+# Create a zero truncated Poisson distribution
+gen.trun(family=PO)
+
+env=simmer("impl_env")
+
+feature=trajectory("feature imp") %>%
+    set_attribute("num_dev", function() rPOtr(1, 2)) %>%
+    seize("developer", function(attrs) attrs[["num_dev"]]) %>%
+    timeout(function() rPOtr(1, 2)) %>%
+    release("developer", function(attrs) attrs[["num_dev"]])
+
+env %>%
+    add_resource("developer", 10) %>%
+    add_generator("feature imp", feature, at(rep(0, 1e2)))
+
+env %>%
+    run(until=20)
+
+env %>%
+    get_mon_arrivals
+
+env %>%
+    get_mon_resources
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue May 16 14:11:02 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Tue, 16 May 2017 14:11:02 +0000
+Subject: Re: [simmer-devel] Avoiding memory/reference leaks inside function (?)
+Message-ID: <A4M7uP0Lmgw.9zbh0-HzBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <A4M7uP0Lmgw.IM1xugpQBwAJ@simmer-devel.groups.google.com>
+References: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com> <A4M7uP0Lmgw.IM1xugpQBwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/A4M7uP0Lmgw/m/9zbh0-HzBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Franz, all,
+
+Thanks to Kevin Ushey, we finally found the bug <https://github.com/tidyverse/magrittr/issues/146> in magrittr that prevents object destruction (and therefore, memory deallocation) in simmer. I don't expect a new release on CRAN solving this any time soon (note that the last magrittr release dates back to 2014), so I've implemented a workaround in simmer.
+
+With the current master branch, you don't need to reset the environment explicitly anymore. Your code should work now with no memory issues.
+
+Regards,
+Iñaki
+
+2017-05-15 16:24 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+
+> Outstanding. Thanks for tracking down and addressing.
+>
+> vr/Franz
+>
+> Policy Coordinator/Legislative Liaison
+>
+> Wyoming Department of Health
+> Director's Unit for Policy, Research and Evaluation
+> 401 Hathaway Building
+> Cheyenne, WY 82002
+>
+> (e) franz...@wyo.gov
+> (o) 307-777-2865
+> (c) 307-477-0112
+>
+>
+> On Sun, May 14, 2017 at 6:08 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+> > Hi, this issue has been solved on GitHub. As I said in my last mail, I found another problem which prevents the object's destructor from being called in some circumstances. Unfortunately, there is nothing we can do about it right now, because the bug is in magrittr or Rcpp, not in simmer (see the report <https://github.com/tidyverse/magrittr/issues/146>).
+> >
+> > Now, what can you do to prevent your machine from running out of memory?
+> > Use the current master branch on GitHub (you can install it with devtools::install_github) until we roll out a new release (at the end of the month, probably).
+> > I recommend you to reset your environment once you've extracted the information needed inside your loop, that is: create the env, run it, call get_mon_whatever, and then call reset(env).
+> > Regards,
+> > Iñaki
+> >
+> > 2017-05-11 17:12 GMT+02:00 Iñaki Úcar <i.uc...@gmail.com>:
+> > > Franz, your code looks good to me. I've found the problem and it's related to how STL containers behave (the C++ part of the package). If you are familiarised with C++, basically it seems that clearing a vector does not deallocate the memory. I didn't know that, and that's why your memory keeps growing. Additionally, I've found another problem with the destructor of the simulator object. More details as soon as there is a working patch.
+> > >
+> > > Thanks for the report.
+> > >
+> > >
+> > > 2017-05-11 16:12 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > > > hi Iñaki,
+> > > >
+> > > > Thanks for checking it out. I'm 99% sure the issue is with my code, and so I appreciate the assistance. Very impressed with the package in general -- thanks for building it and putting it out there.
+> > > >
+> > > > Vr/
+> > > > Franz
+> > > >
+> > > > Policy Coordinator/Legislative Liaison
+> > > >
+> > > > Wyoming Department of Health
+> > > > Director's Unit for Policy, Research and Evaluation
+> > > > 401 Hathaway Building
+> > > > Cheyenne, WY 82002
+> > > >
+> > > > (e) franz...@wyo.gov
+> > > > (o) 307-777-2865
+> > > > (c) 307-477-0112
+> > > >
+> > > >
+> > > > On Thu, May 11, 2017 at 2:27 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+> > > > > Hi Franz,
+> > > > >
+> > > > > I am pretty sure that there are no memory leaks. I did find some memory management problems though, namely, memory cleared but not deallocated. I will further investigate this issue and, hopefully, we will see this solved for the next release. Stay tuned.
+> > > > >
+> > > > > Regards,
+> > > > > Iñaki
+> > > > >
+> > > > > 2017-05-10 22:49 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > > > > > Good afternoon,
+> > > > > >
+> > > > > > I am attempting to wrap a simmer DES (in this case, a psychiatric hospital with a waiting list) inside a function which would pass various parameters (in this case, total number of incoming admissions, number of beds, average length of stay, and replications) to the simulation for modeling, and return the 5th, 50th and 95th percentile for results of interest.
+> > > > > >
+> > > > > > The simulation runs for 5 "years", but I truncate the last year of data, bind the list of simulation results together, and process the results in the function itself, so the actual result of the function is only a small data table.
+> > > > > >
+> > > > > > The end goal is to use mapply to start with a data table of these starting parameters, and build a data table of results from those parameters automatically.
+> > > > > >
+> > > > > > Everything seems to work fine, but I've noticed that RAM consistently creeps upward  -- to the point where, if I have enough parameters and replications, my 32 GB machine is completely consumed and the simulation aborts due to lack of memory.
+> > > > > >
+> > > > > > I'm suspecting that there is some kind of reference leak in the simulation environment. Definitely not an R expert, so I'm struggling to figure out how to clean these up -- i.e., presumably deleting the simulation results in the environment they are accumulating.
+> > > > > >
+> > > > > > For simplicity, I am not using lapply or mclapply in the function itself -- just a for loop. Simplified code is attached to demonstrate the issue.
+> > > > > >
+> > > > > > Thanks for your time and consideration.
+> > > > > >
+> > > > > > Very respectfully,
+> > > > > > Franz Fuchs
+> > > > > > franz...@wyo.gov
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > E-Mail to and from me, in connection with the transaction
+> > > > > > of public business, is subject to the Wyoming Public Records
+> > > > > > Act and may be disclosed to third parties.
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > >
+> > > > >
+> > > > >
+> > > > > --
+> > > > > Iñaki Úcar
+> > > > > http://www.enchufa2.es
+> > > > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > > > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> > > > > To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > > >
+> > > >
+> > > > E-Mail to and from me, in connection with the transaction
+> > > > of public business, is subject to the Wyoming Public Records
+> > > > Act and may be disclosed to third parties.
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > >
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> > > http://www.enchufa2.es
+> > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> >
+> >
+> >
+> > --
+> > Iñaki Úcar
+> > http://www.enchufa2.es
+> > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> >
+> > --
+> > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> > To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq0x0ogRmNLmjkoLBJjGvfBydgCepQ7PWh0qNPDD5i0KOw%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq0x0ogRmNLmjkoLBJjGvfBydgCepQ7PWh0qNPDD5i0KOw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> E-Mail to and from me, in connection with the transaction
+> of public business, is subject to the Wyoming Public Records
+> Act and may be disclosed to third parties.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAOc6zHarWq5U4_hfWuPYF8zy%3DAFv1BjOfUDC-9zC25t_8BiY3g%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAOc6zHarWq5U4_hfWuPYF8zy%3DAFv1BjOfUDC-9zC25t_8BiY3g%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From uc38f3e078ba2e263 at groups.google.com  Tue May 16 14:11:46 2017
+From: uc38f3e078ba2e263 at groups.google.com (Franz Fuchs)
+Date: Tue, 16 May 2017 14:11:46 +0000
+Subject: Re: [simmer-devel] Avoiding memory/reference leaks inside function (?)
+Message-ID: <A4M7uP0Lmgw.R1vf_-vzBwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <A4M7uP0Lmgw.9zbh0-HzBwAJ@simmer-devel.groups.google.com>
+References: <A4M7uP0Lmgw.f_0wkctKBQAJ@simmer-devel.groups.google.com> <A4M7uP0Lmgw.9zbh0-HzBwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/A4M7uP0Lmgw/m/R1vf_-vzBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Excellent. Thanks much for tracking this down and resolving. Much appreciated!
+
+Policy Coordinator/Legislative Liaison
+
+Wyoming Department of Health
+Director's Unit for Policy, Research and Evaluation
+401 Hathaway Building
+Cheyenne, WY 82002
+
+(e) franz...@wyo.gov
+(o) 307-777-2865
+(c) 307-477-0112
+
+On Tue, May 16, 2017 at 8:11 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+
+> Hi Franz, all,
+>
+> Thanks to Kevin Ushey, we finally found the bug <https://github.com/tidyverse/magrittr/issues/146> in magrittr that prevents object destruction (and therefore, memory deallocation) in simmer. I don't expect a new release on CRAN solving this any time soon (note that the last magrittr release dates back to 2014), so I've implemented a workaround in simmer.
+>
+> With the current master branch, you don't need to reset the environment explicitly anymore. Your code should work now with no memory issues.
+>
+> Regards,
+> Iñaki
+>
+> 2017-05-15 16:24 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > Outstanding. Thanks for tracking down and addressing.
+> >
+> > vr/Franz
+> >
+> > Policy Coordinator/Legislative Liaison
+> >
+> > Wyoming Department of Health
+> > Director's Unit for Policy, Research and Evaluation
+> > 401 Hathaway Building
+> > Cheyenne, WY 82002
+> >
+> > (e) franz...@wyo.gov
+> > (o) 307-777-2865
+> > (c) 307-477-0112
+> >
+> >
+> > On Sun, May 14, 2017 at 6:08 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+> > > Hi, this issue has been solved on GitHub. As I said in my last mail, I found another problem which prevents the object's destructor from being called in some circumstances. Unfortunately, there is nothing we can do about it right now, because the bug is in magrittr or Rcpp, not in simmer (see the report <https://github.com/tidyverse/magrittr/issues/146>).
+> > >
+> > > Now, what can you do to prevent your machine from running out of memory?
+> > > Use the current master branch on GitHub (you can install it with devtools::install_github) until we roll out a new release (at the end of the month, probably).
+> > > I recommend you to reset your environment once you've extracted the information needed inside your loop, that is: create the env, run it, call get_mon_whatever, and then call reset(env).
+> > > Regards,
+> > > Iñaki
+> > >
+> > > 2017-05-11 17:12 GMT+02:00 Iñaki Úcar <i.uc...@gmail.com>:
+> > > > Franz, your code looks good to me. I've found the problem and it's related to how STL containers behave (the C++ part of the package). If you are familiarised with C++, basically it seems that clearing a vector does not deallocate the memory. I didn't know that, and that's why your memory keeps growing. Additionally, I've found another problem with the destructor of the simulator object. More details as soon as there is a working patch.
+> > > >
+> > > > Thanks for the report.
+> > > >
+> > > >
+> > > > 2017-05-11 16:12 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > > > > hi Iñaki,
+> > > > >
+> > > > > Thanks for checking it out. I'm 99% sure the issue is with my code, and so I appreciate the assistance. Very impressed with the package in general -- thanks for building it and putting it out there.
+> > > > >
+> > > > > Vr/
+> > > > > Franz
+> > > > >
+> > > > > Policy Coordinator/Legislative Liaison
+> > > > >
+> > > > > Wyoming Department of Health
+> > > > > Director's Unit for Policy, Research and Evaluation
+> > > > > 401 Hathaway Building
+> > > > > Cheyenne, WY 82002
+> > > > >
+> > > > > (e) franz...@wyo.gov
+> > > > > (o) 307-777-2865
+> > > > > (c) 307-477-0112
+> > > > >
+> > > > >
+> > > > > On Thu, May 11, 2017 at 2:27 AM, Iñaki Úcar <i.uc...@gmail.com> wrote:
+> > > > > > Hi Franz,
+> > > > > >
+> > > > > > I am pretty sure that there are no memory leaks. I did find some memory management problems though, namely, memory cleared but not deallocated. I will further investigate this issue and, hopefully, we will see this solved for the next release. Stay tuned.
+> > > > > >
+> > > > > > Regards,
+> > > > > > Iñaki
+> > > > > >
+> > > > > > 2017-05-10 22:49 GMT+02:00 Franz Fuchs <franz...@wyo.gov>:
+> > > > > > > Good afternoon,
+> > > > > > >
+> > > > > > > I am attempting to wrap a simmer DES (in this case, a psychiatric hospital with a waiting list) inside a function which would pass various parameters (in this case, total number of incoming admissions, number of beds, average length of stay, and replications) to the simulation for modeling, and return the 5th, 50th and 95th percentile for results of interest.
+> > > > > > >
+> > > > > > > The simulation runs for 5 "years", but I truncate the last year of data, bind the list of simulation results together, and process the results in the function itself, so the actual result of the function is only a small data table.
+> > > > > > >
+> > > > > > > The end goal is to use mapply to start with a data table of these starting parameters, and build a data table of results from those parameters automatically.
+> > > > > > >
+> > > > > > > Everything seems to work fine, but I've noticed that RAM consistently creeps upward  -- to the point where, if I have enough parameters and replications, my 32 GB machine is completely consumed and the simulation aborts due to lack of memory.
+> > > > > > >
+> > > > > > > I'm suspecting that there is some kind of reference leak in the simulation environment. Definitely not an R expert, so I'm struggling to figure out how to clean these up -- i.e., presumably deleting the simulation results in the environment they are accumulating.
+> > > > > > >
+> > > > > > > For simplicity, I am not using lapply or mclapply in the function itself -- just a for loop. Simplified code is attached to demonstrate the issue.
+> > > > > > >
+> > > > > > > Thanks for your time and consideration.
+> > > > > > >
+> > > > > > > Very respectfully,
+> > > > > > > Franz Fuchs
+> > > > > > > franz...@wyo.gov
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > > E-Mail to and from me, in connection with the transaction
+> > > > > > > of public business, is subject to the Wyoming Public Records
+> > > > > > > Act and may be disclosed to third parties.
+> > > > > > >
+> > > > > > > --
+> > > > > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/e64fab46-e78d-4e58-a70e-bc482d9c1d32%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > --
+> > > > > > Iñaki Úcar
+> > > > > > http://www.enchufa2.es
+> > > > > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > > > > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> > > > > > To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq2yA_uzj6EKhz8MpJ0Q%3DdtW4zL7zrDEEqh0bHmtZOQTuQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > >
+> > > > >
+> > > > >
+> > > > > E-Mail to and from me, in connection with the transaction
+> > > > > of public business, is subject to the Wyoming Public Records
+> > > > > Act and may be disclosed to third parties.
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > > > To post to this group, send email to simmer...@googlegroups.com.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAOc6zHZUDk5eRDYOio_9wNomeayyhcXyk0WSnsCUuWVwz8yYww%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > > > >
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > Iñaki Úcar
+> > > > http://www.enchufa2.es
+> > > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > >
+> > >
+> > >
+> > > --
+> > > Iñaki Úcar
+> > > http://www.enchufa2.es
+> > > @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+> > >
+> > > --
+> > > You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> > > To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > > To post to this group, send email to simmer...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq0x0ogRmNLmjkoLBJjGvfBydgCepQ7PWh0qNPDD5i0KOw%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq0x0ogRmNLmjkoLBJjGvfBydgCepQ7PWh0qNPDD5i0KOw%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> > >
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > E-Mail to and from me, in connection with the transaction
+> > of public business, is subject to the Wyoming Public Records
+> > Act and may be disclosed to third parties.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> > To post to this group, send email to simmer...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CAOc6zHarWq5U4_hfWuPYF8zy%3DAFv1BjOfUDC-9zC25t_8BiY3g%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CAOc6zHarWq5U4_hfWuPYF8zy%3DAFv1BjOfUDC-9zC25t_8BiY3g%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+> >
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Iñaki Úcar
+> http://www.enchufa2.es
+> @Enchufa2 <https://twitter.com/#%21/Enchufa2>
+>
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "simmer-devel" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/simmer-devel/A4M7uP0Lmgw/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/CALEXWq2CraqfEm3bx%2BuEvO6A7O_6mZRNQ9BKfqkYkkdnh03UxQ%40mail.gmail.com <https://groups.google.com/d/msgid/simmer-devel/CALEXWq2CraqfEm3bx%2BuEvO6A7O_6mZRNQ9BKfqkYkkdnh03UxQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+E-Mail to and from me, in connection with the transaction
+of public business, is subject to the Wyoming Public Records
+Act and may be disclosed to third parties.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Tue May 16 15:14:30 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Tue, 16 May 2017 15:14:30 +0000
+Subject: Re: [simmer-devel] Variable number of ongoing tasks
+Message-ID: <WOYDGShY9aI.4bY1W1j3BwAJ@simmer-devel.groups.google.com>
+In-Reply-To: <WOYDGShY9aI.8seBKmErBQAJ@simmer-devel.groups.google.com>
+References: <WOYDGShY9aI.8seBKmErBQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/WOYDGShY9aI/m/4bY1W1j3BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> Is there a way to create an infinite queue of pending tasks without flooding the pipeline at the start?
+
+No, there is not.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From uda21136057a57d37 at groups.google.com  Mon May 22 04:27:09 2017
+From: uda21136057a57d37 at groups.google.com (Stefanka Chukova)
+Date: Mon, 22 May 2017 04:27:09 +0000
+Subject: problems with select()
+Message-ID: <bvvf933o5lM.-UZnWgu1BQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/bvvf933o5lM/m/-UZnWgu1BQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I was going over http://r-simmer.org/articles/C-trajectories.html  Advanced Trajectory Usage
+and the code below, which is from section select()
+
+==================================================================
+library(simmer)
+patient_traj <- trajectory <http://r-simmer.org/reference/trajectory.html>(name = "patient_trajectory") %>%
+  set_attribute <http://r-simmer.org/reference/set_attribute.html>("resource", function() sample(1:3, 1)) %>%
+  select <http://r-simmer.org/reference/select.html>(resources = function(attrs) paste0("doctor", attrs["resource"])) %>%
+  seize_selected <http://r-simmer.org/reference/seize.html>(amount = 1) %>%
+  timeout <http://r-simmer.org/reference/timeout.html>(5) %>%
+  release_selected <http://r-simmer.org/reference/seize.html>(amount = 1)
+
+env <- simmer <http://r-simmer.org/reference/simmer.html>() %>%
+  add_resource <http://r-simmer.org/reference/add_resource.html>("doctor1", capacity = 1) %>%
+  add_resource <http://r-simmer.org/reference/add_resource.html>("doctor2", capacity = 1) %>%
+  add_resource <http://r-simmer.org/reference/add_resource.html>("doctor3", capacity = 1) %>%
+  add_generator <http://r-simmer.org/reference/add_generator.html>("patient", patient_traj, at <http://r-simmer.org/reference/at.html>(0, 1, 2), mon = 2) %>%
+  run <http://r-simmer.org/reference/run.html>()
+
+get_mon_attributes <http://r-simmer.org/reference/get_mon.html>(env)
+============================================================
+produces the following error:
+Error in UseMethod("select_") :
+  no applicable method for 'select_' applied to an object of class "c('trajectory', 'R6')"
+Why is that? How does simmer know that this is not select() from package dplyr?
+
+From u0f5b7adb7e70bd8b at groups.google.com  Mon May 22 08:44:25 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Mon, 22 May 2017 08:44:25 +0000
+Subject: Re: [simmer-devel] problems with select()
+Message-ID: <bvvf933o5lM.H1Kh6kHzCQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <bvvf933o5lM.-UZnWgu1BQAJ@simmer-devel.groups.google.com>
+References: <bvvf933o5lM.-UZnWgu1BQAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/bvvf933o5lM/m/H1Kh6kHzCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Stefanka,
+
+There is a namespace collision between simmer's select() and dplyr's when both packages are loaded. If you are using both of them, I recommend using simmer::select() and dplyr::select() instead of just select() to avoid this problem.
+
+Regards,
+Iñaki
+
+2017-05-22 6:22 GMT+02:00 Stefanka Chukova <stef...@gmail.com>:
+
+> I was going over http://r-simmer.org/articles/C-trajectories.html  Advanced Trajectory Usage
+> and the code below, which is from section select()
+>
+> ==================================================================
+
+> library(simmer)
+> patient_traj <- trajectory <http://r-simmer.org/reference/trajectory.html>(name = "patient_trajectory") %>%
+>   set_attribute <http://r-simmer.org/reference/set_attribute.html>("resource", function() sample(1:3, 1)) %>%
+>   select <http://r-simmer.org/reference/select.html>(resources = function(attrs) paste0("doctor", attrs["resource"])) %>%
+>   seize_selected <http://r-simmer.org/reference/seize.html>(amount = 1) %>%
+>   timeout <http://r-simmer.org/reference/timeout.html>(5) %>%
+>   release_selected <http://r-simmer.org/reference/seize.html>(amount = 1)
+>
+> env <- simmer <http://r-simmer.org/reference/simmer.html>() %>%
+>   add_resource <http://r-simmer.org/reference/add_resource.html>("doctor1", capacity = 1) %>%
+>   add_resource <http://r-simmer.org/reference/add_resource.html>("doctor2", capacity = 1) %>%
+>   add_resource <http://r-simmer.org/reference/add_resource.html>("doctor3", capacity = 1) %>%
+>   add_generator <http://r-simmer.org/reference/add_generator.html>("patient", patient_traj, at <http://r-simmer.org/reference/at.html>(0, 1, 2), mon = 2) %>%
+>   run <http://r-simmer.org/reference/run.html>()
+>
+> get_mon_attributes <http://r-simmer.org/reference/get_mon.html>(env)
+> ============================================================
+> produces the following error:
+> Error in UseMethod("select_") :
+>   no applicable method for 'select_' applied to an object of class "c('trajectory', 'R6')"
+
+> Why it that? How does simmer know that this is not select() from package dplyr?
+>
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/7dd69791-1bc1-4972-b724-072433f63ca3%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/7dd69791-1bc1-4972-b724-072433f63ca3%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+
+From u57a7662e790ccc92 at groups.google.com  Wed May 31 17:00:05 2017
+From: u57a7662e790ccc92 at groups.google.com (Shawn Garbett)
+Date: Wed, 31 May 2017 17:00:05 +0000
+Subject: Shiny App Feedback
+Message-ID: <jVazKnYJKXw.EEGvQkEEAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/jVazKnYJKXw/m/EEGvQkEEAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Our work to date is up live on http://rightsim.org/RIGHT. The website still has issues, but the simmer code has been working incredibly well.
+
+One thing we would like is to have feedback on time to completion or where timewise a simulation is for user feedback. Has anyone done this with simmer and shiny? Is it possible?
+
+From ua5b521959296c79e at groups.google.com  Wed May 31 18:02:50 2017
+From: ua5b521959296c79e at groups.google.com (Mark)
+Date: Wed, 31 May 2017 18:02:50 +0000
+Subject: Re: Shiny App Feedback
+Message-ID: <jVazKnYJKXw._T_Hw7BhCgAJ@simmer-devel.groups.google.com>
+In-Reply-To: <jVazKnYJKXw.EEGvQkEEAAAJ@simmer-devel.groups.google.com>
+References: <jVazKnYJKXw.EEGvQkEEAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/jVazKnYJKXw/m/_T_Hw7BhCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The easiest thing that comes to mind would be to just do a pilot run of a small number of replications, calculate a mean and variance and then calculate the 95th quantile as your predicted run-time.
+I haven't looked, but I wouldn't be surprised if the progress bar in shiny allows you to provide an estimated completion time.
+If you have a small number of parameters that can be changed and your analysis is static, you could also just create a surrogate model of the average/stdev runtime and use that to estimate your runtime for the selected params.  A GP/krigging model would probably be sufficient.
+
+From u0f5b7adb7e70bd8b at groups.google.com  Wed May 31 22:22:46 2017
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?b?ScOxYWtpIMOaY2Fy?=)
+Date: Wed, 31 May 2017 22:22:46 +0000
+Subject: Re: [simmer-devel] Shiny App Feedback
+Message-ID: <jVazKnYJKXw.VPHymyADAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <jVazKnYJKXw.EEGvQkEEAAAJ@simmer-devel.groups.google.com>
+References: <jVazKnYJKXw.EEGvQkEEAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/jVazKnYJKXw/m/VPHymyADAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Shawn,
+
+I'm quite impressed, that's a great work! About the runtime, some kind of progress report is a feature that I think it's very interesting for long runs and easy to implement in simmer as an option. I'll definitely take a look at this. In the meantime, Mark's suggestions are to be considered.
+
+Another simpler approach that comes to my mind, a more... heuristic approach, would be to run the model in steps. For instance, let's say that the selected simulation time is 5000. You can run(until=1000), report back to the user, run(until=2000), report back... and finally run(until=5000). Because if you increase the time, the simulation just continues from the last step. So the web interface would show: 0%, 20%, 40%... The penalty in terms of total execution time should be very small.
+
+Regards,
+Iñaki
+
+2017-05-31 19:00 GMT+02:00 Shawn Garbett <shawn....@gmail.com>:
+
+> Our work to date is up live on http://rightsim.org/RIGHT. The website still has issues, but the simmer code has been working incredibly well.
+>
+> One thing we would like is to have feedback on time to completion or where timewise a simulation is for user feedback. Has anyone done this with simmer and shiny? Is it possible?
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel+unsubscribe@googlegroups.com.
+> To post to this group, send email to simmer...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/64d25997-8460-49b1-9e02-a02682b7acdd%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/64d25997-8460-49b1-9e02-a02682b7acdd%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Iñaki Úcar
+http://www.enchufa2.es
+@Enchufa2 <https://twitter.com/#%21/Enchufa2>
+

@@ -1,0 +1,688 @@
+From u574beeebc8eda76a at groups.google.com  Wed Oct 12 15:39:12 2022
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Wed, 12 Oct 2022 15:39:12 +0000
+Subject: Queueing issue with simultaneous arrivals
+Message-ID: <REOakRTU0D4.DNhfTP0WBwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/REOakRTU0D4/m/DNhfTP0WBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm building a simulation with potentially simultaneous arrivals, which should then select from a list of preferred or mandatory resources, based on availability. Arrivals may compete for the same resources and have differing queuing priorities. My proposed logic for a given arrival is this:
+Select an available resource from the list of preferred or mandatory resources. If none available (i.e. if server count == 1), select the mandatory resource with shortest queue count.
+Set capacity of the selected resource to zero IFF its server count is zero. This is to allow queueing at this resource for other simultaneous (or nearly simultaneous) arrivals that may have higher priority than the current arrival. This should also prevent a seized resource from kicking out a previous arrival that is being served.
+After an arbitrary time delay OR once the queue count exceeds some value, set_capacity_selected() to 1, so that the priority arrival can seize the resource. Else, keep the preexisting capacity so a previous arrival does not get kicked out.
+As soon as the resource is seized, send signal for queued arrivals to renege and rollback to step 1.
+
+My current setup does not work as advertised, however. With simultaneous arrivals, the simulation executes step 2 and then stops (nothing else registers in the monitoring). If I offset the arrivals by a nonzero amount (see reprex at bottom), the simulation runs more or less correctly for two arrivals (Yam and Turnip), and then stops, with nothing happening the other arrivals. It seems that part of the issue may lie in the resource attributes (specifically capacity and server) not being updated until the next arrival comes in. For example, this output shows the resource status after Turnip and Potato select resource B, but note how the queue size is unchanged until Celery comes along:
+
+0.3: Turnip0: Leaving queue of A
+0.3: Turnip0: Selected B
+0.3: Potato0: Leaving queue of A
+0.3: Potato0: Selected B
+0.3: Turnip0:
+    Resource:    A, B, C
+    Capacity:    1, 0, 1
+    Server count:1, 0, 0
+    Queue count: 0, 0, 0
+0.3: Potato0:
+    Resource:    A, B, C
+    Capacity:    1, 0, 1
+    Server count:1, 0, 0
+    Queue count: 0, 0, 0
+0.4: Celery0: Selected B
+0.4: Celery0:
+    Resource:    A, B, C
+    Capacity:    1, 0, 1
+    Server count:1, 0, 0
+    Queue count: 0, 2, 0
+
+# Convenience functions
+get_valid_resources <- function(.env, arrivals_df, resource_list) {
+  function() {
+    arrival_name = get_name(.env) |>
+      stringr::str_remove('0')
+
+    arrival_res_df = arrivals_df |>
+      dplyr::filter(Name == arrival_name)
+
+    mand_res = arrival_res_df |>
+      dplyr::pull(Mandatory) |>
+      unlist()
+
+    pref_res = arrival_res_df |>
+      dplyr::pull(Preferred) |>
+      unlist()
+
+    # Get available resources
+    avail_res = resource_list[
+      !as.logical(get_server_count(.env, resource_list))
+      ]
+
+    # Intersect all available resources with mandatory resources
+    avail_mand_res = dplyr::intersect(avail_res, mand_res)
+
+    # Intersect available mandatory resources with preferred resources
+    avail_pref_res = dplyr::intersect(avail_mand_res, pref_res)
+
+    # Get best available resources
+    if (length(avail_pref_res) > 0) {
+      selected_res = avail_pref_res
+    } else if (length(avail_mand_res) > 0 ) {
+      selected_res = avail_mand_res
+    } else {
+      selected_res = mand_res
+    }
+
+    return (selected_res)
+  }
+}
+
+log_resource_status <- function(.trj, .env, resource_list) {
+  log_(.trj, \() {
+    sprintf(
+      '\n\tResource:    %s\n\tCapacity:    %s\n\tServer count:%s\n\tQueue count: %s',
+      paste(resource_list, collapse = ', '),
+      paste(get_capacity(.env, resource_list), collapse = ', '),
+      paste(get_server_count(.env, resource_list), collapse = ', '),
+      paste(get_queue_count(.env, resource_list), collapse = ', ')
+    )
+  })
+}
+
+# Setup Sim ---------------------------------------------------------------
+library(simmer)
+
+arrivals_df = dplyr::tibble(
+  Name = c('Potato', 'Yam', 'Turnip', 'Celery'),
+  Mandatory = list(c('A', 'B', 'C'), c('A', 'B'), c('A', 'B'), c('B', 'C')),
+  Preferred = list(c('A', 'B'), c('A'), c('A'), c('B')),
+  # ArrivalTime = c(0, 0, 0, 0),
+  ArrivalTime = c(0.1, 0.2, 0.3, 0.4),
+  Priority = c(0, 2, 1, 0)
+)
+
+resource_list = c('A', 'B', 'C')
+
+# Create simulation environment
+env <- simmer('PriorityQueueSim')
+
+# Define vessel trajectory
+my_traj <- trajectory('trajectory') |>
+
+  # Select an available berth with shortest queue
+  set_attribute('arrival_time', values = \() now(env)) |>
+  select(
+    get_valid_resources(env, arrivals_df, resource_list),
+    policy = 'shortest-queue',
+    tag = 'res_selection'
+  ) |>
+  log_(\() {sprintf("Selected %s", get_selected(env))}) |>
+  timeout(0) |>
+
+  # Set capacity of selected berth to zero to allow priority queuing IFF it is
+  # unoccupied
+  set_capacity_selected(
+    value = \() {
+      if (get_server_count_selected(env) == 0) {
+        return(0)
+      } else {
+        return(1)
+      }
+    }
+    ) |>
+  timeout(0) |>
+
+  # Send renege signal once priority vessel has seized the berth so queues can reset
+  renege_if(
+    'renege_queue',
+    out = trajectory() |>
+      log_(\() sprintf("Leaving queue of %s", get_selected(env))) |>
+      rollback(target = 'res_selection')
+  ) |>
+  timeout(0) |>
+  log_resource_status(env, resource_list) |>
+
+  # Set capacity of selected resource to 1 after allowing queue to form for at
+  # least 5 units of time OR queue count is >=2. Don't change capacity otherwise.
+  # TODO: queue_delay time and queue count should be user-configurable
+  set_capacity_selected(
+    value = \() {
+      queue_delay = now(env) - get_attribute(env, 'arrival_time')
+      queue_count = get_queue_count_selected(env)
+      if (queue_delay >= 5 | queue_count >= 2) {
+        return(1)
+      } else {
+        return(get_capacity_selected(env))
+      }
+    }
+    ) |>
+  timeout(0) |>
+  # rollback(1, check = \() get_queue_count_selected(env) < 1)
+
+  # Seize the resource
+  seize_selected() |>
+  set_attribute('service_start_time', values = \() now(env)) |>
+  log_(\() sprintf("In resource %s", get_selected(env))) |>
+  renege_abort() |>
+  send('renege_queue') |>
+  timeout(5) |>
+
+  # All done
+  release_selected() |>
+  log_(\() sprintf("Leaving resource %s", get_selected(env))) |>
+  set_attribute('service_end_time', values = \() now(env)) |>
+  log_resource_status(env, resource_list)
+
+# Add resources and generators
+add_my_gen <- function(.env, .traj, arrival_name, arrivals_df) {
+  add_generator(
+    .env,
+    trajectory = .traj,
+    name_prefix = arrival_name,
+    priority = arrivals_df |>
+      dplyr::filter(Name == arrival_name) |>
+      dplyr::pull(Priority),
+    distribution = at(
+      arrivals_df |>
+        dplyr::filter(Name == arrival_name) |>
+        dplyr::pull(ArrivalTime)
+      ),
+    mon = 2
+  )
+}
+
+env |>
+  add_resource(
+    c('A', 'B', 'C'), capacity = 1, queue_size = Inf
+    ) |>
+  add_my_gen(my_traj, 'Potato', arrivals_df) |>
+  add_my_gen(my_traj, 'Yam', arrivals_df) |>
+  add_my_gen(my_traj, 'Turnip', arrivals_df) |>
+  add_my_gen(my_traj, 'Celery', arrivals_df)
+
+# Run simulation
+env |>
+  run(30, progress = progress::progress_bar$new()$update)
+
+mon_arrivals_df = env |>
+  get_mon_arrivals(per_resource = TRUE)
+
+mon_resources_df = env |>
+  get_mon_resources()
+
+From u574beeebc8eda76a at groups.google.com  Wed Oct 12 18:40:29 2022
+From: u574beeebc8eda76a at groups.google.com (Philemon Cyclone)
+Date: Wed, 12 Oct 2022 18:40:29 +0000
+Subject: Re: Queueing issue with simultaneous arrivals
+Message-ID: <REOakRTU0D4.3v7ftCeHAAAJ@simmer-devel.groups.google.com>
+In-Reply-To: <REOakRTU0D4.DNhfTP0WBwAJ@simmer-devel.groups.google.com>
+References: <REOakRTU0D4.DNhfTP0WBwAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/REOakRTU0D4/m/3v7ftCeHAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+After some experimentation, removing timeout(0) after the second set_capacity_selected() call resolves the issue of nothing happening when all arrivals occur simultaneously. The issue of nothing happening for Potato and Celery persists in that both enter the queue for resource C, but then the simulation ends without either seizing a resource.
+
+On Wednesday, October 12, 2022 at 11:39:12 AM UTC-4 Philemon Cyclone wrote:
+> I'm building a simulation with potentially simultaneous arrivals, which should then select from a list of preferred or mandatory resources, based on availability. Arrivals may compete for the same resources and have differing queuing priorities. My proposed logic for a given arrival is this:
+> Select an available resource from the list of preferred or mandatory resources. If none available (i.e. if server count == 1), select the mandatory resource with shortest queue count.
+> Set capacity of the selected resource to zero IFF its server count is zero. This is to allow queueing at this resource for other simultaneous (or nearly simultaneous) arrivals that may have higher priority than the current arrival. This should also prevent a seized resource from kicking out a previous arrival that is being served.
+> After an arbitrary time delay OR once the queue count exceeds some value, set_capacity_selected() to 1, so that the priority arrival can seize the resource. Else, keep the preexisting capacity so a previous arrival does not get kicked out.
+> As soon as the resource is seized, send signal for queued arrivals to renege and rollback to step 1.
+>
+> My current setup does not work as advertised, however. With simultaneous arrivals, the simulation executes step 2 and then stops (nothing else registers in the monitoring). If I offset the arrivals by a nonzero amount (see reprex at bottom), the simulation runs more or less correctly for two arrivals (Yam and Turnip), and then stops, with nothing happening the other arrivals. It seems that part of the issue may lie in the resource attributes (specifically capacity and server) not being updated until the next arrival comes in. For example, this output shows the resource status after Turnip and Potato select resource B, but note how the queue size is unchanged until Celery comes along:
+>
+> 0.3: Turnip0: Leaving queue of A
+> 0.3: Turnip0: Selected B
+> 0.3: Potato0: Leaving queue of A
+> 0.3: Potato0: Selected B
+> 0.3: Turnip0:
+>     Resource:    A, B, C
+>     Capacity:    1, 0, 1
+>     Server count:1, 0, 0
+>     Queue count: 0, 0, 0
+> 0.3: Potato0:
+>     Resource:    A, B, C
+>     Capacity:    1, 0, 1
+>     Server count:1, 0, 0
+>     Queue count: 0, 0, 0
+> 0.4: Celery0: Selected B
+> 0.4: Celery0:
+>     Resource:    A, B, C
+>     Capacity:    1, 0, 1
+>     Server count:1, 0, 0
+>     Queue count: 0, 2, 0
+>
+>
+>
+> # Convenience functions
+> get_valid_resources <- function(.env, arrivals_df, resource_list) {
+>   function() {
+>     arrival_name = get_name(.env) |>
+>       stringr::str_remove('0')
+>
+>     arrival_res_df = arrivals_df |>
+>       dplyr::filter(Name == arrival_name)
+>
+>     mand_res = arrival_res_df |>
+>       dplyr::pull(Mandatory) |>
+>       unlist()
+>
+>     pref_res = arrival_res_df |>
+>       dplyr::pull(Preferred) |>
+>       unlist()
+>
+>     # Get available resources
+>     avail_res = resource_list[
+>       !as.logical(get_server_count(.env, resource_list))
+>       ]
+>
+>     # Intersect all available resources with mandatory resources
+>     avail_mand_res = dplyr::intersect(avail_res, mand_res)
+>
+>     # Intersect available mandatory resources with preferred resources
+>     avail_pref_res = dplyr::intersect(avail_mand_res, pref_res)
+>
+>     # Get best available resources
+>     if (length(avail_pref_res) > 0) {
+>       selected_res = avail_pref_res
+>     } else if (length(avail_mand_res) > 0 ) {
+>       selected_res = avail_mand_res
+>     } else {
+>       selected_res = mand_res
+>     }
+>
+>     return (selected_res)
+>   }
+> }
+>
+>
+> log_resource_status <- function(.trj, .env, resource_list) {
+>   log_(.trj, \() {
+>     sprintf(
+>       '\n\tResource:    %s\n\tCapacity:    %s\n\tServer count:%s\n\tQueue count: %s',
+>       paste(resource_list, collapse = ', '),
+>       paste(get_capacity(.env, resource_list), collapse = ', '),
+>       paste(get_server_count(.env, resource_list), collapse = ', '),
+>       paste(get_queue_count(.env, resource_list), collapse = ', ')
+>     )
+>   })
+> }
+>
+> # Setup Sim ---------------------------------------------------------------
+> library(simmer)
+>
+> arrivals_df = dplyr::tibble(
+>   Name = c('Potato', 'Yam', 'Turnip', 'Celery'),
+>   Mandatory = list(c('A', 'B', 'C'), c('A', 'B'), c('A', 'B'), c('B', 'C')),
+>   Preferred = list(c('A', 'B'), c('A'), c('A'), c('B')),
+>   # ArrivalTime = c(0, 0, 0, 0),
+>   ArrivalTime = c(0.1, 0.2, 0.3, 0.4),
+>   Priority = c(0, 2, 1, 0)
+> )
+>
+> resource_list = c('A', 'B', 'C')
+>
+>
+> # Create simulation environment
+> env <- simmer('PriorityQueueSim')
+>
+> # Define vessel trajectory
+> my_traj <- trajectory('trajectory') |>
+>
+>   # Select an available berth with shortest queue
+>   set_attribute('arrival_time', values = \() now(env)) |>
+>   select(
+>     get_valid_resources(env, arrivals_df, resource_list),
+>     policy = 'shortest-queue',
+>     tag = 'res_selection'
+>   ) |>
+>   log_(\() {sprintf("Selected %s", get_selected(env))}) |>
+>   timeout(0) |>
+>
+>   # Set capacity of selected berth to zero to allow priority queuing IFF it is
+>   # unoccupied
+>   set_capacity_selected(
+>     value = \() {
+>       if (get_server_count_selected(env) == 0) {
+>         return(0)
+>       } else {
+>         return(1)
+>       }
+>     }
+>     ) |>
+>   timeout(0) |>
+>
+>   # Send renege signal once priority vessel has seized the berth so queues can reset
+>   renege_if(
+>     'renege_queue',
+>     out = trajectory() |>
+>       log_(\() sprintf("Leaving queue of %s", get_selected(env))) |>
+>       rollback(target = 'res_selection')
+>   ) |>
+>   timeout(0) |>
+>   log_resource_status(env, resource_list) |>
+>
+>   # Set capacity of selected resource to 1 after allowing queue to form for at
+>   # least 5 units of time OR queue count is >=2. Don't change capacity otherwise.
+>   # TODO: queue_delay time and queue count should be user-configurable
+>   set_capacity_selected(
+>     value = \() {
+>       queue_delay = now(env) - get_attribute(env, 'arrival_time')
+>       queue_count = get_queue_count_selected(env)
+>       if (queue_delay >= 5 | queue_count >= 2) {
+>         return(1)
+>       } else {
+>         return(get_capacity_selected(env))
+>       }
+>     }
+>     ) |>
+>   timeout(0) |>
+>   # rollback(1, check = \() get_queue_count_selected(env) < 1)
+>
+>   # Seize the resource
+>   seize_selected() |>
+>   set_attribute('service_start_time', values = \() now(env)) |>
+>   log_(\() sprintf("In resource %s", get_selected(env))) |>
+>   renege_abort() |>
+>   send('renege_queue') |>
+>   timeout(5) |>
+>
+>   # All done
+>   release_selected() |>
+>   log_(\() sprintf("Leaving resource %s", get_selected(env))) |>
+>   set_attribute('service_end_time', values = \() now(env)) |>
+>   log_resource_status(env, resource_list)
+>
+>
+> # Add resources and generators
+> add_my_gen <- function(.env, .traj, arrival_name, arrivals_df) {
+>   add_generator(
+>     .env,
+>     trajectory = .traj,
+>     name_prefix = arrival_name,
+>     priority = arrivals_df |>
+>       dplyr::filter(Name == arrival_name) |>
+>       dplyr::pull(Priority),
+>     distribution = at(
+>       arrivals_df |>
+>         dplyr::filter(Name == arrival_name) |>
+>         dplyr::pull(ArrivalTime)
+>       ),
+>     mon = 2
+>   )
+> }
+>
+>
+> env |>
+>   add_resource(
+>     c('A', 'B', 'C'), capacity = 1, queue_size = Inf
+>     ) |>
+>   add_my_gen(my_traj, 'Potato', arrivals_df) |>
+>   add_my_gen(my_traj, 'Yam', arrivals_df) |>
+>   add_my_gen(my_traj, 'Turnip', arrivals_df) |>
+>   add_my_gen(my_traj, 'Celery', arrivals_df)
+>
+>
+> # Run simulation
+> env |>
+>   run(30, progress = progress::progress_bar$new()$update)
+>
+> mon_arrivals_df = env |>
+>   get_mon_arrivals(per_resource = TRUE)
+>
+> mon_resources_df = env |>
+>   get_mon_resources()
+
+From u0f5b7adb7e70bd8b at groups.google.com  Fri Oct 14 08:59:19 2022
+From: u0f5b7adb7e70bd8b at groups.google.com (=?utf-8?q?I=C3=B1aki_Ucar?=)
+Date: Fri, 14 Oct 2022 08:59:19 +0000
+Subject: Re: [simmer-devel] Re: Queueing issue with simultaneous arrivals
+Message-ID: <REOakRTU0D4.o87D85kEAQAJ@simmer-devel.groups.google.com>
+In-Reply-To: <REOakRTU0D4.3v7ftCeHAAAJ@simmer-devel.groups.google.com>
+References: <REOakRTU0D4.DNhfTP0WBwAJ@simmer-devel.groups.google.com> <REOakRTU0D4.3v7ftCeHAAAJ@simmer-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/simmer-devel/c/REOakRTU0D4/m/o87D85kEAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Wed, 12 Oct 2022 at 20:40, Philemon Cyclone <phil.m.f...@gmail.com> wrote:
+> After some experimentation, removing timeout(0) after the second set_capacity_selected() call resolves the issue of nothing happening when all arrivals occur simultaneously. The issue of nothing happening for Potato and Celery persists in that both enter the queue for resource C, but then the simulation ends without either seizing a resource.
+
+Nice. To further narrow down the issue, could you please provide the time point and event that you see out of place? Or what you expect and it's not happening? And it would further help if you do this with the output from get_mon_resources() as a reference.
+
+More comments below.
+
+> On Wednesday, October 12, 2022 at 11:39:12 AM UTC-4 Philemon Cyclone wrote:
+> > I'm building a simulation with potentially simultaneous arrivals, which should then select from a list of preferred or mandatory resources, based on availability. Arrivals may compete for the same resources and have differing queuing priorities. My proposed logic for a given arrival is this:
+> > Select an available resource from the list of preferred or mandatory resources. If none available (i.e. if server count == 1), select the mandatory resource with shortest queue count.
+> > Set capacity of the selected resource to zero IFF its server count is zero. This is to allow queueing at this resource for other simultaneous (or nearly simultaneous) arrivals that may have higher priority than the current arrival. This should also prevent a seized resource from kicking out a previous arrival that is being served.
+
+Not sure if I understand this. An arrival that is being served cannot be kicked out, because you call renege_abort() right after the seize_selected().
+
+> > After an arbitrary time delay OR once the queue count exceeds some value, set_capacity_selected() to 1, so that the priority arrival can seize the resource. Else, keep the preexisting capacity so a previous arrival does not get kicked out.
+
+Not sure either if I understand the rationale behind the queue_delay in the second set_capacity_selected.  Correct me if I'm wrong, but I think there's a chance that, if you do not have two arrivals at the same time and the server is empty, then the arrival gets stuck in the queue, because the first set_capacity sets the server to 0, and the second one keeps it in that way. If there are no further signals from arrivals being served, that arrival doesn't move from that queue, right?
+
+> > As soon as the resource is seized, send signal for queued arrivals to renege and rollback to step 1.
+
+Wouldn't it be making the resources preemptive a better solution? You could chunk the timeout of the arrival being served so that it increases its priority a big amount after some small delay to avoid getting preempted afterwards.
+
+Iñaki
+
+> >
+> > My current setup does not work as advertised, however. With simultaneous arrivals, the simulation executes step 2 and then stops (nothing else registers in the monitoring). If I offset the arrivals by a nonzero amount (see reprex at bottom), the simulation runs more or less correctly for two arrivals (Yam and Turnip), and then stops, with nothing happening the other arrivals. It seems that part of the issue may lie in the resource attributes (specifically capacity and server) not being updated until the next arrival comes in. For example, this output shows the resource status after Turnip and Potato select resource B, but note how the queue size is unchanged until Celery comes along:
+> >
+> > 0.3: Turnip0: Leaving queue of A
+> > 0.3: Turnip0: Selected B
+> > 0.3: Potato0: Leaving queue of A
+> > 0.3: Potato0: Selected B
+> > 0.3: Turnip0:
+> >     Resource:    A, B, C
+> >     Capacity:    1, 0, 1
+> >     Server count:1, 0, 0
+> >     Queue count: 0, 0, 0
+> > 0.3: Potato0:
+> >     Resource:    A, B, C
+> >     Capacity:    1, 0, 1
+> >     Server count:1, 0, 0
+> >     Queue count: 0, 0, 0
+> > 0.4: Celery0: Selected B
+> > 0.4: Celery0:
+> >     Resource:    A, B, C
+> >     Capacity:    1, 0, 1
+> >     Server count:1, 0, 0
+> >     Queue count: 0, 2, 0
+> >
+> >
+> >
+> > # Convenience functions
+> > get_valid_resources <- function(.env, arrivals_df, resource_list) {
+> >   function() {
+> >     arrival_name = get_name(.env) |>
+> >       stringr::str_remove('0')
+> >
+> >     arrival_res_df = arrivals_df |>
+> >       dplyr::filter(Name == arrival_name)
+> >
+> >     mand_res = arrival_res_df |>
+> >       dplyr::pull(Mandatory) |>
+> >       unlist()
+> >
+> >     pref_res = arrival_res_df |>
+> >       dplyr::pull(Preferred) |>
+> >       unlist()
+> >
+> >     # Get available resources
+> >     avail_res = resource_list[
+> >       !as.logical(get_server_count(.env, resource_list))
+> >       ]
+> >
+> >     # Intersect all available resources with mandatory resources
+> >     avail_mand_res = dplyr::intersect(avail_res, mand_res)
+> >
+> >     # Intersect available mandatory resources with preferred resources
+> >     avail_pref_res = dplyr::intersect(avail_mand_res, pref_res)
+> >
+> >     # Get best available resources
+> >     if (length(avail_pref_res) > 0) {
+> >       selected_res = avail_pref_res
+> >     } else if (length(avail_mand_res) > 0 ) {
+> >       selected_res = avail_mand_res
+> >     } else {
+> >       selected_res = mand_res
+> >     }
+> >
+> >     return (selected_res)
+> >   }
+> > }
+> >
+> >
+> > log_resource_status <- function(.trj, .env, resource_list) {
+> >   log_(.trj, \() {
+> >     sprintf(
+> >       '\n\tResource:    %s\n\tCapacity:    %s\n\tServer count:%s\n\tQueue count: %s',
+> >       paste(resource_list, collapse = ', '),
+> >       paste(get_capacity(.env, resource_list), collapse = ', '),
+> >       paste(get_server_count(.env, resource_list), collapse = ', '),
+> >       paste(get_queue_count(.env, resource_list), collapse = ', ')
+> >     )
+> >   })
+> > }
+> >
+> > # Setup Sim ---------------------------------------------------------------
+> > library(simmer)
+> >
+> > arrivals_df = dplyr::tibble(
+> >   Name = c('Potato', 'Yam', 'Turnip', 'Celery'),
+> >   Mandatory = list(c('A', 'B', 'C'), c('A', 'B'), c('A', 'B'), c('B', 'C')),
+> >   Preferred = list(c('A', 'B'), c('A'), c('A'), c('B')),
+> >   # ArrivalTime = c(0, 0, 0, 0),
+> >   ArrivalTime = c(0.1, 0.2, 0.3, 0.4),
+> >   Priority = c(0, 2, 1, 0)
+> > )
+> >
+> > resource_list = c('A', 'B', 'C')
+> >
+> >
+> > # Create simulation environment
+> > env <- simmer('PriorityQueueSim')
+> >
+> > # Define vessel trajectory
+> > my_traj <- trajectory('trajectory') |>
+> >
+> >   # Select an available berth with shortest queue
+> >   set_attribute('arrival_time', values = \() now(env)) |>
+> >   select(
+> >     get_valid_resources(env, arrivals_df, resource_list),
+> >     policy = 'shortest-queue',
+> >     tag = 'res_selection'
+> >   ) |>
+> >   log_(\() {sprintf("Selected %s", get_selected(env))}) |>
+> >   timeout(0) |>
+> >
+> >   # Set capacity of selected berth to zero to allow priority queuing IFF it is
+> >   # unoccupied
+> >   set_capacity_selected(
+> >     value = \() {
+> >       if (get_server_count_selected(env) == 0) {
+> >         return(0)
+> >       } else {
+> >         return(1)
+> >       }
+> >     }
+> >     ) |>
+> >   timeout(0) |>
+> >
+> >   # Send renege signal once priority vessel has seized the berth so queues can reset
+> >   renege_if(
+> >     'renege_queue',
+> >     out = trajectory() |>
+> >       log_(\() sprintf("Leaving queue of %s", get_selected(env))) |>
+> >       rollback(target = 'res_selection')
+> >   ) |>
+> >   timeout(0) |>
+> >   log_resource_status(env, resource_list) |>
+> >
+> >   # Set capacity of selected resource to 1 after allowing queue to form for at
+> >   # least 5 units of time OR queue count is >=2. Don't change capacity otherwise.
+> >   # TODO: queue_delay time and queue count should be user-configurable
+> >   set_capacity_selected(
+> >     value = \() {
+> >       queue_delay = now(env) - get_attribute(env, 'arrival_time')
+> >       queue_count = get_queue_count_selected(env)
+> >       if (queue_delay >= 5 | queue_count >= 2) {
+> >         return(1)
+> >       } else {
+> >         return(get_capacity_selected(env))
+> >       }
+> >     }
+> >     ) |>
+> >   timeout(0) |>
+> >   # rollback(1, check = \() get_queue_count_selected(env) < 1)
+> >
+> >   # Seize the resource
+> >   seize_selected() |>
+> >   set_attribute('service_start_time', values = \() now(env)) |>
+> >   log_(\() sprintf("In resource %s", get_selected(env))) |>
+> >   renege_abort() |>
+> >   send('renege_queue') |>
+> >   timeout(5) |>
+> >
+> >   # All done
+> >   release_selected() |>
+> >   log_(\() sprintf("Leaving resource %s", get_selected(env))) |>
+> >   set_attribute('service_end_time', values = \() now(env)) |>
+> >   log_resource_status(env, resource_list)
+> >
+> >
+> > # Add resources and generators
+> > add_my_gen <- function(.env, .traj, arrival_name, arrivals_df) {
+> >   add_generator(
+> >     .env,
+> >     trajectory = .traj,
+> >     name_prefix = arrival_name,
+> >     priority = arrivals_df |>
+> >       dplyr::filter(Name == arrival_name) |>
+> >       dplyr::pull(Priority),
+> >     distribution = at(
+> >       arrivals_df |>
+> >         dplyr::filter(Name == arrival_name) |>
+> >         dplyr::pull(ArrivalTime)
+> >       ),
+> >     mon = 2
+> >   )
+> > }
+> >
+> >
+> > env |>
+> >   add_resource(
+> >     c('A', 'B', 'C'), capacity = 1, queue_size = Inf
+> >     ) |>
+> >   add_my_gen(my_traj, 'Potato', arrivals_df) |>
+> >   add_my_gen(my_traj, 'Yam', arrivals_df) |>
+> >   add_my_gen(my_traj, 'Turnip', arrivals_df) |>
+> >   add_my_gen(my_traj, 'Celery', arrivals_df)
+> >
+> >
+> > # Run simulation
+> > env |>
+> >   run(30, progress = progress::progress_bar$new()$update)
+> >
+> > mon_arrivals_df = env |>
+> >   get_mon_arrivals(per_resource = TRUE)
+> >
+> > mon_resources_df = env |>
+> >   get_mon_resources()
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "simmer-devel" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to simmer-devel...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/simmer-devel/37e15f79-ef87-47c1-98ee-0bdbd2938316n%40googlegroups.com <https://groups.google.com/d/msgid/simmer-devel/37e15f79-ef87-47c1-98ee-0bdbd2938316n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Iñaki Úcar
+
