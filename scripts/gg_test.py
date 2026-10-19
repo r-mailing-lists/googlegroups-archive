@@ -313,8 +313,55 @@ class Addresses(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     gg.cmd_check("grp")
                 said = sys.stderr.getvalue()
-                self.assertIn("grp/processed/2020-09.json: 2 whole addresses (body_plain 1, 1 only in the file's escaped text)", said)
+                self.assertIn("grp/processed/2020-09.json: 1 whole addresses (body_plain 1, 1 only in the file's escaped text)", said)
                 self.assertNotIn("al.smith", said)
+            finally:
+                sys.stderr = err
+                os.chdir(cwd)
+
+    def test_a_line_of_code_after_a_line_break_is_not_an_address_in_json(self):
+        # stan-dev's processed months: "\n@app.route" in the file's text.
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            err, sys.stderr = sys.stderr, __import__("io").StringIO()
+            try:
+                os.makedirs("grp/processed")
+                with open("grp/config.json", "w") as f:
+                    json.dump({"list": "grp"}, f)
+                with open("grp/processed/2020-09.json", "w") as f:
+                    json.dump([{"body_plain": "import flask\n@app.route('/')\ndef index(): pass"}], f)
+                gg.cmd_check("grp")
+                self.assertIn("check: no whole address", sys.stderr.getvalue())
+                with open("grp/processed/2020-10.json", "w") as f:
+                    json.dump({"al.smith@example.org": 1}, f)
+                with self.assertRaises(SystemExit):
+                    gg.cmd_check("grp")
+            finally:
+                sys.stderr = err
+                os.chdir(cwd)
+
+    def test_a_groups_source_can_be_checked_by_itself(self):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            err, sys.stderr = sys.stderr, __import__("io").StringIO()
+            try:
+                os.makedirs("grp/source")
+                os.makedirs("grp/processed")
+                with open("grp/config.json", "w") as f:
+                    json.dump({"list": "grp"}, f)
+                with open("grp/source/T1.json", "w") as f:
+                    json.dump({"subject": "hi al...@example.org"}, f)
+                with open("grp/processed/2020-09.json", "w") as f:
+                    json.dump([{"body_plain": "al.smith@example.org"}], f)
+                gg.main(["check", "grp/source"])
+                with self.assertRaises(SystemExit):
+                    gg.main(["check", "grp"])
+                for bad in ("grp/processed", "grp/../x/source", "../grp/source"):
+                    with self.assertRaises(SystemExit) as stop:
+                        gg.main(["check", bad])
+                    self.assertIn("not a group name", str(stop.exception.code))
             finally:
                 sys.stderr = err
                 os.chdir(cwd)

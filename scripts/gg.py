@@ -554,11 +554,13 @@ def cmd_scrub(group):
 
 
 def json_fields(value, key=""):
-    """(field, text) for every string in a decoded JSON value."""
+    """(field, text) for every string in a decoded JSON value, keys
+    included."""
     if isinstance(value, str):
         yield key, value
     elif isinstance(value, dict):
         for k, v in value.items():
+            yield "(key)", k
             yield from json_fields(v, k)
     elif isinstance(value, list):
         for v in value:
@@ -587,9 +589,25 @@ def fields_holding_addresses(text):
     return f" ({', '.join(parts)})" if parts else ""
 
 
+def addresses_in(path, text):
+    """The whole addresses in a file as it will be read: a JSON file's
+    strings once decoded, any other file as it is. In a JSON file's text a
+    line break is written \\n, so a line of code such as "@app.route" reads
+    there as the address n@app.route; stan-dev, distance-sampling and
+    seewave were stopped by nothing else."""
+    if path.endswith(".json"):
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return whole_addresses(text)
+        return sum(whole_addresses(s) for _, s in json_fields(value))
+    return whole_addresses(text)
+
+
 def cmd_check(group):
     """Stop if any file about to be published holds a whole address. It
-    says where, never what: the run's log is public."""
+    says where, never what: the run's log is public. GROUP may also be a
+    group's source/ directory alone."""
     groups = [group] if group != "all" else sorted(
         os.path.dirname(c) for c in __import__("glob").glob("*/config.json"))
     paths = ["lists.tsv"] if group == "all" and os.path.exists("lists.tsv") else []
@@ -600,7 +618,7 @@ def cmd_check(group):
     for path in paths:
         with open(path, encoding="utf-8", errors="replace") as f:
             text = f.read()
-        n = whole_addresses(text)
+        n = addresses_in(path, text)
         if n:
             where = fields_holding_addresses(text) if path.endswith(".json") else ""
             print(f"{path}: {n} whole addresses{where}", file=sys.stderr)
@@ -824,7 +842,9 @@ def main(argv=None):
     ap.add_argument("group")
     ap.add_argument("--all", action="store_true", help="fetch: every conversation, not just new ones")
     a = ap.parse_args(argv)
-    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", a.group):
+    # The crawl checks a group's source/ by itself when the rest failed.
+    name = a.group[:-len("/source")] if a.command == "check" and a.group.endswith("/source") else a.group
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
         sys.exit(f"not a group name: {a.group}")
     {"describe": lambda: cmd_describe(a.group),
      "list": lambda: cmd_list(a.group),
