@@ -1,0 +1,360 @@
+From ud05f819ded2dac67 at groups.google.com  Fri Jan 28 00:09:52 2022
+From: ud05f819ded2dac67 at groups.google.com (Yannick Jadoul)
+Date: Fri, 28 Jan 2022 00:09:52 +0000
+Subject: Re: [seewave] Start and end times of timer() result swapped, plus patch resolving the issue
+Message-ID: <UkEeyixxjV4.mCQqODY4AgAJ@seewave.groups.google.com>
+In-Reply-To: <UkEeyixxjV4.vzjD_UMVAAAJ@seewave.groups.google.com>
+References: <UkEeyixxjV4.SA2maJ1gCQAJ@seewave.groups.google.com> <UkEeyixxjV4.vzjD_UMVAAAJ@seewave.groups.google.com>
+Archived-At: <https://groups.google.com/g/seewave/c/UkEeyixxjV4/m/mCQqODY4AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Jérôme
+
+Using the updated version, we ran into another rare bug in `timer`, originating in the `wave4[2] == 2` condition. This if-condition gives problems in the rare case that when multiple transitions signal-silence transitions at the start of an audio fragment. The following examples illustrates the bug as well as its (accidentally) correct counterpart:
+
+```
+> sf <- 16000
+> timer(c(0, 1, rep(0, sf), rep(1, sf)), sf, plot=F)
+$s
+[1] 0.0001250039 0.9999687471
+
+$p
+[1] 1.000031
+
+$r
+[1] 1.000063
+
+$s.start
+[1] 0.000000 1.000156
+
+$s.end
+[1] 0.0001250039
+
+$first
+[1] "signal"
+
+> timer(c(1, 0, rep(1, sf), rep(0, sf)), sf, plot=F)
+$s
+[1] 0.0001250039 0.9999687471
+
+$p
+[1] 1.000031
+
+$r
+[1] 1.000063
+
+$s.start
+[1] 0.000000 1.000156
+
+$s.end
+[1] 0.0001250039
+
+$first
+[1] "signal"
+```
+
+The solution that I found is to check the first non-transition (i.e., where `wave4 != 3`).
+
+Additionally, the following call of `timer` results in an error:
+
+```
+> timer(c(0, 1, rep(0, sf), rep(1, sf)), sf, dmin=0.05, plot=F)
+
+Error in seq.default(3, npos - 1, by = 2) : wrong sign in 'by' argument
+
+```
+
+This can be fixed by changing `end.signal <- positions[seq(3, npos - 1, by = 2)]` into `end.signal <- positions[seq(3, npos, by = 2)]`.
+
+I have managed to fix both these issues with minimal changes. In case you agree with the proposed fixes, this is the overview of the changes that fix both issues for me:
+
+```
+--- seewave.orig.r        2022-01-28 01:02:14.905711026 +0100
++++ seewave.r        2022-01-28 01:01:35.457193485 +0100
+@@ -7651,13 +7651,15 @@
+     durations <- diff(positions)
+
+     npos <- length(positions)
+     if(npos<=2) stop("It seems that the sound is continuous, there are not signal/pause events.")
+
++    first.non.transition <- which(wave4 != 3)[1]
++    first.non.transition.even <- first.non.transition %% 2 == 0
+
+     ## the wave starts with a pause
+
+-    if (wave4[2] == 2) {   # if (wave2[1] == 1) {   ## by 2021-04-16 by Yannick Jadoul and Marianna Anichini
++    if ((wave4[first.non.transition] == 2) == first.non.transition.even) {
+
+         first <- "pause"
+         pause <- durations[seq(1, npos - 1, by = 2)]
+         signal <- durations[seq(2, npos - 1, by = 2)]
+         start.signal <- positions[seq(2, npos - 1, by = 2)]
+-        end.signal <- positions[seq(3, npos - 1, by = 2)]
++        end.signal <- positions[seq(3, npos, by = 2)]
+     }
+     ## the wave starts with a signal
+     else {
+
+@@ -7665,7 +7667,7 @@
+
+         pause <- durations[seq(2, npos - 1, by = 2)]
+         signal <- durations[seq(1, npos - 1, by = 2)]
+         start.signal <- positions[seq(1, npos - 1, by = 2)]
+-        end.signal <- positions[seq(2, npos - 1, by = 2)]
++        end.signal <- positions[seq(2, npos, by = 2)]
+     }
+     ratio <- sum(signal)/sum(pause)
+     timer <- list(s = signal, p = pause, r = ratio,
+
+@@ -7693,8 +7695,7 @@
+
+             wave8[i] <- ((wave5[i] - wave5[i - 1])/2) + wave5[i -
+                 1]
+         }
+
+-        if(wave4[2] == 2) {     #@mod 2021-04-16 by Yannick Jadoul and Marianna Anichini
+-            # if (wave2[1] == 1) {
++        if((wave4[first.non.transition] == 2) == first.non.transition.even) {
+
+             wave8.1 <- wave8[seq(2, npos, by = 2)]/f1
+             wave8.2 <- wave8[seq(3, npos, by = 2)]/f1
+         }  else {
+
+```
+
+Kind regards
+Yannick Jadoul
+
+On Saturday, 17 April 2021 at 23:27:51 UTC+2 Yannick Jadoul wrote:
+> Dear Jerôme
+>
+> Thank you very much for your reply! I will look forward to using this new version!
+>
+> Meanwhile, I bumped into a minor related issue. Calling `timer()` on a audio fragment that ends on a signal, results in the last value of `s.end` missing:
+>
+> ```
+> > timer(c(rep(1, sf), rep(0, sf), rep(1, sf)), sf, plot=F)
+> $s
+> [1] 1.0000208 0.9999583
+>
+> $p
+> [1] 1.000021
+>
+> $r
+> [1] 1.999937
+>
+> $s.start
+> [1] 0.000000 2.000042
+>
+> $s.end
+> [1] 1.000021
+>
+> $first
+> [1] "signal"
+> ```
+>
+> And the following even simpler example results in an error inside of `timer()`:
+>
+> ```
+> > timer(c(rep(0, sf), rep(1, sf)), sf, plot=F)
+> Error in seq.default(3, npos - 1, by = 2) : wrong sign in 'by' argument
+> ```
+>
+> If I understood the correctly, changing the following two lines assigning to `end.signal` to `end.signal <- positions[seq(..., npos, by = 2)]` (instead of `npos - 1`) fixes this issue and still gets other input correct:
+>
+> ```
+> > timer(c(rep(0, sf), rep(1, sf)), sf, plot=F)
+> $s
+> [1] 0.9999687
+>
+> $p
+> [1] 1.000031
+>
+> $r
+> [1] 0.9999375
+>
+> $s.start
+> [1] 1.000031
+>
+> $s.end
+> [1] 2
+>
+> $first
+> [1] "pause"
+> ```
+>
+> If you agree with this issue and proposed solution, would it be possible to still include this fix as well?
+> Combined with the previous 2 changes, the full patch would look like this:
+>
+> ```
+> $ diff -u seewave.orig.r seewave.r
+> --- seewave.orig.r    2020-05-28 10:52:10.000000000 +0200
+> +++ seewave.r    2021-04-15 12:49:36.583457006 +0200
+> @@ -7648,12 +7648,12 @@
+>      npos <- length(positions)
+>      if(npos<=2) stop("It seems that the sound is continuous, there are not signal/pause events.")
+>      ## the wave starts with a pause
+> -    if (wave2[1] == 1) {
+> +    if (wave4[2] == 2) {
+>          first <- "pause"
+>          pause <- durations[seq(1, npos - 1, by = 2)]
+>          signal <- durations[seq(2, npos - 1, by = 2)]
+>          start.signal <- positions[seq(2, npos - 1, by = 2)]
+> -        end.signal <- positions[seq(3, npos - 1, by = 2)]
+> +        end.signal <- positions[seq(3, npos, by = 2)]
+>      }
+>      ## the wave starts with a signal
+>      else {
+> @@ -7661,7 +7661,7 @@
+>          pause <- durations[seq(2, npos - 1, by = 2)]
+>          signal <- durations[seq(1, npos - 1, by = 2)]
+>          start.signal <- positions[seq(1, npos - 1, by = 2)]
+> -        end.signal <- positions[seq(2, npos - 1, by = 2)]
+> +        end.signal <- positions[seq(2, npos, by = 2)]
+>      }
+>      ratio <- sum(signal)/sum(pause)
+>      timer <- list(s = signal, p = pause, r = ratio,
+> @@ -7689,7 +7689,7 @@
+>              wave8[i] <- ((wave5[i] - wave5[i - 1])/2) + wave5[i -
+>                  1]timer()
+>          }
+> -        if(wave2[1] == 1) {
+> +        if(wave4[2] == 2) {
+>              wave8.1 <- wave8[seq(2, npos, by = 2)]/f1
+>              wave8.2 <- wave8[seq(3, npos, by = 2)]/f1
+>          }  else {
+> ```
+>
+>
+> Kind regards
+> Yannick Jadoul
+>
+> On Friday, 16 April 2021 at 14:18:45 UTC+2 Jérôme SUEUR wrote:
+> > Dear Yannick,
+> > Thank you very much for this fix!
+> > I will include it in the next release probably before next summer.
+> > All the best
+> > Jerome
+> >
+> > De: "Yannick Jadoul" <yannick...@gmail.com>
+> > À: "seewave GROUP" <see...@googlegroups.com>
+> > Envoyé: Mercredi 14 Avril 2021 11:56:02
+> > Objet: [seewave] Start and end times of timer() result swapped, plus patch resolving the issue
+> >
+> > When an audio fragment is passed to `timer()`, starting with a signal of less than `dmin`, the result returned from the `timer()` call is wrong.
+> > This pieces of code demonstrate and reproduce the issue. This shows a correct result (set `sf` to any sample frequency you prefer; e.g., `sf <- 16000` works):
+> >
+> > ```
+> > > timer(c(rep(1, 0.1 * sf), rep(0, sf), rep(1, sf), rep(0, 0.1 * sf)), sf, dmin=0.05, plot=F)
+> > $s
+> > [1] 0.1000028 1.0000284
+> >
+> > $p
+> > [1] 1.00002841 0.09994034
+> >
+> > $r
+> > [1] 1.000057
+> >
+> > $s.start
+> > [1] 0.000000 1.100031
+> >
+> > $s.end
+> > [1] 0.1000028 2.1000597
+> >
+> > $first
+> > [1] "signal"
+> > ```
+> >
+> > On the contrary, changing `dmin` to 0.2 reproduces the bug we encountered:
+> >
+> > ```
+> > > timer(c(rep(1, 0.1 * sf), rep(0, sf), rep(1, sf), rep(0, 0.1 * sf)), sf, dmin=0.2, plot=F)
+> > $s
+> > [1] 1.1000313 0.1000028
+> >
+> > $p
+> > [1] 0.9999659
+> >
+> > $r
+> > [1] 1.200075
+> >
+> > $s.start
+> > [1] 0.000000 2.099997
+> >
+> > $s.end
+> > [1] 1.100031
+> >
+> > $first
+> > [1] "signal"
+> > ```
+> >
+> >
+> > In particular, while `s` and `p` are correct, `s.start` and `s.end` are swapped (`s.start` should be +- 1.1, while `s.end` should be +- 2.1).
+> >
+> > The reason for this bug seems to lie in the `if (wave2[1] == 1)` condition: `wave2` contains the signals/silence before it has been filtered on `dmin`, whereas `wave4` contains only signals longer than `dmin`. The following patch fixes the issue, to the best of my knowledge (if I have not overlooked another corner case?):
+> >
+> > ```
+> > $ diff -u seewave.orig.r seewave.r
+> > --- seewave.orig.r    2020-05-28 10:52:10.000000000 +0200
+> > +++ seewave.r    2021-04-13 23:07:47.013635984 +0200
+> > @@ -7648,7 +7648,7 @@
+> >      npos <- length(positions)
+> >      if(npos<=2) stop("It seems that the sound is continuous, there are not signal/pause events.")
+> >      ## the wave starts with a pause
+> > -    if (wave2[1] == 1) {
+> > +    if (wave4[2] == 2) {
+> >          first <- "pause"
+> >          pause <- durations[seq(1, npos - 1, by = 2)]
+> >          signal <- durations[seq(2, npos - 1, by = 2)]
+> > @@ -7689,7 +7689,7 @@
+> >              wave8[i] <- ((wave5[i] - wave5[i - 1])/2) + wave5[i -
+> >                  1]
+> >          }
+> > -        if(wave2[1] == 1) {
+> > +        if(wave4[2] == 2) {
+> >              wave8.1 <- wave8[seq(2, npos, by = 2)]/f1
+> >              wave8.2 <- wave8[seq(3, npos, by = 2)]/f1
+> >          }  else {
+> > ```
+> >
+> > Using this updated version of `seewave.r`, the previously failing example now works:
+> >
+> > ```
+> > > source("seewave.r")
+> > > timer(c(rep(1, 0.1 * sf), rep(0, sf), rep(1, sf), rep(0, 0.1 * sf)), sf, dmin=0.2, plot=F)
+> > $s
+> > [1] 0.9999659
+> >
+> > $p
+> > [1] 1.1000313 0.1000028
+> >
+> > $r
+> > [1] 0.8332812
+> >
+> > $s.start
+> > [1] 1.100031
+> >
+> > $s.end
+> > [1] 2.099997
+> >
+> > $first
+> > [1] "pause"
+> > ```
+> >
+> > This issue seems like it might also be related to the "
+> > Odd behavior in timer()" email thread at https://groups.google.com/g/seewave/c/KroqU5ag_-o
+> >
+> >
+> > Thank you for providing the seewave library!
+> >
+> > Kind regards
+> > Yannick Jadoul (& Marianna Anichini)
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "seewave" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to seewave+u...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/seewave/013fb214-fc20-4266-8a83-0f432d12eef3n%40googlegroups.com <https://groups.google.com/d/msgid/seewave/013fb214-fc20-4266-8a83-0f432d12eef3n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+
