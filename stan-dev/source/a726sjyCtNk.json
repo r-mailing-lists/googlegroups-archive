@@ -1,0 +1,240 @@
+{
+ "thread": "a726sjyCtNk",
+ "subject": "Re: [stan-users] Problem with truncated data model",
+ "messages_listed": 12,
+ "last_activity": "2012-09-04T23:23:10Z",
+ "messages": [
+  {
+   "id": "EleVDELoPToJ",
+   "from": "Jiqiang Guo",
+   "author": "ab7b24da45678eac",
+   "date": "2012-09-04T01:21:49Z",
+   "subject": "Re: [stan-users] Problem with truncated data model",
+   "parts": [
+    [
+     1,
+     "Thanks for pointing this out. This might be bug in a stanc as the C++ code for the log-posterior has<div><br></div><div><div>      lp__ += stan::prob::normal_log&lt;true&gt;(get_base1(y,n,&quot;y&quot;,1), mu, sigma);</div>\r\n<div>      lp__ += log(normal_p(U, mu, sigma));</div><div><br></div><div>I think the second += should be -=.  So I am sending this to the stan-dev list. </div><div><br></div><div>--</div><div>Jiqiang</div><div><br></div><br>\r\n<div class=\"gmail_quote\">On Mon, Sep 3, 2012 at 4:55 PM, Marek Smigielski <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">marek.sm...@gmail.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nHi,<div><br></div><div>I have some strange problem with truncated data model from user guide.  It is not producing expected estimation of any parameters neither mu nor sigma. My testing procedure is as follows.</div><div>\r\n<br></div><div>1. Prepare random vector of observations from normal random generator with parameters (mean=0, sigma =1).</div><div>2. Next truncate data when it is greater than 0.</div><div>3. Compile and fit model.</div>\r\n<div>4. Instead of expecting estimations near real values I get mu=-0.8, sigma=0.5.</div><div><br></div><div>My code in R is:</div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\">\r\n<code><div><font color=\"#660066\"><div>library(rstan) </div><div><br></div><div>model_code &lt;- &#39;</div><div>data {</div><div>int&lt;lower=0&gt; N;</div><div>real U;</div><div>real&lt;upper=U&gt; y[N];</div><div>}</div>\r\n<div>parameters{</div><div>real mu;</div><div>real&lt;lower=0&gt; sigma;</div><div>}</div><div>model {</div><div>for (n in 1:N)</div><div>  y[n] ~ normal(mu,sigma) T[,U];</div><div>}</div><div>&#39;</div><div>real_data&lt;- rnorm(200)</div>\r\n<div>truncated_data&lt;-real_data[which(real_data&lt;0)]</div><div><br></div><div>data &lt;- list(N = length(truncated_data),U=0, y = truncated_data)</div><div><br></div><div>fit &lt;- stan(model_code = model_code, data = data)</div>\r\n<div><br></div><div>print(fit)</div></font></div></code></div><br>Could you suggest what am I doing wrong or how can I achieve better estimations?</div><div><br></div><div>regards,</div><div>Marek Smigielski</div></blockquote>\r\n</div><br></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "mZPuh2718zYJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-09-04T06:43:28Z",
+   "subject": "Re: Problem with truncated data model [+ log CDF?]",
+   "parts": [
+    [
+     1,
+     "Good call.  Totally my bad.  And it affects all of\r<br>the truncated distributions, not just the upper-bound\r<br>only.  None of these will work properly until we release\r<br>a patched version of Stan (and RStan), which we will do ASAP.\r<br>\r<br>I just pushed a patch to our code repository that\r<br>fixes the issue, which is in stan/gm/generator.hpp,\r<br>starting on line 1024 or so.\r<br>\r<br>We should set up a model test as the generator isn&#39;t\r<br>tested otherwise.\r<br>\r<br>I forgot the negation due to the CDF terms being in\r<br>the denominator under a log.\r<br>\r<br>An upper-truncated sampling statement\r<br>\r<br>    y ~ foo(...) T[,U];\r<br>\r<br>should translate to the C++:\r<br>\r<br>    lp__ += foo_log(y,...);\r<br>    lp__ -= log(foo_cdf(U,...));\r<br>\r<br>Because I inadvertently made the second line here += instead\r<br>of -= in the generator, we&#39;ll need to test this\r<br>through a model.\r<br>\r<br>The other two cases we have are with just a lower\r<br>bound, using log1m(x) == log(1 - x), to set\r<br>\r<br>    &quot;&quot; T[L,]\r<br>    lp__ -= log1m(foo_cdf(L,...));\r<br>\r<br>and with both an upper and lower bound,\r<br>\r<br>    &quot;&quot; T[L,U]\r<br>    lp__ -= log(foo_cdf(U,...) - foo_cdf(L,...));\r<br>\r<br>An earlier thread brings up the issue of whether we\r<br>should try to be more careful about underflow of the CDF\r<br>to 0 or overflow to 1.  We could definitely be much\r<br>more careful with the arithmetical precision here.\r<br>\r<br>We could really use three compound log-difference CDF\r<br>functions for these three cases.\r<br>\r<br>We could then test if the lower bound was less than\r<br>the upper bound, something we&#39;re currently not doing.\r<br>As is, if they&#39;re backwards, you&#39;ll try to take the log\r<br>of a negative number and get an error that way.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On 9/3/12 9:21 PM, Jiqiang Guo wrote:\r<br>&gt; Thanks for pointing this out. This might be bug in a stanc as the C++ code for the log-posterior has\r<br>&gt;\r<br>&gt;        lp__ += stan::prob::normal_log&lt;true&gt;(get_base1(y,n,&quot;y&quot;,1), mu, sigma);\r<br>&gt;        lp__ += log(normal_p(U, mu, sigma));\r<br>&gt;\r<br>&gt; I think the second += should be -=.  So I am sending this to the stan-dev list.\r<br>&gt;\r<br>&gt; --\r<br>&gt; Jiqiang\r<br>&gt;\r<br>&gt;\r<br>&gt; On Mon, Sep 3, 2012 at 4:55 PM, Marek Smigielski &lt;<a href data-email-masked rel=\"nofollow\">marek.sm...@gmail.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">marek.sm...@gmail.com</a>&gt;&gt; wrote:\r<br>&gt;\r<br>&gt;     Hi,\r<br>&gt;\r<br>&gt;     I have some strange problem with truncated data model from user guide.  It is not producing expected estimation of\r<br>&gt;     any parameters neither mu nor sigma. My testing procedure is as follows.\r<br>&gt;\r<br>&gt;     1. Prepare random vector of observations from normal random generator with parameters (mean=0, sigma =1).\r<br>&gt;     2. Next truncate data when it is greater than 0.\r<br>&gt;     3. Compile and fit model.\r<br>&gt;     4. Instead of expecting estimations near real values I get mu=-0.8, sigma=0.5.\r<br>&gt;\r<br>&gt;     My code in R is:\r<br>&gt;     |\r<br>&gt;     library(rstan)\r<br>&gt;\r<br>&gt;     model_code &lt;- &#39;\r<br>&gt;     data {\r<br>&gt;     int&lt;lower=0&gt; N;\r<br>&gt;     real U;\r<br>&gt;     real&lt;upper=U&gt; y[N];\r<br>&gt;     }\r<br>&gt;     parameters{\r<br>&gt;     real mu;\r<br>&gt;     real&lt;lower=0&gt; sigma;\r<br>&gt;     }\r<br>&gt;     model {\r<br>&gt;     for (n in 1:N)\r<br>&gt;        y[n] ~ normal(mu,sigma) T[,U];\r<br>&gt;     }\r<br>&gt;     &#39;\r<br>&gt;     real_data&lt;- rnorm(200)\r<br>&gt;     truncated_data&lt;-real_data[which(real_data&lt;0)]\r<br>&gt;\r<br>&gt;     data &lt;- list(N = length(truncated_data),U=0, y = truncated_data)\r<br>&gt;\r<br>&gt;     fit &lt;- stan(model_code = model_code, data = data)\r<br>&gt;\r<br>&gt;     print(fit)\r<br>&gt;     |\r<br>&gt;\r<br>&gt;     Could you suggest what am I doing wrong or how can I achieve better estimations?\r<br>&gt;\r<br>&gt;     regards,\r<br>&gt;     Marek Smigielski\r<br>&gt;\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; --\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "x3Fylhdo0ngJ",
+   "from": "Nigel/essence",
+   "author": "ace57905b77e39eb",
+   "date": "2012-09-04T14:40:01Z",
+   "subject": "Re: [stan-users] Problem with truncated data model",
+   "parts": [
+    [
+     1,
+     "Never take the log of a normal. The normal can get very small and be set to zero and/or underflow.<p>Use a specialised algorithm to get log normals.<p>[forgive me if I am preaching to the converted]</p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "gFgpxiubySoJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-09-04T15:18:56Z",
+   "subject": "Re: [stan-dev] Re: Problem with truncated data model [+ log CDF?]",
+   "parts": [
+    [
+     1,
+     "Would it be better to instead of defining\r<br>\r<br>foo_cdf(x)\r<br>\r<br>for each distribution defining a two parameter function\r<br>\r<br>foo_logcdf(L,U)\r<br>\r<br>to avoid issues of over/underflow where needed? By default we can\r<br>implement it in terms of foo_cdf(x) but we could also overload it as\r<br>needed to be more clever.\r<br>\r<br>Cheers,\r<br>Marcus\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Tue, Sep 4, 2012 at 2:43 AM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt; Good call.  Totally my bad.  And it affects all of\r<br>&gt; the truncated distributions, not just the upper-bound\r<br>&gt; only.  None of these will work properly until we release\r<br>&gt; a patched version of Stan (and RStan), which we will do ASAP.\r<br>&gt;\r<br>&gt; I just pushed a patch to our code repository that\r<br>&gt; fixes the issue, which is in stan/gm/generator.hpp,\r<br>&gt; starting on line 1024 or so.\r<br>&gt;\r<br>&gt; We should set up a model test as the generator isn&#39;t\r<br>&gt; tested otherwise.\r<br>&gt;\r<br>&gt; I forgot the negation due to the CDF terms being in\r<br>&gt; the denominator under a log.\r<br>&gt;\r<br>&gt; An upper-truncated sampling statement\r<br>&gt;\r<br>&gt;    y ~ foo(...) T[,U];\r<br>&gt;\r<br>&gt; should translate to the C++:\r<br>&gt;\r<br>&gt;    lp__ += foo_log(y,...);\r<br>&gt;    lp__ -= log(foo_cdf(U,...));\r<br>&gt;\r<br>&gt; Because I inadvertently made the second line here += instead\r<br>&gt; of -= in the generator, we&#39;ll need to test this\r<br>&gt; through a model.\r<br>&gt;\r<br>&gt; The other two cases we have are with just a lower\r<br>&gt; bound, using log1m(x) == log(1 - x), to set\r<br>&gt;\r<br>&gt;    &quot;&quot; T[L,]\r<br>&gt;    lp__ -= log1m(foo_cdf(L,...));\r<br>&gt;\r<br>&gt; and with both an upper and lower bound,\r<br>&gt;\r<br>&gt;    &quot;&quot; T[L,U]\r<br>&gt;    lp__ -= log(foo_cdf(U,...) - foo_cdf(L,...));\r<br>&gt;\r<br>&gt; An earlier thread brings up the issue of whether we\r<br>&gt; should try to be more careful about underflow of the CDF\r<br>&gt; to 0 or overflow to 1.  We could definitely be much\r<br>&gt; more careful with the arithmetical precision here.\r<br>&gt;\r<br>&gt; We could really use three compound log-difference CDF\r<br>&gt; functions for these three cases.\r<br>&gt;\r<br>&gt; We could then test if the lower bound was less than\r<br>&gt; the upper bound, something we&#39;re currently not doing.\r<br>&gt; As is, if they&#39;re backwards, you&#39;ll try to take the log\r<br>&gt; of a negative number and get an error that way.\r<br>&gt;\r<br>&gt; - Bob\r<br>&gt;\r<br>&gt; On 9/3/12 9:21 PM, Jiqiang Guo wrote:\r<br>&gt;&gt;\r<br>&gt;&gt; Thanks for pointing this out. This might be bug in a stanc as the C++ code\r<br>&gt;&gt; for the log-posterior has\r<br>&gt;&gt;\r<br>&gt;&gt;        lp__ += stan::prob::normal_log&lt;true&gt;(get_base1(y,n,&quot;y&quot;,1), mu,\r<br>&gt;&gt; sigma);\r<br>&gt;&gt;        lp__ += log(normal_p(U, mu, sigma));\r<br>&gt;&gt;\r<br>&gt;&gt; I think the second += should be -=.  So I am sending this to the stan-dev\r<br>&gt;&gt; list.\r<br>&gt;&gt;\r<br>&gt;&gt; --\r<br>&gt;&gt; Jiqiang\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; On Mon, Sep 3, 2012 at 4:55 PM, Marek Smigielski\r<br>&gt;&gt; &lt;<a href data-email-masked rel=\"nofollow\">marek.sm...@gmail.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">marek.sm...@gmail.com</a>&gt;&gt; wrote:\r<br>&gt;&gt;\r<br>&gt;&gt;     Hi,\r<br>&gt;&gt;\r<br>&gt;&gt;     I have some strange problem with truncated data model from user guide.\r<br>&gt;&gt; It is not producing expected estimation of\r<br>&gt;&gt;     any parameters neither mu nor sigma. My testing procedure is as\r<br>&gt;&gt; follows.\r<br>&gt;&gt;\r<br>&gt;&gt;     1. Prepare random vector of observations from normal random generator\r<br>&gt;&gt; with parameters (mean=0, sigma =1).\r<br>&gt;&gt;     2. Next truncate data when it is greater than 0.\r<br>&gt;&gt;     3. Compile and fit model.\r<br>&gt;&gt;     4. Instead of expecting estimations near real values I get mu=-0.8,\r<br>&gt;&gt; sigma=0.5.\r<br>&gt;&gt;\r<br>&gt;&gt;     My code in R is:\r<br>&gt;&gt;     |\r<br>&gt;&gt;     library(rstan)\r<br>&gt;&gt;\r<br>&gt;&gt;     model_code &lt;- &#39;\r<br>&gt;&gt;     data {\r<br>&gt;&gt;     int&lt;lower=0&gt; N;\r<br>&gt;&gt;     real U;\r<br>&gt;&gt;     real&lt;upper=U&gt; y[N];\r<br>&gt;&gt;     }\r<br>&gt;&gt;     parameters{\r<br>&gt;&gt;     real mu;\r<br>&gt;&gt;     real&lt;lower=0&gt; sigma;\r<br>&gt;&gt;     }\r<br>&gt;&gt;     model {\r<br>&gt;&gt;     for (n in 1:N)\r<br>&gt;&gt;        y[n] ~ normal(mu,sigma) T[,U];\r<br>&gt;&gt;     }\r<br>&gt;&gt;     &#39;\r<br>&gt;&gt;     real_data&lt;- rnorm(200)\r<br>&gt;&gt;     truncated_data&lt;-real_data[which(real_data&lt;0)]\r<br>&gt;&gt;\r<br>&gt;&gt;     data &lt;- list(N = length(truncated_data),U=0, y = truncated_data)\r<br>&gt;&gt;\r<br>&gt;&gt;     fit &lt;- stan(model_code = model_code, data = data)\r<br>&gt;&gt;\r<br>&gt;&gt;     print(fit)\r<br>&gt;&gt;     |\r<br>&gt;&gt;\r<br>&gt;&gt;     Could you suggest what am I doing wrong or how can I achieve better\r<br>&gt;&gt; estimations?\r<br>&gt;&gt;\r<br>&gt;&gt;     regards,\r<br>&gt;&gt;     Marek Smigielski\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; --\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; --\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "ZCDb_jQsp1gJ",
+   "from": "Nigel/essence",
+   "author": "ace57905b77e39eb",
+   "date": "2012-09-04T17:04:46Z",
+   "subject": "Re: [stan-dev] Re: Problem with truncated data model [+ log CDF?]",
+   "parts": [
+    [
+     1,
+     "<br>I posted this in another thread, so it may have got lost:<p>Garsaglia has done some interesting work in this area &#39;Evaluating the Normal Distribution&#39; in JSS.<p>But even that was nowhere near enough for my tails, so I used the concept and wrote my own approximation. I was more interested in speed than accuracy.<p>You can get some ideas from that paper how to get log cum norm approximations at extreme tails.<p><br></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "gFXUOpNKp1EJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-09-04T18:39:16Z",
+   "subject": "Re: [stan-dev] Re: Problem with truncated data model [+ log CDF?]",
+   "parts": [
+    [
+     1,
+     "The interface I was proposing would make it plausible to do this at some point.\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Tue, Sep 4, 2012 at 1:04 PM, Nigel/essence &lt;<a href data-email-masked rel=\"nofollow\">goo...@essence.co.uk</a>&gt; wrote:\r<br>&gt;\r<br>&gt; I posted this in another thread, so it may have got lost:\r<br>&gt;\r<br>&gt; Garsaglia has done some interesting work in this area &#39;Evaluating the Normal Distribution&#39; in JSS.\r<br>&gt;\r<br>&gt; But even that was nowhere near enough for my tails, so I used the concept and wrote my own approximation. I was more interested in speed than accuracy.\r<br>&gt;\r<br>&gt; You can get some ideas from that paper how to get log cum norm approximations at extreme tails.\r<br>&gt;\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; --\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "uLb_KGXyAzQJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-09-04T18:48:32Z",
+   "subject": "Re: [stan-dev] Re: Problem with truncated data model [+ log CDF?]",
+   "parts": [
+    [
+     2,
+     "n 9/4/12 11:18 AM, Marcus Brubaker wrote:\r<br>&gt; Would it be better to instead of defining\r<br>&gt;\r<br>&gt; foo_cdf(x)\r<br>&gt;\r<br>&gt; for each distribution defining a two parameter function\r<br>&gt;\r<br>&gt; foo_logcdf(L,U)\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Exactly.\r<br>\r<br>I&#39;m thinking we&#39;ll either need need three functions, as in\r<br>\r<br>    foo_cdf_lb_log(L|...)     = log(1 - foo_cdf(L|...))\r<br>    foo_cdf_ub_log(U|...)     = log(foo_cdf(U|...) - 0)\r<br>    foo_cdf_lub_log(L,U|...)  = log(foo_cdf(U|...) - foo_cdf(L|...))\r<br>\r<br>or some way to just use foo_cdf_lub_log(L,U|...)\r<br>with -inf and +inf bounds.\r<br>\r<br>I&#39;m reading up on some implementation suggesstions in\r<br>the JSS paper Nigel suggested.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "cnmjkiw2jIEJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-09-04T18:57:56Z",
+   "subject": "Re: [stan-dev] Re: [stan-users] Problem with truncated data model",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 9/4/12 10:40 AM, Nigel/essence wrote:\r<br>&gt; Never take the log of a normal. The normal can get very small and be set to zero and/or underflow.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Absolutely.\r<br>\r<br>In practice, overflow or underflow in the truncated\r<br>distributions shouldn&#39;t be much cause for concern.  There we have\r<br>terms\r<br>\r<br>   -log(U - L)\r<br>   -log(1 - L)\r<br>   -log(U - 0)\r<br>\r<br>where U and L are the cdf values of the upper and lower\r<br>bounds.  If these overflow to 1 or underflow to 0, there&#39;s\r<br>not much harm done :-)\r<br>\r<br>The one area where it could matter is if an upper bound\r<br>underflowed or a lower-bound overflowed.  That would mean\r<br>you have a very very narrow interveral for the constraint.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Use a specialised algorithm to get log normals.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "We already do that for the probability functions and\r<br>many other functions.\r<br>\r<br>As I mentioned last time, the frustrating part is that\r<br>even if the basic functions are OK, their interactions\r<br>can get messy.  For instance, we added a log Bernoulli\r<br>distribution function that took logit-scaled parameters\r<br>because applying inv_logit would underflow or overflow\r<br>to 0 or 1 in some cases with initial parameters and lead\r<br>to overall 0 probability.  (We truncated that to make\r<br>sure it didn&#39;t happen, but that&#39;s a hack, though one\r<br>Andrew&#39;s written about before under the heading &#39;Pinocchio\r<br>principle&#39;) -- a truncated inv_logit that&#39;s bounded between\r<br>(.01, .99) effectively handles overflow not only of the\r<br>arithmetic (for which (1E-15,1-1E-15) suffices.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; [forgive me if I am preaching to the converted]\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I like listening to a good sermon on arithmetic\r<br>accuracy :-)  And thanks for the reference.  I&#39;ll read\r<br>it tonight.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "YlmufY4Z5t4J",
+   "from": "Daniel Lee",
+   "author": "cab04b8f0759c712",
+   "date": "2012-09-04T22:09:59Z",
+   "subject": "Re: [stan-users] Re: Problem with truncated data model [+ log CDF?]",
+   "parts": [
+    [
+     1,
+     "On Tue, Sep 4, 2012 at 6:05 PM, Ben Goodrich &lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt; wrote:\r<br>&gt; On Tuesday, September 4, 2012 3:15:09 PM UTC-4, Bob Carpenter wrote:\r<br>&gt;&gt;\r<br>&gt;&gt; If you only see a few, as you did here, it&#39;s not\r<br>&gt;&gt; a problem.  We&#39;re also working on making that\r<br>&gt;&gt; clear by changing &quot;Error&quot; to &quot;Warning&quot; in the report.\r<br>&gt;&gt; (What would be really nice is to link them back to\r<br>&gt;&gt; a line of the Stan source, but that&#39;s MUCH trickier\r<br>&gt;&gt; and not on our short-term to-do list.)\r<br>&gt;\r<br>&gt;\r<br>&gt; Can you metaprogram a call to git grep -n $WARNING inside the C++ source?\r<br>&gt;\r<br>\r<br>No. git is not on the list of requirements for Stan.\r<br>\r<br>What would that line accomplish? Perhaps we can find another way to do\r<br>the same thing.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "FaYWAvd8tZoJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-09-04T22:23:58Z",
+   "subject": "truncation still broken",
+   "parts": [
+    [
+     1,
+     "On 9/4/12 5:20 PM, Jiqiang Guo wrote:\r<br> &gt; On Tue, Sep 4, 2012 at 3:15 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br> &gt;     Because the truncation point is data, it&#39;s not\r<br> &gt;     actually doing anything in this model!  The data\r<br> &gt;     are all known and constrained to be &lt; U, so\r<br> &gt;     T[,U] terms just add some constants of proportionality.\r<br> &gt; No, it does not just add some constants.  Because the denominator of the pdf\r<br> &gt; of truncated function is\r<br> &gt;\r<br> &gt; normal_cdf(U, mu, sigma),\r<br> &gt;\r<br> &gt; which involves parameter mu and sigma.\r<br>\r<br>Thanks for the clarification.  If it didn&#39;t work\r<br>as you just pointed out, we&#39;d never be able to\r<br>do censored or truncated models!\r<br>\r<br>Daniel and I are in the middle of debugging this\r<br>and having some problems getting simple truncated\r<br>estimates right.  The only problem is we&#39;re out of\r<br>things to test -- the model&#39;s getting translated\r<br>properly, all the gradients for the normal density\r<br>and CDF seem right, too.\r<br>\r<br>I wrote a model that includes the censored\r<br>data:\r<br>\r<br>data {\r<br>   real U;\r<br>   int&lt;lower=0&gt; N_censored;\r<br>   int&lt;lower=0&gt; N_observed;\r<br>   real&lt;upper=U&gt; y[N_observed];\r<br>}\r<br>transformed data {\r<br>   real&lt;lower=0&gt; sigma;\r<br>   sigma &lt;- 1.0;\r<br>}\r<br>parameters {\r<br>   real mu;\r<br>}\r<br>model {\r<br>   for (n in 1:N_observed)\r<br>"
+    ],
+    [
+     2,
+     "     y[n] ~ normal(mu,sigma) T[,U];\r<br>"
+    ],
+    [
+     1,
+     "   lp__ &lt;- lp__ + N_censored * log(1 - normal_p(U,mu,sigma));\r<br>}\r<br>\r<br>I know that we should have better arithmetic precision\r<br>in all this, but I don&#39;t think that&#39;s the issue here.\r<br>\r<br>I then generate 1000 training points and censor at 0 roughly\r<br>the same way as the original poster did.\r<br>\r<br> &gt; N = 1000\r<br> &gt; y_raw = rnorm(N,0,1)\r<br> &gt; y &lt;- y_raw[y_raw &lt; 0]\r<br> &gt; U = 0\r<br> &gt; N_observed = length(y)\r<br> &gt; N_censored = N - N_observed\r<br> &gt; dump(c(&quot;N_observed&quot;,&quot;N_censored&quot;,&quot;y&quot;,&quot;U&quot;))\r<br>\r<br>With all this in place, we&#39;re getting estimates of\r<br>mu around 1.0.  And often very ill-behaved adaptation\r<br>(massive step sizes).\r<br>\r<br>If I take the line for censored data out of the model,\r<br>everything works about how you&#39;d expect (a slight\r<br>underestimate of the true mean used to generate the data).\r<br>So it seems like it must be a problem with normal_p.\r<br>\r<br>But all the tests for normal_p show all systems go.\r<br>\r<br>I had to add in a signature declaration for normal_p in\r<br>stan/gm to get it to run.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "rn3S40Zh0hIJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-09-04T23:07:43Z",
+   "subject": "Re: [stan-users] Re: Problem with truncated data model [+ log CDF?]",
+   "parts": [
+    [
+     2,
+     "On Tuesday, September 4, 2012 6:10:01 PM UTC-4, Daniel Lee wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">On Tue, Sep 4, 2012 at 6:05 PM, Ben Goodrich &lt;<a rel=\"nofollow\">goodri...@gmail.com</a>&gt; wrote:\n<br>&gt; On Tuesday, September 4, 2012 3:15:09 PM UTC-4, Bob Carpenter wrote:\n<br>&gt;&gt;\n<br>&gt;&gt; If you only see a few, as you did here, it&#39;s not\n<br>&gt;&gt; a problem.  We&#39;re also working on making that\n<br>&gt;&gt; clear by changing &quot;Error&quot; to &quot;Warning&quot; in the report.\n<br>&gt;&gt; (What would be really nice is to link them back to\n<br>&gt;&gt; a line of the Stan source, but that&#39;s MUCH trickier\n<br>&gt;&gt; and not on our short-term to-do list.)\n<br>&gt;\n<br>&gt;\n<br>&gt; Can you metaprogram a call to git grep -n $WARNING inside the C++ source?\n<br>&gt;\n<br>\n<br>No. git is not on the list of requirements for Stan.\n<br></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>I know. But if we were to metaprogram or makefile it into the source code when make dist happens, then the binaries would be able to output line numbers. <br><br></div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">What would that line accomplish? Perhaps we can find another way to do\n<br>the same thing.\n<br></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>Rather than metaprogramming, it may be easier to try to do that with shell programming when make dist is called. Like run a script that augments the warning with the line number of the warning.<br><br>Ben<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "7bAd8X-FDKgJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-09-04T23:23:10Z",
+   "subject": "Re: [stan-dev] Re: [stan-users] Re: Problem with truncated data model [+ log CDF?]",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 9/4/12 7:07 PM, Ben Goodrich wrote:\r<br>&gt; On Tuesday, September 4, 2012 6:10:01 PM UTC-4, Daniel Lee wrote:\r<br>&gt;\r<br>"
+    ],
+    [
+     2,
+     "&gt;     On Tue, Sep 4, 2012 at 6:05 PM, Ben Goodrich &lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a> &lt;javascript:&gt;&gt; wrote:\r<br>&gt;      &gt; On Tuesday, September 4, 2012 3:15:09 PM UTC-4, Bob Carpenter wrote:\r<br>&gt;      &gt;&gt;\r<br>&gt;      &gt;&gt; If you only see a few, as you did here, it&#39;s not\r<br>&gt;      &gt;&gt; a problem.  We&#39;re also working on making that\r<br>&gt;      &gt;&gt; clear by changing &quot;Error&quot; to &quot;Warning&quot; in the report.\r<br>&gt;      &gt;&gt; (What would be really nice is to link them back to\r<br>&gt;      &gt;&gt; a line of the Stan source, but that&#39;s MUCH trickier\r<br>&gt;      &gt;&gt; and not on our short-term to-do list.)\r<br>&gt;      &gt;\r<br>&gt;      &gt;\r<br>&gt;      &gt; Can you metaprogram a call to git grep -n $WARNING inside the C++ source?\r<br>&gt;      &gt;\r<br>&gt;\r<br>&gt;     No. git is not on the list of requirements for Stan.\r<br>&gt;\r<br>&gt;\r<br>&gt; I know. But if we were to metaprogram or makefile it into the source code when make dist happens, then the binaries\r<br>&gt; would be able to output line numbers.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I see.\r<br>\r<br>The problem I see is that I want to point\r<br>back to the Stan model code, not the generated\r<br>C++ code or underlying C++ code!   The text &quot;WARNING&quot;\r<br>shows up in the Stan C++ code, not even the code\r<br>generated for a model.\r<br>\r<br> From C++, it&#39;d be nice to have something like\r<br>a stack trace for where errors happen.  But on the C++\r<br>side, a simple grep -R will work, too.  Most of our\r<br>users won&#39;t have the git repository installed anyway,\r<br>I suspect.\r<br>\r<br>I&#39;ve never ever downloaded a repository\r<br>from a project I wasn&#39;t a developer for.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  }
+ ]
+}

@@ -1,0 +1,204 @@
+{
+ "thread": "87dh2t9PwV4",
+ "subject": "25% of time spent in check_range?",
+ "messages_listed": 8,
+ "last_activity": "2012-08-17T22:54:59Z",
+ "messages": [
+  {
+   "id": "7XKvjWO8yBcJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-17T20:39:44Z",
+   "subject": "25% of time spent in check_range?",
+   "parts": [
+    [
+     1,
+     "Hey,<br><br>So I&#39;m playing with a simple model in Stan and it was running a bit slower than I would have expected.  After a profiling run, it turned out that around 25% of the time was being spent in check_range().  I would have expected that these checks would have been disabled with -DNDEBUG at compile time (which turns off these checks in Eigen), but apparently not.  An easy fix is to wrap the body of check_range with an #ifndef NDEBUG block.<br>\r\n<br>Anyone have any thoughts?  For reference, this was with clang++ and -O3 on Linux.<br><br>Cheers,<br>Marcus<br>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "YYFP6Zj8oEIJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-17T21:12:41Z",
+   "subject": "Re: [stan-dev] 25% of time spent in check_range?",
+   "parts": [
+    [
+     3,
+     "On 8/17/12 4:39 PM, Marcus Brubaker wrote:\r<br>&gt; Hey,\r<br>&gt;\r<br>&gt; So I&#39;m playing with a simple model in Stan and it was running a bit slower than I would have expected.  After a\r<br>&gt; profiling run, it turned out that around 25% of the time was being spent in check_range().  I would have expected that\r<br>&gt; these checks would have been disabled with -DNDEBUG at compile time (which turns off these checks in Eigen), but\r<br>&gt; apparently not.  An easy fix is to wrap the body of check_range with an #ifndef NDEBUG block.\r<br>&gt;\r<br>&gt; Anyone have any thoughts?  For reference, this was with clang++ and -O3 on Linux.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "My first thought is &quot;yikes&quot;.\r<br>\r<br>My second thought is that we&#39;ve found g++ to\r<br>be a bit faster.\r<br>\r<br>My third thought is that putting in flags is a good\r<br>idea that we should finally get around to doing!\r<br>\r<br>I think we should follow Eigen, which turns off range\r<br>checking if either the flag NDEBUG or flag EIGEN_NO_DEBUG\r<br>is used (i.e., called with -DNDEBUG or -DEIGEN_NO_DEBUG).\r<br>\r<br>So I&#39;d suggest STAN_NO_DEBUG and calling the error checking\r<br>under the condition that !(STAN_NO_DEBUG || NDEBUG).\r<br>\r<br>We&#39;d then want to be able to pass options through calls\r<br>to stanc.  That in turn means we can&#39;t precompile object\r<br>files for the relevant calls, at least if we turn things\r<br>off at a fairly low level.\r<br>\r<br>I&#39;m curious as to why it&#39;s so expensive.  The function\r<br>is inline, passes three size_t values and a const char*,\r<br>with a body that&#39;s a simple if statement that&#39;s\r<br>always false.  I wonder if it&#39;s somehow\r<br>opportunistically pre-allocating for the stringstream?\r<br>Or the size is causing it not to be inlined.\r<br>Just in case, I broke out a raise_range_error.\r<br>\r<br>So it now looks like this:\r<br>\r<br>     void raise_range_error(size_t max,\r<br>                              size_t i,\r<br>                              const char* msg,\r<br>                              size_t idx) {\r<br>           std::stringstream s;\r<br>           s &lt;&lt; &quot;INDEX OPERATOR [] OUT OF BOUNDS&quot;\r<br>             &lt;&lt; &quot;; index=&quot; &lt;&lt; i\r<br>             &lt;&lt; &quot;; lower bound=1&quot;\r<br>             &lt;&lt; &quot;; upper bound=&quot; &lt;&lt; max\r<br>             &lt;&lt; &quot;; index position=&quot; &lt;&lt; idx\r<br>             &lt;&lt; &quot;; &quot; &lt;&lt; msg\r<br>             &lt;&lt; std::endl;\r<br>           throw std::out_of_range(s.str());\r<br>       }\r<br>\r<br>       inline\r<br>       void check_range(size_t max,\r<br>                        size_t i,\r<br>                        const char* msg,\r<br>                        size_t idx) {\r<br>         if (i &lt; 1 || i &gt; max)\r<br>           raise_range_error(max,i,msg,idx);\r<br>       }\r<br>\r<br>I pushed the change.\r<br>\r<br>Should the test for NDEBUG or STAN_NO_DEBUG be on the\r<br>body of check range as Marcus suggests?  That would be my\r<br>inclination because it should be sufficient\r<br>to make sure check_range is inlined away.  We just have\r<br>to be sure not to precompile check_range if we do it\r<br>this way!\r<br>\r<br>We can also turn off checks in the probability\r<br>functions the same way.  Some of those will be expensive\r<br>if we test that matrices are positive definite, etc.\r<br>\r<br>- Bob\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "8203NgJ1NXQJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-17T21:29:34Z",
+   "subject": "Re: [stan-dev] 25% of time spent in check_range?",
+   "parts": [
+    [
+     2,
+     "<div class=\"gmail_quote\">On Fri, Aug 17, 2012 at 5:12 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div><div>On 8/17/12 4:39 PM, Marcus Brubaker wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nHey,<br>\r\n<br>\r\nSo I&#39;m playing with a simple model in Stan and it was running a bit slower than I would have expected.  After a<br>\r\nprofiling run, it turned out that around 25% of the time was being spent in check_range().  I would have expected that<br>\r\nthese checks would have been disabled with -DNDEBUG at compile time (which turns off these checks in Eigen), but<br>\r\napparently not.  An easy fix is to wrap the body of check_range with an #ifndef NDEBUG block.<br>\r\n<br>\r\nAnyone have any thoughts?  For reference, this was with clang++ and -O3 on Linux.<br>\r\n</blockquote>\r\n<br></div></div>\r\nMy first thought is &quot;yikes&quot;.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Mine too!<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\nMy second thought is that we&#39;ve found g++ to<br>\r\nbe a bit faster.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I haven&#39;t tested with g++, as I lack the patience for it&#39;s compile time while working.<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n\r\n<br>\r\nMy third thought is that putting in flags is a good<br>\r\nidea that we should finally get around to doing!<br>\r\n<br>\r\nI think we should follow Eigen, which turns off range<br>\r\nchecking if either the flag NDEBUG or flag EIGEN_NO_DEBUG<br>\r\nis used (i.e., called with -DNDEBUG or -DEIGEN_NO_DEBUG).<br>\r\n<br>\r\nSo I&#39;d suggest STAN_NO_DEBUG and calling the error checking<br>\r\nunder the condition that !(STAN_NO_DEBUG || NDEBUG).<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>My reading of the Eigen docs suggests that they use EIGEN_NO_DEBUG on it&#39;s own and turn that on or off based on the status of NDEBUG.  Seems like a reasonable pattern as it allows turning debugging off or on in each library separately and simplifies the test conditions.<br>\r\n<br>I.E., we have something like<br><br>#ifdef NDEBUG<br>#  ifndef STAN_NO_DEBUG<br>#    define STAN_NO_DEBUG<br>#  endif<br>\r\n#endif<br><br>in a global header file and then in stan the blocks are just<br><br>#ifdef STAN_NO_DEBUG<br>...<br>#endif<br> \r\n<br></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\nWe&#39;d then want to be able to pass options through calls<br>\r\nto stanc.  That in turn means we can&#39;t precompile object<br>\r\nfiles for the relevant calls, at least if we turn things<br>\r\noff at a fairly low level.<br>\r\n<br>\r\nI&#39;m curious as to why it&#39;s so expensive.  The function<br>\r\nis inline, passes three size_t values and a const char*,<br>\r\nwith a body that&#39;s a simple if statement that&#39;s<br>\r\nalways false.  I wonder if it&#39;s somehow<br>\r\nopportunistically pre-allocating for the stringstream?<br>\r\nOr the size is causing it not to be inlined.<br>\r\nJust in case, I broke out a raise_range_error.<br>\r\n<br>\r\nSo it now looks like this:<br>\r\n<br>\r\n    void raise_range_error(size_t max,<br>\r\n                             size_t i,<br>\r\n                             const char* msg,<br>\r\n                             size_t idx) {<br>\r\n          std::stringstream s;<br>\r\n          s &lt;&lt; &quot;INDEX OPERATOR [] OUT OF BOUNDS&quot;<br>\r\n            &lt;&lt; &quot;; index=&quot; &lt;&lt; i<br>\r\n            &lt;&lt; &quot;; lower bound=1&quot;<br>\r\n            &lt;&lt; &quot;; upper bound=&quot; &lt;&lt; max<br>\r\n            &lt;&lt; &quot;; index position=&quot; &lt;&lt; idx<br>\r\n            &lt;&lt; &quot;; &quot; &lt;&lt; msg<br>\r\n            &lt;&lt; std::endl;<br>\r\n          throw std::out_of_range(s.str());<br>\r\n      }<br>\r\n<br>\r\n      inline<br>\r\n      void check_range(size_t max,<br>\r\n                       size_t i,<br>\r\n                       const char* msg,<br>\r\n                       size_t idx) {<br>\r\n        if (i &lt; 1 || i &gt; max)<br>\r\n          raise_range_error(max,i,msg,<u></u>idx);<br>\r\n      }<br>\r\n<br>\r\nI pushed the change.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I can test to see if this performs better.  In which case it was probably just clang++ ignoring the inline directive.  It may also be the case that a branch hint would help things.<br>\r\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\nShould the test for NDEBUG or STAN_NO_DEBUG be on the<br>\r\nbody of check range as Marcus suggests?  That would be my<br>\r\ninclination because it should be sufficient<br>\r\nto make sure check_range is inlined away.  We just have<br>\r\nto be sure not to precompile check_range if we do it<br>\r\nthis way!<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I&#39;d say in the body, as check_range is to be inlined anyway.  It may miss some cases (like if someone precompiles libstan.a without NDEBUG) but that seems like small fry.<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\">\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\nWe can also turn off checks in the probability<br>\r\nfunctions the same way.  Some of those will be expensive<br>\r\nif we test that matrices are positive definite, etc.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Those tests are more necessary in sampling though, as if they&#39;re violated the sampler needs to know about it.  I would hesitate to turn them off unless we&#39;re certain they&#39;re not necessary.<br>\r\n<br>Cheers,<br>Marcus<br></div></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "6CKU1K2ACWMJ",
+   "from": "Andrew Gelman",
+   "author": "da33143a8db60ce8",
+   "date": "2012-08-17T21:36:24Z",
+   "subject": "Re: [stan-dev] 25% of time spent in check_range?",
+   "parts": [
+    [
+     1,
+     "<div style=\"word-wrap:break-word\">Compile time is annoying but, in my experience, almost any model I fit, I end up fitting over and over again (which we can now do in Stan without recompiling).  So I think run time is much more important than compile time, even for simple models.<div>A</div></div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><div><br><div><br><div><div>On Aug 17, 2012, at 11:29 PM, Marcus Brubaker wrote:</div><blockquote type=\"cite\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><font color=\"#000000\"><br></font></blockquote><div><br>I haven&#39;t tested with g++, as I lack the patience for it&#39;s compile time while working.</div></div></blockquote></div></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "p0ZON58WuwEJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-17T22:22:28Z",
+   "subject": "Re: [stan-dev] 25% of time spent in check_range?",
+   "parts": [
+    [
+     2,
+     "<div class=\"gmail_quote\">On Fri, Aug 17, 2012 at 5:36 PM, Andrew Gelman <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">gel...@stat.columbia.edu</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div style=\"word-wrap:break-word\">Compile time is annoying but, in my experience, almost any model I fit, I end up fitting over and over again (which we can now do in Stan without recompiling).  So I think run time is much more important than compile time, even for simple models.<span><font color=\"#888888\"><div>\r\nA</div></font></span><div><div><br></div></div></div></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>Agreed for the standard use case.  That said, I&#39;m doing things which should ideally be unusual for most users.  For instance, I&#39;m tweaking the model repeatedly to find performance issues and better ways to write the model.  This tweaking and profiling is typically done on small subsets of data or toy examples before scaling up to the full dataset so the sampling runtime is relatively.  At that point the compile time tends to take precedence...<br>\r\n<br>Cheers,<br>Marcus<br><br><br></div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"></blockquote></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div style=\"word-wrap:break-word\"><div><div><div><br><div><div>On Aug 17, 2012, at 11:29 PM, Marcus Brubaker wrote:</div>\r\n<blockquote type=\"cite\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><font color=\"#000000\"><br></font></blockquote><div><br>I haven&#39;t tested with g++, as I lack the patience for it&#39;s compile time while working.</div>\r\n</div></blockquote></div></div></div></div></div>\r\n\r\n<p></p></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n\r\n-- <br>\r\n <br>\r\n <br>\r\n</blockquote></div><br>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "BaW8eDCq3bQJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-17T22:32:59Z",
+   "subject": "Re: [stan-dev] 25% of time spent in check_range?",
+   "parts": [
+    [
+     2,
+     " &gt; On Aug 17, 2012, at 11:29 PM, Marcus Brubaker wrote:\r<br> &gt;&gt; I haven&#39;t tested with g++, as I lack the patience for it&#39;s compile time while working.\r<br>\r<br>"
+    ],
+    [
+     2,
+     "On 8/17/12 5:36 PM, Andrew Gelman wrote:\r<br>&gt; Compile time is annoying but, in my experience, almost any model I fit, I end up fitting over and over again (which we\r<br>&gt; can now do in Stan without recompiling).  So I think run time is much more important than compile time, even for simple\r<br>&gt; models.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Wait until you have g++ configured to use -O3 (see\r<br>Jiqiang&#39;s latest directions for RStan on how to do\r<br>this).\r<br>\r<br>The run times are much faster, but compile time slows\r<br>to a crawl.\r<br>\r<br>So it&#39;s a tradeoff depending on what you want to do.\r<br>\r<br>If you have a big model and know it works, -O3 on g++ is\r<br>the way to go.  Otherwise, I&#39;ve just been using -O0.\r<br>\r<br>For something like 8 Schools, which is trivial, you won&#39;t\r<br>notice the slowdown in runtime, but you will notice the\r<br>speedup in compile time going from -O2 to -O0.\r<br>\r<br>At least one plus is that most of our syntax errors\r<br>are found in the stanc model translation phase.  Everything\r<br>stanc translates should at least compile in C++.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "2sT5FKTnW_IJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-17T22:37:28Z",
+   "subject": "Re: [stan-dev] 25% of time spent in check_range?",
+   "parts": [
+    [
+     1,
+     "\r<br>\r<br>On 8/17/12 6:22 PM, Marcus Brubaker wrote:\r<br>"
+    ],
+    [
+     2,
+     "&gt;\r<br>&gt;\r<br>&gt; On Fri, Aug 17, 2012 at 5:36 PM, Andrew Gelman &lt;<a href data-email-masked rel=\"nofollow\">gel...@stat.columbia.edu</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">gel...@stat.columbia.edu</a>&gt;&gt; wrote:\r<br>&gt;\r<br>&gt;     Compile time is annoying but, in my experience, almost any model I fit, I end up fitting over and over again (which\r<br>&gt;     we can now do in Stan without recompiling).  So I think run time is much more important than compile time, even for\r<br>&gt;     simple models.\r<br>&gt;     A\r<br>&gt;\r<br>&gt; Agreed for the standard use case.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "How much time you spend at a given setting is easy\r<br>to write down:\r<br>\r<br>    compile +  N * run\r<br>\r<br>where N is the number of times you run.\r<br>\r<br>The issue is you don&#39;t know how big N is until you see how\r<br>it works.\r<br>\r<br>With eight schools, compile time at -O2 is 5s and run time\r<br>is 0.01s or something like that.  You need to run a whole\r<br>lot of times to make up for that compile time.  -O0 might\r<br>compile in 2s and run in .1s.\r<br>"
+    ],
+    [
+     2,
+     "\r<br> &gt; That said, I&#39;m doing things which should ideally be unusual for most users.  For\r<br>&gt; instance, I&#39;m tweaking the model repeatedly to find performance issues and better ways to write the model.  This\r<br>&gt; tweaking and profiling is typically done on small subsets of data or toy examples before scaling up to the full dataset\r<br>&gt; so the sampling runtime is relatively.  At that point the compile time tends to take precedence...\r<br>\r<br>"
+    ],
+    [
+     1,
+     "How does that work?  The performance bottlenecks\r<br>change dramatically when you move to more optimization.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "12Ku4Ujn3mwJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-17T22:54:59Z",
+   "subject": "Re: [stan-dev] 25% of time spent in check_range?",
+   "parts": [
+    [
+     3,
+     "<div class=\"gmail_quote\">On Fri, Aug 17, 2012 at 6:37 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\n<br>\r\nOn 8/17/12 6:22 PM, Marcus Brubaker wrote:<div><br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\n<br>\r\nOn Fri, Aug 17, 2012 at 5:36 PM, Andrew Gelman &lt;<a href data-email-masked rel=\"nofollow\">gel...@stat.columbia.edu</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">gel...@stat.columbia.<u></u>edu</a>&gt;&gt; wrote:<br>\r\n\r\n<br>\r\n    Compile time is annoying but, in my experience, almost any model I fit, I end up fitting over and over again (which<br>\r\n    we can now do in Stan without recompiling).  So I think run time is much more important than compile time, even for<br>\r\n    simple models.<br>\r\n    A<br>\r\n<br>\r\nAgreed for the standard use case.<br>\r\n</blockquote>\r\n<br></div>\r\nHow much time you spend at a given setting is easy<br>\r\nto write down:<br>\r\n<br>\r\n   compile +  N * run<br>\r\n<br>\r\nwhere N is the number of times you run.<br>\r\n<br>\r\nThe issue is you don&#39;t know how big N is until you see how<br>\r\nit works.<br>\r\n<br>\r\nWith eight schools, compile time at -O2 is 5s and run time<br>\r\nis 0.01s or something like that.  You need to run a whole<br>\r\nlot of times to make up for that compile time.  -O0 might<br>\r\ncompile in 2s and run in .1s.<div><br>\r\n<br>\r\n&gt; That said, I&#39;m doing things which should ideally be unusual for most users.  For<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\ninstance, I&#39;m tweaking the model repeatedly to find performance issues and better ways to write the model.  This<br>\r\ntweaking and profiling is typically done on small subsets of data or toy examples before scaling up to the full dataset<br>\r\nso the sampling runtime is relatively.  At that point the compile time tends to take precedence...<br>\r\n</blockquote>\r\n<br></div>\r\nHow does that work?  The performance bottlenecks<br>\r\nchange dramatically when you move to more optimization.<span><font color=\"#888888\"><br></font></span></blockquote><div><br><br></div></div>"
+    ],
+    [
+     1,
+     "I always compile with -O3, but use clang++ instead of g++.  The bottlenecks change a little bit, but not much.  Most optimization of Stan models is more about reducing the number of variables that get instantiated than about compiler level optimization.<br>\r\n<br>For instance, I had a line that was:<br><br>x &lt;- x + a*exp(-lambda*dt);<br><br>where dt is a constant.<br><br>Changing it to <br><br>x &lt;- x + a*exp(lambda*ndt);<br><br>where ndt was precomputed to be the negative, reduced the overall cost by ~30% or so.<br>\r\n<br>Cheers,<br>Marcus<br>\r\n<br>\r\n"
+    ]
+   ]
+  }
+ ]
+}

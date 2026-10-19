@@ -1,0 +1,404 @@
+{
+ "thread": "etZXRSSZtXQ",
+ "subject": "Re: [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+ "messages_listed": 12,
+ "last_activity": "2016-08-23T10:40:14Z",
+ "messages": [
+  {
+   "id": "pebwnWdyAwAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-08-21T11:39:13Z",
+   "subject": "Re: [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     1,
+     "[off GitHub, in order to keep issues on topic]\r<br>\r<br>\r<br>&gt; &gt; With all that being said, I&#39;d like to talk through potentially adding a matrix var type, with values stored as a member double matrix and adjoints stored as a member double matrix, but whose values are allocated in our arena. As it stands, it seems like we&#39;re copying values and adjoints far too many times (think about a cov_exp_quad -&gt; cholesky_decompose -&gt; multiply -&gt; sum) and should be able to store one pointer to a matrix vari rather than n^2 pointers to varis.\r<br>\r<br>How far have you worked through this?  I&#39;ve tried many\r<br>times for just the reasons you mention.  But I&#39;d love to\r<br>get a fresh perspective.\r<br>\r<br>In the current approach, we have both the cost of the copies\r<br>and the cost of allocating containers on the C++ heap.  Both of\r<br>those cause unwanted, fine-grained memory contention.  What I\r<br>don&#39;t now is how much overhead that is compared to the actual\r<br>matrix operations.\r<br>\r<br>Have you worked through what the data type would look like\r<br>and how it&#39;d fit in with the rest of our autodiff?  I assume\r<br>you&#39;re talking about:\r<br>\r<br>  mvar\r<br>    mvari* mvi_;\r<br>\r<br>  mvari\r<br>    MatrixXd val_;\r<br>    MatrixXd adj_;\r<br>\r<br>Or did you really mean storing pointers (or references)\r<br>rather than values, as in:\r<br>\r<br>  mvari\r<br>    MatrixXd&amp; val_;\r<br>    MatrixXd&amp; adj_;\r<br>    void chain();\r<br>\r<br>The biggest issue I kept running into is how (or even whether)\r<br>to support indexing (e.g., a[i, j]).  To interface with the rest of\r<br>the language as it currently is, it&#39;d have to support:\r<br>\r<br>  matrix_var a(5, 5);\r<br>  var b = a(i, j);\r<br>\r<br>Specifically, how is the vari inside of var b handled?\r<br>\r<br>An alternative might be to disallow indexing on matrix_var \r<br>instances, which would limit both their construction and\r<br>their use, but might be enough to speed up the operations\r<br>you&#39;re worried about.  I haven&#39;t thought this through as much\r<br>as the previous plans.\r<br>\r<br>Then there&#39;s the issue of how the chain() method will work.  \r<br>The challenge is that you either need to store pointers to other\r<br>scalar vari or matrix mvari.\r<br>\r<br>There&#39;s also the issue of higher-order autodiff if we\r<br>ever want to get that going for real.\r<br>\r<br>Also, Ben&#39;s always been talking about how to store decompositions\r<br>for reuse, which is where a lot of inefficiency in naive matrix\r<br>use comes from in user programs.\r<br>\r<br>Anyway, I&#39;d love to hear some fresh ideas on how to handle this.\r<br>I can also ask around at the autodiff conference in a couple weeks\r<br>in Oxford.  I have a feeling I&#39;m going to mostly be sitting there\r<br>slack-jawed while all the calculus and applied math notation\r<br>rolls over my head.\r<br>\r<br>Whatever the answer to these questions is, it&#39;d be a massive\r<br>undertaking at both the language and math lib level---akin to\r<br>taking on using Nomad.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "oUbpvKWmAwAJ",
+   "from": "Rob Trangucci",
+   "author": "89abf8a3796a510b",
+   "date": "2016-08-22T03:36:35Z",
+   "subject": "Re: [stan-dev] Re: [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\">On Sun, Aug 21, 2016 at 7:38 AM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\">[off GitHub, in order to keep issues on topic]<br>\r\n<span><br>\r\n<br>\r\n&gt; &gt; With all that being said, I&#39;d like to talk through potentially adding a matrix var type, with values stored as a member double matrix and adjoints stored as a member double matrix, but whose values are allocated in our arena. As it stands, it seems like we&#39;re copying values and adjoints far too many times (think about a cov_exp_quad -&gt; cholesky_decompose -&gt; multiply -&gt; sum) and should be able to store one pointer to a matrix vari rather than n^2 pointers to varis.<br>\r\n<br>\r\n</span>How far have you worked through this?  I&#39;ve tried many<br>\r\ntimes for just the reasons you mention.  But I&#39;d love to<br>\r\nget a fresh perspective.<br>\r\n<br>\r\nIn the current approach, we have both the cost of the copies<br>\r\nand the cost of allocating containers on the C++ heap.  Both of<br>\r\nthose cause unwanted, fine-grained memory contention.  What I<br>\r\ndon&#39;t now is how much overhead that is compared to the actual<br>\r\nmatrix operations.<br>\r\n<br></blockquote><div><br></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div><div>My main worry is actually memory consumption rather than computational cost, because for most of the models that I have in mind, a cubic operation (matrix-matrix multiply, or decomposition) would dominate the computational cost. However, for something like a matrix-vector product, the copying will be on the same order as the function evaluation and gradient calc. </div></div><div><br></div><div>multiply(Matrix&lt;var, -1, -1&gt; A, Matrix&lt;var, -1, -1&gt; B) has to allocate arena memory for the double values of A and B in order to compute Matrix&lt;double, -1, -1&gt; AB = A * B, and then in chain() we have to make copies of the adjoint matrix of AB, and A and B. It seems like we&#39;re allocating more memory than we need to here. I think we can cut down on one of these allocations by allowing Eigen to reuse and resize memory for an adjoint calculation. But as we start to chain matrix operations together, we&#39;re going to have to make seemingly unnecessary copies of matrices.</div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div><br></div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\">\r\nHave you worked through what the data type would look like<br>\r\nand how it&#39;d fit in with the rest of our autodiff?  I assume<br>\r\nyou&#39;re talking about:<br>\r\n<br>\r\n  mvar<br>\r\n    mvari* mvi_;<br>\r\n<br>\r\n  mvari<br>\r\n    MatrixXd val_;<br>\r\n    MatrixXd adj_;<br></blockquote><div><br></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div>Yes, this is exactly what I had in mind.</div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\">\r\n<br>\r\nOr did you really mean storing pointers (or references)<br>\r\nrather than values, as in:<br>\r\n<br>\r\n  mvari<br>\r\n    MatrixXd&amp; val_;<br>\r\n    MatrixXd&amp; adj_;<br>\r\n    void chain();<br>\r\n<br>\r\nThe biggest issue I kept running into is how (or even whether)<br>\r\nto support indexing (e.g., a[i, j]).  To interface with the rest of<br>\r\nthe language as it currently is, it&#39;d have to support:<br>\r\n<br>\r\n  matrix_var a(5, 5);<br>\r\n  var b = a(i, j);<br>\r\n<br>\r\nSpecifically, how is the vari inside of var b handled?</blockquote><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\">\r\n<br>\r\nAn alternative might be to disallow indexing on matrix_var<br>\r\ninstances, which would limit both their construction and<br>\r\ntheir use, but might be enough to speed up the operations<br>\r\nyou&#39;re worried about.  I haven&#39;t thought this through as much<br>\r\nas the previous plans.<br></blockquote><div><br></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div>Yes, this is where I was stumbling yesterday. I don&#39;t have a good answer yet. I&#39;m tempted to say that we don&#39;t allow indexing, but this should be a last-resort. Is there a way to template matrix vars in such a way as to specialize for a class that allows for indexing and one that doesn&#39;t? Then you could template the matrix functions to handle inputs of indexable matrix vars and to handle inputs of non-indexable matrix vars. The class and chain method for the former would look similar to our matrix var functions now, but the class and chain methods for the latter would use the MatrixXd members of the matrix vars passed in as arguments.<br></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\">\r\n<br>\r\nThen there&#39;s the issue of how the chain() method will work.<br>\r\nThe challenge is that you either need to store pointers to other<br>\r\nscalar vari or matrix mvari.<br></blockquote><div><br></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div>The idea would be to store pointers to the mvari.</div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\">\r\n<br>\r\nThere&#39;s also the issue of higher-order autodiff if we<br>\r\never want to get that going for real.<br></blockquote><div><br></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div>As long as we&#39;ve added the properly templated versions of all the functions, </div><div>we should be fine, no? </div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\">\r\n<br>\r\nAlso, Ben&#39;s always been talking about how to store decompositions<br>\r\nfor reuse, which is where a lot of inefficiency in naive matrix<br>\r\nuse comes from in user programs.<br>\r\n<br>\r\nAnyway, I&#39;d love to hear some fresh ideas on how to handle this.<br>\r\nI can also ask around at the autodiff conference in a couple weeks<br>\r\nin Oxford.  I have a feeling I&#39;m going to mostly be sitting there<br>\r\nslack-jawed while all the calculus and applied math notation<br>\r\nrolls over my head.<br>\r\n<br>\r\nWhatever the answer to these questions is, it&#39;d be a massive<br>\r\nundertaking at both the language and math lib level---akin to<br>\r\ntaking on using Nomad.<br></blockquote><div><br></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div>No doubt, but I think we&#39;re currently stuck with either slower matrix computation or faster but memory inefficient matrix computation. Worth chatting about on Tuesday at the dev meeting?</div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\">\r\n<span><font color=\"#888888\"><br>\r\n- Bob<br>\r\n<br>\r\n--<br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+unsubscribe@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/d/optout\" rel=\"noreferrer nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792471516740000&amp;usg=AOvVaw3mcNzq9yxPyU83lYP8HGBE\">https://groups.google.com/d/optout</a>.<br>\r\n</font></span></blockquote></div><br></div></div></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "AlNH1xuqAwAJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2016-08-22T04:40:01Z",
+   "subject": "Re: [stan-dev] Re: [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\">On Sunday, August 21, 2016 at 11:36:35 PM UTC-4, robert.trangucci wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">multiply(Matrix&lt;var,\n -1, -1&gt; A, Matrix&lt;var, -1, -1&gt; B) has to allocate arena memory\n for the double values of A and B in order to compute Matrix&lt;double, \n-1, -1&gt; AB = A * B, and then in chain() we have to make copies of the\n adjoint matrix of AB, and A and B. It seems like we&#39;re allocating more \nmemory than we need to here. I think we can cut down on one of these \nallocations by allowing Eigen to reuse and resize memory for an adjoint \ncalculation. But as we start to chain matrix operations together, we&#39;re \ngoing to have to make seemingly unnecessary copies of matrices.</div></blockquote><br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">Perhaps some of this could be prevented by utilizing Eigen Maps, if we could ever get the math library to template on Eigen::MatrixBase rather than Eigen::Matrix.<br><br>Ben<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "-cmMJQeuAwAJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2016-08-22T05:51:50Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     1,
+     "<div style=\"word-wrap:break-word\">I think the only resolution would be slick template expressions, no?</div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><div><br><div><div>On Aug 21, 2016, at 8:36 PM, Rob Trangucci &lt;<a href data-email-masked rel=\"nofollow\">robert.t...@gmail.com</a>&gt; wrote:</div><br><blockquote type=\"cite\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">Yes, this is where I was stumbling yesterday. I don&#39;t have a good answer yet. I&#39;m tempted to say that we don&#39;t allow indexing, but this should be a last-resort. Is there a way to template matrix vars in such a way as to specialize for a class that allows for indexing and one that doesn&#39;t? Then you could template the matrix functions to handle inputs of indexable matrix vars and to handle inputs of non-indexable matrix vars. The class and chain method for the former would look similar to our matrix var functions now, but the class and chain methods for the latter would use the MatrixXd members of the matrix vars passed in as arguments.</span></blockquote></div><br></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "dQDRavPCAwAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-08-22T12:15:15Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     1,
+     "\r<br>&gt; On Aug 22, 2016, at 5:36 AM, Rob Trangucci &lt;<a href data-email-masked rel=\"nofollow\">robert.t...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; \r<br>&gt; \r<br>&gt; ...\r<br>"
+    ],
+    [
+     2,
+     "&gt; My main worry is actually memory consumption rather than computational cost, because for most of the models that I have in mind, a cubic operation (matrix-matrix multiply, or decomposition) would dominate the computational cost. However, for something like a matrix-vector product, the copying will be on the same order as the function evaluation and gradient calc. \r<br>\r<br>"
+    ],
+    [
+     1,
+     "Same order, but much lower constant given the overhead\r<br>of autodiff.  \r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; multiply(Matrix&lt;var, -1, -1&gt; A, Matrix&lt;var, -1, -1&gt; B) has to allocate arena memory for the double values of A and B in order to compute Matrix&lt;double, -1, -1&gt; AB = A * B,\r<br>\r<br>"
+    ],
+    [
+     1,
+     "We shouldn&#39;t allocate a local Matrix&lt;double, ...&gt; in the arena.\r<br>We should just use Eigen so the memory doesn&#39;t persist beyond\r<br>the local scope.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; and then in chain() we have to make copies of the adjoint matrix of AB, and A and B. It seems like we&#39;re allocating more memory than we need to here.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Absolutely, but the dynamic overhead for the operations should\r<br>be freed as soon as the result&#39;s calculated.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I think we can cut down on one of these allocations by allowing Eigen to reuse and resize memory for an adjoint calculation. But as we start to chain matrix operations together, we&#39;re going to have to make seemingly unnecessary copies of matrices.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>\r<br>\r<br>&gt; Have you worked through what the data type would look like\r<br>"
+    ],
+    [
+     1,
+     "&gt; and how it&#39;d fit in with the rest of our autodiff? ...\r<br>\r<br>Above paragraph from me, below from Rob---for some reason I&#39;m not\r<br>getting nesting in his responses.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Yes, this is where I was stumbling yesterday. I don&#39;t have a good answer yet. I&#39;m tempted to say that we don&#39;t allow indexing, but this should be a last-resort. Is there a way to template matrix vars in such a way as to specialize for a class that allows for indexing and one that doesn&#39;t?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Not that I can figure out.  The issue is that templating is resolved\r<br>statically (at compile time), but we don&#39;t know what kind of variable\r<br>we&#39;ll run into on the stack.  And we have to keep things in stack order\r<br>to pass gradients.  So the only way I know how to do this is with a\r<br>virtual function, which is much more epensive.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Then you could template the matrix functions to handle inputs of indexable matrix vars and to handle inputs of non-indexable matrix vars. The class and chain method for the former would look similar to our matrix var functions now, but the class and chain methods for the latter would use the MatrixXd members of the matrix vars passed in as arguments.\r<br>&gt;  \r<br>&gt; \r<br>\r<br>"
+    ],
+    [
+     1,
+     "(from bob)\r<br>"
+    ],
+    [
+     2,
+     "&gt; Then there&#39;s the issue of how the chain() method will work.\r<br>&gt; The challenge is that you either need to store pointers to other\r<br>&gt; scalar vari or matrix mvari.\r<br>&gt; \r<br>\r<br>"
+    ],
+    [
+     1,
+     "(from rob)\r<br>"
+    ],
+    [
+     2,
+     "The idea would be to store pointers to the mvari.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "And then you&#39;d need the indexes into mvari, too.  \r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; There&#39;s also the issue of higher-order autodiff if we\r<br>&gt; ever want to get that going for real.\r<br>&gt; \r<br>&gt; As long as we&#39;ve added the properly templated versions of all the functions, \r<br>&gt; we should be fine, no?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "So you&#39;d have \r<br>\r<br>template &lt;T&gt;\r<br>mvari\r<br>  Matrix&lt;T, -1, -1&gt; val_;\r<br>  Matrix&lt;T, -1, -1&gt; adj_;\r<br>\r<br>?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Also, Ben&#39;s always been talking about how to store decompositions\r<br>&gt; for reuse, which is where a lot of inefficiency in naive matrix\r<br>&gt; use comes from in user programs.\r<br>&gt; \r<br>&gt; Anyway, I&#39;d love to hear some fresh ideas on how to handle this.\r<br>&gt; I can also ask around at the autodiff conference in a couple weeks\r<br>&gt; in Oxford.  I have a feeling I&#39;m going to mostly be sitting there\r<br>&gt; slack-jawed while all the calculus and applied math notation\r<br>&gt; rolls over my head.\r<br>&gt; \r<br>&gt; Whatever the answer to these questions is, it&#39;d be a massive\r<br>&gt; undertaking at both the language and math lib level---akin to\r<br>&gt; taking on using Nomad.\r<br>&gt; \r<br>&gt; No doubt, but I think we&#39;re currently stuck with either slower matrix computation or faster but memory inefficient matrix computation. Worth chatting about on Tuesday at the dev meeting?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "If you have anything else to say about it, sure.  I&#39;d be gung-ho\r<br>to do this if we had a design prototype that worked and at least\r<br>a person-year&#39;s worth of programmer time.\r<br>\r<br>- Bob"
+    ]
+   ]
+  },
+  {
+   "id": "CoJXjanMAwAJ",
+   "from": "Rob Trangucci",
+   "author": "89abf8a3796a510b",
+   "date": "2016-08-22T15:13:13Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\">On Mon, Aug 22, 2016 at 8:14 AM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><br>\r\n&gt; On Aug 22, 2016, at 5:36 AM, Rob Trangucci &lt;<a href data-email-masked rel=\"nofollow\">robert.t...@gmail.com</a>&gt; wrote:<br>\r\n&gt;<br>\r\n&gt;<br>\r\n&gt;<br>\r\n&gt; ...<br>\r\n<span>&gt; My main worry is actually memory consumption rather than computational cost, because for most of the models that I have in mind, a cubic operation (matrix-matrix multiply, or decomposition) would dominate the computational cost. However, for something like a matrix-vector product, the copying will be on the same order as the function evaluation and gradient calc.<br>\r\n<br>\r\n</span>Same order, but much lower constant given the overhead<br>\r\nof autodiff.<br>\r\n<span><br>\r\n&gt; multiply(Matrix&lt;var, -1, -1&gt; A, Matrix&lt;var, -1, -1&gt; B) has to allocate arena memory for the double values of A and B in order to compute Matrix&lt;double, -1, -1&gt; AB = A * B,<br>\r\n<br>\r\n</span>We shouldn&#39;t allocate a local Matrix&lt;double, ...&gt; in the arena.<br>\r\nWe should just use Eigen so the memory doesn&#39;t persist beyond<br>\r\nthe local scope.<br></blockquote><div><br></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div>We need the doubles for A and B again in chain. I can run some benchmarks to see how much of a speed hit (if any) we get from pulling the doubles out into local variables.</div></div></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<span><br>\r\n&gt; and then in chain() we have to make copies of the adjoint matrix of AB, and A and B. It seems like we&#39;re allocating more memory than we need to here.<br>\r\n<br>\r\n</span>Absolutely, but the dynamic overhead for the operations should<br>\r\nbe freed as soon as the result&#39;s calculated.<br>\r\n<span><br>\r\n&gt; I think we can cut down on one of these allocations by allowing Eigen to reuse and resize memory for an adjoint calculation. But as we start to chain matrix operations together, we&#39;re going to have to make seemingly unnecessary copies of matrices.<br>\r\n<br>\r\n</span>Right.<br>\r\n<span><br>\r\n<br>\r\n<br>\r\n&gt; Have you worked through what the data type would look like<br>\r\n</span>&gt; and how it&#39;d fit in with the rest of our autodiff? ...<br>\r\n<br>\r\nAbove paragraph from me, below from Rob---for some reason I&#39;m not<br>\r\ngetting nesting in his responses.<br>\r\n<span><br>\r\n&gt; Yes, this is where I was stumbling yesterday. I don&#39;t have a good answer yet. I&#39;m tempted to say that we don&#39;t allow indexing, but this should be a last-resort. Is there a way to template matrix vars in such a way as to specialize for a class that allows for indexing and one that doesn&#39;t?<br>\r\n<br>\r\n</span>Not that I can figure out.  The issue is that templating is resolved<br>\r\nstatically (at compile time), but we don&#39;t know what kind of variable<br>\r\nwe&#39;ll run into on the stack.  And we have to keep things in stack order<br>\r\nto pass gradients.  So the only way I know how to do this is with a<br>\r\nvirtual function, which is much more epensive.<br>\r\n<span><br>\r\n&gt; Then you could template the matrix functions to handle inputs of indexable matrix vars and to handle inputs of non-indexable matrix vars. The class and chain method for the former would look similar to our matrix var functions now, but the class and chain methods for the latter would use the MatrixXd members of the matrix vars passed in as arguments.<br>\r\n&gt;<br>\r\n&gt;<br>\r\n<br>\r\n</span>(from bob)<br>\r\n<span>&gt; Then there&#39;s the issue of how the chain() method will work.<br>\r\n&gt; The challenge is that you either need to store pointers to other<br>\r\n&gt; scalar vari or matrix mvari.<br>\r\n&gt;<br>\r\n<br>\r\n</span>(from rob)<br>\r\n<span>The idea would be to store pointers to the mvari.<br>\r\n<br>\r\n</span>And then you&#39;d need the indexes into mvari, too.<br>\r\n<span><br>\r\n&gt; There&#39;s also the issue of higher-order autodiff if we<br>\r\n&gt; ever want to get that going for real.<br>\r\n&gt;<br>\r\n&gt; As long as we&#39;ve added the properly templated versions of all the functions,<br>\r\n&gt; we should be fine, no?<br>\r\n<br>\r\n</span>So you&#39;d have<br>\r\n<br>\r\ntemplate &lt;T&gt;<br>\r\nmvari<br>\r\n  Matrix&lt;T, -1, -1&gt; val_;<br>\r\n  Matrix&lt;T, -1, -1&gt; adj_;<br>\r\n<br>\r\n?<br>\r\n<span><br>\r\n&gt; Also, Ben&#39;s always been talking about how to store decompositions<br>\r\n&gt; for reuse, which is where a lot of inefficiency in naive matrix<br>\r\n&gt; use comes from in user programs.<br>\r\n&gt;<br>\r\n&gt; Anyway, I&#39;d love to hear some fresh ideas on how to handle this.<br>\r\n&gt; I can also ask around at the autodiff conference in a couple weeks<br>\r\n&gt; in Oxford.  I have a feeling I&#39;m going to mostly be sitting there<br>\r\n&gt; slack-jawed while all the calculus and applied math notation<br>\r\n&gt; rolls over my head.<br>\r\n&gt;<br>\r\n&gt; Whatever the answer to these questions is, it&#39;d be a massive<br>\r\n&gt; undertaking at both the language and math lib level---akin to<br>\r\n&gt; taking on using Nomad.<br>\r\n&gt;<br>\r\n&gt; No doubt, but I think we&#39;re currently stuck with either slower matrix computation or faster but memory inefficient matrix computation. Worth chatting about on Tuesday at the dev meeting?<br>\r\n<br>\r\n</span>If you have anything else to say about it, sure.  I&#39;d be gung-ho<br>\r\nto do this if we had a design prototype that worked and at least<br>\r\na person-year&#39;s worth of programmer time.<br>\r\n<div><div><br></div></div></blockquote><div><br></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div>I can&#39;t come up with an elegant way of storing adjoints and values as matrices. We&#39;re always going to have complications when interfacing with the scalar vars. </div><div><br></div><div>Here&#39;s another idea. What if an N by M matrix_var contains a pointer to N*M block_varis whose vals and adjoints are laid out contiguously in the arena. The matrix_var also stores pointers to the starting locations of the vals and adjoints. That way, when the var operator()(int i, int j) is defined for the matrix_var, the operator creates a var, whose vi_ is a block_vari, whose val_ and adj_ members map to their correct locations in the block allocated val and block allocated adjoint.</div></div></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\"><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n- Bob<br>\r\n<br>\r\n--<br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+unsubscribe@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/d/optout\" rel=\"noreferrer nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792471516747000&amp;usg=AOvVaw0Oplnl7Rpe_fkg6lV63ug_\">https://groups.google.com/d/optout</a>.<br>\r\n</div></div></blockquote></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "d5aqbpjNAwAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-08-22T15:30:19Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     2,
+     "\r<br>&gt; On Aug 22, 2016, at 5:12 PM, Rob Trangucci &lt;<a href data-email-masked rel=\"nofollow\">robert.t...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; \r<br>&gt; On Mon, Aug 22, 2016 at 8:14 AM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; &gt; On Aug 22, 2016, at 5:36 AM, Rob Trangucci &lt;<a href data-email-masked rel=\"nofollow\">robert.t...@gmail.com</a>&gt; wrote:\r<br>&gt; &gt;\r<br>&gt; &gt;\r<br>&gt; &gt;\r<br>&gt; &gt; ...\r<br>&gt; &gt; My main worry is actually memory consumption rather than computational cost, because for most of the models that I have in mind, a cubic operation (matrix-matrix multiply, or decomposition) would dominate the computational cost. However, for something like a matrix-vector product, the copying will be on the same order as the function evaluation and gradient calc.\r<br>&gt; \r<br>&gt; Same order, but much lower constant given the overhead\r<br>&gt; of autodiff.\r<br>&gt; \r<br>&gt; &gt; multiply(Matrix&lt;var, -1, -1&gt; A, Matrix&lt;var, -1, -1&gt; B) has to allocate arena memory for the double values of A and B in order to compute Matrix&lt;double, -1, -1&gt; AB = A * B,\r<br>"
+    ],
+    [
+     1,
+     "&gt; ...\r<br>"
+    ],
+    [
+     2,
+     "&gt; We need the doubles for A and B again in chain.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Then I don&#39;t see how we can avoid saving them.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I can run some benchmarks to see how much of a speed hit (if any) we get from pulling the doubles out into local variables.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "You mean recomputing them?  That would also save memory\r<br>\r<br>...\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I can&#39;t come up with an elegant way of storing adjoints and values as matrices. We&#39;re always going to have complications when interfacing with the scalar vars. \r<br>&gt; \r<br>&gt; Here&#39;s another idea. What if an N by M matrix_var contains a pointer to N*M block_varis whose vals and adjoints are laid out contiguously in the arena. The matrix_var also stores pointers to the starting locations of the vals and adjoints. That way, when the var operator()(int i, int j) is defined for the matrix_var, the operator creates a var, whose vi_ is a block_vari, whose val_ and adj_ members map to their correct locations in the block allocated val and block allocated adjoint.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s an interesting proposal.\r<br>\r<br>We can&#39;t just have block_vari extend vari, because vari allocates\r<br>the storage directly for the adjoint:\r<br>\r<br>  class vari {\r<br>    const double val_;\r<br>    double adj_;\r<br>    ...\r<br>  };\r<br>\r<br>whereas with this strategy we&#39;d need a reference to the value and\r<br>adjoint.  Then I don&#39;t see how we can avoid paying the virtual\r<br>function cost with two different base classes for vari. \r<br>\r<br>I recently eliminated the chainable class that we used to have as\r<br>a base class for vari because it wasn&#39;t doing anything.  But I\r<br>don&#39;t think that would&#39;ve helped avoid the virtual function call or\r<br>the lack of ability to resolve the required class statically.\r<br>\r<br>- Bob\r<br>\r<br>P.S.  I think the problem&#39;s in my mailer&#39;s interactions because your\r<br>mail scans OK.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "cICCmx_SAwAJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2016-08-22T16:53:17Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     1,
+     "<div style=\"word-wrap:break-word\"><div>Wouldn’t this just take the flavor of an Eigen map,</div><div>which I believe is a template expression?  In other</div><div>words, provide a wrapper to the underlying matrix</div><div>vari that is addressable by index to return a scalar</div><div>vari?</div></div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><br><div><div>On Aug 22, 2016, at 8:29 AM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:</div><br><blockquote type=\"cite\"><blockquote type=\"cite\" style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\">I can&#39;t come up with an elegant way of storing adjoints and values as matrices. We&#39;re always going to have complications when interfacing with the scalar vars.<span> </span><br><br>Here&#39;s another idea. What if an N by M matrix_var contains a pointer to N*M block_varis whose vals and adjoints are laid out contiguously in the arena. The matrix_var also stores pointers to the starting locations of the vals and adjoints. That way, when the var operator()(int i, int j) is defined for the matrix_var, the operator creates a var, whose vi_ is a block_vari, whose val_ and adj_ members map to their correct locations in the block allocated val and block allocated adjoint.<br></blockquote><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">That&#39;s an interesting proposal.</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">We can&#39;t just have block_vari extend vari, because vari allocates</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">the storage directly for the adjoint:</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\"> class vari {</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">   const double val_;</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">   double adj_;</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">   ...</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\"> };</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">whereas with this strategy we&#39;d need a reference to the value and</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">adjoint.  Then I don&#39;t see how we can avoid paying the virtual</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">function cost with two different base classes for vari.<span> </span></span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">I recently eliminated the chainable class that we used to have as</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">a base class for vari because it wasn&#39;t doing anything.  But I</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">don&#39;t think that would&#39;ve helped avoid the virtual function call or</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">the lack of ability to resolve the required class statically.</span></blockquote></div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "V9rzYcDTAwAJ",
+   "from": "Rob Trangucci",
+   "author": "89abf8a3796a510b",
+   "date": "2016-08-22T17:23:07Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Right, but that new scalar vari has an adjoint and a value that are pointers to a location in a double array of adjoints and a location in a double array of values that were allocated by the matrix var. So we&#39;d need a way to create a base class that both vari and &quot;block vari&quot; can inherit from which would return adj_ and val_ differently. I&#39;m wondering if you could use CRTP with an adj() and val() functions defined for the base class to return the derived implemenations of adj() and val() which would return adj_ and val_ in current vari scheme and adj_* and val_* in the block_vari scheme.<div><br></div><div>To Bob&#39;s questions:</div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><br></div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\"><span style=\"font-size:13px\">&gt; We need the doubles for A and B again in chain.</span><span style=\"font-size:13px\"><br></span><span style=\"font-size:13px\">Then I don&#39;t see how we can avoid saving them.</span><span style=\"font-size:13px\"><br></span><span style=\"font-size:13px\">&gt; I can run some benchmarks to see how much of a speed hit (if any) we get from pulling the doubles out into local variables.</span><span style=\"font-size:13px\"><br></span><span style=\"font-size:13px\">You mean recomputing them?  That would also save memory</span></blockquote><div><br></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div> Yes, I mean that rather than store the doubles for A and Bin multiply(Matrix&lt;var, -1, -1&gt; A, Matrix&lt;var, -1, -1&gt; B) in the arena, we could instead create local Eigen matrices on construction to compute A_local * B_local, and then on chain, do the same in order to compute the adjoint for A and the adjoint for B. I&#39;ll do the comparisons and get back to everyone.</div><div class=\"gmail_extra\"><br clear=\"all\"><div><div data-smartmail=\"gmail_signature\"><br>Rob</div></div>\r\n<br><div class=\"gmail_quote\"></div></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\">On Mon, Aug 22, 2016 at 12:53 PM, Michael Betancourt <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">betan...@gmail.com</a>&gt;</span> wrote:<br></div></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\"><div style=\"word-wrap:break-word\"><div>Wouldn’t this just take the flavor of an Eigen map,</div><div>which I believe is a template expression?  In other</div><div>words, provide a wrapper to the underlying matrix</div><div>vari that is addressable by index to return a scalar</div><div>vari?</div><span><br><div><div>On Aug 22, 2016, at 8:29 AM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:</div><br><blockquote type=\"cite\"><blockquote type=\"cite\" style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\">I can&#39;t come up with an elegant way of storing adjoints and values as matrices. We&#39;re always going to have complications when interfacing with the scalar vars.<span> </span><br><br>Here&#39;s another idea. What if an N by M matrix_var contains a pointer to N*M block_varis whose vals and adjoints are laid out contiguously in the arena. The matrix_var also stores pointers to the starting locations of the vals and adjoints. That way, when the var operator()(int i, int j) is defined for the matrix_var, the operator creates a var, whose vi_ is a block_vari, whose val_ and adj_ members map to their correct locations in the block allocated val and block allocated adjoint.<br></blockquote><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">That&#39;s an interesting proposal.</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">We can&#39;t just have block_vari extend vari, because vari allocates</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">the storage directly for the adjoint:</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\"> class vari {</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">   const double val_;</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">   double adj_;</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">   ...</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\"> };</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">whereas with this strategy we&#39;d need a reference to the value and</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">adjoint.  Then I don&#39;t see how we can avoid paying the virtual</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">function cost with two different base classes for vari.<span> </span></span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">I recently eliminated the chainable class that we used to have as</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">a base class for vari because it wasn&#39;t doing anything.  But I</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">don&#39;t think that would&#39;ve helped avoid the virtual function call or</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">the lack of ability to resolve the required class statically.</span></blockquote></div><br></span></div></blockquote></div></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\"><div><div>\r\n\r\n<p></p>\r\n\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+unsubscribe@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792471516761000&amp;usg=AOvVaw2vUAZV-krQKFcvxRSXyCrl\">https://groups.google.com/d/optout</a>.<br>\r\n</div></div></blockquote></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "cNo4GjvVAwAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-08-22T17:50:14Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     1,
+     "No, you can&#39;t use the CRTP because that needs to be resolved\r<br>statically.  It&#39;s not like regular OO programming with a base\r<br>class.  So, for example, you can&#39;t make a container like a std::vector\r<br>to hold different extensions of a CRTP base class---the specific\r<br>extension needs to be completely resolved statically.  This is the real\r<br>problem I keep running into every time I tried to think about doing this\r<br>in the past.  And then if you go to virtual functions, everything gets\r<br>very expensive (we could test that presupposition).\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "cf-7au70AwAJ",
+   "from": "Rob Trangucci",
+   "author": "89abf8a3796a510b",
+   "date": "2016-08-23T03:31:08Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">We could have one var stack that holds vars that point to vanilla varis and another var stack that doesn&#39;t get chained with matrix vars that point to matrix varis (this is pretty much how matrix varis work today). I do see the encapsulation problem though. Even if we had a VanillaVari and a MatrixVari that derived from a BaseVari class, the math functions would need to be written for BaseVari pointers, and then I&#39;m not sure how you could interface with them from the language. I&#39;ve attached some code for VanillaVari and MatrixVari, but I&#39;m stumped now. At least I know how CRTP works now, so all is not lost.<br><div class=\"gmail_extra\"><br clear=\"all\"><div><div data-smartmail=\"gmail_signature\"><br>Rob</div></div>\r\n<br><div class=\"gmail_quote\"></div></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\">On Mon, Aug 22, 2016 at 1:49 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br></div></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">No, you can&#39;t use the CRTP because that needs to be resolved<br>\r\nstatically.  It&#39;s not like regular OO programming with a base<br>\r\nclass.  So, for example, you can&#39;t make a container like a std::vector<br>\r\nto hold different extensions of a CRTP base class---the specific<br>\r\nextension needs to be completely resolved statically.  This is the real<br>\r\nproblem I keep running into every time I tried to think about doing this<br>\r\nin the past.  And then if you go to virtual functions, everything gets<br>\r\nvery expensive (we could test that presupposition).<br>\r\n</blockquote></div></div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n--<br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+unsubscribe@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/d/optout\" rel=\"noreferrer nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792471516763000&amp;usg=AOvVaw12-9B3NyuS__XCeYVXI34i\">https://groups.google.com/d/optout</a>.<br>\r\n</div></div></blockquote></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "iGxQu1gMBAAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-08-23T10:40:14Z",
+   "subject": "Re: [stan-dev] [stan-dev/math] Specialized gradients for cov_exp_quad (#353)",
+   "parts": [
+    [
+     2,
+     "\r<br>&gt; On Aug 23, 2016, at 5:30 AM, Rob Trangucci &lt;<a href data-email-masked rel=\"nofollow\">robert.t...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; We could have one var stack that holds vars that point to vanilla varis and another var stack that doesn&#39;t get chained with matrix vars that point to matrix varis (this is pretty much how matrix varis work today).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I get that part, but how do you do indexing of a matrix?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I do see the encapsulation problem though. Even if we had a VanillaVari and a MatrixVari that derived from a BaseVari class, the math functions would need to be written for BaseVari pointers, and then I&#39;m not sure how you could interface with them from the language.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That would be OK---it&#39;d be the usual complex CRTP because\r<br>the function signatures being called will be resolvable at\r<br>compile time.\r<br>\r<br>The problem is how we deal with the chaining.  I&#39;m not saying it&#39;s\r<br>impossible, just that I have never figured out how to do it.  At\r<br>some point, all my work always devolves into not knowing the CRTP\r<br>instance statically, so having to revert to virtual function calls\r<br>in the deepested nested calls.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I&#39;ve attached some code for VanillaVari and MatrixVari, but I&#39;m stumped now. At least I know how CRTP works now, so all is not lost.\r<br>\r<br>"
+    ],
+    [
+     1,
+     ":-)  That&#39;s a tough pattern and it doesn&#39;t buy you a whole\r<br>lot, becuase you can&#39;t use it in the usual OO way of having\r<br>containers of the base type. \r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  }
+ ]
+}

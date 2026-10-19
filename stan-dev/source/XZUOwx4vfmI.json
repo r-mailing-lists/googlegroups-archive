@@ -1,0 +1,154 @@
+{
+ "thread": "XZUOwx4vfmI",
+ "subject": "stan::io::reader/writer Refactor Pattern",
+ "messages_listed": 2,
+ "last_activity": "2015-04-03T15:50:09Z",
+ "messages": [
+  {
+   "id": "yOX86Rt_04cJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2015-04-03T15:15:14Z",
+   "subject": "stan::io::reader/writer Refactor Pattern",
+   "parts": [
+    [
+     1,
+     "Right now the model has to do lots of validation,\r<br>making parameter manipulation a bit awkward.  For\r<br>example, in model::transform_inits the model has\r<br>to construct an io::writer with internal storage for\r<br>unconstrained parameters, then one by one check\r<br>that a variable exists in the var_context, grab\r<br>it, validate its dimensions, and then finally\r<br>map it to the unconstrained scale and append the\r<br>unconstrained values into the io::writer’s internal\r<br>storage before copying into the model storage:\r<br>\r<br>void model::transform_inits(…) {\r<br>\r<br>  stan::io::writer&lt;double&gt; writer__(params_r__,params_i__);\r<br>  size_t pos__;\r<br>  std::vector&lt;double&gt; vals_r__;\r<br>  …\r<br>\r<br>  if (!(context__.contains_r(&quot;mu1&quot;)))\r<br>    throw std::runtime_error(&quot;variable mu1 missing&quot;);\r<br>  vals_r__ = context__.vals_r(&quot;mu1&quot;);\r<br>  pos__ = 0U;\r<br>  context__.validate_dims(&quot;initialization&quot;, &quot;mu1&quot;, &quot;double&quot;, context__.to_vec());\r<br>  double mu1(0);\r<br>  mu1 = vals_r__[pos__++];\r<br>  try {\r<br>    writer__.scalar_lb_unconstrain(0, mu1);\r<br>  } catch (const std::exception&amp; e) { \r<br>    throw std::runtime_error(std::string(&quot;Error transforming variable mu1: &quot;) + e.what());\r<br>  }\r<br>  …\r<br>  params_r__ = writer__.data_r();\r<br>}\r<br>\r<br>using the var_context methods\r<br>\r<br>bool var_context::contains_r(const std::string&amp; param_name);\r<br>std::vector&lt;double&gt; var_context::vals_r(const std::string&amp; name);\r<br>void var_context::validate_dims(const std::string&amp; stage,\r<br>                                const std::string&amp; name,\r<br>                                const std::string&amp; base_type,\r<br>                                const std::vector&lt;size_t&gt;&amp; dims_declared);\r<br>\r<br>This is not only extra work for the parser, it makes\r<br>implementing features like partial random inits a bit kludgy.\r<br>\r<br>In order to clean up the interaction of the API with\r<br>both constrain/unconstrain transformations and the \r<br>var_context (making it easier to access the transformations\r<br>directly and pull the var_contexts out into the interfaces)\r<br>I am proposing the following changes.\r<br>\r<br>First, io::writer and io::reader will be replaced with\r<br>a set of functors responsible for a given transformation,\r<br>\r<br>class transform {\r<br>  static virtual void constrain(const std::vector&lt;double&gt;&amp; input, \r<br>                                std::vector&lt;double&gt;&amp; output) = 0;\r<br>  static virtual void unconstrain(const std::vector&lt;double&gt;&amp; input, \r<br>                                  std::vector&lt;double&gt;&amp; output) = 0;\r<br>  static int constrained_dim();\r<br>  static int unconstrained_dim();\r<br>  static std::string base_type();\r<br>}\r<br>\r<br>For example, a lower bound constraint would be\r<br>handled by the functor\r<br>\r<br>&lt;double LowerBound&gt;\r<br>class lb_transform: public transform {\r<br>  static void constrain(const std::vector&lt;double&gt;&amp; input, \r<br>                        std::vector&lt;double&gt;&amp; output) {\r<br>    output.push_back(stan::prob::lb_constrain(input, LowerBound));\r<br>  }\r<br>  static void unconstrain(const std::vector&lt;double&gt;&amp; input, \r<br>                          std::vector&lt;double&gt;&amp; output) {\r<br>    output.push_back(stan::prob::lb_free(input, LowerBound));\r<br>  }\r<br>  static int constrained_dim() { return 1; }\r<br>  static int unconstrained_dim() { return 1; }\r<br>  static std::string base_type() { return “double”; }\r<br>}\r<br>\r<br>and the io::writer::scalar_lb_unconstrain(0, mu1) call\r<br>in model::transform_inits could be immediately replaced by\r<br>lb_transform&lt;0&gt;::unconstrain(mu1, params_r_).\r<br>\r<br>With these functors available we can now move all of the\r<br>validation into the var_context,\r<br>\r<br>template &lt;Transform&gt;\r<br>void var_context::get_unconstrained(const vector&lt;double&gt;&amp; params_r,\r<br>                                    const string&amp; stage,\r<br>                                    const string&amp; param_name,\r<br>                                    int constrained_dim) {\r<br>  if (!(this-&gt;contains_r(param_name)))\r<br>    throw std::runtime_error(&quot;variable “ + param_name + “ missing&quot;);\r<br>  validate_dims(stage, param_name, Transform::base_type(), constrained_dim))\r<br>\r<br>  params_r.append(Transform::unconstrain(vars_r(param_name)));\r<br>}\r<br>\r<br>and then the model becomes simply\r<br>\r<br>void model::transform_inits(…) {\r<br>\r<br>  params_r.clear();\r<br>  …\r<br>  try {\r<br>    context__.get_unconstrained&lt;lb_transform&lt;0&gt; &gt;(params_r,\r<br>                                                  “initialization”,\r<br>                                                  “mu1”, 1);\r<br>  } catch (const std::exception&amp; e) { \r<br>    throw std::runtime_error(std::string(&quot;Error initializing variable mu1: &quot;) + e.what());\r<br>  }\r<br>}\r<br>\r<br>Moreover, partial random inits become as simple as\r<br>\r<br>&lt;template VarContext&gt;\r<br>class random_fallback_var_context {\r<br>   \r<br>  template &lt;Transform&gt;\r<br>  void var_context::get_unconstrained(const vector&lt;double&gt;&amp; params_r,\r<br>                                      const string&amp; stage,\r<br>                                      const string&amp; param_name,\r<br>                                      int constrained_dim) {\r<br>\r<br>    if (   !(base_context.contains_r(param_name)))\r<br>        &amp;&amp; !(validate_dims(stage, param_name, Transform::base_type(), constrained_dim)))\r<br>    params_r.append(Transform::unconstrain(base_context.vars_r(param_name)));\r<br>  else\r<br>    params_r.append(random_array(Transform::unconstrained_dim()));\r<br>  }\r<br>\r<br>  VarContext&amp; base_context;\r<br>\r<br>}\r<br>\r<br>Of course there are lots of subtleties that will have to\r<br>be fixed along the way, but what do people think of the\r<br>basic pattern?\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "YkHFWfvzPDEJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2015-04-03T15:50:09Z",
+   "subject": "Re: [stan-dev] stan::io::reader/writer Refactor Pattern",
+   "parts": [
+    [
+     1,
+     "I&#39;m totally on board with this kind of clean up in\r<br>the code generator and reader/writer interfaces.  (It&#39;s\r<br>not actually a problem with the parser, per se.)\r<br>\r<br>Let&#39;s do it right this time.  Some detailed comments inline.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; On Apr 4, 2015, at 2:15 AM, Michael Betancourt &lt;<a href data-email-masked rel=\"nofollow\">betan...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; Right now the model has to do lots of validation,\r<br>&gt; making parameter manipulation a bit awkward.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "It&#39;s more than a bit awkward --- it&#39;s a mess!\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;  For\r<br>&gt; example, in model::transform_inits the model has\r<br>&gt; to construct an io::writer with internal storage for\r<br>&gt; unconstrained parameters,\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Recall that transform_inits takes variables declared\r<br>on the constrained scale (through a var_context) to a vector of \r<br>unconstrained variables.\r<br>\r<br>So somewhere there has to be memory for the unconstrained\r<br>variables.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>\r<br>&gt; then one by one check\r<br>&gt; that a variable exists in the var_context, grab\r<br>&gt; it, validate its dimensions, and then finally\r<br>&gt; map it to the unconstrained scale and append the\r<br>&gt; unconstrained values into the io::writer’s internal\r<br>&gt; storage before copying into the model storage:\r<br>&gt; \r<br>\r<br>"
+    ],
+    [
+     1,
+     "Here&#39;s the full signature:\r<br>\r<br>   void transform_inits(const stan::io::var_context&amp; context__,\r<br>                         std::vector&lt;int&gt;&amp; params_i__,\r<br>                         std::vector&lt;double&gt;&amp; params_r__,\r<br>                         std::ostream* pstream__) const {\r<br>\r<br>\r<br>We need to get rid of those &quot;__&quot; at some point --- they&#39;re there\r<br>to avoid name conflicts with user-defined variables, but some\r<br>other mangling is in order.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; void model::transform_inits(…) {\r<br>&gt; \r<br>&gt;  stan::io::writer&lt;double&gt; writer__(params_r__,params_i__);\r<br>&gt;  size_t pos__;\r<br>&gt;  std::vector&lt;double&gt; vals_r__;\r<br>&gt;  …\r<br>&gt; \r<br>&gt;  if (!(context__.contains_r(&quot;mu1&quot;)))\r<br>&gt;    throw std::runtime_error(&quot;variable mu1 missing&quot;);\r<br>\r<br>"
+    ],
+    [
+     1,
+     "This shold be an error thrown by the context itself.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;  vals_r__ = context__.vals_r(&quot;mu1&quot;);\r<br>&gt;  pos__ = 0U;\r<br>&gt;  context__.validate_dims(&quot;initialization&quot;, &quot;mu1&quot;, &quot;double&quot;, context__.to_vec());\r<br>\r<br>"
+    ],
+    [
+     1,
+     "This validation should also be done by the context itself.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;  double mu1(0);\r<br>&gt;  mu1 = vals_r__[pos__++];\r<br>&gt;  try {\r<br>&gt;    writer__.scalar_lb_unconstrain(0, mu1);\r<br>&gt;  } catch (const std::exception&amp; e) { \r<br>&gt;    throw std::runtime_error(std::string(&quot;Error transforming variable mu1: &quot;) + e.what());\r<br>&gt;  }\r<br>\r<br>"
+    ],
+    [
+     1,
+     "This transform is already done in the writer.  What I&#39;d suggest\r<br>is passing in the name &quot;mu1&quot; to the unconstrain function.\r<br>\r<br>We also want to specialize the lb (lower bound) unconstrain so\r<br>that 0 doesn&#39;t show up.  That is, we want a test for zero somewhere\r<br>and then just a straight log transform.  \r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;  …\r<br>&gt;  params_r__ = writer__.data_r();\r<br>&gt; }\r<br>&gt; \r<br>&gt; using the var_context methods\r<br>&gt; \r<br>&gt; bool var_context::contains_r(const std::string&amp; param_name);\r<br>&gt; std::vector&lt;double&gt; var_context::vals_r(const std::string&amp; name);\r<br>&gt; void var_context::validate_dims(const std::string&amp; stage,\r<br>&gt;                                const std::string&amp; name,\r<br>&gt;                                const std::string&amp; base_type,\r<br>&gt;                                const std::vector&lt;size_t&gt;&amp; dims_declared);\r<br>&gt; \r<br>&gt; This is not only extra work for the parser, it makes\r<br>&gt; implementing features like partial random inits a bit kludgy.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Absolutely.  And again, I&#39;d say it&#39;s more than a bit kludgy!\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; In order to clean up the interaction of the API with\r<br>&gt; both constrain/unconstrain transformations and the \r<br>&gt; var_context (making it easier to access the transformations\r<br>&gt; directly and pull the var_contexts out into the interfaces)\r<br>&gt; I am proposing the following changes.\r<br>&gt; \r<br>&gt; First, io::writer and io::reader will be replaced with\r<br>&gt; a set of functors responsible for a given transformation,\r<br>\r<br>"
+    ],
+    [
+     1,
+     "A functor defines operator() --- these are are just classes\r<br>with member functions.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; class transform {\r<br>&gt;  static virtual void constrain(const std::vector&lt;double&gt;&amp; input, \r<br>&gt;                                std::vector&lt;double&gt;&amp; output) = 0;\r<br>&gt;  static virtual void unconstrain(const std::vector&lt;double&gt;&amp; input, \r<br>&gt;                                  std::vector&lt;double&gt;&amp; output) = 0;\r<br>&gt;  static int constrained_dim();\r<br>&gt;  static int unconstrained_dim();\r<br>&gt;  static std::string base_type();\r<br>&gt; }\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The base_type should be a typedef, not a string.  Or if it\r<br>needs a string, then the method should be called &quot;base_type_name()&quot;.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; For example, a lower bound constraint would be\r<br>&gt; handled by the functor\r<br>&gt; \r<br>&gt; &lt;double LowerBound&gt;\r<br>&gt; class lb_transform: public transform {\r<br>&gt;  static void constrain(const std::vector&lt;double&gt;&amp; input, \r<br>&gt;                        std::vector&lt;double&gt;&amp; output) {\r<br>&gt;    output.push_back(stan::prob::lb_constrain(input, LowerBound));\r<br>&gt;  }\r<br>&gt;  static void unconstrain(const std::vector&lt;double&gt;&amp; input, \r<br>&gt;                          std::vector&lt;double&gt;&amp; output) {\r<br>&gt;    output.push_back(stan::prob::lb_free(input, LowerBound));\r<br>&gt;  }\r<br>&gt;  static int constrained_dim() { return 1; }\r<br>&gt;  static int unconstrained_dim() { return 1; }\r<br>&gt;  static std::string base_type() { return “double”; }\r<br>&gt; }\r<br>\r<br>"
+    ],
+    [
+     1,
+     "This isn&#39;t quite C++ --- you can&#39;t have virtual static functions\r<br>because there&#39;s no object to dynamically resolve the function definition.\r<br>But it can all be concept driven with no abstract base \r<br>class.  Or it could use the CRTP to get the performance of a static\r<br>and some of the benefits of an abstract base class in terms of\r<br>more transparent specs.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; and the io::writer::scalar_lb_unconstrain(0, mu1) call\r<br>&gt; in model::transform_inits could be immediately replaced by\r<br>&gt; lb_transform&lt;0&gt;::unconstrain(mu1, params_r_).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Yes, and maybe we could add &quot;mu1&quot; as an argument so we can\r<br>do the error checking?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; With these functors available we can now move all of the\r<br>&gt; validation into the var_context,\r<br>&gt; \r<br>&gt; template &lt;Transform&gt;\r<br>&gt; void var_context::get_unconstrained(const vector&lt;double&gt;&amp; params_r,\r<br>&gt;                                    const string&amp; stage,\r<br>&gt;                                    const string&amp; param_name,\r<br>&gt;                                    int constrained_dim) {\r<br>&gt;  if (!(this-&gt;contains_r(param_name)))\r<br>&gt;    throw std::runtime_error(&quot;variable “ + param_name + “ missing&quot;);\r<br>&gt;  validate_dims(stage, param_name, Transform::base_type(), constrained_dim))\r<br>&gt; \r<br>&gt;  params_r.append(Transform::unconstrain(vars_r(param_name)));\r<br>&gt; }\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Agreed --- that&#39;s where it belongs.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; and then the model becomes simply\r<br>&gt; \r<br>&gt; void model::transform_inits(…) {\r<br>&gt; \r<br>&gt;  params_r.clear();\r<br>&gt;  …\r<br>&gt;  try {\r<br>&gt;    context__.get_unconstrained&lt;lb_transform&lt;0&gt; &gt;(params_r,\r<br>&gt;                                                  “initialization”,\r<br>&gt;                                                  “mu1”, 1);\r<br>&gt;  } catch (const std::exception&amp; e) { \r<br>&gt;    throw std::runtime_error(std::string(&quot;Error initializing variable mu1: &quot;) + e.what());\r<br>&gt;  }\r<br>&gt; }\r<br>\r<br>"
+    ],
+    [
+     1,
+     "None of those curly quotes, though!  :-)\r<br>\r<br>And given that we&#39;re passing &quot;mu1&quot; in, we can also have the\r<br>exception be thrown from the var_context itself.\r<br>\r<br>I&#39;m wondering if that&#39;ll be redundant for the different interfaces.\r<br>There&#39;s got to be a way to keep it defined only once and not in\r<br>the generated model code as it&#39;s done now, which is more than a bit\r<br>awkward.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Moreover, partial random inits become as simple as\r<br>&gt; \r<br>&gt; &lt;template VarContext&gt;\r<br>&gt; class random_fallback_var_context {\r<br>&gt; \r<br>&gt;  template &lt;Transform&gt;\r<br>&gt;  void var_context::get_unconstrained(const vector&lt;double&gt;&amp; params_r,\r<br>&gt;                                      const string&amp; stage,\r<br>&gt;                                      const string&amp; param_name,\r<br>&gt;                                      int constrained_dim) {\r<br>&gt; \r<br>&gt;    if (   !(base_context.contains_r(param_name)))\r<br>&gt;        &amp;&amp; !(validate_dims(stage, param_name, Transform::base_type(), constrained_dim)))\r<br>&gt;    params_r.append(Transform::unconstrain(base_context.vars_r(param_name)));\r<br>&gt;  else\r<br>&gt;    params_r.append(random_array(Transform::unconstrained_dim()));\r<br>&gt;  }\r<br>&gt; \r<br>&gt;  VarContext&amp; base_context;\r<br>&gt; \r<br>&gt; }\r<br>&gt; \r<br>\r<br>"
+    ],
+    [
+     1,
+     "Nice.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Of course there are lots of subtleties that will have to\r<br>&gt; be fixed along the way, but what do people think of the\r<br>&gt; basic pattern?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Great idea.  We should&#39;ve done this ages ago.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  }
+ ]
+}

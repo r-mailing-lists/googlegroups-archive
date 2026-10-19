@@ -1,0 +1,745 @@
+{
+ "thread": "Xzao6uixSmg",
+ "subject": "new auto-diff + improved existing forward-mode",
+ "messages_listed": 21,
+ "last_activity": "2014-01-20T22:36:47Z",
+ "messages": [
+  {
+   "id": "AZt9j0KHbPUJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-19T13:39:48Z",
+   "subject": "new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "I&#39;ve been putting some cycles into evaluating Michael&#39;s new\r<br>proposal for auto-diff (I don&#39;t think they&#39;re written up anywhere ---\r<br>he just went over them one afternoon at MCMski with me and Daniel).\r<br>\r<br>The basic idea is that each function stores its first, second, and\r<br>third-order derivatives, and then all of the derivatives are calculated\r<br>by multiple sweeps back and forth on the expression stack, with no\r<br>need for any further virtual function calls.\r<br>\r<br>I&#39;m still worried about the amount of memory this will take for\r<br>storing the derivatives for high-dimensional operations like dot products.\r<br>The dot product derivatives are quite structured, given that the operation\r<br>is just SUM_i x[i] * y[i].  If N is large, we wind up with an N x N\r<br>matrix of Hessians, which if you ordered the input vector x[1], y[1],\r<br>x[2], y[2], ... should just a narrow off-diagonal band.\r<br>\r<br>We can probably deal with this case by de-vectorizing.  That is,\r<br>implementing dot(x,y) literally as the sum of individual products.\r<br>The downside to this is that it increases the number of items on\r<br>the stack for all the intermediate sums and products compared to what\r<br>we do now.\r<br>\r<br>The other issue I worry about with the new scheme is that addition\r<br>will be less efficient because it&#39;s going to require storing the\r<br>partials where we often don&#39;t need to do that now.  This is particularly\r<br>worrisome for addition, which doesn&#39;t currently require storing the\r<br>derivatives (all 1) or multiplying them (1 * x) during derivative\r<br>propagation.\r<br>\r<br>On the second topic, I just realized our forward-mode auto-diff\r<br>is horrendously inefficient for the uses we have in mind.  When\r<br>I designed it, I just naively followed existing implementations,\r<br>which defined a fwd-mode auto-diff variable as:\r<br>\r<br>    template &lt;typename T&gt;\r<br>    fvar {\r<br>      T val_;\r<br>      T d_;\r<br>    }\r<br>\r<br>(I should&#39;ve used &quot;tangent_&quot; instead of &quot;d_&quot; to follow conventional\r<br>notation.)\r<br>\r<br>BUT, what I now realize is that we can always take the value to\r<br>be double.  We only ever need the tangent to be an auto-diff variable.\r<br>What I should&#39;ve done was this:\r<br>\r<br>   template &lt;typename T&gt;\r<br>   fvar {\r<br>     double value_;\r<br>     T tangent_;\r<br>   }\r<br>\r<br>The types are all sound because values are only ever computed in\r<br>terms of other values, whereas tangent values involve other tangents\r<br>and other values, and it&#39;s kosher to mix double and anything.\r<br>\r<br>This should lead to *more* than a factor of 2 speedup because of\r<br>all the mixed operations currently done on values and tangents.\r<br>For example:\r<br>\r<br>   template &lt;typename T&gt;\r<br>   fvar&lt;T&gt; multiply(const fvar&lt;T&gt;&amp; x1,\r<br>                    const fvar&lt;T&gt;&amp; x2) {\r<br>      return fvar&lt;T&gt;(x1.value_ * x2.value_,\r<br>                     x1.tangent_ * x2.value_ + x1.value_ * x2.tangent_);\r<br>   }\r<br>\r<br>Here the constructor is just the obvious setter.\r<br>\r<br>Current scheme:  3 multiply(var,var)\r<br>                  1 add(var,var)\r<br>\r<br>New scheme:      1 multiply(double,double)\r<br>                  2 multiply(double,var)\r<br>                  1 add(var,var)\r<br>\r<br>The multiply(double,double) is much faster than multiply(var,var)\r<br>and also requires substantially less memory on the stack.\r<br>The multiply(double,var) calls require the same amount of memory,\r<br>but are faster in that they eliminate a pair of multiplications\r<br>during derivative propagation.\r<br>\r<br>This will result in a big savings in both memory and time\r<br>compared to the current approach.\r<br>\r<br>And the savings are even more stark at third order, i.e.,\r<br>fvar&lt;fvar&lt;var&gt;&gt;, which is now just two doubles and\r<br>a var, rather than four var instances!\r<br>\r<br>I actually don&#39;t think this will be a very complicated fix to\r<br>the code.  Of course, testing&#39;s going to be a pain for second\r<br>order (i.e., fvar&lt;var&gt;) because now the values don&#39;t need to\r<br>be pulled out of a var, they&#39;ll just be doubles.\r<br>\r<br>For evaluation, I&#39;d like to implement the new scheme far enough\r<br>that we can compare it to Michael&#39;s new scheme.  My intuition is\r<br>that our current scheme will be more memory efficient and\r<br>Michael&#39;s new scheme will be faster, even for gradients.\r<br>\r<br>- Bob\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "lvt2ST081m8J",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-19T19:02:26Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "\r<br>On Jan 19, 2014, at 1:39 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>\r<br>&gt; I&#39;ve been putting some cycles into evaluating Michael&#39;s new\r<br>&gt; proposal for auto-diff (I don&#39;t think they&#39;re written up anywhere ---\r<br>&gt; he just went over them one afternoon at MCMski with me and Daniel).\r<br>&gt; \r<br>&gt; The basic idea is that each function stores its first, second, and\r<br>&gt; third-order derivatives, and then all of the derivatives are calculated\r<br>&gt; by multiple sweeps back and forth on the expression stack, with no\r<br>&gt; need for any further virtual function calls.\r<br>&gt; \r<br>&gt; I&#39;m still worried about the amount of memory this will take for\r<br>&gt; storing the derivatives for high-dimensional operations like dot products.\r<br>&gt; The dot product derivatives are quite structured, given that the operation\r<br>&gt; is just SUM_i x[i] * y[i].  If N is large, we wind up with an N x N\r<br>&gt; matrix of Hessians, which if you ordered the input vector x[1], y[1],\r<br>&gt; x[2], y[2], ... should just a narrow off-diagonal band.\r<br>&gt; \r<br>&gt; We can probably deal with this case by de-vectorizing.  That is,\r<br>&gt; implementing dot(x,y) literally as the sum of individual products.\r<br>&gt; The downside to this is that it increases the number of items on\r<br>&gt; the stack for all the intermediate sums and products compared to what\r<br>&gt; we do now.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "But those items are much, much cheaper and if we’re careful about the\r<br>memory they should be as quick to access as the full Hessian in a single\r<br>joint node.  Given the new approach is should be much more efficient\r<br>to encode structure in the expression graph itself rather than internally\r<br>to a node.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; The other issue I worry about with the new scheme is that addition\r<br>&gt; will be less efficient because it&#39;s going to require storing the\r<br>&gt; partials where we often don&#39;t need to do that now.  This is particularly\r<br>&gt; worrisome for addition, which doesn&#39;t currently require storing the\r<br>&gt; derivatives (all 1) or multiplying them (1 * x) during derivative\r<br>&gt; propagation.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "We can explicitly check for 1’s in the propagation methods, although\r<br>I’d be surprised if there were a huge effect (right now we already check\r<br>for zeros to avoid unnecessary calculations).\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Ph_ngo2qDikJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2014-01-19T19:53:21Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Without having seen Michael&#39;s plans, it&#39;s hard to comment much on this.  However, based on Bob&#39;s description I have two thoughts:<div>- Is it really worth this much work to get rid of the virtual function calls?  I&#39;ve really not seen them popping up in the profiles that much.  A bigger issue is making it easier to implement all the needed derivatives which this would help somewhat however, would it not be better to require each function to provide &quot;dot_grad&quot;, &quot;mult_hess&quot; and &quot;apply_3rd&quot; (or something) and then apply those as needed?  This would allow for selective optimization of things like dot_product and sum and allow each function to make the decision of how much needs to be stored.</div>\r\n<div>- I imagine we would want to template out the var type so that, if only first order derivatives are needed, no extra storage or computation is needed using, for instance, the boost::enable_if.<br><div><br></div><div>\r\nMore broadly, I&#39;d be interested in how this would impact functions which take matrices or vectors as parameters.  Right now our ability to implement specialized vari&#39;s for handling matrix inverses, log determinants, etc is huge for efficient computation.</div>\r\n<div><br></div><div>Cheers,</div><div>Marcus</div><div><br></div></div></div><div class=\"gmail_extra\"><br><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\">On Sun, Jan 19, 2014 at 2:02 PM, Michael Betancourt <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">betan...@gmail.com</a>&gt;</span> wrote:<br>\r\n</div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><br>\r\nOn Jan 19, 2014, at 1:39 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:<br>\r\n<br>\r\n&gt; I&#39;ve been putting some cycles into evaluating Michael&#39;s new<br>\r\n&gt; proposal for auto-diff (I don&#39;t think they&#39;re written up anywhere ---<br>\r\n&gt; he just went over them one afternoon at MCMski with me and Daniel).<br>\r\n&gt;<br>\r\n&gt; The basic idea is that each function stores its first, second, and<br>\r\n&gt; third-order derivatives, and then all of the derivatives are calculated<br>\r\n&gt; by multiple sweeps back and forth on the expression stack, with no<br>\r\n&gt; need for any further virtual function calls.<br>\r\n&gt;<br>\r\n&gt; I&#39;m still worried about the amount of memory this will take for<br>\r\n&gt; storing the derivatives for high-dimensional operations like dot products.<br>\r\n&gt; The dot product derivatives are quite structured, given that the operation<br>\r\n&gt; is just SUM_i x[i] * y[i].  If N is large, we wind up with an N x N<br>\r\n&gt; matrix of Hessians, which if you ordered the input vector x[1], y[1],<br>\r\n&gt; x[2], y[2], ... should just a narrow off-diagonal band.<br>\r\n&gt;<br>\r\n&gt; We can probably deal with this case by de-vectorizing.  That is,<br>\r\n&gt; implementing dot(x,y) literally as the sum of individual products.<br>\r\n&gt; The downside to this is that it increases the number of items on<br>\r\n&gt; the stack for all the intermediate sums and products compared to what<br>\r\n&gt; we do now.<br>\r\n<br>\r\n</div>But those items are much, much cheaper and if we’re careful about the<br>\r\nmemory they should be as quick to access as the full Hessian in a single<br>\r\njoint node.  Given the new approach is should be much more efficient<br>\r\nto encode structure in the expression graph itself rather than internally<br>\r\nto a node.<br>\r\n<div><br>\r\n&gt; The other issue I worry about with the new scheme is that addition<br>\r\n&gt; will be less efficient because it&#39;s going to require storing the<br>\r\n&gt; partials where we often don&#39;t need to do that now.  This is particularly<br>\r\n&gt; worrisome for addition, which doesn&#39;t currently require storing the<br>\r\n&gt; derivatives (all 1) or multiplying them (1 * x) during derivative<br>\r\n&gt; propagation.<br>\r\n<br>\r\n</div>We can explicitly check for 1’s in the propagation methods, although<br>\r\nI’d be surprised if there were a huge effect (right now we already check<br>\r\nfor zeros to avoid unnecessary calculations).<br>\r\n</blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><br>\r\n--<br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212840000&amp;usg=AOvVaw0KSS543_-AWjOjLQkf7QFV\">https://groups.google.com/groups/opt_out</a>.<br>\r\n</div></div></blockquote></div><br></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "GQ-D4hd2u2cJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-20T13:11:45Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 1/19/14, 8:53 PM, Marcus Brubaker wrote:\r<br>&gt; Without having seen Michael&#39;s plans, it&#39;s hard to comment much on this.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I&#39;d write it up, but it&#39;s pretty complicated and I still only\r<br>understand it up to second order.  (Though Michael says 3rd order\r<br>is just more of the same and he has it working for a few operations.)\r<br>"
+    ],
+    [
+     2,
+     "\r<br> &gt; However, based on Bob&#39;s description I have two\r<br>&gt; thoughts:\r<br>&gt; - Is it really worth this much work to get rid of the virtual function calls?\r<br> &gt; I&#39;ve really not seen them popping up in\r<br> &gt; the profiles that much.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Absolutely.  Check out the Adept paper, which is the\r<br>first-order version of what Michael&#39;s doing:\r<br>\r<br><a href=\"http://www.met.reading.ac.uk/clouds/adept/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.met.reading.ac.uk/clouds/adept/&amp;source=gmail&amp;ust=1792475212841000&amp;usg=AOvVaw2tv1kIKbKaoEebjO2UJk7m\">http://www.met.reading.ac.uk/clouds/adept/</a>\r<br>\r<br>The real benefit, though, is at higher orders, because\r<br>nothing needs to get recalculated other than a string\r<br>of multiply-adds.  As we&#39;re doing things now, we run\r<br>the whole log prob function on an fvar&lt;var&gt; for each parameter\r<br>to compute a row of the Hessian.  But all the partials, which\r<br>is where the real work is with all the exps, gamma functions\r<br>and what not, get recomputed each time.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; A bigger issue is making it easier to implement all the needed derivatives which this would\r<br>&gt; help somewhat however, would it not be better to require each function to provide &quot;dot_grad&quot;, &quot;mult_hess&quot; and\r<br>&gt; &quot;apply_3rd&quot; (or something) and then apply those as needed?  This would allow for selective optimization of things like\r<br>&gt; dot_product and sum and allow each function to make the decision of how much needs to be stored.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Yes, we absolutely need to do that so that we can still\r<br>run Euclidean HMC quickly.  All we need per function is\r<br>the local gradient vector, Hessian matrix, and tensor\r<br>of 3rd order derivatives.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; - I imagine we would want to template out the var type so that, if only first order derivatives are needed, no extra\r<br>&gt; storage or computation is needed using, for instance, the boost::enable_if.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; More broadly, I&#39;d be interested in how this would impact functions which take matrices or vectors as parameters.  Right\r<br>&gt; now our ability to implement specialized vari&#39;s for handling matrix inverses, log determinants, etc is huge for\r<br>&gt; efficient computation.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "This is my main concern, too.  The problem with having to do\r<br>Hessians for something like a dot product is that they&#39;re mostly\r<br>zeroes.  The alternative is unfolding it into a sequence of products\r<br>and sums, which defeats the speed of what we have in there now.\r<br>\r<br>And doing something like matrix inverse is even worse as far as this\r<br>goes.  Without solutions to these problems, I think the new\r<br>approach is a non-starter.\r<br>\r<br>Having said all this, I have a scheme to make the existing forward-mode\r<br>much faster.\r<br>\r<br>- Bob\r<br>\r<br>&gt; Cheers,\r<br>&gt; Marcus\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt; On Sun, Jan 19, 2014 at 2:02 PM, Michael Betancourt &lt;<a href data-email-masked rel=\"nofollow\">betan...@gmail.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">betan...@gmail.com</a>&gt;&gt; wrote:\r<br>"
+    ],
+    [
+     2,
+     "&gt;\r<br>&gt;\r<br>&gt;     On Jan 19, 2014, at 1:39 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br>&gt;\r<br>&gt;      &gt; I&#39;ve been putting some cycles into evaluating Michael&#39;s new\r<br>&gt;      &gt; proposal for auto-diff (I don&#39;t think they&#39;re written up anywhere ---\r<br>&gt;      &gt; he just went over them one afternoon at MCMski with me and Daniel).\r<br>&gt;      &gt;\r<br>&gt;      &gt; The basic idea is that each function stores its first, second, and\r<br>&gt;      &gt; third-order derivatives, and then all of the derivatives are calculated\r<br>&gt;      &gt; by multiple sweeps back and forth on the expression stack, with no\r<br>&gt;      &gt; need for any further virtual function calls.\r<br>&gt;      &gt;\r<br>&gt;      &gt; I&#39;m still worried about the amount of memory this will take for\r<br>&gt;      &gt; storing the derivatives for high-dimensional operations like dot products.\r<br>&gt;      &gt; The dot product derivatives are quite structured, given that the operation\r<br>&gt;      &gt; is just SUM_i x[i] * y[i].  If N is large, we wind up with an N x N\r<br>&gt;      &gt; matrix of Hessians, which if you ordered the input vector x[1], y[1],\r<br>&gt;      &gt; x[2], y[2], ... should just a narrow off-diagonal band.\r<br>&gt;      &gt;\r<br>&gt;      &gt; We can probably deal with this case by de-vectorizing.  That is,\r<br>&gt;      &gt; implementing dot(x,y) literally as the sum of individual products.\r<br>&gt;      &gt; The downside to this is that it increases the number of items on\r<br>&gt;      &gt; the stack for all the intermediate sums and products compared to what\r<br>&gt;      &gt; we do now.\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt;     But those items are much, much cheaper and if weï¿½re careful about the\r<br>"
+    ],
+    [
+     2,
+     "&gt;     memory they should be as quick to access as the full Hessian in a single\r<br>&gt;     joint node.  Given the new approach is should be much more efficient\r<br>&gt;     to encode structure in the expression graph itself rather than internally\r<br>&gt;     to a node.\r<br>&gt;\r<br>&gt;      &gt; The other issue I worry about with the new scheme is that addition\r<br>&gt;      &gt; will be less efficient because it&#39;s going to require storing the\r<br>&gt;      &gt; partials where we often don&#39;t need to do that now.  This is particularly\r<br>&gt;      &gt; worrisome for addition, which doesn&#39;t currently require storing the\r<br>&gt;      &gt; derivatives (all 1) or multiplying them (1 * x) during derivative\r<br>&gt;      &gt; propagation.\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt;     We can explicitly check for 1ï¿½s in the propagation methods, although\r<br>&gt;     Iï¿½d be surprised if there were a huge effect (right now we already check\r<br>"
+    ],
+    [
+     2,
+     "&gt;     for zeros to avoid unnecessary calculations).\r<br>&gt;\r<br>&gt;     --\r<br>&gt;     You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt;     To unsubscribe from this group and stop receiving emails from it, send an email to\r<br>"
+    ],
+    [
+     1,
+     "&gt;     <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">stan-dev%2Bunsu...@googlegroups.com</a>&gt;.\r<br>"
+    ],
+    [
+     3,
+     "&gt;     For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212842000&amp;usg=AOvVaw0tQO94a-aWc7VevctXnCWY\">https://groups.google.com/groups/opt_out</a>.\r<br>&gt;\r<br>&gt;\r<br>&gt; --\r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212842000&amp;usg=AOvVaw0tQO94a-aWc7VevctXnCWY\">https://groups.google.com/groups/opt_out</a>.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "daAnRle4Wx0J",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-20T13:14:21Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 1/19/14, 8:02 PM, Michael Betancourt wrote:\r<br>&gt;\r<br>&gt; On Jan 19, 2014, at 1:39 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;\r<br>&gt;&gt; I&#39;ve been putting some cycles into evaluating Michael&#39;s new\r<br>&gt;&gt; proposal for auto-diff (I don&#39;t think they&#39;re written up anywhere ---\r<br>&gt;&gt; he just went over them one afternoon at MCMski with me and Daniel).\r<br>&gt;&gt;\r<br>&gt;&gt; The basic idea is that each function stores its first, second, and\r<br>&gt;&gt; third-order derivatives, and then all of the derivatives are calculated\r<br>&gt;&gt; by multiple sweeps back and forth on the expression stack, with no\r<br>&gt;&gt; need for any further virtual function calls.\r<br>&gt;&gt;\r<br>&gt;&gt; I&#39;m still worried about the amount of memory this will take for\r<br>&gt;&gt; storing the derivatives for high-dimensional operations like dot products.\r<br>&gt;&gt; The dot product derivatives are quite structured, given that the operation\r<br>&gt;&gt; is just SUM_i x[i] * y[i].  If N is large, we wind up with an N x N\r<br>&gt;&gt; matrix of Hessians, which if you ordered the input vector x[1], y[1],\r<br>&gt;&gt; x[2], y[2], ... should just a narrow off-diagonal band.\r<br>&gt;&gt;\r<br>&gt;&gt; We can probably deal with this case by de-vectorizing.  That is,\r<br>&gt;&gt; implementing dot(x,y) literally as the sum of individual products.\r<br>&gt;&gt; The downside to this is that it increases the number of items on\r<br>&gt;&gt; the stack for all the intermediate sums and products compared to what\r<br>&gt;&gt; we do now.\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; But those items are much, much cheaper and if weï¿½re careful about the\r<br>"
+    ],
+    [
+     2,
+     "&gt; memory they should be as quick to access as the full Hessian in a single\r<br>&gt; joint node.  Given the new approach is should be much more efficient\r<br>&gt; to encode structure in the expression graph itself rather than internally\r<br>&gt; to a node.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "So you&#39;re proposing to break something like dot product\r<br>apart into a series of multiply-adds?  It will take quite\r<br>a bit more memory that way, and I don&#39;t see how it&#39;d work\r<br>with something like matrix operations like division (or\r<br>inverse or determinant or whatever).\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;&gt; The other issue I worry about with the new scheme is that addition\r<br>&gt;&gt; will be less efficient because it&#39;s going to require storing the\r<br>&gt;&gt; partials where we often don&#39;t need to do that now.  This is particularly\r<br>&gt;&gt; worrisome for addition, which doesn&#39;t currently require storing the\r<br>&gt;&gt; derivatives (all 1) or multiplying them (1 * x) during derivative\r<br>&gt;&gt; propagation.\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; We can explicitly check for 1ï¿½s in the propagation methods, although\r<br>&gt; Iï¿½d be surprised if there were a huge effect (right now we already check\r<br>"
+    ],
+    [
+     2,
+     "&gt; for zeros to avoid unnecessary calculations).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I don&#39;t know this for sure, but my guess would be that checking\r<br>for 1 would be as expensive as multiplying by 1.  Branching is\r<br>expensive!\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "se7PqPhym7AJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-20T13:49:59Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "&gt; So you&#39;re proposing to break something like dot product\r<br>&gt; apart into a series of multiply-adds?  It will take quite\r<br>&gt; a bit more memory that way, and I don&#39;t see how it&#39;d work\r<br>&gt; with something like matrix operations like division (or\r<br>&gt; inverse or determinant or whatever).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "For the dot product, yes.  Dense matrix operations will have dense\r<br>derivatives and be different beasts.\r<br>\r<br>Splitting things up should only introduce a few extra ints/bools for indexing\r<br>and defining order.  To get rid of that we&#39;d need some container class or something\r<br>and I&#39;m not sure how to do that without bringing in virtual functions.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I don&#39;t know this for sure, but my guess would be that checking\r<br>&gt; for 1 would be as expensive as multiplying by 1.  Branching is\r<br>&gt; expensive!\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right, hence my hesitance that checking for anything beyond zero\r<br>(which saves a ton of operations) will provide any utility.\r<br>\r<br>I&#39;m pretty sure that there&#39;s no way to have var-specific optimization\r<br>without a static expression graph or virtual functions: the latter is too\r<br>slow while the former would require limiting the modeling language\r<br>(which I support but would have nontrivial side effects)."
+    ]
+   ]
+  },
+  {
+   "id": "cfuvpSWbD9UJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-20T14:13:04Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "<div style=\"word-wrap:break-word\"><div>Let’s be clear — the new approach admits very fast matrix computations</div><div>by efficiently computing all of the partials in the instantiation of a node</div><div>(leveraging Eigen to its full effect).</div><div><br></div><div>The issue here is when we define an operation that has sparse or structure</div><div>(but non-zero) higher-order derivatives.  Currently we would not take</div><div>advantage of this structure and perform unnecessary loops/operations.</div><div>Splitting out the nodes would encode the structure in the expression</div><div>graph itself, allowing a compromise between the two approaches.</div></div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><br><div><div>On Jan 20, 2014, at 1:11 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:</div><br><blockquote type=\"cite\"><blockquote type=\"cite\" style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\">More broadly, I&#39;d be interested in how this would impact functions which take matrices or vectors as parameters.  Right<br>now our ability to implement specialized vari&#39;s for handling matrix inverses, log determinants, etc is huge for<br>efficient computation.<br></blockquote><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">This is my main concern, too.  The problem with having to do</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">Hessians for something like a dot product is that they&#39;re mostly</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">zeroes.  The alternative is unfolding it into a sequence of products</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">and sums, which defeats the speed of what we have in there now.</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">And doing something like matrix inverse is even worse as far as this</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">goes.  Without solutions to these problems, I think the new</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">approach is a non-starter.</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">Having said all this, I have a scheme to make the existing forward-mode</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">much faster.</span></blockquote></div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "d2qsBuEhhDoJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-20T15:08:39Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "On 1/20/14, 3:13 PM, Michael Betancourt wrote:\r<br>&gt; Letï¿½s be clear ï¿½ the new approach admits very fast matrix computations\r<br>"
+    ],
+    [
+     2,
+     "&gt; by efficiently computing all of the partials in the instantiation of a node\r<br>&gt; (leveraging Eigen to its full effect).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s what we do now, with the added overhead of\r<br>copying the values of the var into a new matrix.\r<br>\r<br>I don&#39;t understand your proposal (both my calc and matrix algebra\r<br>fu are weak).  If you have an N x N matrix and take an inverse,\r<br>what&#39;s the Hessian and how do you encode it (if necessary)?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; The issue here is when we define an operation that has sparse or structure\r<br>&gt; (but non-zero) higher-order derivatives.  Currently we would not take\r<br>&gt; advantage of this structure and perform unnecessary loops/operations.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "A dot product like\r<br>\r<br>   z = SUM_i x[i] * y[i]\r<br>\r<br>has a sparse local Hessian, with only d^2/dx[i]dy[i] = 1 and all other\r<br>entries zero.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Splitting out the nodes would encode the structure in the expression\r<br>&gt; graph itself, allowing a compromise between the two approaches.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I think we&#39;re talking about the same thing here --- define a bunch of\r<br>intermediate x[i] * y[i] nodes, each of which has the same (2 x 2) Hessian\r<br>(with 0 diagonal and 1 off diagonal entries).\r<br>\r<br>And then a single node for the sum (only a gradient, no higher-order\r<br>derivatives);  you could also use N binary sums.\r<br>\r<br>I think I see what the booleans are doing now --- that&#39;s for when\r<br>the Hessian&#39;s all zero?  That comparison&#39;s not free, but definitely\r<br>better than the alternative!\r<br>\r<br>Either way, the new approach will take much more memory than what we do now and\r<br>require more multiplies by 1 (we can skip that because the dot-product knows that\r<br>the gradient is 1).\r<br>\r<br>Right now, for computing gradients, the dot product of two var N-vectors consumes\r<br>a total of 2N+2 pointers + 1 size_t (the 2N for the daughters, one for the mother, and one\r<br>for the vtable pointer; size_t is for the size).  Plus there&#39;s one more pointer on the\r<br>actual stack to the memory used.  The product of a double and var takes the same amount\r<br>of memory, but has fewer propagation ops --- presumably that would be the same in\r<br>what you&#39;re doing.\r<br>\r<br>With the new scheme I was proposing for reducing\r<br>memory in fvar, the Hessian calc won&#39;t take much more memory per pass, but\r<br>there&#39;s the inevitable (2N)^2 entries in the final Hessian.  This is assuming\r<br>I&#39;m remembering correctly that you need an explicit Hessian for SoftAbs\r<br>and not just a Hessian-vector product.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; On Jan 20, 2014, at 1:11 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br>&gt;\r<br>&gt;&gt;&gt; More broadly, I&#39;d be interested in how this would impact functions which take matrices or vectors as parameters.  Right\r<br>&gt;&gt;&gt; now our ability to implement specialized vari&#39;s for handling matrix inverses, log determinants, etc is huge for\r<br>&gt;&gt;&gt; efficient computation.\r<br>&gt;&gt;\r<br>&gt;&gt; This is my main concern, too.  The problem with having to do\r<br>&gt;&gt; Hessians for something like a dot product is that they&#39;re mostly\r<br>&gt;&gt; zeroes.  The alternative is unfolding it into a sequence of products\r<br>&gt;&gt; and sums, which defeats the speed of what we have in there now.\r<br>&gt;&gt;\r<br>&gt;&gt; And doing something like matrix inverse is even worse as far as this\r<br>&gt;&gt; goes.  Without solutions to these problems, I think the new\r<br>&gt;&gt; approach is a non-starter.\r<br>&gt;&gt;\r<br>&gt;&gt; Having said all this, I have a scheme to make the existing forward-mode\r<br>&gt;&gt; much faster.\r<br>&gt;\r<br>"
+    ],
+    [
+     3,
+     "&gt; --\r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212848000&amp;usg=AOvVaw16nOnajFI6Wck21xLmHtLF\">https://groups.google.com/groups/opt_out</a>.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "z6FWlIq9po0J",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-20T15:24:57Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "&gt; I don&#39;t understand your proposal (both my calc and matrix algebra\r<br>&gt; fu are weak).  If you have an N x N matrix and take an inverse,\r<br>&gt; what&#39;s the Hessian and how do you encode it (if necessary)?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Start with the gradient and go from there,\r<br>\r<br>X^{-1} X = \\mathbb{I}\r<br>partial ( X^{-1} X = \\mathbb{I} )\r<br>( partial X^{-1} ) X + X^{-1} ( \\partial X ) = 0 \r<br>\r<br>or\r<br>\r<br>partial X^{-1} = X^{-1} ( \\partial X ) X^{-1}\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; A dot product like\r<br>&gt; \r<br>&gt;  z = SUM_i x[i] * y[i]\r<br>&gt; \r<br>&gt; has a sparse local Hessian, with only d^2/dx[i]dy[i] = 1 and all other\r<br>&gt; entries zero.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Exactly.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I think we&#39;re talking about the same thing here --- define a bunch of\r<br>&gt; intermediate x[i] * y[i] nodes, each of which has the same (2 x 2) Hessian\r<br>&gt; (with 0 diagonal and 1 off diagonal entries).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Yup.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I think I see what the booleans are doing now --- that&#39;s for when\r<br>&gt; the Hessian&#39;s all zero?  That comparison&#39;s not free, but definitely\r<br>&gt; better than the alternative!\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The Adept paper explicitly notes that these kinds of checks made a big\r<br>difference in overall performance — they’re even more important more\r<br>the higher-order calcs.\r<br>\r<br>If the expression graph was static these could be templated away, but\r<br>at the moment this is likely the best we’ll be able to do.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Either way, the new approach will take much more memory than what we do now and\r<br>&gt; require more multiplies by 1 (we can skip that because the dot-product knows that\r<br>&gt; the gradient is 1).\r<br>&gt; \r<br>&gt; Right now, for computing gradients, the dot product of two var N-vectors consumes\r<br>&gt; a total of 2N+2 pointers + 1 size_t (the 2N for the daughters, one for the mother, and one\r<br>&gt; for the vtable pointer; size_t is for the size).  Plus there&#39;s one more pointer on the\r<br>&gt; actual stack to the memory used.  The product of a double and var takes the same amount\r<br>&gt; of memory, but has fewer propagation ops --- presumably that would be the same in\r<br>&gt; what you&#39;re doing.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Yeah.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; With the new scheme I was proposing for reducing\r<br>&gt; memory in fvar, the Hessian calc won&#39;t take much more memory per pass, but\r<br>&gt; there&#39;s the inevitable (2N)^2 entries in the final Hessian.  This is assuming\r<br>&gt; I&#39;m remembering correctly that you need an explicit Hessian for SoftAbs\r<br>&gt; and not just a Hessian-vector product.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Full Hessian.  It should come for free in the third-derivative calcs."
+    ]
+   ]
+  },
+  {
+   "id": "dInGhUWW71IJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-20T16:04:46Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 1/20/14, 4:24 PM, Michael Betancourt wrote:\r<br>&gt;&gt; I don&#39;t understand your proposal (both my calc and matrix algebra\r<br>&gt;&gt; fu are weak).  If you have an N x N matrix and take an inverse,\r<br>&gt;&gt; what&#39;s the Hessian and how do you encode it (if necessary)?\r<br>\r<br>&gt;\r<br>&gt; Start with the gradient and go from there,\r<br>&gt;\r<br>&gt; X^{-1} X = \\mathbb{I}\r<br>&gt; partial ( X^{-1} X = \\mathbb{I} )\r<br>&gt; ( partial X^{-1} ) X + X^{-1} ( \\partial X ) = 0\r<br>&gt;\r<br>&gt; or\r<br>&gt;\r<br>&gt; partial X^{-1} = X^{-1} ( \\partial X ) X^{-1}\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I see the gradient, but what&#39;s the Hessian?  That&#39;s where\r<br>I start to worry about memory usage.   (Sorry if these\r<br>are stupid questions --- I can just shut up until you build\r<br>the thing and we can measure it empirically --- that would\r<br>convince me without having to understand the calc/linear algebra.)\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "-egV5wXl3vIJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-20T16:19:16Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "You just repeat, applying the chain rule over and over again.  The\r<br>point is that you’ll get explicit results for the Hessian and third-derivatives\r<br>in terms of matrix operations that you can compute efficiently using\r<br>Eigen — with the current approach we only get efficient calculations\r<br>at first-order and then start loosing efficacy quickly.\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Jan 20, 2014, at 4:04 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>\r<br>&gt; \r<br>&gt; \r<br>&gt; On 1/20/14, 4:24 PM, Michael Betancourt wrote:\r<br>&gt;&gt;&gt; I don&#39;t understand your proposal (both my calc and matrix algebra\r<br>&gt;&gt;&gt; fu are weak).  If you have an N x N matrix and take an inverse,\r<br>&gt;&gt;&gt; what&#39;s the Hessian and how do you encode it (if necessary)?\r<br>&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; Start with the gradient and go from there,\r<br>&gt;&gt; \r<br>&gt;&gt; X^{-1} X = \\mathbb{I}\r<br>&gt;&gt; partial ( X^{-1} X = \\mathbb{I} )\r<br>&gt;&gt; ( partial X^{-1} ) X + X^{-1} ( \\partial X ) = 0\r<br>&gt;&gt; \r<br>&gt;&gt; or\r<br>&gt;&gt; \r<br>&gt;&gt; partial X^{-1} = X^{-1} ( \\partial X ) X^{-1}\r<br>&gt; \r<br>&gt; I see the gradient, but what&#39;s the Hessian?  That&#39;s where\r<br>&gt; I start to worry about memory usage.   (Sorry if these\r<br>&gt; are stupid questions --- I can just shut up until you build\r<br>&gt; the thing and we can measure it empirically --- that would\r<br>&gt; convince me without having to understand the calc/linear algebra.)\r<br>&gt; \r<br>&gt; - Bob\r<br>&gt; \r<br>"
+    ],
+    [
+     3,
+     "&gt; -- \r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212851000&amp;usg=AOvVaw2su72D7PmM_rm2TbntncRM\">https://groups.google.com/groups/opt_out</a>.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "MkJQIcLu_wkJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-20T17:10:39Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 1/20/14, 5:19 PM, Michael Betancourt wrote:\r<br>&gt; You just repeat, applying the chain rule over and over again.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right --- I understand that part.\r<br>\r<br>&gt; The\r<br>&gt; point is that youï¿½ll get explicit results for the Hessian and third-derivatives\r<br>"
+    ],
+    [
+     2,
+     "&gt; in terms of matrix operations that you can compute efficiently using\r<br>"
+    ],
+    [
+     1,
+     "&gt; Eigen ï¿½\r<br>\r<br>This is what I don&#39;t get.  How do these get stored in the stack?\r<br>We only went over functions that went from a small number of inputs\r<br>to a single output.  The matrix ops go from many inputs to many outputs.\r<br>If we had to store the Jacobian for the operation it&#39;d be huge, even\r<br>at first order.  So I&#39;m guessing you have some scheme to not store it.\r<br>But if so, how do you compute it in the sweeps?\r<br>\r<br>Maybe this is too low bandwidth a way to communicate --- we can wait\r<br>until the next meeting if we ever get one scheduled.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; with the current approach we only get efficient calculations\r<br>&gt; at first-order and then start loosing efficacy quickly.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I understand the strengths/drawbacks of the current approach.\r<br>It does a ton of redundant calculations, but is pretty tight\r<br>in memory.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>\r<br>&gt;\r<br>&gt; On Jan 20, 2014, at 4:04 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; On 1/20/14, 4:24 PM, Michael Betancourt wrote:\r<br>&gt;&gt;&gt;&gt; I don&#39;t understand your proposal (both my calc and matrix algebra\r<br>&gt;&gt;&gt;&gt; fu are weak).  If you have an N x N matrix and take an inverse,\r<br>&gt;&gt;&gt;&gt; what&#39;s the Hessian and how do you encode it (if necessary)?\r<br>&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Start with the gradient and go from there,\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; X^{-1} X = \\mathbb{I}\r<br>&gt;&gt;&gt; partial ( X^{-1} X = \\mathbb{I} )\r<br>&gt;&gt;&gt; ( partial X^{-1} ) X + X^{-1} ( \\partial X ) = 0\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; or\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; partial X^{-1} = X^{-1} ( \\partial X ) X^{-1}\r<br>&gt;&gt;\r<br>&gt;&gt; I see the gradient, but what&#39;s the Hessian?  That&#39;s where\r<br>&gt;&gt; I start to worry about memory usage.   (Sorry if these\r<br>&gt;&gt; are stupid questions --- I can just shut up until you build\r<br>&gt;&gt; the thing and we can measure it empirically --- that would\r<br>&gt;&gt; convince me without having to understand the calc/linear algebra.)\r<br>&gt;&gt;\r<br>&gt;&gt; - Bob\r<br>&gt;&gt;\r<br>&gt;&gt; --\r<br>&gt;&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt;&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt;&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212852000&amp;usg=AOvVaw2QSwszqUFjNpoGCFi2OlZZ\">https://groups.google.com/groups/opt_out</a>.\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "twIm1Y0HZ4UJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-20T18:00:57Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "<div style=\"word-wrap:break-word\"><div><blockquote type=\"cite\"><div style=\"font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\">is what I don&#39;t get.  How do these get stored in the stack?<br>We only went over functions that went from a small number of inputs<br>to a single output.  The matrix ops go from many inputs to many outputs.<br>If we had to store the Jacobian for the operation it&#39;d be huge, even<br>at first order.  So I&#39;m guessing you have some scheme to not store it.<br>But if so, how do you compute it in the sweeps?<br><br>Maybe this is too low bandwidth a way to communicate --- we can wait<br>until the next meeting if we ever get one scheduled.<br></div></blockquote><div><br></div></div></div>"
+    ],
+    [
+     1,
+     "<div style=\"word-wrap:break-word\"><div><div>No, you have to store it — but you have to store it all no matter</div><div>method you use (well, you have to compute it and allocate memory</div><div>for it no matter which method you use, it just may be on the stack</div><div>or on the heap).</div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "0OOt8Er-xL8J",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-20T18:11:17Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 1/20/14, 7:00 PM, Michael Betancourt wrote:\r<br>&gt;&gt; is what I don&#39;t get.  How do these get stored in the stack?\r<br>&gt;&gt; We only went over functions that went from a small number of inputs\r<br>&gt;&gt; to a single output.  The matrix ops go from many inputs to many outputs.\r<br>&gt;&gt; If we had to store the Jacobian for the operation it&#39;d be huge, even\r<br>&gt;&gt; at first order.  So I&#39;m guessing you have some scheme to not store it.\r<br>&gt;&gt; But if so, how do you compute it in the sweeps?\r<br>&gt;&gt;\r<br>&gt;&gt; Maybe this is too low bandwidth a way to communicate --- we can wait\r<br>&gt;&gt; until the next meeting if we ever get one scheduled.\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; No, you have to store it ï¿½ but you have to store it all no matter\r<br>"
+    ],
+    [
+     2,
+     "&gt; method you use (well, you have to compute it and allocate memory\r<br>&gt; for it no matter which method you use, it just may be on the stack\r<br>&gt; or on the heap).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I don&#39;t think so.  By doing multiple passes, you only wind up having\r<br>to compute a row of the Hessian at a time.  And in cases where the\r<br>expression graph is sparse, you don&#39;t store the equivalent of all the\r<br>zeroes --- just take dot product as an example again.\r<br>\r<br>Of course, all the recomputation is where you lose out in time!\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "GPJKpf9P54YJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-20T18:24:26Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     2,
+     "<div style=\"word-wrap:break-word\"><blockquote type=\"cite\">I don&#39;t think so.  By doing multiple passes, you only wind up having<br></blockquote><div><blockquote type=\"cite\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">to compute a row of the Hessian at a time.  And in cases where the</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">expression graph is sparse, you don&#39;t store the equivalent of all the</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">zeroes --- just take dot product as an example again.</span><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><br style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">Of course, all the recomputation is where you lose out in time!</span></blockquote></div><br></div>"
+    ],
+    [
+     1,
+     "<div style=\"word-wrap:break-word\"><div>Again, we have competing issues here.</div><div><br></div><div>Virtual functions or static expression graphs would allow for </div><div>custom calculations at each node, providing a huge speed</div><div>up when there’s structure.  The latter is not mutually exclusive</div><div>with the new approach.</div><div><br></div><div>The alternative is to encode that structure into the</div><div>expression graph, as we have already discussed.</div><div><br></div><div>But general matrix ops do not have much structure — </div><div>there shouldn’t be any huge inefficiency using the new</div><div>approach verses the old one.</div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "X9dmnsAFlwgJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-20T18:32:49Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "I wouldn&#39;t get that shy about virtual functions.\r<br>You should do whatever&#39;s most efficient.\r<br>\r<br>The thing I&#39;m mainly worried about is memory in\r<br>the new approach.  Secondarily, I&#39;m worried about\r<br>very sparse Hessians leading to too much extra work.\r<br>\r<br>If you can tame that with virtual functions, it&#39;s\r<br>probably going to be worth taking the speed hit.\r<br>\r<br>We could look into static expression graphs (Michael\r<br>means ones that don&#39;t change from evaluation to\r<br>evaluation, which means no loops or conditionals\r<br>based on anything other than data).\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     2,
+     "\r<br>On 1/20/14, 7:24 PM, Michael Betancourt wrote:\r<br>&gt;&gt; I don&#39;t think so.  By doing multiple passes, you only wind up having\r<br>&gt;&gt; to compute a row of the Hessian at a time.  And in cases where the\r<br>&gt;&gt; expression graph is sparse, you don&#39;t store the equivalent of all the\r<br>&gt;&gt; zeroes --- just take dot product as an example again.\r<br>&gt;&gt;\r<br>&gt;&gt; Of course, all the recomputation is where you lose out in time!\r<br>&gt;\r<br>&gt; Again, we have competing issues here.\r<br>&gt;\r<br>&gt; Virtual functions or static expression graphs would allow for\r<br>&gt; custom calculations at each node, providing a huge speed\r<br>"
+    ],
+    [
+     1,
+     "&gt; up when thereï¿½s structure.  The latter is not mutually exclusive\r<br>"
+    ],
+    [
+     2,
+     "&gt; with the new approach.\r<br>&gt;\r<br>&gt; The alternative is to encode that structure into the\r<br>&gt; expression graph, as we have already discussed.\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; But general matrix ops do not have much structure ï¿½\r<br>&gt; there shouldnï¿½t be any huge inefficiency using the new\r<br>"
+    ],
+    [
+     2,
+     "&gt; approach verses the old one.\r<br>&gt;\r<br>"
+    ],
+    [
+     3,
+     "&gt; --\r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212855000&amp;usg=AOvVaw2yVGSbMXwT51vfj9_nk-fE\">https://groups.google.com/groups/opt_out</a>.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "bTSFysiniJ8J",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2014-01-20T18:51:28Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Ok, I just took a quick look at the Adept paper.  Basically, we&#39;re talking about doing the expression template pattern that Eigen uses to do autodiff and extending it to higher order derivatives?  That makes sense to me, but I don&#39;t see how that requires that something like dot_product,  sum or any other function which takes vector or matrix needs to be implemented in terms of the elementary operations.  Just like we have a custom dot_product vari now, we create a custom dot_product expression template in the new pattern.  The same would hold for other more complex functions (e.g., inverse quadratic forms).  Going further on that though, won&#39;t this make our compilation times *much* worse though?<div>\r\n<br></div><div>Cheers,</div><div>Marcus</div><div><br></div></div><div class=\"gmail_extra\"><br><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\">On Mon, Jan 20, 2014 at 1:32 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br>\r\n</div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">I wouldn&#39;t get that shy about virtual functions.<br>\r\nYou should do whatever&#39;s most efficient.<br>\r\n<br>\r\nThe thing I&#39;m mainly worried about is memory in<br>\r\nthe new approach.  Secondarily, I&#39;m worried about<br>\r\nvery sparse Hessians leading to too much extra work.<br>\r\n<br>\r\nIf you can tame that with virtual functions, it&#39;s<br>\r\nprobably going to be worth taking the speed hit.<br>\r\n<br>\r\nWe could look into static expression graphs (Michael<br>\r\nmeans ones that don&#39;t change from evaluation to<br>\r\nevaluation, which means no loops or conditionals<br>\r\nbased on anything other than data).<span><font color=\"#888888\"><br>\r\n<br>\r\n- Bob</font></span><div><br>\r\n<br>\r\nOn 1/20/14, 7:24 PM, Michael Betancourt wrote:<br>\r\n</div></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n\r\nI don&#39;t think so.  By doing multiple passes, you only wind up having<br>\r\nto compute a row of the Hessian at a time.  And in cases where the<br>\r\nexpression graph is sparse, you don&#39;t store the equivalent of all the<br>\r\nzeroes --- just take dot product as an example again.<br>\r\n<br>\r\nOf course, all the recomputation is where you lose out in time!<br>\r\n</blockquote>\r\n<br>\r\nAgain, we have competing issues here.<br>\r\n<br>\r\nVirtual functions or static expression graphs would allow for<br>\r\ncustom calculations at each node, providing a huge speed<br></blockquote></div></div></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nup when there’s structure.  The latter is not mutually exclusive</blockquote></div></div></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><br>\r\nwith the new approach.<br>\r\n<br>\r\nThe alternative is to encode that structure into the<br>\r\nexpression graph, as we have already discussed.<br>\r\n<br></blockquote></div></div></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nBut general matrix ops do not have much structure —<br>\r\nthere shouldn’t be any huge inefficiency using the new</blockquote></div></div></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><br>\r\napproach verses the old one.<br>\r\n<br>\r\n--<br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br></blockquote></div></div></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+unsubscribe@<u></u>googlegroups.com</a>.</blockquote></div></div></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212856000&amp;usg=AOvVaw3mSPiYTTmE2FhdvPztXsr9\">https://groups.google.com/<u></u>groups/opt_out</a>.<br>\r\n</blockquote></div></div></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br></div></div></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+unsubscribe@<u></u>googlegroups.com</a>.</div></div></blockquote></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212856000&amp;usg=AOvVaw3mSPiYTTmE2FhdvPztXsr9\">https://groups.google.com/<u></u>groups/opt_out</a>.<br>\r\n</div></div></blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "vDKR2cdEwMQJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-01-20T20:24:38Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "There are two parts to the Adept auto-diff system.\r<br>\r<br>One&#39;s the templating, and yes, that&#39;d make compilation times\r<br>even worse.  I&#39;m not convinced it&#39;s worth the coding hassle\r<br>given how many functions we have to deal with.\r<br>\r<br>The other is that it just creates an expression graph consisting\r<br>only of nodes and partials, so that the backward pass is just\r<br>a bunch of add/multiply ops.  Exactly what we&#39;re doing for\r<br>the probability functions, but without any need for the virtual\r<br>function call.\r<br>\r<br>Michael figured out how to extend that scheme to higher-order\r<br>derivatives.  Actually, Michael just figured it out from\r<br>scratch --- only after he explained it did I tell him it\r<br>was like what Adept was doing.  I&#39;d experimented with the\r<br>same scheme a while ago, but couldn&#39;t really get it to go\r<br>any faster than what we had, but I&#39;m not sure I fully got\r<br>rid of the virtual function calls.\r<br>\r<br>The downside of Adept compared to what we&#39;re doing now is\r<br>that it can be more memory intensive.  For instance, in\r<br>sums, we only have pointers to the daughter nodes, whereas\r<br>the Adept scheme has pointers (really just indexes, and they\r<br>use int for that, not actual pointers) and also the partials\r<br>for the edges.  We are lazy about computing many of the partials,\r<br>which saves memory in cases other than just sum.  For instance,\r<br>an exp node doesn&#39;t need to store a partial and a daughter,\r<br>just the daughter, because the partial&#39;s recoverable as the\r<br>value.  On the other hand, the Adept-like scheme doesn&#39;t\r<br>need to store a vtable pointer.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On 1/20/14, 7:51 PM, Marcus Brubaker wrote:\r<br>&gt; Ok, I just took a quick look at the Adept paper.  Basically, we&#39;re talking about doing the expression template pattern\r<br>&gt; that Eigen uses to do autodiff and extending it to higher order derivatives?  That makes sense to me, but I don&#39;t see\r<br>&gt; how that requires that something like dot_product,  sum or any other function which takes vector or matrix needs to be\r<br>&gt; implemented in terms of the elementary operations.  Just like we have a custom dot_product vari now, we create a custom\r<br>&gt; dot_product expression template in the new pattern.  The same would hold for other more complex functions (e.g., inverse\r<br>&gt; quadratic forms).  Going further on that though, won&#39;t this make our compilation times *much* worse though?\r<br>&gt;\r<br>&gt; Cheers,\r<br>&gt; Marcus\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt; On Mon, Jan 20, 2014 at 1:32 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br>&gt;\r<br>&gt;     I wouldn&#39;t get that shy about virtual functions.\r<br>&gt;     You should do whatever&#39;s most efficient.\r<br>&gt;\r<br>&gt;     The thing I&#39;m mainly worried about is memory in\r<br>&gt;     the new approach.  Secondarily, I&#39;m worried about\r<br>&gt;     very sparse Hessians leading to too much extra work.\r<br>&gt;\r<br>&gt;     If you can tame that with virtual functions, it&#39;s\r<br>&gt;     probably going to be worth taking the speed hit.\r<br>&gt;\r<br>&gt;     We could look into static expression graphs (Michael\r<br>&gt;     means ones that don&#39;t change from evaluation to\r<br>&gt;     evaluation, which means no loops or conditionals\r<br>&gt;     based on anything other than data).\r<br>&gt;\r<br>&gt;     - Bob\r<br>&gt;\r<br>&gt;\r<br>&gt;     On 1/20/14, 7:24 PM, Michael Betancourt wrote:\r<br>&gt;\r<br>&gt;             I don&#39;t think so.  By doing multiple passes, you only wind up having\r<br>&gt;             to compute a row of the Hessian at a time.  And in cases where the\r<br>&gt;             expression graph is sparse, you don&#39;t store the equivalent of all the\r<br>&gt;             zeroes --- just take dot product as an example again.\r<br>&gt;\r<br>&gt;             Of course, all the recomputation is where you lose out in time!\r<br>&gt;\r<br>&gt;\r<br>&gt;         Again, we have competing issues here.\r<br>&gt;\r<br>&gt;         Virtual functions or static expression graphs would allow for\r<br>&gt;         custom calculations at each node, providing a huge speed\r<br>"
+    ],
+    [
+     1,
+     "&gt;         up when thereï¿½s structure.  The latter is not mutually exclusive\r<br>"
+    ],
+    [
+     2,
+     "&gt;         with the new approach.\r<br>&gt;\r<br>&gt;         The alternative is to encode that structure into the\r<br>&gt;         expression graph, as we have already discussed.\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt;         But general matrix ops do not have much structure ï¿½\r<br>&gt;         there shouldnï¿½t be any huge inefficiency using the new\r<br>"
+    ],
+    [
+     2,
+     "&gt;         approach verses the old one.\r<br>&gt;\r<br>&gt;         --\r<br>&gt;         You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt;         To unsubscribe from this group and stop receiving emails from it, send an email to\r<br>"
+    ],
+    [
+     1,
+     "&gt;         stan-dev+unsubscribe@__<a href=\"http://googlegroups.com\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://googlegroups.com&amp;source=gmail&amp;ust=1792475212858000&amp;usg=AOvVaw1SsOjJYcrUNsSToCDuN-2C\">googlegroups.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">stan-dev%2Bunsu...@googlegroups.com</a>&gt;.\r<br>&gt;         For more options, visit <a href=\"https://groups.google.com/__groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/__groups/opt_out&amp;source=gmail&amp;ust=1792475212858000&amp;usg=AOvVaw2fXAgx89mLJeKDBG8X2dwC\">https://groups.google.com/__groups/opt_out</a> &lt;<a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212858000&amp;usg=AOvVaw0EumGsq2td9pTeHR5x3525\">https://groups.google.com/groups/opt_out</a>&gt;.\r<br>"
+    ],
+    [
+     2,
+     "&gt;\r<br>&gt;\r<br>&gt;     --\r<br>&gt;     You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt;     To unsubscribe from this group and stop receiving emails from it, send an email to\r<br>"
+    ],
+    [
+     1,
+     "&gt;     stan-dev+unsubscribe@__<a href=\"http://googlegroups.com\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://googlegroups.com&amp;source=gmail&amp;ust=1792475212858000&amp;usg=AOvVaw1SsOjJYcrUNsSToCDuN-2C\">googlegroups.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">stan-dev%2Bunsu...@googlegroups.com</a>&gt;.\r<br>&gt;     For more options, visit <a href=\"https://groups.google.com/__groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/__groups/opt_out&amp;source=gmail&amp;ust=1792475212858000&amp;usg=AOvVaw2fXAgx89mLJeKDBG8X2dwC\">https://groups.google.com/__groups/opt_out</a> &lt;<a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212858000&amp;usg=AOvVaw0EumGsq2td9pTeHR5x3525\">https://groups.google.com/groups/opt_out</a>&gt;.\r<br>"
+    ],
+    [
+     2,
+     "&gt;\r<br>&gt;\r<br>&gt; --\r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>"
+    ],
+    [
+     1,
+     "&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>"
+    ],
+    [
+     3,
+     "&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212858000&amp;usg=AOvVaw0EumGsq2td9pTeHR5x3525\">https://groups.google.com/groups/opt_out</a>.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "x2g0SpVFEvIJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2014-01-20T22:00:16Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Ok, I see your concern with memory but I&#39;m not sure that&#39;s much different than what we&#39;re doing now.  We already have to store the value and an adjoint for everything.  For more complex operations we end up storing a bit more than that (e.g., matrix factorizations).  Sure it will get nastier with higher order derivatives, but, to some extent, that&#39;s unavoidable.  So long as we can<div>\r\n<br></div><div>1. Make the expression graph smaller by compressing things with specializations of the expression templates, and</div><div>2. Implement special traversals of the expression graph to efficiently implement things like Hessian-vector products</div>\r\n<div><br></div><div>then it seems plausible.  I&#39;m still not seeing at all why dot_product would have to be done in terms of scalar ops though...  Also, just to be clear, it&#39;s not really dot_product that worries me most, it&#39;s things like mdivide_left.  If we have to do dot_product with scalar ops, does that mean we have to do mdivide_left (and hence, Cholesky/QR/etc) with scalar ops?  If so that&#39;s really bad but right now I don&#39;t see why that has to be the case.</div>\r\n<div><br></div><div>Cheers,</div><div>Marcus</div><div><br></div></div><div class=\"gmail_extra\"><br><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\">On Mon, Jan 20, 2014 at 3:24 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br>\r\n</div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">There are two parts to the Adept auto-diff system.<br>\r\n<br>\r\nOne&#39;s the templating, and yes, that&#39;d make compilation times<br>\r\neven worse.  I&#39;m not convinced it&#39;s worth the coding hassle<br>\r\ngiven how many functions we have to deal with.<br>\r\n<br>\r\nThe other is that it just creates an expression graph consisting<br>\r\nonly of nodes and partials, so that the backward pass is just<br>\r\na bunch of add/multiply ops.  Exactly what we&#39;re doing for<br>\r\nthe probability functions, but without any need for the virtual<br>\r\nfunction call.<br>\r\n<br>\r\nMichael figured out how to extend that scheme to higher-order<br>\r\nderivatives.  Actually, Michael just figured it out from<br>\r\nscratch --- only after he explained it did I tell him it<br>\r\nwas like what Adept was doing.  I&#39;d experimented with the<br>\r\nsame scheme a while ago, but couldn&#39;t really get it to go<br>\r\nany faster than what we had, but I&#39;m not sure I fully got<br>\r\nrid of the virtual function calls.<br>\r\n<br>\r\nThe downside of Adept compared to what we&#39;re doing now is<br>\r\nthat it can be more memory intensive.  For instance, in<br>\r\nsums, we only have pointers to the daughter nodes, whereas<br>\r\nthe Adept scheme has pointers (really just indexes, and they<br>\r\nuse int for that, not actual pointers) and also the partials<br>\r\nfor the edges.  We are lazy about computing many of the partials,<br>\r\nwhich saves memory in cases other than just sum.  For instance,<br>\r\nan exp node doesn&#39;t need to store a partial and a daughter,<br>\r\njust the daughter, because the partial&#39;s recoverable as the<br>\r\nvalue.  On the other hand, the Adept-like scheme doesn&#39;t<br>\r\nneed to store a vtable pointer.<br>\r\n<br>\r\n- Bob<div><br>\r\n<br>\r\nOn 1/20/14, 7:51 PM, Marcus Brubaker wrote:<br>\r\n</div></blockquote></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>\r\nOk, I just took a quick look at the Adept paper.  Basically, we&#39;re talking about doing the expression template pattern<br>\r\nthat Eigen uses to do autodiff and extending it to higher order derivatives?  That makes sense to me, but I don&#39;t see<br>\r\nhow that requires that something like dot_product,  sum or any other function which takes vector or matrix needs to be<br>\r\nimplemented in terms of the elementary operations.  Just like we have a custom dot_product vari now, we create a custom<br>\r\ndot_product expression template in the new pattern.  The same would hold for other more complex functions (e.g., inverse<br>\r\nquadratic forms).  Going further on that though, won&#39;t this make our compilation times *much* worse though?<br>\r\n<br>\r\nCheers,<br>\r\nMarcus<br>\r\n<br>\r\n<br>\r\n<br></div></blockquote></blockquote></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\nOn Mon, Jan 20, 2014 at 1:32 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:<br>\r\n\r\n<br>\r\n    I wouldn&#39;t get that shy about virtual functions.<br>\r\n    You should do whatever&#39;s most efficient.<br>\r\n<br>\r\n    The thing I&#39;m mainly worried about is memory in<br>\r\n    the new approach.  Secondarily, I&#39;m worried about<br>\r\n    very sparse Hessians leading to too much extra work.<br>\r\n<br>\r\n    If you can tame that with virtual functions, it&#39;s<br>\r\n    probably going to be worth taking the speed hit.<br>\r\n<br>\r\n    We could look into static expression graphs (Michael<br>\r\n    means ones that don&#39;t change from evaluation to<br>\r\n    evaluation, which means no loops or conditionals<br>\r\n    based on anything other than data).<br>\r\n<br>\r\n    - Bob<br>\r\n<br>\r\n<br>\r\n    On 1/20/14, 7:24 PM, Michael Betancourt wrote:<br>\r\n<br>\r\n            I don&#39;t think so.  By doing multiple passes, you only wind up having<br>\r\n            to compute a row of the Hessian at a time.  And in cases where the<br>\r\n            expression graph is sparse, you don&#39;t store the equivalent of all the<br>\r\n            zeroes --- just take dot product as an example again.<br>\r\n<br>\r\n            Of course, all the recomputation is where you lose out in time!<br>\r\n<br>\r\n<br>\r\n        Again, we have competing issues here.<br>\r\n<br>\r\n        Virtual functions or static expression graphs would allow for<br>\r\n        custom calculations at each node, providing a huge speed<br></div></div></blockquote></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n        up when there’s structure.  The latter is not mutually exclusive</div></div></blockquote></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><br>\r\n        with the new approach.<br>\r\n<br>\r\n        The alternative is to encode that structure into the<br>\r\n        expression graph, as we have already discussed.<br>\r\n<br></div></div></blockquote></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n        But general matrix ops do not have much structure —<br>\r\n        there shouldn’t be any huge inefficiency using the new</div></div></blockquote></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><br>\r\n        approach verses the old one.<br>\r\n<br>\r\n        --<br>\r\n        You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br>\r\n        To unsubscribe from this group and stop receiving emails from it, send an email to<br></div></div></blockquote></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n        stan-dev+unsubscribe@__<a href=\"http://googlegroups.com\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://googlegroups.com&amp;source=gmail&amp;ust=1792475212862000&amp;usg=AOvVaw0iEuZGOCxsMDZBJAM3PZ2S\">googleg<u></u>roups.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">stan-dev%<u></u>2Bunsu...@googlegroups.com</a><u></u>&gt;.<br>\r\n\r\n        For more options, visit <a href=\"https://groups.google.com/__groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/__groups/opt_out&amp;source=gmail&amp;ust=1792475212862000&amp;usg=AOvVaw16rVV4VTSr79yiPecnXnIk\">https://groups.google.com/__<u></u>groups/opt_out</a> &lt;<a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212862000&amp;usg=AOvVaw1wSVT8DdPce2fXwDfOCAeL\">https://groups.google.com/<u></u>groups/opt_out</a>&gt;.<div>\r\n<br>\r\n<br>\r\n<br>\r\n    --<br>\r\n    You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br>\r\n    To unsubscribe from this group and stop receiving emails from it, send an email to<br></div>\r\n    stan-dev+unsubscribe@__<a href=\"http://googlegroups.com\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://googlegroups.com&amp;source=gmail&amp;ust=1792475212862000&amp;usg=AOvVaw0iEuZGOCxsMDZBJAM3PZ2S\">googleg<u></u>roups.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">stan-dev%<u></u>2Bunsu...@googlegroups.com</a><u></u>&gt;.<br>\r\n\r\n    For more options, visit <a href=\"https://groups.google.com/__groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/__groups/opt_out&amp;source=gmail&amp;ust=1792475212862000&amp;usg=AOvVaw16rVV4VTSr79yiPecnXnIk\">https://groups.google.com/__<u></u>groups/opt_out</a> &lt;<a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212862000&amp;usg=AOvVaw1wSVT8DdPce2fXwDfOCAeL\">https://groups.google.com/<u></u>groups/opt_out</a>&gt;.</blockquote></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>\r\n<br>\r\n<br>\r\n<br>\r\n--<br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br></div></blockquote></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+unsubscribe@<u></u>googlegroups.com</a>.</div></blockquote></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212862000&amp;usg=AOvVaw1wSVT8DdPce2fXwDfOCAeL\">https://groups.google.com/<u></u>groups/opt_out</a>.<br>\r\n</div></blockquote></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.<br></div></div></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+unsubscribe@<u></u>googlegroups.com</a>.</div></div></blockquote></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212862000&amp;usg=AOvVaw1wSVT8DdPce2fXwDfOCAeL\">https://groups.google.com/<u></u>groups/opt_out</a>.<br>\r\n</div></div></blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "BfF5L_85IUwJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-20T22:19:09Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "To review:\r<br>\r<br>Forward mode computes scalars, namely,\r<br>\r<br>v^{i} partial_{i} phi\r<br>v^{i} w^{j} partial_{i} partial{j} phi\r<br>v^{i} w^{j} x^{k} partial_{i} partial_{j} partial_{k} phi\r<br>\r<br>efficiently, and because only one sweep is necessary memory\r<br>can be allocated on the stack and grows only as the largest node.\r<br>\r<br>Reverse mode computes vectors, namely\r<br>\r<br>partial_{i} phi\r<br>v^{i} partial_{i} partial_{j} phi\r<br>v^{i} w^{j} partial_{i} partial_{j} partial_{k} phi,\r<br>\r<br>efficiently, at the expense of having to store everything\r<br>on the heap.  The savings are significantly, at least an order\r<br>of N faster than forward mode.\r<br>\r<br>The new method computes both forward and reverse mode,\r<br>but focuses on saving the expression graph so that multiple\r<br>sweeps can be made without duplicating any partial evaluations.\r<br>It could easily be modified to do forward mode with allocation\r<br>only on the stack.\r<br>\r<br>Now the expanded memory footprint for reverse mode goes as\r<br>the size of the largest node, which in most cases will be dwarfed\r<br>by the size of the full expression graph.  Higher-order partials\r<br>follow a similar pattern.  In particular, the footprint should\r<br>grow with some coefficient times the size of the problem,\r<br>and if memory is an issue then there are going to be much worse\r<br>problems with higher-order methods (RHMC NUTS uses way\r<br>more memory than this).  In particular, if we template out first-order \r<br>and higher-order executables then the memory footprint should be \r<br>manageable for really big models.\r<br>\r<br>Now, that said, there are many optimizations that could be made\r<br>if we admit polymorphism.  Dynamic polymorphism is slow,\r<br>static would require a change to the modeling language (loops\r<br>are fine, the bounds just have to be constants).  Adept very\r<br>elegantly used expression templates for static polymorphism\r<br>which also allowed the compiler to compile away all kinds of\r<br>optimizations.\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Jan 20, 2014, at 8:24 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>\r<br>&gt; There are two parts to the Adept auto-diff system.\r<br>&gt; \r<br>&gt; One&#39;s the templating, and yes, that&#39;d make compilation times\r<br>&gt; even worse.  I&#39;m not convinced it&#39;s worth the coding hassle\r<br>&gt; given how many functions we have to deal with.\r<br>&gt; \r<br>&gt; The other is that it just creates an expression graph consisting\r<br>&gt; only of nodes and partials, so that the backward pass is just\r<br>&gt; a bunch of add/multiply ops.  Exactly what we&#39;re doing for\r<br>&gt; the probability functions, but without any need for the virtual\r<br>&gt; function call.\r<br>&gt; \r<br>&gt; Michael figured out how to extend that scheme to higher-order\r<br>&gt; derivatives.  Actually, Michael just figured it out from\r<br>&gt; scratch --- only after he explained it did I tell him it\r<br>&gt; was like what Adept was doing.  I&#39;d experimented with the\r<br>&gt; same scheme a while ago, but couldn&#39;t really get it to go\r<br>&gt; any faster than what we had, but I&#39;m not sure I fully got\r<br>&gt; rid of the virtual function calls.\r<br>&gt; \r<br>&gt; The downside of Adept compared to what we&#39;re doing now is\r<br>&gt; that it can be more memory intensive.  For instance, in\r<br>&gt; sums, we only have pointers to the daughter nodes, whereas\r<br>&gt; the Adept scheme has pointers (really just indexes, and they\r<br>&gt; use int for that, not actual pointers) and also the partials\r<br>&gt; for the edges.  We are lazy about computing many of the partials,\r<br>&gt; which saves memory in cases other than just sum.  For instance,\r<br>&gt; an exp node doesn&#39;t need to store a partial and a daughter,\r<br>&gt; just the daughter, because the partial&#39;s recoverable as the\r<br>&gt; value.  On the other hand, the Adept-like scheme doesn&#39;t\r<br>&gt; need to store a vtable pointer.\r<br>&gt; \r<br>&gt; - Bob\r<br>&gt; \r<br>&gt; On 1/20/14, 7:51 PM, Marcus Brubaker wrote:\r<br>&gt;&gt; Ok, I just took a quick look at the Adept paper.  Basically, we&#39;re talking about doing the expression template pattern\r<br>&gt;&gt; that Eigen uses to do autodiff and extending it to higher order derivatives?  That makes sense to me, but I don&#39;t see\r<br>&gt;&gt; how that requires that something like dot_product,  sum or any other function which takes vector or matrix needs to be\r<br>&gt;&gt; implemented in terms of the elementary operations.  Just like we have a custom dot_product vari now, we create a custom\r<br>&gt;&gt; dot_product expression template in the new pattern.  The same would hold for other more complex functions (e.g., inverse\r<br>&gt;&gt; quadratic forms).  Going further on that though, won&#39;t this make our compilation times *much* worse though?\r<br>&gt;&gt; \r<br>&gt;&gt; Cheers,\r<br>&gt;&gt; Marcus\r<br>&gt;&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; On Mon, Jan 20, 2014 at 1:32 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br>&gt;&gt; \r<br>&gt;&gt;    I wouldn&#39;t get that shy about virtual functions.\r<br>&gt;&gt;    You should do whatever&#39;s most efficient.\r<br>&gt;&gt; \r<br>&gt;&gt;    The thing I&#39;m mainly worried about is memory in\r<br>&gt;&gt;    the new approach.  Secondarily, I&#39;m worried about\r<br>&gt;&gt;    very sparse Hessians leading to too much extra work.\r<br>&gt;&gt; \r<br>&gt;&gt;    If you can tame that with virtual functions, it&#39;s\r<br>&gt;&gt;    probably going to be worth taking the speed hit.\r<br>&gt;&gt; \r<br>&gt;&gt;    We could look into static expression graphs (Michael\r<br>&gt;&gt;    means ones that don&#39;t change from evaluation to\r<br>&gt;&gt;    evaluation, which means no loops or conditionals\r<br>&gt;&gt;    based on anything other than data).\r<br>&gt;&gt; \r<br>&gt;&gt;    - Bob\r<br>&gt;&gt; \r<br>&gt;&gt; \r<br>&gt;&gt;    On 1/20/14, 7:24 PM, Michael Betancourt wrote:\r<br>&gt;&gt; \r<br>&gt;&gt;            I don&#39;t think so.  By doing multiple passes, you only wind up having\r<br>&gt;&gt;            to compute a row of the Hessian at a time.  And in cases where the\r<br>&gt;&gt;            expression graph is sparse, you don&#39;t store the equivalent of all the\r<br>&gt;&gt;            zeroes --- just take dot product as an example again.\r<br>&gt;&gt; \r<br>&gt;&gt;            Of course, all the recomputation is where you lose out in time!\r<br>&gt;&gt; \r<br>&gt;&gt; \r<br>&gt;&gt;        Again, we have competing issues here.\r<br>&gt;&gt; \r<br>&gt;&gt;        Virtual functions or static expression graphs would allow for\r<br>&gt;&gt;        custom calculations at each node, providing a huge speed\r<br>"
+    ],
+    [
+     1,
+     "&gt;&gt;        up when there’s structure.  The latter is not mutually exclusive\r<br>"
+    ],
+    [
+     2,
+     "&gt;&gt;        with the new approach.\r<br>&gt;&gt; \r<br>&gt;&gt;        The alternative is to encode that structure into the\r<br>&gt;&gt;        expression graph, as we have already discussed.\r<br>&gt;&gt; \r<br>"
+    ],
+    [
+     1,
+     "&gt;&gt;        But general matrix ops do not have much structure —\r<br>&gt;&gt;        there shouldn’t be any huge inefficiency using the new\r<br>"
+    ],
+    [
+     3,
+     "&gt;&gt;        approach verses the old one.\r<br>&gt;&gt; \r<br>&gt;&gt;        --\r<br>&gt;&gt;        You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt;&gt;        To unsubscribe from this group and stop receiving emails from it, send an email to\r<br>&gt;&gt;        stan-dev+unsubscribe@__<a href=\"http://googlegroups.com\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://googlegroups.com&amp;source=gmail&amp;ust=1792475212866000&amp;usg=AOvVaw3JLTZAxTtc0KFRB9x9-6Ha\">googlegroups.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">stan-dev%2Bunsu...@googlegroups.com</a>&gt;.\r<br>&gt;&gt;        For more options, visit <a href=\"https://groups.google.com/__groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/__groups/opt_out&amp;source=gmail&amp;ust=1792475212866000&amp;usg=AOvVaw2ybBd5PrYJygAU_eWQwK7D\">https://groups.google.com/__groups/opt_out</a> &lt;<a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212866000&amp;usg=AOvVaw3CKWdtaP3F7N3T71Ztidyf\">https://groups.google.com/groups/opt_out</a>&gt;.\r<br>&gt;&gt; \r<br>&gt;&gt; \r<br>&gt;&gt;    --\r<br>&gt;&gt;    You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt;&gt;    To unsubscribe from this group and stop receiving emails from it, send an email to\r<br>&gt;&gt;    stan-dev+unsubscribe@__<a href=\"http://googlegroups.com\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://googlegroups.com&amp;source=gmail&amp;ust=1792475212866000&amp;usg=AOvVaw3JLTZAxTtc0KFRB9x9-6Ha\">googlegroups.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">stan-dev%2Bunsu...@googlegroups.com</a>&gt;.\r<br>&gt;&gt;    For more options, visit <a href=\"https://groups.google.com/__groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/__groups/opt_out&amp;source=gmail&amp;ust=1792475212866000&amp;usg=AOvVaw2ybBd5PrYJygAU_eWQwK7D\">https://groups.google.com/__groups/opt_out</a> &lt;<a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212866000&amp;usg=AOvVaw3CKWdtaP3F7N3T71Ztidyf\">https://groups.google.com/groups/opt_out</a>&gt;.\r<br>&gt;&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; --\r<br>&gt;&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt;&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt;&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212866000&amp;usg=AOvVaw3CKWdtaP3F7N3T71Ztidyf\">https://groups.google.com/groups/opt_out</a>.\r<br>&gt; \r<br>&gt; -- \r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan development mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-dev+u...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792475212866000&amp;usg=AOvVaw3CKWdtaP3F7N3T71Ztidyf\">https://groups.google.com/groups/opt_out</a>.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "4iRsM961i8UJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2014-01-20T22:36:47Z",
+   "subject": "Re: [stan-dev] new auto-diff + improved existing forward-mode",
+   "parts": [
+    [
+     1,
+     "<div style=\"word-wrap:break-word\">No, you can _compute_ everything with matrix ops, the results just have to stored in many-to-one nodes.<div>So an N-to-M function would be stored in the graph as M N-to-1 node, but we can do all of the N-to-M</div><div>linear algebra efficiently when we compute all those partials.</div><div><br></div><div>Instantiation (i.e. computing the partials) can be specialized right now, it’s just traversal of the graph</div><div>that has to be generalized.</div></div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><div><br><div><div><br><div><div>On Jan 20, 2014, at 10:00 PM, Marcus Brubaker &lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt; wrote:</div><br><blockquote type=\"cite\"><span style=\"font-family:Helvetica;font-size:11px;font-style:normal;font-variant:normal;font-weight:normal;letter-spacing:normal;line-height:normal;text-align:start;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px;float:none;display:inline!important\">then it seems plausible.  I&#39;m still not seeing at all why dot_product would have to be done in terms of scalar ops though...  Also, just to be clear, it&#39;s not really dot_product that worries me most, it&#39;s things like mdivide_left.  If we have to do dot_product with scalar ops, does that mean we have to do mdivide_left (and hence, Cholesky/QR/etc) with scalar ops?  If so that&#39;s really bad but right now I don&#39;t see why that has to be the case.</span></blockquote></div><br></div></div></div></div>"
+    ]
+   ]
+  }
+ ]
+}

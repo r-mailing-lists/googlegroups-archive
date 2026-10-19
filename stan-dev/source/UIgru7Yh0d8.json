@@ -1,0 +1,189 @@
+{
+ "thread": "UIgru7Yh0d8",
+ "subject": "destroying variables",
+ "messages_listed": 5,
+ "last_activity": "2012-10-29T21:13:53Z",
+ "messages": [
+  {
+   "id": "y6w24BgiHmUJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-10-29T02:08:35Z",
+   "subject": "destroying variables",
+   "parts": [
+    [
+     1,
+     "Why do we declare the variables in the log_prob function, as opposed to declaring them in the class definition and just modifying them in the log_prob function? I guess it doesn&#39;t make too much difference for scalars, but for matrices, it wasn&#39;t obvious to me why we were doing that. For example, why do<div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">matrix_v R_t = in__.corr_matrix_constrain(D,lp__);</font></div></div></code></div><br></div><div>as opposed to designing things so that this</div><div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">in__.corr_matrix_constrain(D,lp__,R_t);</font></div></div></code></div><br>would fill the already allocated R_t? Or in the future,</div><div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\">R_t.set_foo(something);</font></div></code></div><br>Particularly, if say we had a giant Cholesky factor L, then the upper triangle is always going to stay the same, and we only need to update the lower triangle and diagonal. It seems like it would be a waste to malloc the whole thing every time, right?</div><div><br></div><div>I thought that maybe the vars need to be destroyed every function call in order to reset the auto-diff mechanism. But then I couldn&#39;t grasp why the matrix or vector that holds the vars needed to be destroyed to accomplish that. So I&#39;m confused.</div><div><br></div><div>Ben</div><div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "Sko1oahIWl0J",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-29T18:13:50Z",
+   "subject": "Re: [stan-dev] destroying variables",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 10/28/12 10:08 PM, Ben Goodrich wrote:\r<br>&gt; Why do we declare the variables in the log_prob function, as opposed to declaring them in the class definition\r<br> &gt; and just modifying them in the log_prob function?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Three important reasons, any of which could be overridden\r<br>if we really need the speed:\r<br>\r<br>1.  Thread safety.\r<br>\r<br>The way it&#39;s written, instances of log_prob_grad can be\r<br>made thread safe by making auto-dif thread safe (via\r<br>using thread-local instances for the auto-dif stack).\r<br>\r<br>If we used local variables for scratch space, it\r<br>would no longer be thread safe, at least unless those\r<br>were also made thread-local.  That could be done.\r<br>\r<br>We&#39;re not even running multi-threaded yet; we can run\r<br>multi-process -- that&#39;s easy.\r<br>\r<br>\r<br>2.  Conceptual clarity of scope.\r<br>\r<br>The variables used in log_prob are local/scratch variables\r<br>to the log_prob calc, not conceptually part of the model.\r<br>\r<br>The usual reason that classes will not hold onto a reference\r<br>to some large data structure across calls is because it\r<br>keeps the class object itself smaller, which all else being\r<br>equal is good.  For us, that won&#39;t matter as the lifespan of\r<br>the class is just for computing the log probs and gradients\r<br>we need.\r<br>\r<br>\r<br>3.  State consistency.\r<br>\r<br>This follows from the immutability of the model.  That means\r<br>no public ways to change data.  Our models (log_prob_grad\r<br>objects, really), set all their data during construction and\r<br>it never changes.\r<br>\r<br>Immutable objects are not only thread safe, but state safe,\r<br>meaning they are never in an illegal state with respect\r<br>to their member variables (i.e., non-static class variables).\r<br>This assumes you check on construction, of course.\r<br>\r<br>If you use a no-arg constructor + setter pattern, you have\r<br>to make sure enough setters are called to get your object\r<br>into a consistent state and then that every subsequent set\r<br>maintains a consistent state.\r<br>\r<br>The burden is that it requires classes to be constructed with\r<br>all their immutable data.\r<br>"
+    ],
+    [
+     2,
+     "\r<br> &gt; I guess it doesn&#39;t make too much difference for scalars, but for matrices, it\r<br>&gt; wasn&#39;t obvious to me why we were doing that. For example, why do\r<br>&gt;\r<br>&gt; |\r<br>&gt; matrix_v R_t = in__.corr_matrix_constrain(D,lp__);\r<br>&gt; |\r<br>&gt;\r<br>&gt; as opposed to designing things so that this\r<br>&gt;\r<br>&gt; |\r<br>&gt; in__.corr_matrix_constrain(D,lp__,R_t);\r<br>&gt; |\r<br>&gt;\r<br>&gt; would fill the already allocated R_t? Or in the future,\r<br>&gt;\r<br>&gt; |\r<br>&gt; R_t.set_foo(something);\r<br>&gt; |\r<br>&gt;\r<br>&gt; Particularly, if say we had a giant Cholesky factor L, then the upper triangle is always going to stay the same, and we\r<br>&gt; only need to update the lower triangle and diagonal. It seems like it would be a waste to malloc the whole thing every\r<br>&gt; time, right?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right.  For scalars, it&#39;s just as efficient if not\r<br>more efficient to keep things local.\r<br>\r<br>For matrices, you&#39;re right that we&#39;re doing unnecessary\r<br>mallocs.  Do you really think these are going to\r<br>be costly compared to all the other ops we&#39;re doing?\r<br>\r<br>If we gave up thread safety we could use member variables\r<br>for function scratch.  Or we could make them thread local\r<br>themselves, which has a performance overhead (but could\r<br>be configured through compile-time properties).\r<br>\r<br>We could also do something in between like re-use the\r<br>variables over leapfrog steps.\r<br>\r<br>As to the upper triangle always being ignored, what we\r<br>really need is a triangular data structure in both Stan\r<br>and Eigen.  And we&#39;d have to be careful in Stan it\r<br>doesn&#39;t just get promoted back to a full matrix by operations.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I thought that maybe the vars need to be destroyed every function call in order to reset the auto-diff mechanism. But\r<br>&gt; then I couldn&#39;t grasp why the matrix or vector that holds the vars needed to be destroyed to accomplish that. So I&#39;m\r<br>&gt; confused.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right.  The stan::agrad::var instances will get destroyed\r<br>each auto-diff step.  But that doesn&#39;t mean you have to\r<br>destroy the holder matrix.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "5uCxfvar5egJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-10-29T20:25:43Z",
+   "subject": "Re: [stan-dev] destroying variables",
+   "parts": [
+    [
+     2,
+     "On Monday, October 29, 2012 2:13:51 PM UTC-4, Bob Carpenter wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">On 10/28/12 10:08 PM, Ben Goodrich wrote:\n<br>&gt; Why do we declare the variables in the log_prob function, as opposed to declaring them in the class definition\n<br> &gt; and just modifying them in the log_prob function?\n<br>\n<br>Three important reasons, any of which could be overridden\n<br>if we really need the speed:\n<br>\n<br>1.  Thread safety.\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Ah. I hadn&#39;t thought about thread safety. I guess for a CovarianceMatrix, it would be easy enough to make a .lock() and a .unlock() method, but in general it would be more effort to ensure thread safety if the containers were pre-declared.</div>"
+    ],
+    [
+     2,
+     "<div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">2.  Conceptual clarity of scope. <br>\n<br>The variables used in log_prob are local/scratch variables\n<br>to the log_prob calc, not conceptually part of the model.\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>This one doesn&#39;t seem that compelling to me, but I see your point.</div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">3.  State consistency. </blockquote>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><br><br>If you use a no-arg constructor + setter pattern, you have\n<br>to make sure enough setters are called to get your object\n<br>into a consistent state and then that every subsequent set\n<br>maintains a consistent state.\n<br></blockquote>"
+    ],
+    [
+     1,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"></blockquote><div><br></div><div>There is an alternative, which I was planning to utilize with the new CovarianceMatrices: every set_foo(something) method flips all the *Initialized flags to false and every other method checks whether the thing it wants to use is initialized before it uses it.</div><div><br></div><div>Another choice would have every set_foo(something) method not only set foo but also set all the other data members. But then it would be setting data members that might not ever be needed in that model.</div>"
+    ],
+    [
+     2,
+     "<div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">For matrices, you&#39;re right that we&#39;re doing unnecessary <br>mallocs.  Do you really think these are going to\n<br>be costly compared to all the other ops we&#39;re doing?\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>I haven&#39;t tested it, so premature optimization and all that. But presumably we could construct a scenario where the costs are substantial with a sufficiently big matrix. Also, for a CovarianceMatrix, suppose you need a Cholesky factor to set, the precision matrix for the likelihood, and the covariance matrix for writing to the output. Then that is 2 mallocs per log_prob() plus another per iteration that could be avoided.</div>"
+    ],
+    [
+     2,
+     "<div><br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">As to the upper triangle always being ignored, what we\n<br>really need is a triangular data structure in both Stan\n<br>and Eigen.  And we&#39;d have to be careful in Stan it\n<br>doesn&#39;t just get promoted back to a full matrix by operations.\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Yeah, that would be nice if Eigen supported it.</div><div><br></div><div>Ben</div><div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "EId_5_TXvs4J",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-10-29T20:41:36Z",
+   "subject": "Re: [stan-dev] destroying variables",
+   "parts": [
+    [
+     2,
+     "On Mon, Oct 29, 2012 at 4:25 PM, Ben Goodrich <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;</span> wrote:<br>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div>On Monday, October 29, 2012 2:13:51 PM UTC-4, Bob Carpenter wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">On 10/28/12 10:08 PM, Ben Goodrich wrote:\r\n<br>&gt; Why do we declare the variables in the log_prob function, as opposed to declaring them in the class definition\r\n<br> &gt; and just modifying them in the log_prob function?\r\n<br>\r\n<br>Three important reasons, any of which could be overridden\r\n<br>if we really need the speed:\r\n<br>\r\n<br>1.  Thread safety.\r\n<br></blockquote><div><br></div></div><div>Ah. I hadn&#39;t thought about thread safety. I guess for a CovarianceMatrix, it would be easy enough to make a .lock() and a .unlock() method, but in general it would be more effort to ensure thread safety if the containers were pre-declared.</div>\r\n<div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">2.  Conceptual clarity of scope. <br>\r\n<br>The variables used in log_prob are local/scratch variables\r\n<br>to the log_prob calc, not conceptually part of the model.\r\n<br></blockquote><div><br></div></div><div>This one doesn&#39;t seem that compelling to me, but I see your point.</div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n3.  State consistency. <div><br><br>If you use a no-arg constructor + setter pattern, you have\r\n<br>to make sure enough setters are called to get your object\r\n<br>into a consistent state and then that every subsequent set\r\n<br>maintains a consistent state.\r\n<br></div></blockquote><div><br></div><div>There is an alternative, which I was planning to utilize with the new CovarianceMatrices: every set_foo(something) method flips all the *Initialized flags to false and every other method checks whether the thing it wants to use is initialized before it uses it.</div>\r\n<div><br></div><div>Another choice would have every set_foo(something) method not only set foo but also set all the other data members. But then it would be setting data members that might not ever be needed in that model.</div>\r\n<div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">For matrices, you&#39;re right that we&#39;re doing unnecessary <br>mallocs.  Do you really think these are going to\r\n<br>be costly compared to all the other ops we&#39;re doing?\r\n<br></blockquote><div><br></div></div><div>I haven&#39;t tested it, so premature optimization and all that. But presumably we could construct a scenario where the costs are substantial with a sufficiently big matrix. Also, for a CovarianceMatrix, suppose you need a Cholesky factor to set, the precision matrix for the likelihood, and the covariance matrix for writing to the output. Then that is 2 mallocs per log_prob() plus another per iteration that could be avoided.</div>\r\n</blockquote><div><br></div><div><br></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div>I&#39;ve done some profiling off and on.  It&#39;s been a little while since the last time (maybe a month or two) but I&#39;ve never seen eigen::matrix or std::vector construction/allocation showup anywhere near the top of the list for the models I&#39;ve worked with which have tended to be on the larger size (thousands of parameters).  vari construction dominated (but is greatly reduced these days due to the new vari&#39;s for vector ops), followed by the actual numerical calculations of the model which are unavoidable.</div>\r\n<div><br></div><div><br></div><div>Cheers,</div><div>Marcus</div></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "OZeR-cztf50J",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-29T21:13:53Z",
+   "subject": "Re: [stan-dev] destroying variables",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 10/29/12 4:25 PM, Ben Goodrich wrote:\r<br>&gt; On Monday, October 29, 2012 2:13:51 PM UTC-4, Bob Carpenter wrote:\r<br>&gt;\r<br>&gt;     On 10/28/12 10:08 PM, Ben Goodrich wrote:\r<br>&gt;      &gt; Why do we declare the variables in the log_prob function, as opposed to declaring them in the class definition\r<br>&gt;       &gt; and just modifying them in the log_prob function?\r<br>&gt;\r<br>&gt;     Three important reasons, any of which could be overridden\r<br>&gt;     if we really need the speed:\r<br>&gt;\r<br>&gt;     1.  Thread safety.\r<br>&gt;\r<br>&gt;\r<br>&gt; Ah. I hadn&#39;t thought about thread safety. I guess for a CovarianceMatrix, it would be easy enough to make a .lock() and\r<br>&gt; a .unlock() method, but in general it would be more effort to ensure thread safety if the containers were pre-declared.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Then we&#39;d have to have a way to aquire and release\r<br>locks in all of our matrix ops.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;     2.  Conceptual clarity of scope.\r<br>&gt;\r<br>&gt;     The variables used in log_prob are local/scratch variables\r<br>&gt;     to the log_prob calc, not conceptually part of the model.\r<br>&gt;\r<br>&gt;\r<br>&gt; This one doesn&#39;t seem that compelling to me, but I see your point.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "It only helps for maintenance and understandability!\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;     3.  State consistency.\r<br>&gt;\r<br>&gt;     If you use a no-arg constructor + setter pattern, you have\r<br>&gt;     to make sure enough setters are called to get your object\r<br>&gt;     into a consistent state and then that every subsequent set\r<br>&gt;     maintains a consistent state.\r<br>&gt;\r<br>&gt;\r<br>&gt; There is an alternative, which I was planning to utilize with the new CovarianceMatrices: every set_foo(something)\r<br>&gt; method flips all the *Initialized flags to false and every other method checks whether the thing it wants to use is\r<br>&gt; initialized before it uses it.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right -- this is what you were laying out on Andrew&#39;s\r<br>board and I think it&#39;s a good idea for covariance\r<br>matrices.  The design combines lazy well-formedness\r<br>checks and lazy inits of values (like Cholesky factors\r<br>or determinants [or even gradients if we get really\r<br>crazy]).\r<br>\r<br>That design combines lazy well-formedness checks\r<br>(on access) and lazy inits of values.\r<br>\r<br>You can do one without the other.\r<br>\r<br>With eager well-formedness, you might lazy init\r<br>but still compute well-formedness on the fly.  It&#39;s\r<br>useful to catch errors as soon as possible, so there&#39;s\r<br>something to be said for this.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Another choice would have every set_foo(something) method not only set foo but also set all the other data members. But\r<br>&gt; then it would be setting data members that might not ever be needed in that model.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s where the lazy inits save the day!\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;     For matrices, you&#39;re right that we&#39;re doing unnecessary\r<br>&gt;     mallocs.  Do you really think these are going to\r<br>&gt;     be costly compared to all the other ops we&#39;re doing?\r<br>&gt;\r<br>&gt;\r<br>&gt; I haven&#39;t tested it, so premature optimization and all that. But presumably we could construct a scenario where the\r<br>&gt; costs are substantial with a sufficiently big matrix.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "It&#39;s more the relative costs I&#39;m worried about.\r<br>\r<br>The mallocs actually get cheaper per entry as the number\r<br>of entries grow.  The time to copy grows linearly.\r<br>\r<br>But I&#39;m thinking that&#39;s blown away by the cost to\r<br>compute a Cholesky factor, determinant, etc.  Or really\r<br>even the cost to multiply matrices.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Also, for a CovarianceMatrix, suppose you need a Cholesky factor\r<br>&gt; to set, the precision matrix for the likelihood, and the covariance matrix for writing to the output. Then that is 2\r<br>&gt; mallocs per log_prob() plus another per iteration that could be avoided.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;     As to the upper triangle always being ignored, what we\r<br>&gt;     really need is a triangular data structure in both Stan\r<br>&gt;     and Eigen.  And we&#39;d have to be careful in Stan it\r<br>&gt;     doesn&#39;t just get promoted back to a full matrix by operations.\r<br>&gt;\r<br>&gt;\r<br>&gt; Yeah, that would be nice if Eigen supported it.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "It&#39;s been another ongoing thread on their lists along\r<br>with heterogeneous typed ops.  In my fantasy world, someone\r<br>else would upgrade Eigen (say, maybe, Ben and Doug Bates, who&#39;s\r<br>also been active on the Eigen lists around these issues).\r<br>\r<br>It&#39;s on our wish list for the Army grant Andrew and I\r<br>just pre-proposed with a white paper.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  }
+ ]
+}

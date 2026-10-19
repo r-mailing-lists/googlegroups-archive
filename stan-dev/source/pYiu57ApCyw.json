@@ -1,0 +1,173 @@
+{
+ "thread": "pYiu57ApCyw",
+ "subject": "Optimization of stack_alloc::alloc",
+ "messages_listed": 9,
+ "last_activity": "2012-03-14T22:48:21Z",
+ "messages": [
+  {
+   "id": "LeorOCTFSeMJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-13T22:53:32Z",
+   "subject": "Optimization of stack_alloc::alloc",
+   "parts": [
+    [
+     1,
+     "I made some small changes to stack_alloc::alloc() which cut it&#39;s cost by ~37%.  Since it&#39;s a pretty central function I wanted to run the patch by people before I pushed it.  I&#39;ve run make test-unit which comes up clean, but I wanted to be doubly sure.<br>\n<br>On a related note it seems like (at least in my case) it&#39;s not (entirely) extra calls to to_var() that are the culprit.  In fact ~60% of the calls are coming from operators (* and +) being used in Eigen::internal::gebp_kernel which is called by Eigen::internal::general_matrix_matrix_product (from multiply(matrix_v,matrix_v)) and Eigen::internal::triangular_solve_matrix (from multi_normal_cholesky_log).<br>\n<br>(For reference, this profiling is done with g++ -O3 using callgrind and the excellent Kcachegrind to visualize results.)<br><br>Cheers,<br>Marcus<br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "I2Bs5EoNzqEJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-03-13T23:14:20Z",
+   "subject": "Re: [stan-dev] Optimization of stack_alloc::alloc",
+   "parts": [
+    [
+     1,
+     "Awesome.  I&#39;ll take a look.  If all of our<br>unit tests are passing, we should be OK.<p>g++ -O3 is exactly what we&#39;re targeting.  Thanks<br>for pointing out which tools you used.<p>I&#39;ll take a look and hopefully learn more about C++<br>optimization.<p>The other thing to look at is the way objects<br>get constructed in var and vari -- that&#39;s where<br>the stack allocation&#39;s getting called.<p>For to_var(), I was talking about arithmetic operators of mixed<br>types, as in Matrix&lt;var&gt; * Matrix&lt;double&gt; and even more so<br>Matrix&lt;var&gt; + Matrix&lt;double&gt;.  The extra memory overhead hurts<br>as much as the time.<p>The solvers shouldn&#39;t need to_var() at all, as they work on a single<br>type.  And we of course expect the solving to dominate (like<br>the log gamma and digamma functions implicated in some of<br>the gradients and to a lesser extent, log and exp itself).<p>For some operations, we know there&#39;s no effect on gradients,<br>like transpose.  But for others like products or sums,<br>it&#39;d be nice to compute the gradients directly.  That&#39;s only<br>going to help for the solvers if we can push it through to<br>the operator*() for Eigen matrices used by the solvers.<p>In some cases (like inverse as you pointed out before),<br>we might be able to get some speedup by sending a Matrix&lt;double&gt;<br>to the solver and computing the effect on the gradients ourselves.<p>- Bob</p></p></p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><p><p>On 3/13/12 6:53 PM, Marcus Brubaker wrote:<br>&gt; I made some small changes to stack_alloc::alloc() which cut it&#39;s cost by<br>&gt; ~37%.  Since it&#39;s a pretty central function I wanted to run the patch by<br>&gt; people before I pushed it.  I&#39;ve run make test-unit which comes up<br>&gt; clean, but I wanted to be doubly sure.<br>&gt;<br>&gt; On a related note it seems like (at least in my case) it&#39;s not<br>&gt; (entirely) extra calls to to_var() that are the culprit.  In fact ~60%<br>&gt; of the calls are coming from operators (* and +) being used in<br>&gt; Eigen::internal::gebp_kernel which is called by<br>&gt; Eigen::internal::general_matrix_matrix_product (from<br>&gt; multiply(matrix_v,matrix_v)) and<br>&gt; Eigen::internal::triangular_solve_matrix (from multi_normal_cholesky_log).<br>&gt;<br>&gt; (For reference, this profiling is done with g++ -O3 using callgrind and<br>&gt; the excellent Kcachegrind to visualize results.)<br>&gt;<br>&gt; Cheers,<br>&gt; Marcus<br></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "kVquSVgt2tIJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-03-13T23:39:42Z",
+   "subject": "comments/questions on updated stack_alloc",
+   "parts": [
+    [
+     1,
+     "This all looks fine, and I can see the motivation for<br>the changes.  Some I didn&#39;t know would make<br>that much of a difference, like declaring a variable<br>outside of the body of an if statement.<p>My only concern is how portable<p>     __builtin_expect<p>is.  Does it run on all compilers we&#39;re likely to encounter?<br>If not, could we IFDEF the likely(x) and unlikely(x)<br>macros for some flag indicating we&#39;re using GCC and<br>fall back to a simpler definition?<p>We are mainly targeting gcc, but we want to be able<br>to run on Windows, and that&#39;s been a compilation<br>struggle so far.<p>We&#39;ve been trying to avoid macros, but this is exactly<br>the kind of place where they make sense.<p>All those calls to eight_byte_aligned_malloc might<br>be removed, too, but I figured they weren&#39;t too common<br>and are only going to occur in the context of an already<br>expensive malloc operation.<p>- Bob<p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "UGq-Rrl1fT4J",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-13T23:55:02Z",
+   "subject": "Re: [stan-dev] comments/questions on updated stack_alloc",
+   "parts": [
+    [
+     2,
+     "<div class=\"gmail_quote\">On Tue, Mar 13, 2012 at 7:39 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\nThis all looks fine, and I can see the motivation for<br>\nthe changes.  Some I didn&#39;t know would make<br>\nthat much of a difference, like declaring a variable<br>\noutside of the body of an if statement.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>I was a little surprised about that as well.  I figured the compiler would be smart enough to optimize it appropriately, but apparently not.  That said, a big part of improvement was simply avoiding multiple calls to .size().<br>\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<br>\nMy only concern is how portable<br>\n<br>\n    __builtin_expect<br>\n<br>\nis.  Does it run on all compilers we&#39;re likely to encounter?<br>\nIf not, could we IFDEF the likely(x) and unlikely(x)<br>\nmacros for some flag indicating we&#39;re using GCC and<br>\nfall back to a simpler definition?<br>\n<br>\nWe are mainly targeting gcc, but we want to be able<br>\nto run on Windows, and that&#39;s been a compilation<br>\nstruggle so far.<br>\n<br>\nWe&#39;ve been trying to avoid macros, but this is exactly<br>\nthe kind of place where they make sense.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I double checked that it&#39;s available on both gcc and clang.  It can be easily ifdef&#39;d out based on __GNUC__, although I&#39;m not sure what happens with clang in that case.<br>\n\n<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<br>\nAll those calls to eight_byte_aligned_malloc might<br>\nbe removed, too, but I figured they weren&#39;t too common<br>\nand are only going to occur in the context of an already<br>\nexpensive malloc operation.<span><font color=\"#888888\"><br></font></span></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>The typical use pattern for stack_alloc means that eight_byte_aligned_malloc will almost never be called compared to the rest of the code in there.  This is so much the case that eight_byte_aligned_malloc never really shows up on the profiles.<br>\n<br>On a related note, I realized that there is a bug in the 8 byte alignment of stack_alloc::alloc().  Specifically, when the value of used_ is not a multiple of 8, the returned pointer will not be properly aligned even if malloc() is properly aligned.  I suspect that this rarely happens in practice, but it could in theory.<br>\n</div></div><br>Cheers,<br>Marcus<br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "21DdJo1WB6AJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-03-14T00:21:16Z",
+   "subject": "Re: [stan-dev] comments/questions on updated stack_alloc",
+   "parts": [
+    [
+     2,
+     "On Tuesday, March 13, 2012 7:55:02 PM UTC-4, Marcus Brubaker wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div class=\"gmail_quote\">I double checked that it&#39;s available on both gcc and clang.  It can be easily ifdef&#39;d out based on __GNUC__, although I&#39;m not sure what happens with clang in that case.<br></div></blockquote><br>"
+    ],
+    [
+     1,
+     "clang defines __GNUC__, see<br><br>goodrich@CYBERPOWERPC:/tmp$ clang -x c /dev/null -dM -E | grep GNUC<br>#define __GNUC_MINOR__ 2<br>#define __GNUC_PATCHLEVEL__ 1<br>#define __GNUC_STDC_INLINE__ 1<br>#define __GNUC__ 4<br><br>so the Linux kernel apparently does<br><br><pre><code>#ifdef __GNUC__\n#  define likely(x)   __builtin_expect((x), 1)\n#  define unlikely(x) __builtin_expect((x), 0)\n#else\n#  define likely(x)   (x)\n#  define unlikely(x) (x)\n#endif<br><br>Ben<br></code></pre><br>"
+    ]
+   ]
+  },
+  {
+   "id": "O19YdWIcgIIJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-03-14T21:12:18Z",
+   "subject": "Re: [stan-dev] comments/questions on updated stack_alloc",
+   "parts": [
+    [
+     1,
+     "I tried to apply the patch and ran into this<br>problem:<p>   ~/stan&gt;git am stack_allocopt.patch<br>   Patch format detection failed.<p>Could you (Marcus) apply it on your side?<br>The patch Ben sent me that worked looked like an<br>e-mail and then had a diff command inside; yours<br>didn&#39;t have the e-mail header or the file insert/delete<br>listing before the diff.<p>I&#39;d like to provide an ifdef for non-g++ and<br>non-clang++ compilers.  The current macros from<br>Marcus&#39;s patch are:<p>#define likely(x) (__builtin_expect(!!(x),1))<br>#define unlikely(x) (__builtin_expect(!!(x),0))<p>I get the double-negation in the expect 1 case<br>for likely(x), but shouldn&#39;t we be able to get<br>rid of it in the second case for unlikely(x)?<p>So what I&#39;m thinking (perhaps without second &quot;!!&quot;)<br>is:<p>#ifdef __GNUC__<br>#  define likely(x)   __builtin_expect(!!(x), 1)<br>#  define unlikely(x) __builtin_expect(!!(x), 0)</p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><br>#else<br>#  define likely(x)   (x)<br>#  define unlikely(x) (x)<br>#endif</p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p>Plus the rest of Marcus&#39;s patch, of course.<p>- Bob<br></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "Wf3iGS9cgLgJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-14T21:21:14Z",
+   "subject": "Re: [stan-dev] comments/questions on updated stack_alloc",
+   "parts": [
+    [
+     1,
+     "So I&#39;ve gone ahead and added in the ifdef, removed the double negation on both counts (I&#39;ve seen both versions floating about) and pushed the change since no one seemed to have significant objections.  It should be in git now.  Of course if something comes up we can back it out.<br>\n<br>Sorry, I had meant to send an email about this when I pushed the changes it but I forgot.  Mea culpa.<br><br>Cheers,<br>Marcus"
+    ],
+    [
+     3,
+     "<br><br><div class=\"gmail_quote\">On Wed, Mar 14, 2012 at 5:12 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br>\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">I tried to apply the patch and ran into this<br>\nproblem:<br>\n<br>\n  ~/stan&gt;git am stack_allocopt.patch<br>\n  Patch format detection failed.<br>\n<br>\nCould you (Marcus) apply it on your side?<br>\nThe patch Ben sent me that worked looked like an<br>\ne-mail and then had a diff command inside; yours<br>\ndidn&#39;t have the e-mail header or the file insert/delete<br>\nlisting before the diff.<br>\n<br>\nI&#39;d like to provide an ifdef for non-g++ and<br>\nnon-clang++ compilers.  The current macros from<br>\nMarcus&#39;s patch are:<br>\n<br>\n#define likely(x) (__builtin_expect(!!(x),1))<br>\n#define unlikely(x) (__builtin_expect(!!(x),0))<br>\n<br>\nI get the double-negation in the expect 1 case<br>\nfor likely(x), but shouldn&#39;t we be able to get<br>\nrid of it in the second case for unlikely(x)?<br>\n<br>\nSo what I&#39;m thinking (perhaps without second &quot;!!&quot;)<br>\nis:<br>\n<br>\n#ifdef __GNUC__<br>\n#  define likely(x)   __builtin_expect(!!(x), 1)<br>\n#  define unlikely(x) __builtin_expect(!!(x), 0)<div><br>\n#else<br>\n#  define likely(x)   (x)<br>\n#  define unlikely(x) (x)<br>\n#endif<br>\n<br></div>\nPlus the rest of Marcus&#39;s patch, of course.<span><font color=\"#888888\"><br>\n<br>\n- Bob<br>\n</font></span></blockquote></div><br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "OHCdXWR_lZsJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-03-14T22:44:32Z",
+   "subject": "Re: [stan-dev] comments/questions on updated stack_alloc",
+   "parts": [
+    [
+     2,
+     "On Wednesday, March 14, 2012 5:12:18 PM UTC-4, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I tried to apply the patch and ran into this<br>problem:<p>   ~/stan&gt;git am stack_allocopt.patch<br>   Patch format detection failed.</p><p>Could you (Marcus) apply it on your side?<br>The patch Ben sent me that worked looked like an<br>e-mail and then had a diff command inside; yours<br>didn&#39;t have the e-mail header or the file insert/delete<br>listing before the diff.</p></blockquote>"
+    ],
+    [
+     1,
+     "FYI: patches should be created with git format-patch, in which case they can be applied (assuming no conflicts) with git apply or git am.<br><br>But this is now moot in this case because Marcus did a git push. <br><br>Ben<br><br>"
+    ]
+   ]
+  },
+  {
+   "id": "OJdqBH6ZxlEJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-14T22:48:21Z",
+   "subject": "Re: [stan-dev] comments/questions on updated stack_alloc",
+   "parts": [
+    [
+     3,
+     "<div class=\"gmail_quote\">On Wed, Mar 14, 2012 at 6:44 PM, Ben Goodrich <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n<div>On Wednesday, March 14, 2012 5:12:18 PM UTC-4, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I tried to apply the patch and ran into this<br>\nproblem:<p>   ~/stan&gt;git am stack_allocopt.patch<br>   Patch format detection failed.</p><p>Could you (Marcus) apply it on your side?<br>The patch Ben sent me that worked looked like an<br>e-mail and then had a diff command inside; yours<br>\ndidn&#39;t have the e-mail header or the file insert/delete<br>listing before the diff.</p></blockquote></div>FYI: patches should be created with git format-patch, in which case they can be applied (assuming no conflicts) with git apply or git am.<br>\n<br>But this is now moot in this case because Marcus did a git push. <br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I&#39;ve been using git diff, which seemed to produce patches which applied for me.  (I used them to move some patches between different machines.)  However, after looking at the git format-patch and git am help pages, those seem like they&#39;d be really helpful in being more selective with the patch creation.  Thanks for the tip!<br>\n<br>Cheers,<br>Marcus<br><br></div></div><br>\n"
+    ]
+   ]
+  }
+ ]
+}

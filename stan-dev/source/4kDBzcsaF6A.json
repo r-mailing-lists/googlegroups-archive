@@ -1,0 +1,231 @@
+{
+ "thread": "4kDBzcsaF6A",
+ "subject": "command-line and RStan config",
+ "messages_listed": 3,
+ "last_activity": "2014-08-27T17:46:23Z",
+ "messages": [
+  {
+   "id": "3UaLsuRNhHIJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-08-19T18:56:25Z",
+   "subject": "command-line and RStan config",
+   "parts": [
+    [
+     1,
+     "&lt;can_of_worms&gt;\r<br>\r<br>I&#39;m listing out some slightly finer-grained commands than Andrew\r<br>used to help illustrate what we&#39;ll need to do with config.  I didn&#39;t\r<br>want to just go crazy overwriting the Wiki \r<br>\r<br>  <a href=\"https://github.com/stan-dev/rstan/wiki/Interfaces-3.0-Spec\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/stan-dev/rstan/wiki/Interfaces-3.0-Spec&amp;source=gmail&amp;ust=1792474364861000&amp;usg=AOvVaw3RP4ucguLHIFlsfi-B0_CD\">https://github.com/stan-dev/rstan/wiki/Interfaces-3.0-Spec</a>\r<br>\r<br>without discussion.\r<br>\r<br>Allen hinted that PyStan can follow along with what RStan does, but\r<br>if there are PyStan-specific issues, now&#39;s the time to bring them up!\r<br>\r<br>I think there are good motivations for the finer-grained functions,\r<br>namely so that we can compile a model and reuse it with different\r<br>data without recompiling.  And do all of this with log prob and\r<br>gradients without ever calling sampling or optimizing functions.\r<br>\r<br>At the same time, I imagine most R users will use something like\r<br>the existing stan() function for sampling or the existing optimizing()\r<br>function for MLEs.\r<br>\r<br>If we have these finer-grained functions in R, there are two issues:\r<br>\r<br>1.  How do we configure them?  The lower-level functions only require\r<br>parts of the total configuration needed for stan() for sampling\r<br>and/or optimizing() for optimization with uncertainty, etc.\r<br>\r<br>2.  Do we want to implement the stan() and optimizing() commands in RStan\r<br>using the lower-level RStan API pieces, or do we want to have callbacks\r<br>into a larger Stan object in C++ with the existing uber-config object.\r<br>I&#39;ve been lobbying for the former.\r<br>\r<br>But I don&#39;t imagine most R users would build what they needed out\r<br>of this low-level R API, but rather they&#39;d use something like the existing\r<br>stan() or optimizing() commands.\r<br>\r<br>The question is then whether we want to build RStan&#39;s higher-level ops\r<br>out of these lower-level ops or whether we want one big Stan function\r<br>implemented in Stan C++ and configured from RStan and with callbacks\r<br>for whatever functionality we need in Stan.  Then we probably would try\r<br>to create the pieces by running samplers for 0 iterations or whatever\r<br>other hacks we needed to do to make the R interface clean from the R\r<br>user perspective.\r<br>\r<br>Each object could potentially hold refs to everything it was constructed\r<br>with as well as intermediate states it went through, though I&#39;m not convinced that&#39;s \r<br>a good idea.\r<br>\r<br>Note that everything here gets created in a stable state and nothing\r<br>is mutable.  And there aren&#39;t any hairball config objects.  We can be\r<br>clever on the inside with make-like behavior for the compilation and\r<br>perhaps for other objects we can re-use if they&#39;re expensive to recreate.\r<br>\r<br>OBJECTS AND RELATED FUNCTIONS\r<br>=======================================\r<br>\r<br>It seems like reference classes would be the way to go to create each\r<br>of the objects.\r<br>\r<br>This proposal does not have the big config object like Ben was suggesting\r<br>on the Wiki.  I still don&#39;t see what that would buy us and would strongly\r<br>prefer to build modularly than with some kind of blackboard architecture.\r<br>I say again the latter is almost impossible to doc, test, and maintain\r<br>consistency for.  Everything below maintains consistency where it needs\r<br>to as well-formed objects are constructed.\r<br>\r<br>\r<br>RNG and States\r<br>---------------------------------------------\r<br>We need to be able to manage RNG state, which is more complex\r<br>than just a seed, at least with what we&#39;re using now.\r<br>\r<br>* rng_state create_rng_state(seed);\r<br>\r<br>* rng create_rng(rng_state);\r<br>\r<br>* rng_state get_rng_state(rng);\r<br>\r<br>\r<br>Text Streams\r<br>----------------------------------------------\r<br>* textstream &lt;- create_stream(file=path, string=value, url=url);\r<br> \r<br>exactly one option must be specified;  or we could break\r<br>it out into functions (I don&#39;t see how we could overload in R).\r<br>\r<br>* textstream &lt;- create_stream_from_path(file=string);\r<br>* textstream &lt;- create_stream_from_string(string=string);\r<br>* textstream &lt;- create_stream_from_url(url=strings);\r<br>\r<br>Structured Data Source\r<br>----------------------------------------------\r<br>\r<br>* struct_data &lt;- create_structured_data_names(names=string-vector, \r<br>                                              context=);\r<br>\r<br>* struct_data &lt;- create_structured_data_list(list=list);  \r<br>\r<br>* struct_data &lt;- create_structured_data_dump_file(file = string);\r<br>\r<br>* struct_data &lt;- create_structured_data_json_file(file = string);\r<br>\r<br>\r<br>Compilation\r<br>----------------------------------------------\r<br>The first step is to compile the program into a shared object/DLL\r<br>which can be later populated with data.\r<br>\r<br>* program &lt;- compile(source=textstream, compile_options=...)\r<br>   \r<br>    compile_options includes library location, optimization level, ???\r<br>\r<br>\r<br>Instantiation with Data\r<br>----------------------------------------------\r<br>Populate the model with data, producing a proper density proportional\r<br>to what we want to sample with.\r<br>\r<br>* density &lt;- instantiate(program=program, data=struct_data);\r<br>\r<br>The density class implements log_prob, gradients, and also\r<br>allows inspection of variable name list, constrained variable dimensions\r<br>list, and unconstrained variable sizes, as well as a translator\r<br>for constrained to unconstrained.  \r<br>\r<br>\r<br>States and Initialization\r<br>----------------------------------------------\r<br>Create a sampler state, consisting of unconstrained values for\r<br>all parameters.\r<br>\r<br>* sampler_state &lt;- initialize(data=struct_data, density=density);\r<br>\r<br>\r<br>Sampler\r<br>----------------------------------------------\r<br>* sampler &lt;- adapt_hmc(density=density, inits=sampler_state,\r<br>                       adapt_config=..., rng=rng);\r<br>\r<br>The resulting sampler needs to hang onto the rng so its\r<br>state is gettable, and will also hold a density and the\r<br>current state.   Maybe this wants to be broken down into\r<br>NUTS (+/- adapted step size and mass matrix) and\r<br>HMC (+/- adapted step size and mass matrix and specified num \r<br>steps [no way to adapt num steps as is]).  \r<br>\r<br>Maybe we also need to be able to create a sampler without\r<br>any adaptation if we set all the params.  \r<br>\r<br>* sampler &lt;- static_hmc(density=desnity, inits=state,\r<br>                        step_size=double, mass_matrix=...,\r<br>                        num_steps=int);\r<br>\r<br>Also, this should probably save the intermediate steps in\r<br>case we need them for traceplotting.\r<br>\r<br>And now that I write this, I see that we need a way of specifying\r<br>unit, diagonal, or dense mass matrices.\r<br>\r<br>\r<br>Draws\r<br>----------------------------------------------\r<br>This creates an iterator to draw a single vector of\r<br>parameter values (a sampler_state) at a time.\r<br>\r<br>* sampler_state draw(sampler);\r<br>\r<br>Draws a single state from the sampler and modifies sampler.  Will\r<br>the sampler state change when the sampler changes or is it a copy?\r<br>\r<br>\r<br>Single Chain\r<br>----------------------------------------------\r<br>\r<br>Now I&#39;m getting confused, because we probably want the chains to\r<br>be the structured, constrained values.  Or maybe not?\r<br>\r<br>* chain &lt;- create_chain(num_draws=int, num_warmup=int);\r<br>\r<br>Not sure if we want num_warmup here, and num_draws\r<br>can just be to preallocate necessary vectors.\r<br>\r<br>* add(states=sampler_states, warmup=boolean);\r<br>\r<br>This is already not quite a sample if there are warmup iterations\r<br>involved.  Not sure if the flag is a good idea.\r<br>\r<br>Where to put things like timing info?  Do we keep updating\r<br>it with a time argument on each call, or just with some\r<br>kind of final opertion that adds in a time.  I don&#39;t like the\r<br>latter as it leaves the states possibly ill defined.\r<br>\r<br>The chain doesn&#39;t know anything about where it came from.\r<br>\r<br>Also an issue of storage.  Do we store just something flat\r<br>and keep a reference to dimensions, or do we store with structure?\r<br>I don&#39;t even know how to do the latter in a general way in R.\r<br>\r<br>\r<br>Multiple Chains\r<br>----------------------------------------------\r<br>This is where we&#39;d run all the posterior analysis and printing\r<br>from.\r<br>\r<br>* chains &lt;- create_chains(num_chains=int);\r<br>\r<br>* add(chains, chain, id=int);\r<br>\r<br>If we want to print times, the single chains are going to need\r<br>to have times, or the times will have to be added when the chain\r<br>is added.\r<br>\r<br>\r<br>MLE\r<br>----------------------------------------------\r<br>We want to create a density and what not the same way, but\r<br>I don&#39;t know that we want to put the iterator on the outside.\r<br>\r<br>param_state &lt;- optimize(density=density, init=structured_data,\r<br>                        opt_params=...?...);\r<br>\r<br>I&#39;m OK breaking this down into one function per type of\r<br>optimizer (bfgs, lbfgs, newton, conjugate gradient, etc.),\r<br>because they all take slightly different parameters.\r<br>\r<br>\r<br>OO Notation\r<br>===============================================\r<br>Rather than just using \r<br>\r<br>  a$foo(...)$bar(...)\r<br>\r<br>we can change each member function into a regular function,\r<br>and write this as:\r<br>\r<br>   bar(foo(a,...), ...)\r<br>\r<br>I think this may be more in line with what R users are\r<br>expecting.\r<br>\r<br>&lt;/can_of_worms&gt;\r<br>\r<br>- Bob\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "cXud7LsfIWIJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2014-08-20T19:11:31Z",
+   "subject": "Re: command-line and RStan config",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\">On Tuesday, August 19, 2014 2:56:25 PM UTC-4, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Note that everything here gets created in a stable state and nothing\r\n<br>is mutable.  </blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>I don&#39;t think having everything be immutable is the best way to go. It makes sense for some things like the compiled model wrapper or the MCMC samples. But I don&#39;t think it makes sense for something like config, where there are so many options. I think the best design would be something like<br><br>config_object &lt;- stan_config(algorithm = &quot;sampling&quot;, ...) <br><br>that would call a C++ function in libstan and create an R object that has the default configuration for MCMC sampling (the default would be different for optimization, etc.) that has been overwritten using the arguments passed (if any) via the ... argument. Then config_object would basically be a named list of character vectors of length two where the first element is the value and the second element is the explanation that you see in cmdstan if you ask for help. Then users could then change something like<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">config_object$adapt_delta</span><span style=\"color:#660\">[</span><span style=\"color:#066\">1</span><span style=\"color:#660\">]</span><span style=\"color:#000\"> </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.6</span><span style=\"color:#000\"><br></span></div></code></div><br>That does mean that config_object has to get revalidated on the C++ side when the sampling starts, but that is cheap and easy. If you make the config_object immutable, then all the non-default arguments would have to get passed when it is created like<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">config_object </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> stan_config</span><span style=\"color:#660\">(</span><span style=\"color:#000\">algorithm </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#080\">&quot;sampling&quot;</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> adapt_delta </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.6</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br></span></div></code></div><br>which requires the user to know what all of the options are in advance. That doesn&#39;t make for a good interface when the Stan config is so complicated and 99.99% of things in R are mutable. A lot of progress was made with S4 objects that can revalidate themselves when one of their slots is modified but they retained the bizarre approach of defining generic functions whose signatures could involve object classes. <br>  <br></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">OBJECTS AND RELATED FUNCTIONS\r\n<br>=======================================\r\n<br>\r\n<br>It seems like reference classes would be the way to go to create each\r\n<br>of the objects.\r\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>I agree but I think we disagree as to why. For developers, there is some advantage to making the interfaces have the same logic as the C++ (we have the model inherit from an abstract base class with methods for log_prob, gradient, etc.). But for users, the main advantage is that they don&#39;t have to read very much documentation in the Rd format. For the R user to figure out what is possible, they need to either know the exact name of the function they need to call or the name of the class that is involved in the signature of the unknown function. And those are hard to guess or remember so they have to read the documentation like a book, which is not how the documentation is organized. And a lot of users don&#39;t even read the documentation because they expect it to not be helpful and just ask questions somewhere on the internet.<br><br>Python does this much better where if you have an object called pystan, you can just press TAB after that and it will tell you all the methods that are defined for that object. And then you can get help for a particular method. In R, it would be<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#008\">object</span><span style=\"color:#000\">$methods</span><span style=\"color:#660\">()</span><span style=\"color:#000\"> </span><span style=\"color:#800\"># sees that log_prob is one of the methods</span><span style=\"color:#000\"><br></span><span style=\"color:#008\">object</span><span style=\"color:#000\">$help</span><span style=\"color:#660\">(</span><span style=\"color:#000\">method </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#080\">&quot;log_prob&quot;</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#800\"># in the console, sees what the arguments are / what log_prob does</span><span style=\"color:#000\"><br></span><span style=\"color:#008\">object</span><span style=\"color:#000\">$log_prob</span><span style=\"color:#660\">(</span><span style=\"color:#000\">theta</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#800\"># returns lp__ at theta</span><span style=\"color:#000\"><br></span></div></code></div><br>So, it is an opportunity to change the workflow of RStan users away from a function-centric approach to an object-centric approach. If we also write a lot of one-line &quot;convenience&quot; functions like<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">setMethod</span><span style=\"color:#660\">(</span><span style=\"color:#080\">&quot;log_prob&quot;</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> signature</span><span style=\"color:#660\">(</span><span style=\"color:#008\">object</span><span style=\"color:#000\"> </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#080\">&quot;stanmodel&quot;</span><span style=\"color:#660\">),</span><span style=\"color:#000\"> </span><span style=\"color:#008\">def</span><span style=\"color:#000\"> </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#008\">function</span><span style=\"color:#660\">(</span><span style=\"color:#008\">object</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> theta</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">{</span><span style=\"color:#000\"><br>  </span><span style=\"color:#008\">return</span><span style=\"color:#000\"> </span><span style=\"color:#008\">object</span><span style=\"color:#000\">$log_prob</span><span style=\"color:#660\">(</span><span style=\"color:#000\">theta</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br></span><span style=\"color:#660\">})</span><span style=\"color:#000\"><br></span></div></code></div><br>then we have to document log_prob() in the Rd format, which makes users dumber.<br><br>If it is easier to maintain and test (which it probably will be), that is fine, but it would be possible to maintain and test even if doing so were difficult. If it makes it easier for R developers to build stuff by utilizing the RStan &quot;API&quot;, that is fine. But if it is easier to document, that is a problem because the documentation is the problem that we should be trying to minimize. <br><br></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nDraws\r\n<br>----------------------------------------------\r\n<br>This creates an iterator to draw a single vector of\r\n<br>parameter values (a sampler_state) at a time.\r\n<br>\r\n<br>* sampler_state draw(sampler);\r\n<br>\r\n<br>Draws a single state from the sampler and modifies sampler.  Will\r\n<br>the sampler state change when the sampler changes or is it a copy?\r\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">sampler$draw</span><span style=\"color:#660\">()</span><span style=\"color:#000\"><br></span></div></code></div><br>would change the state and does not make a copy. <br><br></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n* add(states=sampler_states, warmup=boolean);\r\n<br>\r\n<br>This is already not quite a sample if there are warmup iterations\r\n<br>involved.  Not sure if the flag is a good idea.\r\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>I think Andrew was suggesting something equivalent to<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">chain$adapt</span><span style=\"color:#660\">(</span><span style=\"color:#066\">1000</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br></span></div></code></div><br>and having the opportunity to examine how things are going before doing<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">chain$sample</span><span style=\"color:#660\">(</span><span style=\"color:#066\">1000</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br></span></div></code></div><br>but I think that would require some changes on the C++ side.<br> </div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nWhere to put things like timing info?  Do we keep updating\r\n<br>it with a time argument on each call, or just with some\r\n<br>kind of final opertion that adds in a time.  I don&#39;t like the\r\n<br>latter as it leaves the states possibly ill defined.\r\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>It may be possible to lock on the R side and permit the C++ to bypass the locks. I personally don&#39;t think it matters that much if a user sabatoges the timing output because that is not an input to anything.<br> </div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nAlso an issue of storage.  Do we store just something flat\r\n<br>and keep a reference to dimensions, or do we store with structure?\r\n<br>I don&#39;t even know how to do the latter in a general way in R.\r\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>I think the way we store stuff now is fine, which is a list of lists of vectors / matrices / arrays that is easy to convert to an array / matrix or extract a piece of.<br><br></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">MLE\r\n<br>----------------------------------------------\r\n<br>We want to create a density and what not the same way, but\r\n<br>I don&#39;t know that we want to put the iterator on the outside.\r\n<br>\r\n<br>param_state &lt;- optimize(density=density, init=structured_data,\r\n<br>                        opt_params=...?...);\r\n<br>\r\n<br>I&#39;m OK breaking this down into one function per type of\r\n<br>optimizer (bfgs, lbfgs, newton, conjugate gradient, etc.),\r\n<br>because they all take slightly different parameters.\r\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>That is five functions to document each with non-obvious names and different options where there could be one method.<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">config_object </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> stan_config</span><span style=\"color:#660\">(</span><span style=\"color:#080\">&quot;optimizing&quot;</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> algorithm </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#080\">&quot;lbfgs&quot;</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br>config_object </span><span style=\"color:#800\"># sees that m is an option</span><span style=\"color:#000\"><br>config_object$m</span><span style=\"color:#660\">[</span><span style=\"color:#066\">1</span><span style=\"color:#660\">]</span><span style=\"color:#000\"> </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> </span><span style=\"color:#066\">10</span><span style=\"color:#000\"><br></span></div></code></div><br> </div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nOO Notation\r\n<br>===============================================\r\n<br>Rather than just using \r\n<br>\r\n<br>  a$foo(...)$bar(...)\r\n<br>\r\n<br>we can change each member function into a regular function,\r\n<br>and write this as:\r\n<br>\r\n<br>   bar(foo(a,...), ...)\r\n<br>\r\n<br>I think this may be more in line with what R users are\r\n<br>expecting.\r\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>That is the problem not the solution. I guess we have to have a stan() function that can take dozens of arguments and do everything except output diagnostics. But to have a function like<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">setMethod</span><span style=\"color:#660\">(</span><span style=\"color:#080\">&quot;Rhat&quot;</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> </span><span style=\"color:#080\">&quot;stanfit&quot;</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> </span><span style=\"color:#008\">def</span><span style=\"color:#000\"> </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#008\">function</span><span style=\"color:#660\">(</span><span style=\"color:#008\">object</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> </span><span style=\"color:#008\">params</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#008\">object</span><span style=\"color:#000\">$Rhat</span><span style=\"color:#660\">(</span><span style=\"color:#008\">params</span><span style=\"color:#660\">))</span><span style=\"color:#000\"><br></span></div></code></div><br>is to avoid an opportunity to avoid shooting ourselves in the foot. It is not easy to remember if this function is called Rhat, or rhat, or R_hat, or r_hat, or R, or scale_reduction_factor, or scaleReductionFactor, or BGR, or BrooksGelmanRubin, or gelman.diag and the user has to know it happens to be called Rhat it order to lookup the fact that it takes an optional vector of parameter names. It is less hard to learn that doing<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#008\">object</span><span style=\"color:#000\">$methods</span><span style=\"color:#660\">()</span><span style=\"color:#000\"><br></span></div></code></div><br>tells you an exhaustive list of the things that can be done with that object, including <br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#008\">object</span><span style=\"color:#000\">$Rhat</span><span style=\"color:#660\">(</span><span style=\"color:#008\">params</span><span style=\"color:#660\">)</span></div></code></div><br>Ben<br><br></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "29UVnHbMIIwJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2014-08-27T17:46:23Z",
+   "subject": "Re: [stan-dev] Re: command-line and RStan config",
+   "parts": [
+    [
+     2,
+     "\r<br>On Aug 20, 2014, at 3:11 PM, Ben Goodrich &lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt; wrote:\r<br>\r<br>&gt; On Tuesday, August 19, 2014 2:56:25 PM UTC-4, Bob Carpenter wrote:\r<br>&gt; Note that everything here gets created in a stable state and nothing \r<br>&gt; is mutable.  \r<br>&gt; \r<br>&gt; I don&#39;t think having everything be immutable is the best way to go. It makes sense for some things like the compiled model wrapper or the MCMC samples. But I don&#39;t think it makes sense for something like config, where there are so many options. I think the best design would be something like\r<br>&gt; \r<br>&gt; config_object &lt;- stan_config(algorithm = &quot;sampling&quot;, ...) \r<br>&gt; \r<br>&gt; that would call a C++ function in libstan and create an R object that has the default configuration for MCMC sampling (the default would be different for optimization, etc.) that has been overwritten using the arguments passed (if any) via the ... argument. Then config_object would basically be a named list of character vectors of length two where the first element is the value and the second element is the explanation that you see in cmdstan if you ask for help. Then users could then change something like\r<br>&gt; \r<br>&gt; config_object$adapt_delta[1] &lt;- 0.6\r<br>&gt; \r<br>&gt; That does mean that config_object has to get revalidated on the C++ side when the sampling starts,\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I think it&#39;s better to validate early and often.  But then \r<br>you might not be able to do that if there are dependencies among\r<br>the config pieces.  \r<br>\r<br>And then you get into problems like you get with lm() in R when\r<br>the fit object can be out of synch.  If you do a fit, then change\r<br>the data in the fit object, you have what I consider to be an inconsistent\r<br>fit object.  \r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; but that is cheap and easy. If you make the config_object immutable, then all the non-default arguments would have to get passed when it is created like\r<br>&gt; \r<br>&gt; config_object &lt;- stan_config(algorithm = &quot;sampling&quot;, adapt_delta = 0.6)\r<br>&gt; \r<br>&gt; which requires the user to know what all of the options are in advance.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "They had to know them sometime and have them somewhere.  \r<br>\r<br>It&#39;s not the immutability that&#39;s key but the keeping everything in\r<br>a consistent state.\r<br>\r<br>You could do something like this\r<br>\r<br>  config_object &lt;- modify_config(config, algorithm = &quot;optimizing&quot;, tol_param=1e-6);\r<br>\r<br>that would create a new object based on the existing one with changes\r<br>as indicated.  Then at least the changes could be validated all at once.\r<br>Whereas if you do this:\r<br>\r<br>   config$algorithm = &quot;optimizing&quot;\r<br>\r<br>you&#39;re left in an inconsistent state with the other parameter settings.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; That doesn&#39;t make for a good interface when the Stan config is so complicated and 99.99% of things in R are mutable.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Really?  No wonder I have such a hard time understanding it.\r<br>It seems that this is going to lead to a world of trouble with\r<br>consistency.  As in lm().\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; A lot of progress was made with S4 objects that can revalidate themselves when one of their slots is modified but they retained the bizarre approach of defining generic functions whose signatures could involve object classes.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I think this would be a big improvement.  But coding those\r<br>updates is complicated as is documenting them and understanding\r<br>them from a user point of view, which is why I&#39;d rather avoid it.\r<br>\r<br>I do not like the lm approach of letting you get things in a \r<br>consistent state.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>\r<br>&gt; OBJECTS AND RELATED FUNCTIONS \r<br>&gt; ======================================= \r<br>&gt; \r<br>&gt; It seems like reference classes would be the way to go to create each \r<br>&gt; of the objects. \r<br>&gt; \r<br>&gt; I agree but I think we disagree as to why. For developers, there is some advantage to making the interfaces have the same logic as the C++ (we have the model inherit from an abstract base class with methods for log_prob, gradient, etc.).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I just meant that having objects consist of references to components\r<br>seems like the right way to go rather than copying everything.\r<br>But I probably misunderstood how things used to go.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; But for users, the main advantage is that they don&#39;t have to read very much documentation in the Rd format. For the R user to figure out what is possible, they need to either know the exact name of the function they need to call or the name of the class that is involved in the signature of the unknown function. And those are hard to guess or remember so they have to read the documentation like a book, which is not how the documentation is organized. And a lot of users don&#39;t even read the documentation because they expect it to not be helpful and just ask questions somewhere on the internet.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I&#39;m happy with anything that improves the doc R format.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Python does this much better where if you have an object called pystan, you can just press TAB after that and it will tell you all the methods that are defined for that object.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I think you get some of this in RStudio and in the R GUI.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; And then you can get help for a particular method. In R, it would be\r<br>&gt; \r<br>&gt; object$methods() # sees that log_prob is one of the methods\r<br>&gt; object$help(method = &quot;log_prob&quot;) # in the console, sees what the arguments are / what log_prob does\r<br>&gt; object$log_prob(theta) # returns lp__ at theta\r<br>&gt; \r<br>&gt; So, it is an opportunity to change the workflow of RStan users away from a function-centric approach to an object-centric approach.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Isn&#39;t most of R function-centric if we&#39;re talking about what&#39;s\r<br>idiomatic?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; If we also write a lot of one-line &quot;convenience&quot; functions like\r<br>&gt; \r<br>&gt; setMethod(&quot;log_prob&quot;, signature(object = &quot;stanmodel&quot;), def = function(object, theta) {\r<br>&gt;   return object$log_prob(theta)\r<br>&gt; })\r<br>&gt; \r<br>&gt; then we have to document log_prob() in the Rd format, which makes users dumber.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I&#39;m not sure the built-in doc is what&#39;s most important.  When I\r<br>try to use ggplot2, for example, I can&#39;t make heads or tails of\r<br>any of the built-in doc and need to go online or look in the book\r<br>for examples.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; If it is easier to maintain and test (which it probably will be), that is fine, but it would be possible to maintain and test even if doing so were difficult. If it makes it easier for R developers to build stuff by utilizing the RStan &quot;API&quot;, that is fine. But if it is easier to document, that is a problem because the documentation is the problem that we should be trying to minimize.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "My goal is for the API to be easy to write good doc for.\r<br>And by good doc, I mean easy for users to understand and\r<br>then employ.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Draws \r<br>&gt; ---------------------------------------------- \r<br>&gt; This creates an iterator to draw a single vector of \r<br>&gt; parameter values (a sampler_state) at a time. \r<br>&gt; \r<br>&gt; * sampler_state draw(sampler); \r<br>&gt; \r<br>&gt; Draws a single state from the sampler and modifies sampler.  Will \r<br>&gt; the sampler state change when the sampler changes or is it a copy? \r<br>&gt; \r<br>&gt; sampler$draw()\r<br>&gt; \r<br>&gt; would change the state and does not make a copy. \r<br>&gt; \r<br>&gt; * add(states=sampler_states, warmup=boolean); \r<br>&gt; \r<br>&gt; This is already not quite a sample if there are warmup iterations \r<br>&gt; involved.  Not sure if the flag is a good idea. \r<br>&gt; \r<br>&gt; I think Andrew was suggesting something equivalent to\r<br>&gt; \r<br>&gt; chain$adapt(1000)\r<br>&gt; \r<br>&gt; and having the opportunity to examine how things are going before doing\r<br>&gt; \r<br>&gt; chain$sample(1000)\r<br>&gt; \r<br>&gt; but I think that would require some changes on the C++ side.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The current command functions on the C++ side are too monolothic.  We\r<br>can call stan with adaptation iterations but no sampling iterations, but\r<br>then there&#39;s no way to get that state back in to start again from.\r<br>We do want to add that functionality.  \r<br>\r<br>This is part of breaking the design down into smaller parts.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Where to put things like timing info?  Do we keep updating \r<br>&gt; it with a time argument on each call, or just with some \r<br>&gt; kind of final opertion that adds in a time.  I don&#39;t like the \r<br>&gt; latter as it leaves the states possibly ill defined. \r<br>&gt; \r<br>&gt; It may be possible to lock on the R side and permit the C++ to bypass the locks. I personally don&#39;t think it matters that much if a user sabatoges the timing output because that is not an input to anything.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "If we want users to use it to measure how well optimized\r<br>their code is, it&#39;s going to matter.\r<br>\r<br>I&#39;d rather not have to get into locking.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Also an issue of storage.  Do we store just something flat \r<br>&gt; and keep a reference to dimensions, or do we store with structure? \r<br>&gt; I don&#39;t even know how to do the latter in a general way in R. \r<br>&gt; \r<br>&gt; I think the way we store stuff now is fine, which is a list of lists of vectors / matrices / arrays that is easy to convert to an array / matrix or extract a piece of.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Isn&#39;t this where part of the slowdown is in the output?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; MLE \r<br>&gt; ---------------------------------------------- \r<br>&gt; We want to create a density and what not the same way, but \r<br>&gt; I don&#39;t know that we want to put the iterator on the outside. \r<br>&gt; \r<br>&gt; param_state &lt;- optimize(density=density, init=structured_data, \r<br>&gt;                         opt_params=...?...); \r<br>&gt; \r<br>&gt; I&#39;m OK breaking this down into one function per type of \r<br>&gt; optimizer (bfgs, lbfgs, newton, conjugate gradient, etc.), \r<br>&gt; because they all take slightly different parameters. \r<br>&gt; \r<br>&gt; That is five functions to document each with non-obvious names and different options where there could be one method.\r<br>&gt; \r<br>&gt; config_object &lt;- stan_config(&quot;optimizing&quot;, algorithm = &quot;lbfgs&quot;)\r<br>&gt; config_object # sees that m is an option\r<br>&gt; config_object$m[1] &lt;- 10\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I prefer the modularity.  But I see the point about non-obvious names.\r<br>This is the problem I have with ggplot2.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; OO Notation \r<br>&gt; =============================================== \r<br>&gt; Rather than just using \r<br>&gt; \r<br>&gt;   a$foo(...)$bar(...) \r<br>&gt; \r<br>&gt; we can change each member function into a regular function, \r<br>&gt; and write this as: \r<br>&gt; \r<br>&gt;    bar(foo(a,...), ...) \r<br>&gt; \r<br>&gt; I think this may be more in line with what R users are \r<br>&gt; expecting. \r<br>&gt; \r<br>&gt; That is the problem not the solution. I guess we have to have a stan() function that can take dozens of arguments and do everything except output diagnostics. But to have a function like\r<br>&gt; \r<br>&gt; setMethod(&quot;Rhat&quot;, &quot;stanfit&quot;, def = function(object, params) object$Rhat(params))\r<br>&gt; \r<br>&gt; is to avoid an opportunity to avoid shooting ourselves in the foot.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I agree, but I thought Andrew didn&#39;t like the $ notation and wanted\r<br>something more &quot;standard&quot; in R.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; It is not easy to remember if this function is called Rhat, or rhat, or R_hat, or r_hat, or R, or scale_reduction_factor, or scaleReductionFactor, or BGR, or BrooksGelmanRubin, or gelman.diag and the user has to know it happens to be called Rhat it order to lookup the fact that it takes an optional vector of parameter names. It is less hard to learn that doing\r<br>&gt; \r<br>&gt; object$methods()\r<br>&gt; \r<br>&gt; tells you an exhaustive list of the things that can be done with that object, including \r<br>&gt; \r<br>&gt; object$Rhat(params)\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Agreed. \r<br>\r<br>One issue to keep in mind is that if there&#39;s one object, this is no\r<br>more helpful than just sending the user to the index.  It&#39;s a huge\r<br>list to look through.\r<br>\r<br>- Bob"
+    ]
+   ]
+  }
+ ]
+}

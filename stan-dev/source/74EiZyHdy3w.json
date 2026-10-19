@@ -1,0 +1,438 @@
+{
+ "thread": "74EiZyHdy3w",
+ "subject": "Patch adding matrix/vector scalar subtraction (plus bug fix)",
+ "messages_listed": 10,
+ "last_activity": "2012-03-08T03:38:10Z",
+ "messages": [
+  {
+   "id": "jG2HbzpfrisJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-07T20:26:01Z",
+   "subject": "Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     1,
+     "So I implemented subtraction by a scalar in stan.  I&#39;ve attached a patch.  I tried to follow convention as best as I could determine, hopefully I got close.  If everything is ok, I&#39;ll finish and add scalar addition.  (I started with subtraction because it was what was immediately necessary for my model.  In retrospect, addition would have been more generally useful.  Ah well.)<br>\n<br>Also included in the patch is a very small fix to the element-wise division that was recently added.  One function was named elt_division when (I assume) it was meant to be elt_divide.<br><br>Cheers,<br>Marcus<br><br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "nsTIbkTXTVsJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-03-07T22:06:46Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     1,
+     "One question for EVERYONE (marked below as such), and<br>one for BEN (ditto).<p></p>"
+    ],
+    [
+     2,
+     "<p>On 3/7/12 3:26 PM, Marcus Brubaker wrote:<br> &gt; So I implemented subtraction by a scalar in stan.  I&#39;ve attached a<br> &gt; patch.</p>"
+    ],
+    [
+     1,
+     "<p><p>Thanks for the code and heads up about the misnamed<br>divide operator.  Yes, it&#39;s very close to the conventions<br>we&#39;ve used.<p>We can add you (Marcus) as a committer to the Stan project<br>so this doesn&#39;t all have to go through e-mails.  How do<br>you feel about doc and unit tests?  You can find the tests<br>under stan/test -- we&#39;re using the googletest framework, which<br>is like JUnit for Java.<p><br>?? for EVERYONE:<br>-----------------<br>As to this specific patch (and presumably its sibling,<br>addition by scalar), what does everyone else think about<br>having this kind of broadcasting of constants up to<br>appropriately sized vectors or matrices?  With v a vector,<br>m a matrix, and c a scalar, this would be:<p>   vector:  (v - c)(i) = v(i) - c<p>   matrix:  (m - c)(i,j) = m(i,j) - c<p>Is this something that&#39;s done in MATLAB?  In standard<br>vector notation?<p><br>I also have some (long) comments on efficiency and some of<br>the standards we&#39;ve tried to follow.  Your implementation (for<br>matrices) is:<p>     inline matrix_d subtract(const matrix_d&amp; m, const double&amp; c) {<br>       matrix_d c_(m.rows(),m.cols());<br>       c_.fill(c);<br>       return m - c_;<br>     }<p>I&#39;m wondering if it&#39;d be more efficient to do this explicitly:<p>     inline matrix_d subtract(const matrix_d&amp; m, const double c) {<br>         matrix_d mc(m.rows(),m.cols());<br>         for (int i = 0; i &lt; c.size(); ++i)<br>             mc(i) = m(i) - c;<br>         return mc;<br>     }<p>This unfortunately relies on fixed row-major or column-major<br>ordering because it uses unary accessors.<p>But then your last line, &quot;return m - c_;&quot; should be using<br>a template expression for (m - c_) rather than allocating, so<br>the return-by-value should copy directly without creating<br>an intermediate in situations like:<p>      matrix_d mc = m - c;<p>So they&#39;re probably very similar in terms of performance, with<br>the only difference being the second loop through the data<br>done by fill(c).<p><br>?? for BEN:<br>-----------<br>What we&#39;d really like is a no-allocation template expression<br>for a constant M x N matrix (like your &quot;c_&quot;), but I can&#39;t figure<br>out how to do that in Eigen (CwiseNullaryOp, as returned<br>by Constant() looks promising).  Ben?<p><br>You can use size() on matrices and it gives you rows * cols.<br>This is potentially unsafe if m doesn&#39;t have the default<br>row-major/col-major setting.  We&#39;ve just stuck with the col-major<br>defaults, so it&#39;ll be OK as called from Stan, but not as a general<br>API function.  A full double loop is safer, but much less efficient<br>in that there&#39;s all the index arithmetic<p>     for (int j = 0; j &lt; c.cols(); ++j)<br>         for (int i = 0; i &lt; c.rows(); ++i)<br>             mc(i,j) = m(i,j) - c<p>We stuck with Eigen&#39;s col-major default, so<br>the loop should at least be col-major.<p>We relaly want that constant template expression.<p>We&#39;ve saved the &quot;x_&quot; style of variables for class member variables<br>to separate them visually from local variables (we&#39;ve also been<br>inconsistent and used &quot;_x&quot; and I used &quot;x__&quot; inside of models to<br>avoid name clashes with Stan variables).<p>I haven&#39;t profiled, but every piece of advice I&#39;ve ever<br>seen says that doubles should be passed by value where<br>possible.  There are some clever ways to template out an arg<br>so that it&#39;s by value for primitives and otherwise by ref --<br>Alexandrescu discusses this in his C++ book and the approach<br>is implemented more or less in Boost.  But we haven&#39;t gone that<br>far down the optimization path, yet.  I&#39;d rather get things<br>working before getting too carried away on optimization (despite<br>how I may sound in this e-mail).<p>We don&#39;t want to promote a matrix or vector of scalars to<br>an auto dif variable (using to_var()) unless we have to,<br>as the creation of auto-dif variables is expensive.<br>I plan to go back in and optimize all the vector ops to<br>avoid many of the to_var() that are there and also partially<br>evaluate the auto-difs as we&#39;ve already done for the basic<br>functions.<p>The code&#39;s essentially the same:<p>     template &lt;typename T1, typename T2&gt;<br>     inline Matrix&lt;var,Dynamic,Dynamic&gt;<br>     subtract(const Matrix&lt;T1,Dynamic,Dynamic&gt;&amp; m,<br>              const T2&amp; c) {<br>         Matrix&lt;var,Dynamic,Dynamic&gt; mc(m.rows(),m.cols());<br>         for (int i = 0; i &lt; c.size(); ++i)<br>             mc(i) = m(i) - c;<br>         return mc;<br>     }<p>A single templated function could work for all four cases<br>of double/var for T1 and T2:<p>     template &lt;typename T1, typename T2&gt;<br>     inline Matrix&lt;typename promote_args&lt;T1,T2&gt;::type,Dynamic,Dynamic&gt;<br>     subtract(const Matrix&lt;T1,Dynamic,Dynamic&gt;&amp; m,<br>              const T2&amp; c) {<br>         Matrix&lt;typename promote_args&lt;T1,T2&gt;::type,Dynamic,Dynamic&gt; \t<br>             mc(m.rows(),m.cols());<br>         for (int i = 0; i &lt; c.size(); ++i)<br>             mc(i) = m(i) - c;<br>         return mc;<br>     }<p>In fact, if you pull out the two Dynamic template params and replace<br>them with template params, you could generalize across vectors,<br>row vectors and matrices, too -- they all support size() and<br>unary operator() for references.<p>But as you saw, I&#39;ve broken these down into separate functions<br>because all the auto-dif stuff needs a round of unfolding<br>for optimization (as we&#39;ve done with the basic functions<br>you see in stan/agrad/agrad.hpp).  And the doc&#39;s also a lot<br>easier than the mess of promotions above.<p>Also, I&#39;ve been un-inlining anything that has loops like this.<br>In general, we only want to inline fairly short programs.  Of<br>course, the compiler probably won&#39;t inline the big ones anyway -- it&#39;s<br>only a suggestion.<p>- Bob<br></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "1rU7qXa4chcJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-07T23:14:31Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     2,
+     "<div class=\"gmail_quote\">On Wed, Mar 7, 2012 at 5:06 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n\nOne question for EVERYONE (marked below as such), and<br>\none for BEN (ditto).<div><br>\n<br>\nOn 3/7/12 3:26 PM, Marcus Brubaker wrote:<br>\n&gt; So I implemented subtraction by a scalar in stan.  I&#39;ve attached a<br>\n&gt; patch.<br>\n<br></div>\nThanks for the code and heads up about the misnamed<br>\ndivide operator.  Yes, it&#39;s very close to the conventions<br>\nwe&#39;ve used.<br>\n<br>\nWe can add you (Marcus) as a committer to the Stan project<br>\nso this doesn&#39;t all have to go through e-mails.  How do<br>\nyou feel about doc and unit tests?  You can find the tests<br>\nunder stan/test -- we&#39;re using the googletest framework, which<br>\nis like JUnit for Java.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I would be happy to contribute to the doc and unit tests as needed.  I&#39;m a bit rusty on my software engineering skills though and have never used either JUnit or googletest so I would ask for you patience.  The last serious software engineering (in contrast to research hacking) I&#39;ve done was probably 10 years ago.  I believe JUnit might have just been introduced at the time but maybe not...<br>\n\n <br></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n?? for EVERYONE:<br>\n-----------------<br>\nAs to this specific patch (and presumably its sibling,<br>\naddition by scalar), what does everyone else think about<br>\nhaving this kind of broadcasting of constants up to<br>\nappropriately sized vectors or matrices?  With v a vector,<br>\nm a matrix, and c a scalar, this would be:<br>\n<br>\n  vector:  (v - c)(i) = v(i) - c<br>\n<br>\n  matrix:  (m - c)(i,j) = m(i,j) - c<br>\n<br>\nIs this something that&#39;s done in MATLAB?  In standard<br>\nvector notation?<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>This is MATLAB&#39;s convention and to me it is relatively unambiguous and allows for reasonable optimization.  The other ways to handle the functionality that I&#39;ve seen include:<br>\n\n<br>1) require users to define extra &quot;transformed parameters&quot; which manually build vectors and matrices full of the constant<br>2) provide a ones() function or something similar which produces a matrix (or vector) of appropriate size which can then be multiplied by the desired constant<br>\n\n3) interpret +/- constants as operating on each element of a matrix/vector (what I implemented)<br><br>(1) is cumbersome and potentially leads to excess memory usage, although it would be reasonably fast in terms of computation.  (2) is the slowest of the options, providing little ability to optimize the code as the intention of the user is hard to discern.  That said, functions like ones() and eye() (for identity matrices) are generally handy to have.  So I went with (3) since it allows for relatively efficient implementation if done properly (what I did probably isn&#39;t).<br>\n\n <br></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\nI also have some (long) comments on efficiency and some of<br>\nthe standards we&#39;ve tried to follow.  Your implementation (for<br>\nmatrices) is:<br>\n<br>\n    inline matrix_d subtract(const matrix_d&amp; m, const double&amp; c) {<br>\n      matrix_d c_(m.rows(),m.cols());<br>\n      c_.fill(c);<br>\n      return m - c_;<br>\n    }<br>\n<br>\nI&#39;m wondering if it&#39;d be more efficient to do this explicitly:<br>\n<br>\n    inline matrix_d subtract(const matrix_d&amp; m, const double c) {<br>\n        matrix_d mc(m.rows(),m.cols());<br>\n        for (int i = 0; i &lt; c.size(); ++i)<br>\n            mc(i) = m(i) - c;<br>\n        return mc;<br>\n    }<br>\n<br>\nThis unfortunately relies on fixed row-major or column-major<br>\nordering because it uses unary accessors.<br>\n<br>\nBut then your last line, &quot;return m - c_;&quot; should be using<br>\na template expression for (m - c_) rather than allocating, so<br>\nthe return-by-value should copy directly without creating<br>\nan intermediate in situations like:<br>\n<br>\n     matrix_d mc = m - c;<br>\n<br>\nSo they&#39;re probably very similar in terms of performance, with<br>\nthe only difference being the second loop through the data<br>\ndone by fill(c).<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Assuming Eigen/the compiler is smart, I would think fill() for basic numeric types would reduce to a memset() call which is itself notably faster than looping and repeatedly indexing.  I could certainly be wrong.<br>\n\n <br></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n?? for BEN:<br>\n-----------<br>\nWhat we&#39;d really like is a no-allocation template expression<br>\nfor a constant M x N matrix (like your &quot;c_&quot;), but I can&#39;t figure<br>\nout how to do that in Eigen (CwiseNullaryOp, as returned<br>\nby Constant() looks promising).  Ben?<br>\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Alternatively, Eigen directly supports adding/subtracting a scalar from each element of an Array type object.  Unfortunately, I wasn&#39;t able to figure out how to make this work.  If I understand Eigen&#39;s docs properly you can do it with matrices like so:<br>\n\n<br>  return (m.array() - c).matrix();<br><br>but I&#39;m not sure about the conversion back to vector types.<br><br></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n\n\nWe&#39;ve saved the &quot;x_&quot; style of variables for class member variables<br>\nto separate them visually from local variables (we&#39;ve also been<br>\ninconsistent and used &quot;_x&quot; and I used &quot;x__&quot; inside of models to<br>\navoid name clashes with Stan variables).<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Ah, sorry, my bad.  I&#39;ll use that naming convention going forward. <br><br></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n\n\nI haven&#39;t profiled, but every piece of advice I&#39;ve ever<br>\nseen says that doubles should be passed by value where<br>\npossible.  There are some clever ways to template out an arg<br>\nso that it&#39;s by value for primitives and otherwise by ref --<br>\nAlexandrescu discusses this in his C++ book and the approach<br>\nis implemented more or less in Boost.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>In retrospect that&#39;s probably true for 64bit machines.  On 32bit machines I&#39;d always been told that it&#39;s faster to pass by reference since it&#39;s half the amount data getting pushed onto the stack.  For inlined function it&#39;s largely irrelevant, so long as the function doesn&#39;t modify the value of the double.<br>\n\n<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">But we haven&#39;t gone that<br>\nfar down the optimization path, yet.  I&#39;d rather get things<br>\nworking before getting too carried away on optimization (despite<br>\nhow I may sound in this e-mail).<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Fair enough.  That said I&#39;ve always found it worth thinking about throughout.  Design decisions made now can have performance impacts that could be hard or tedious to fix later.<br>\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\nWe don&#39;t want to promote a matrix or vector of scalars to<br>\nan auto dif variable (using to_var()) unless we have to,<br>\nas the creation of auto-dif variables is expensive.<br>\nI plan to go back in and optimize all the vector ops to<br>\navoid many of the to_var() that are there and also partially<br>\nevaluate the auto-difs as we&#39;ve already done for the basic<br>\nfunctions.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I&#39;ll try to go back and rework what I&#39;ve done in those terms.<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n\nBut as you saw, I&#39;ve broken these down into separate functions<br>\nbecause all the auto-dif stuff needs a round of unfolding<br>\nfor optimization (as we&#39;ve done with the basic functions<br>\nyou see in stan/agrad/agrad.hpp).  And the doc&#39;s also a lot<br>\neasier than the mess of promotions above.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I&#39;m not sure I follow you in terms of the docs.  Having dozens of &quot;add&quot; functions compared to one seems more confusing to me or am I missing your meaning?<br>\n <br></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\nAlso, I&#39;ve been un-inlining anything that has loops like this.<br>\nIn general, we only want to inline fairly short programs.  Of<br>\ncourse, the compiler probably won&#39;t inline the big ones anyway -- it&#39;s<br>\nonly a suggestion.<span><font color=\"#888888\"><br></font></span></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Yeah, I&#39;ve generally understood inline to be more about allowing the compiler to inline it if it chooses to, rather than forcing it to do anything.  My only argument for keeping those inlined is that ideally most of those loops would eventually go away and be replaced by modular calls to other appropriate functions and at that point someone would need to remember to add the inline designation back in.<br>\n<br>Cheers,<br>Marcus<br>\n</div></div><br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "8-purKs5whUJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-08T00:30:28Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     1,
+     "Ok, take two.<br><br>I realized that the various vector types are just specialized Matrix templates (a retrospective duh) so I can use the .array()/.matrix() trick to implement the addition/subtraction of elements cleanly and efficiently.  I&#39;ve also templated the functions to avoid code duplication, removed the pass-by-reference doubles and implemented addition.<br>\n<br>By the way, is there a reason to differentiate the matrix/vector/row_vector functions instead of templating them?<br><br>I&#39;ve attached a patch for now.  If I get commit access I can commit it assuming that it passes muster.<br>\n<br>I think the .array()/.matrix() trick could be used to avoid the loops in the elementwise multiplication and division as well as I think those operators are defined there.  If you&#39;d like I can go ahead and do that and send a patch.<br>\n<br>Cheers,<br>Marcus"
+    ],
+    [
+     3,
+     "<br><br><br><div class=\"gmail_quote\">On Wed, Mar 7, 2012 at 6:14 PM, Marcus Brubaker <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt;</span> wrote:<br>\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div class=\"gmail_quote\"><div>On Wed, Mar 7, 2012 at 5:06 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br>\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n\nOne question for EVERYONE (marked below as such), and<br>\none for BEN (ditto).<div><br>\n<br>\nOn 3/7/12 3:26 PM, Marcus Brubaker wrote:<br>\n&gt; So I implemented subtraction by a scalar in stan.  I&#39;ve attached a<br>\n&gt; patch.<br>\n<br></div>\nThanks for the code and heads up about the misnamed<br>\ndivide operator.  Yes, it&#39;s very close to the conventions<br>\nwe&#39;ve used.<br>\n<br>\nWe can add you (Marcus) as a committer to the Stan project<br>\nso this doesn&#39;t all have to go through e-mails.  How do<br>\nyou feel about doc and unit tests?  You can find the tests<br>\nunder stan/test -- we&#39;re using the googletest framework, which<br>\nis like JUnit for Java.<br></blockquote></div><div><br>I would be happy to contribute to the doc and unit tests as needed.  I&#39;m a bit rusty on my software engineering skills though and have never used either JUnit or googletest so I would ask for you patience.  The last serious software engineering (in contrast to research hacking) I&#39;ve done was probably 10 years ago.  I believe JUnit might have just been introduced at the time but maybe not...<br>\n\n\n <br></div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n?? for EVERYONE:<br>\n-----------------<br>\nAs to this specific patch (and presumably its sibling,<br>\naddition by scalar), what does everyone else think about<br>\nhaving this kind of broadcasting of constants up to<br>\nappropriately sized vectors or matrices?  With v a vector,<br>\nm a matrix, and c a scalar, this would be:<br>\n<br>\n  vector:  (v - c)(i) = v(i) - c<br>\n<br>\n  matrix:  (m - c)(i,j) = m(i,j) - c<br>\n<br>\nIs this something that&#39;s done in MATLAB?  In standard<br>\nvector notation?<br></blockquote></div><div><br><br>This is MATLAB&#39;s convention and to me it is relatively unambiguous and allows for reasonable optimization.  The other ways to handle the functionality that I&#39;ve seen include:<br>\n\n\n<br>1) require users to define extra &quot;transformed parameters&quot; which manually build vectors and matrices full of the constant<br>2) provide a ones() function or something similar which produces a matrix (or vector) of appropriate size which can then be multiplied by the desired constant<br>\n\n\n3) interpret +/- constants as operating on each element of a matrix/vector (what I implemented)<br><br>(1) is cumbersome and potentially leads to excess memory usage, although it would be reasonably fast in terms of computation.  (2) is the slowest of the options, providing little ability to optimize the code as the intention of the user is hard to discern.  That said, functions like ones() and eye() (for identity matrices) are generally handy to have.  So I went with (3) since it allows for relatively efficient implementation if done properly (what I did probably isn&#39;t).<br>\n\n\n <br></div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\nI also have some (long) comments on efficiency and some of<br>\nthe standards we&#39;ve tried to follow.  Your implementation (for<br>\nmatrices) is:<br>\n<br>\n    inline matrix_d subtract(const matrix_d&amp; m, const double&amp; c) {<br>\n      matrix_d c_(m.rows(),m.cols());<br>\n      c_.fill(c);<br>\n      return m - c_;<br>\n    }<br>\n<br>\nI&#39;m wondering if it&#39;d be more efficient to do this explicitly:<br>\n<br>\n    inline matrix_d subtract(const matrix_d&amp; m, const double c) {<br>\n        matrix_d mc(m.rows(),m.cols());<br>\n        for (int i = 0; i &lt; c.size(); ++i)<br>\n            mc(i) = m(i) - c;<br>\n        return mc;<br>\n    }<br>\n<br>\nThis unfortunately relies on fixed row-major or column-major<br>\nordering because it uses unary accessors.<br>\n<br>\nBut then your last line, &quot;return m - c_;&quot; should be using<br>\na template expression for (m - c_) rather than allocating, so<br>\nthe return-by-value should copy directly without creating<br>\nan intermediate in situations like:<br>\n<br>\n     matrix_d mc = m - c;<br>\n<br>\nSo they&#39;re probably very similar in terms of performance, with<br>\nthe only difference being the second loop through the data<br>\ndone by fill(c).<br></blockquote></div><div><br>Assuming Eigen/the compiler is smart, I would think fill() for basic numeric types would reduce to a memset() call which is itself notably faster than looping and repeatedly indexing.  I could certainly be wrong.<br>\n\n\n <br></div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n?? for BEN:<br>\n-----------<br>\nWhat we&#39;d really like is a no-allocation template expression<br>\nfor a constant M x N matrix (like your &quot;c_&quot;), but I can&#39;t figure<br>\nout how to do that in Eigen (CwiseNullaryOp, as returned<br>\nby Constant() looks promising).  Ben?<br>\n<br></blockquote></div><div><br>Alternatively, Eigen directly supports adding/subtracting a scalar from each element of an Array type object.  Unfortunately, I wasn&#39;t able to figure out how to make this work.  If I understand Eigen&#39;s docs properly you can do it with matrices like so:<br>\n\n\n<br>  return (m.array() - c).matrix();<br><br>but I&#39;m not sure about the conversion back to vector types.<br><br></div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n\n\n\nWe&#39;ve saved the &quot;x_&quot; style of variables for class member variables<br>\nto separate them visually from local variables (we&#39;ve also been<br>\ninconsistent and used &quot;_x&quot; and I used &quot;x__&quot; inside of models to<br>\navoid name clashes with Stan variables).<br></blockquote></div><div><br>Ah, sorry, my bad.  I&#39;ll use that naming convention going forward. <br><br></div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n\n\n\nI haven&#39;t profiled, but every piece of advice I&#39;ve ever<br>\nseen says that doubles should be passed by value where<br>\npossible.  There are some clever ways to template out an arg<br>\nso that it&#39;s by value for primitives and otherwise by ref --<br>\nAlexandrescu discusses this in his C++ book and the approach<br>\nis implemented more or less in Boost.</blockquote></div><div><br>In retrospect that&#39;s probably true for 64bit machines.  On 32bit machines I&#39;d always been told that it&#39;s faster to pass by reference since it&#39;s half the amount data getting pushed onto the stack.  For inlined function it&#39;s largely irrelevant, so long as the function doesn&#39;t modify the value of the double.<br>\n\n\n<br> </div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">But we haven&#39;t gone that<br>\nfar down the optimization path, yet.  I&#39;d rather get things<br>\nworking before getting too carried away on optimization (despite<br>\nhow I may sound in this e-mail).<br></blockquote></div><div><br>Fair enough.  That said I&#39;ve always found it worth thinking about throughout.  Design decisions made now can have performance impacts that could be hard or tedious to fix later.<br>\n\n </div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\nWe don&#39;t want to promote a matrix or vector of scalars to<br>\nan auto dif variable (using to_var()) unless we have to,<br>\nas the creation of auto-dif variables is expensive.<br>\nI plan to go back in and optimize all the vector ops to<br>\navoid many of the to_var() that are there and also partially<br>\nevaluate the auto-difs as we&#39;ve already done for the basic<br>\nfunctions.<br></blockquote></div><div><br>I&#39;ll try to go back and rework what I&#39;ve done in those terms.<br> </div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n\n\nBut as you saw, I&#39;ve broken these down into separate functions<br>\nbecause all the auto-dif stuff needs a round of unfolding<br>\nfor optimization (as we&#39;ve done with the basic functions<br>\nyou see in stan/agrad/agrad.hpp).  And the doc&#39;s also a lot<br>\neasier than the mess of promotions above.<br></blockquote></div><div><br>I&#39;m not sure I follow you in terms of the docs.  Having dozens of &quot;add&quot; functions compared to one seems more confusing to me or am I missing your meaning?<br>\n\n <br></div><div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\nAlso, I&#39;ve been un-inlining anything that has loops like this.<br>\nIn general, we only want to inline fairly short programs.  Of<br>\ncourse, the compiler probably won&#39;t inline the big ones anyway -- it&#39;s<br>\nonly a suggestion.<span><font color=\"#888888\"><br></font></span></blockquote></div><div><br>Yeah, I&#39;ve generally understood inline to be more about allowing the compiler to inline it if it chooses to, rather than forcing it to do anything.  My only argument for keeping those inlined is that ideally most of those loops would eventually go away and be replaced by modular calls to other appropriate functions and at that point someone would need to remember to add the inline designation back in.<br>\n\n<br>Cheers,<br>Marcus<br>\n</div></div><br>\n</blockquote></div><br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "oqAZdtq9-xkJ",
+   "from": "Andrew Gelman",
+   "author": "da33143a8db60ce8",
+   "date": "2012-03-08T00:36:23Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     2,
+     "<br>On Mar 7, 2012, at 5:06 PM, Bob Carpenter wrote:"
+    ],
+    [
+     2,
+     "<p>&gt; <br>&gt; ?? for EVERYONE:<br>&gt; -----------------<br>&gt; As to this specific patch (and presumably its sibling,<br>&gt; addition by scalar), what does everyone else think about<br>&gt; having this kind of broadcasting of constants up to<br>&gt; appropriately sized vectors or matrices?  With v a vector,<br>&gt; m a matrix, and c a scalar, this would be:<br>&gt; <br>&gt;  vector:  (v - c)(i) = v(i) - c<br>&gt; <br>&gt;  matrix:  (m - c)(i,j) = m(i,j) - c<br>&gt; </p>"
+    ],
+    [
+     1,
+     "<p><p>This looks good to me.<br></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "SGZykGBOpvwJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-03-08T00:55:25Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     1,
+     "Oddly your replies don&#39;t show up properly formatted<br>in my mailer (Thunderbird).  I&#39;ve been meaning to upgrade<br>to something else anyway now that I&#39;m on a Mac.<p>I have the &quot;&gt;&quot; convention going, so I&#39;ll comment inline.<p></p></p>"
+    ],
+    [
+     2,
+     "<p><p>On 3/7/12 6:14 PM, Marcus Brubaker wrote:<br>&gt; On Wed, Mar 7, 2012 at 5:06 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a><br>&gt; &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:<br>&gt;<br>&gt;     One question for EVERYONE (marked below as such), and<br>&gt;     one for BEN (ditto).<br>&gt;<br>&gt;<br>&gt;     On 3/7/12 3:26 PM, Marcus Brubaker wrote:<br>&gt;      &gt; So I implemented subtraction by a scalar in stan.  I&#39;ve attached a<br>&gt;      &gt; patch.<br>&gt;<br>&gt;     Thanks for the code and heads up about the misnamed<br>&gt;     divide operator.  Yes, it&#39;s very close to the conventions<br>&gt;     we&#39;ve used.<br>&gt;<br>&gt;     We can add you (Marcus) as a committer to the Stan project<br>&gt;     so this doesn&#39;t all have to go through e-mails.  How do<br>&gt;     you feel about doc and unit tests?  You can find the tests<br>&gt;     under stan/test -- we&#39;re using the googletest framework, which<br>&gt;     is like JUnit for Java.<br>&gt;<br>&gt;<br>&gt; I would be happy to contribute to the doc and unit tests as needed.  I&#39;m<br>&gt; a bit rusty on my software engineering skills though and have never used<br>&gt; either JUnit or googletest so I would ask for you patience.  The last<br>&gt; serious software engineering (in contrast to research hacking) I&#39;ve done<br>&gt; was probably 10 years ago.  I believe JUnit might have just been<br>&gt; introduced at the time but maybe not...</p></p>"
+    ],
+    [
+     1,
+     "<p><p><p>JUnit was definitely around ten years ago.  But the concept&#39;s<br>older.  The framework&#39;s pretty simple if you look at the tests<br>and Daniel has everything instrumented so you can just run tests<br>by:<p>% cd $STAN<br>% make test/math/matrix<p>The test itself is in $STAN/src/test/math/matrix_test.cpp.<p>There&#39;s a matching test in test/agrad/matrix for the auto-dif<br>stuff.<p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p>&gt;     ?? for EVERYONE:<br>&gt;     -----------------<br>&gt;     As to this specific patch (and presumably its sibling,<br>&gt;     addition by scalar), what does everyone else think about<br>&gt;     having this kind of broadcasting of constants up to<br>&gt;     appropriately sized vectors or matrices?  With v a vector,<br>&gt;     m a matrix, and c a scalar, this would be:<br>&gt;<br>&gt;       vector:  (v - c)(i) = v(i) - c<br>&gt;<br>&gt;       matrix:  (m - c)(i,j) = m(i,j) - c<br>&gt;<br>&gt;     Is this something that&#39;s done in MATLAB?  In standard<br>&gt;     vector notation?<br>&gt;<br>&gt;<br>&gt;<br>&gt; This is MATLAB&#39;s convention and to me it is relatively unambiguous and<br>&gt; allows for reasonable optimization.</p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p>I don&#39;t see any problem with ambiguity.  And it&#39;ll definitely<br>be the most optimizable approach.<p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p>&gt; The other ways to handle the<br>&gt; functionality that I&#39;ve seen include:<br>&gt;<br>&gt; 1) require users to define extra &quot;transformed parameters&quot; which manually<br>&gt; build vectors and matrices full of the constant<br>&gt; 2) provide a ones() function or something similar which produces a<br>&gt; matrix (or vector) of appropriate size which can then be multiplied by<br>&gt; the desired constant<br>&gt; 3) interpret +/- constants as operating on each element of a<br>&gt; matrix/vector (what I implemented)<br>&gt;<br>&gt; (1) is cumbersome and potentially leads to excess memory usage, although<br>&gt; it would be reasonably fast in terms of computation.</p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p>Actually, (1) is independent of (2) and (3).  We could construct<br>ahead the templated constant and re-use it, which would be even<br>more efficient than building it each time (though probably close, it&#39;s<br>a very simple function).<p>(3) is definitely what we want, but I we&#39;ll get it through<br>template expressions.  At which point we can optimize further<br>by pre-building the template expression as in (1).<p>If we have a const(M,N,x) function, we can expose (2) and get<br>the efficiency of (3).  That&#39;s the beauty of template expressions.<p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p>&gt; (2) is the slowest<br>&gt; of the options, providing little ability to optimize the code as the<br>&gt; intention of the user is hard to discern.  That said, functions like<br>&gt; ones() and eye() (for identity matrices) are generally handy to have.</p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p>I don&#39;t think I could bear the name &quot;eye()&quot;.  Tell me they don&#39;t<br>use that in MATLAB.  Please.  People used &quot;liszt&quot; in Prolog because<br>&quot;list&quot; was reserved, and it drove me bonkers.  They use &quot;clazz&quot; in<br>Java because &quot;class&quot; is reserved.<p>You couldn&#39;t have a ones() function as is, it&#39;d have to be ones(M,N)<br>with the sizes.  This is actually what Eigen does, though I now see<br>they implement it efficiently storing only the sizes and value.<p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>&gt; So I went with (3) since it allows for relatively efficient<br>&gt; implementation if done properly (what I did probably isn&#39;t).</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>The best implementation would be to have a very small on-the-stack<br>template expression, and it turns out that&#39;s what Eigen does (see<br>below).<p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>&gt;     I also have some (long) comments on efficiency and some of<br>&gt;     the standards we&#39;ve tried to follow.  Your implementation (for<br>&gt;     matrices) is:<br>&gt;<br>&gt;         inline matrix_d subtract(const matrix_d&amp; m, const double&amp; c) {<br>&gt;           matrix_d c_(m.rows(),m.cols());<br>&gt;           c_.fill(c);<br>&gt;           return m - c_;<br>&gt;         }<br>&gt;<br>&gt;     I&#39;m wondering if it&#39;d be more efficient to do this explicitly:<br>&gt;<br>&gt;         inline matrix_d subtract(const matrix_d&amp; m, const double c) {<br>&gt;             matrix_d mc(m.rows(),m.cols());<br>&gt;             for (int i = 0; i &lt; c.size(); ++i)<br>&gt;                 mc(i) = m(i) - c;<br>&gt;             return mc;<br>&gt;         }<br>&gt;<br>&gt;     This unfortunately relies on fixed row-major or column-major<br>&gt;     ordering because it uses unary accessors.<br>&gt;<br>&gt;     But then your last line, &quot;return m - c_;&quot; should be using<br>&gt;     a template expression for (m - c_) rather than allocating, so<br>&gt;     the return-by-value should copy directly without creating<br>&gt;     an intermediate in situations like:<br>&gt;<br>&gt;          matrix_d mc = m - c;<br>&gt;<br>&gt;     So they&#39;re probably very similar in terms of performance, with<br>&gt;     the only difference being the second loop through the data<br>&gt;     done by fill(c).<br>&gt;<br>&gt;<br>&gt; Assuming Eigen/the compiler is smart, I would think fill() for basic<br>&gt; numeric types would reduce to a memset() call which is itself notably<br>&gt; faster than looping and repeatedly indexing.  I could certainly be wrong.</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>I finally bit the bullet and tracked down what was<br>going on in Eigen (I was more curious than concerned about<br>the case we&#39;re looking at).<p>Your intuitions are right, but for the wrong reason.<p>fill() is just an alias for setConstant, which does this<br>(from CwiseNullaryOp.h in Eigen/Core):<p>template&lt;typename Derived&gt;<br>EIGEN_STRONG_INLINE Derived&amp;<br>PlainObjectBase&lt;Derived&gt;::setConstant(Index rows, Index cols, const <br>Scalar&amp; value)<br>{<br>   resize(rows, cols);<br>   return setConstant(value);<br>}<p>which calls this:<p>template&lt;typename Derived&gt;<br>EIGEN_STRONG_INLINE Derived&amp; DenseBase&lt;Derived&gt;::setConstant(const <br>Scalar&amp; value)<br>{<br>   return derived() = Constant(rows(), cols(), value);<br>}<p>The derived() thing is from their use of the so-called curiously<br>recurring template pattern.  This then calls this method:<p>template&lt;typename Derived&gt;<br>EIGEN_STRONG_INLINE const typename DenseBase&lt;Derived&gt;::ConstantReturnType<br>DenseBase&lt;Derived&gt;::Constant(Index rows, Index cols, const Scalar&amp; value)<br>{<br>   return DenseBase&lt;Derived&gt;::NullaryExpr(rows, cols, <br>internal::scalar_constant_op&lt;Scalar&gt;(value));<br>}<p>which then calls:<p>template&lt;typename Derived&gt;<br>template&lt;typename CustomNullaryOp&gt;<br>EIGEN_STRONG_INLINE const CwiseNullaryOp&lt;CustomNullaryOp, Derived&gt;<br>DenseBase&lt;Derived&gt;::NullaryExpr(Index rows, Index cols, const <br>CustomNullaryOp&amp; func)<br>{<br>   return CwiseNullaryOp&lt;CustomNullaryOp, Derived&gt;(rows, cols, func);<br>}<p>and finally, we construct the CwiseNullaryOp, which only stores the<br>number of rows, number of columns, and the functor (which is just<br>a single value promoted in the second to last call above).<p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>&gt;     ?? for BEN:<br>&gt;     -----------<br>&gt;     What we&#39;d really like is a no-allocation template expression<br>&gt;     for a constant M x N matrix (like your &quot;c_&quot;), but I can&#39;t figure<br>&gt;     out how to do that in Eigen (CwiseNullaryOp, as returned<br>&gt;     by Constant() looks promising).  Ben?<br>&gt;<br>&gt;<br>&gt; Alternatively, Eigen directly supports adding/subtracting a scalar from<br>&gt; each element of an Array type object.  Unfortunately, I wasn&#39;t able to<br>&gt; figure out how to make this work.  If I understand Eigen&#39;s docs properly<br>&gt; you can do it with matrices like so:<br>&gt;<br>&gt;    return (m.array() - c).matrix();<br>&gt;<br>&gt; but I&#39;m not sure about the conversion back to vector types.</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>Ben liked the array() thingy too.  I can look into playing<br>nicely with vectors.<p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>&gt;     We&#39;ve saved the &quot;x_&quot; style of variables for class member variables<br>&gt;     to separate them visually from local variables (we&#39;ve also been<br>&gt;     inconsistent and used &quot;_x&quot; and I used &quot;x__&quot; inside of models to<br>&gt;     avoid name clashes with Stan variables).<br>&gt;<br>&gt;<br>&gt; Ah, sorry, my bad.  I&#39;ll use that naming convention going forward.</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>I think that&#39;s more our inconsistency.<p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>&gt;     I haven&#39;t profiled, but every piece of advice I&#39;ve ever<br>&gt;     seen says that doubles should be passed by value where<br>&gt;     possible.  There are some clever ways to template out an arg<br>&gt;     so that it&#39;s by value for primitives and otherwise by ref --<br>&gt;     Alexandrescu discusses this in his C++ book and the approach<br>&gt;     is implemented more or less in Boost.<br>&gt;<br>&gt;<br>&gt; In retrospect that&#39;s probably true for 64bit machines.  On 32bit<br>&gt; machines I&#39;d always been told that it&#39;s faster to pass by reference<br>&gt; since it&#39;s half the amount data getting pushed onto the stack.  For<br>&gt; inlined function it&#39;s largely irrelevant, so long as the function<br>&gt; doesn&#39;t modify the value of the double.</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>That&#39;s the general advice for both 32-bit and 64-bit situations.<br>It will probably depend on how the variable gets used in the function,<br>but the problem with refs is that you need to chase pointers, then<br>bring the 64 bits into registers.  This is going to be<br>way more expensive than copying an extra 32 bits in terms<br>of memory non-locality, which is the main killer given how much<br>faster CPUs are than memory these days.<p>Even some structs, like our var, could probably be as efficiently,<br>if not more efficiently, passed by value.  They&#39;re just pointers<br>to implementation, so they&#39;re only 8 bytes.<p>Again, this is something we can play with later.<p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>&gt;     But we haven&#39;t gone that<br>&gt;     far down the optimization path, yet.  I&#39;d rather get things<br>&gt;     working before getting too carried away on optimization (despite<br>&gt;     how I may sound in this e-mail).<br>&gt;<br>&gt;<br>&gt; Fair enough.  That said I&#39;ve always found it worth thinking about<br>&gt; throughout.  Design decisions made now can have performance impacts that<br>&gt; could be hard or tedious to fix later.</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>I agree.  The issue for me is that they need to be designed<br>so that they can be optimized later.  In that sense, we can<br>add (v - c), and worry about how to implement it more efficiently<br>later without changing the modeling language.  That&#39;s all I&#39;m<br>really worried about now.<p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>&gt;     We don&#39;t want to promote a matrix or vector of scalars to<br>&gt;     an auto dif variable (using to_var()) unless we have to,<br>&gt;     as the creation of auto-dif variables is expensive.<br>&gt;     I plan to go back in and optimize all the vector ops to<br>&gt;     avoid many of the to_var() that are there and also partially<br>&gt;     evaluate the auto-difs as we&#39;ve already done for the basic<br>&gt;     functions.<br>&gt;<br>&gt;<br>&gt; I&#39;ll try to go back and rework what I&#39;ve done in those terms.<br>&gt;<br>&gt;     But as you saw, I&#39;ve broken these down into separate functions<br>&gt;     because all the auto-dif stuff needs a round of unfolding<br>&gt;     for optimization (as we&#39;ve done with the basic functions<br>&gt;     you see in stan/agrad/agrad.hpp).  And the doc&#39;s also a lot<br>&gt;     easier than the mess of promotions above.<br>&gt;<br>&gt;<br>&gt; I&#39;m not sure I follow you in terms of the docs.  Having dozens of &quot;add&quot;<br>&gt; functions compared to one seems more confusing to me or am I missing<br>&gt; your meaning?</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>It&#39;s that each one has simpler doc that doesn&#39;t involve<br>calculated return types.<p>But I doubt anyone&#39;s going to use the doxygen doc anyway.<br>It&#39;s almost useless for Boost and Eigen in my experience,<br>given their insane levels of complexity.<p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>&gt;     Also, I&#39;ve been un-inlining anything that has loops like this.<br>&gt;     In general, we only want to inline fairly short programs.  Of<br>&gt;     course, the compiler probably won&#39;t inline the big ones anyway -- it&#39;s<br>&gt;     only a suggestion.<br>&gt;<br>&gt;<br>&gt; Yeah, I&#39;ve generally understood inline to be more about allowing the<br>&gt; compiler to inline it if it chooses to, rather than forcing it to do<br>&gt; anything.  My only argument for keeping those inlined is that ideally<br>&gt; most of those loops would eventually go away and be replaced by modular<br>&gt; calls to other appropriate functions and at that point someone would<br>&gt; need to remember to add the inline designation back in.</p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p><p>Either way, we&#39;ll profile when we want to do the next<br>speed improvements, and that&#39;ll tell us where the<br>hot spots are in practice.<p>- Bob<br></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "-Pu2JT_VXEUJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-08T01:25:03Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     2,
+     "<div class=\"gmail_quote\">On Wed, Mar 7, 2012 at 7:55 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\nOddly your replies don&#39;t show up properly formatted<br>\nin my mailer (Thunderbird).  I&#39;ve been meaning to upgrade<br>\nto something else anyway now that I&#39;m on a Mac.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Strange.  I use thunderbird as well for my other accounts.  I&#39;m not sure why they&#39;d show up differently but things look fine from my end with Gmail. <br>\n</div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><div> <br></div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\nJUnit was definitely around ten years ago.  But the concept&#39;s<br>\nolder.  The framework&#39;s pretty simple if you look at the tests<br>\nand Daniel has everything instrumented so you can just run tests<br>\nby:<br>\n<br>\n% cd $STAN<br>\n% make test/math/matrix<br>\n<br>\nThe test itself is in $STAN/src/test/math/matrix_<u></u>test.cpp.<br>\n<br>\nThere&#39;s a matching test in test/agrad/matrix for the auto-dif<br>\nstuff.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I&#39;ll take a look and try to add a few tests where appropriate. <br></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><div>\n<br>\n<br>\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\nThe other ways to handle the<br>\nfunctionality that I&#39;ve seen include:<br>\n<br>\n1) require users to define extra &quot;transformed parameters&quot; which manually<br>\nbuild vectors and matrices full of the constant<br>\n2) provide a ones() function or something similar which produces a<br>\nmatrix (or vector) of appropriate size which can then be multiplied by<br>\nthe desired constant<br>\n3) interpret +/- constants as operating on each element of a<br>\nmatrix/vector (what I implemented)<br>\n<br></blockquote><br></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\nActually, (1) is independent of (2) and (3).  We could construct<br>\nahead the templated constant and re-use it, which would be even<br>\nmore efficient than building it each time (though probably close, it&#39;s<br>\na very simple function).<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>True, although unless the modeling language (or compiler) recognizes a matrix of constants it would be hard to prevent it from falling back to performing the operation as on two full matrices/vectors.<br>\n<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<br>\n(3) is definitely what we want, but I we&#39;ll get it through<br>\ntemplate expressions.  At which point we can optimize further<br>\nby pre-building the template expression as in (1).<br>\n<br>\nIf we have a const(M,N,x) function, we can expose (2) and get<br>\nthe efficiency of (3).  That&#39;s the beauty of template expressions.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Agreed.<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<div><br>\n<br>\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n(2) is the slowest<br>\nof the options, providing little ability to optimize the code as the<br>\nintention of the user is hard to discern.  That said, functions like<br>\nones() and eye() (for identity matrices) are generally handy to have.<br>\n</blockquote>\n<br></div>\nI don&#39;t think I could bear the name &quot;eye()&quot;.  Tell me they don&#39;t<br>\nuse that in MATLAB.  Please.  People used &quot;liszt&quot; in Prolog because<br>\n&quot;list&quot; was reserved, and it drove me bonkers.  They use &quot;clazz&quot; in<br>\nJava because &quot;class&quot; is reserved.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Sadly, yes, there is an eye function in Matlab.  I&#39;ve been using it too long now, but I remember finding it idiotic when I first started with Matlab.  It&#39;s gotten so bad that in Matlab dominated fields some papers will use it as mathematical notation.  id() would be a better option.<br>\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<br>\nYou couldn&#39;t have a ones() function as is, it&#39;d have to be ones(M,N)<br>\nwith the sizes.  This is actually what Eigen does, though I now see<br>\nthey implement it efficiently storing only the sizes and value.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>Sorry, I was a little sloppy and unclear.  I assumed there to be size parameters passed, I was just being lazy.<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<div><br>\n<br>\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\nSo I went with (3) since it allows for relatively efficient<br>\nimplementation if done properly (what I did probably isn&#39;t).<br>\n</blockquote>\n<br></div>\nThe best implementation would be to have a very small on-the-stack<br>\ntemplate expression, and it turns out that&#39;s what Eigen does (see<br>\nbelow).</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Agreed.  I think the .array()/.matrix() approach does this quite well and with a bit less obfuscation although I haven&#39;t dug into what, exactly, Eigen is doing with it.  According to it&#39;s docs .array() and .matrix() should be effectively free once the compiler does its optimization.<br>\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n\n<br>\nAssuming Eigen/the compiler is smart, I would think fill() for basic<br>\nnumeric types would reduce to a memset() call which is itself notably<br>\nfaster than looping and repeatedly indexing.  I could certainly be wrong.<br>\n</blockquote><br>\n<br></div></div>\nI finally bit the bullet and tracked down what was<br>\ngoing on in Eigen (I was more curious than concerned about<br>\nthe case we&#39;re looking at).<br>\n<br>\nYour intuitions are right, but for the wrong reason.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>You are a braver man than I chasing that down...  But it&#39;s very comforting to know that Eigen is doing something rather sensible in that case.<br>\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<br><div>\n<br>\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n    ?? for BEN:<br>\n    -----------<br>\n    What we&#39;d really like is a no-allocation template expression<br>\n    for a constant M x N matrix (like your &quot;c_&quot;), but I can&#39;t figure<br>\n    out how to do that in Eigen (CwiseNullaryOp, as returned<br>\n    by Constant() looks promising).  Ben?<br>\n<br>\n<br>\nAlternatively, Eigen directly supports adding/subtracting a scalar from<br>\neach element of an Array type object.  Unfortunately, I wasn&#39;t able to<br>\nfigure out how to make this work.  If I understand Eigen&#39;s docs properly<br>\nyou can do it with matrices like so:<br>\n<br>\n   return (m.array() - c).matrix();<br>\n<br>\nbut I&#39;m not sure about the conversion back to vector types.<br>\n</blockquote>\n<br></div>\nBen liked the array() thingy too.  I can look into playing<br>\nnicely with vectors.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>It turns out that it works just fine with vectors, I stopped digging too soon.  See my most recent patch.  I think this actually opens up a number of nice implementation approaches for these kinds of operators because the Array class has a bunch of operations that Matrix doesn&#39;t. </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\">\n<div> </div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><div>\n<br>\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n    I haven&#39;t profiled, but every piece of advice I&#39;ve ever<br>\n    seen says that doubles should be passed by value where<br>\n    possible.  There are some clever ways to template out an arg<br>\n    so that it&#39;s by value for primitives and otherwise by ref --<br>\n    Alexandrescu discusses this in his C++ book and the approach<br>\n    is implemented more or less in Boost.<br>\n<br>\n<br>\nIn retrospect that&#39;s probably true for 64bit machines.  On 32bit<br>\nmachines I&#39;d always been told that it&#39;s faster to pass by reference<br>\nsince it&#39;s half the amount data getting pushed onto the stack.  For<br>\ninlined function it&#39;s largely irrelevant, so long as the function<br>\ndoesn&#39;t modify the value of the double.<br>\n</blockquote>\n<br></div>\nThat&#39;s the general advice for both 32-bit and 64-bit situations.<br>\nIt will probably depend on how the variable gets used in the function,<br>\nbut the problem with refs is that you need to chase pointers, then<br>\nbring the 64 bits into registers.  This is going to be<br>\nway more expensive than copying an extra 32 bits in terms<br>\nof memory non-locality, which is the main killer given how much<br>\nfaster CPUs are than memory these days.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Very true.  I&#39;ve dropped the pass-by-reference in my latest patch.</div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><div> <br></div><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n<br>\nI&#39;m not sure I follow you in terms of the docs.  Having dozens of &quot;add&quot;<br>\nfunctions compared to one seems more confusing to me or am I missing<br>\nyour meaning?<br>\n</blockquote>\n<br></div>\nIt&#39;s that each one has simpler doc that doesn&#39;t involve<br>\ncalculated return types.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I don&#39;t really see the calculated return types as an issue.  Personally, I find multiple versions of the same function distracting as opposed to a single templated function.  The added advantage of the single templated function is improved testing coverage as there are fewer redundant code paths to check.<br>\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0pt 0pt 0pt 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\n<br>\nBut I doubt anyone&#39;s going to use the doxygen doc anyway.<br>\nIt&#39;s almost useless for Boost and Eigen in my experience,<br>\ngiven their insane levels of complexity.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Sad but true.  Just today I was trying figure out something with Eigen and their doxygen docs were next to useless even though they are fairly complete for precisely this reason. <br>\n</div></div><br>Cheers,<br>Marcus<br><br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "KBq2v3n9-i8J",
+   "from": "Andrew Gelman",
+   "author": "da33143a8db60ce8",
+   "date": "2012-03-08T01:44:18Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     2,
+     "<div style=\"word-wrap:break-word\"><div><blockquote type=\"cite\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin-top:0pt;margin-right:0pt;margin-bottom:0pt;margin-left:0.8ex;border-left-width:1px;border-left-style:solid;border-left-color:rgb(204,204,204);padding-left:1ex\"><div><br></div>\nI don&#39;t think I could bear the name &quot;eye()&quot;.  Tell me they don&#39;t<br>\nuse that in MATLAB.  Please.  People used &quot;liszt&quot; in Prolog because<br>\n&quot;list&quot; was reserved, and it drove me bonkers.  They use &quot;clazz&quot; in<br>\nJava because &quot;class&quot; is reserved.<br></blockquote><div><br>Sadly, yes, there is an eye function in Matlab.  I&#39;ve been using it too long now, but I remember finding it idiotic when I first started with Matlab.  It&#39;s gotten so bad that in Matlab dominated fields some papers will use it as mathematical notation.  id() would be a better option.</div></div></blockquote><br></div></div>"
+    ],
+    [
+     1,
+     "<div style=\"word-wrap:break-word\"><div>R has diag() and Diag().  diag() takes a vector as input and creates a diagonal matrix.  If you give diag a single scalar it creates a matrix, i.e, diag(5) is the same as diag(rep(1,5)).  Diag() takes a square matrix as input and outputs the vector of diagonals.</div><div><br></div><div>I&#39;d rather use diag() than id() or eye().</div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "xGtiEYnEMM8J",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-03-08T01:55:55Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     3,
+     "<div class=\"gmail_quote\">On Wed, Mar 7, 2012 at 8:44 PM, Andrew Gelman <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">gel...@stat.columbia.edu</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\n<div style=\"word-wrap:break-word\"><div><div><blockquote type=\"cite\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin-top:0pt;margin-right:0pt;margin-bottom:0pt;margin-left:0.8ex;border-left-width:1px;border-left-style:solid;border-left-color:rgb(204,204,204);padding-left:1ex\">\n<div><br></div>\nI don&#39;t think I could bear the name &quot;eye()&quot;.  Tell me they don&#39;t<br>\nuse that in MATLAB.  Please.  People used &quot;liszt&quot; in Prolog because<br>\n&quot;list&quot; was reserved, and it drove me bonkers.  They use &quot;clazz&quot; in<br>\nJava because &quot;class&quot; is reserved.<br></blockquote><div><br>Sadly, yes, there is an eye function in Matlab.  I&#39;ve been using it too long now, but I remember finding it idiotic when I first started with Matlab.  It&#39;s gotten so bad that in Matlab dominated fields some papers will use it as mathematical notation.  id() would be a better option.</div>\n</div></blockquote><br></div></div><div>R has diag() and Diag().  diag() takes a vector as input and creates a diagonal matrix.  If you give diag a single scalar it creates a matrix, i.e, diag(5) is the same as diag(rep(1,5)).  Diag() takes a square matrix as input and outputs the vector of diagonals.</div>\n<div><br></div><div>I&#39;d rather use diag() than id() or eye().</div></div></blockquote></div><br><br>"
+    ],
+    [
+     1,
+     "There&#39;s a diag_matrix() function which does the same as you describe diag() doing.  Combined with a const() function, or something like it, that should cover it though it&#39;d require a bit of typing.  I&#39;m not sure I like the single scalar case as much, but I guess it&#39;s not ambiguous since scalars and 1x1 matrices are treated differently in stan.<br>\n"
+    ]
+   ]
+  },
+  {
+   "id": "Kl1BO6YciZUJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-03-08T03:38:10Z",
+   "subject": "Re: [stan-dev] Patch adding matrix/vector scalar subtraction (plus bug fix)",
+   "parts": [
+    [
+     2,
+     "On Wednesday, March 7, 2012 7:30:28 PM UTC-5, Marcus Brubaker wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I realized that the various vector types are just specialized Matrix templates (a retrospective duh) so I can use the .array()/.matrix() trick to implement the addition/subtraction of elements cleanly and efficiently.  I&#39;ve also templated the functions to avoid code duplication, removed the pass-by-reference doubles and implemented addition.<br></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>Just sayin&#39; that the .array() / operate / .matrix() route is also the way I would have done it.<br><br>P.S. @Bob, note there is an git apply function for patches.<br></div>"
+    ]
+   ]
+  }
+ ]
+}

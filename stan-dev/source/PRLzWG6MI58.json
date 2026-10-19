@@ -1,0 +1,449 @@
+{
+ "thread": "PRLzWG6MI58",
+ "subject": "RNG functions in models - design issues",
+ "messages_listed": 17,
+ "last_activity": "2012-08-17T07:49:02Z",
+ "messages": [
+  {
+   "id": "oq2pLuCxvzEJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-15T20:00:53Z",
+   "subject": "RNG functions in models - design issues",
+   "parts": [
+    [
+     1,
+     "We want to be able to have random number generating\r<br>functions accessible through the models.   I see\r<br>them being used in the following blocks for the following\r<br>purposes (please help me fill in things I&#39;ve missed here):\r<br>\r<br>   block: transformed data\r<br>   use: random data generation\r<br>   issue:  only way to save is with generated quantity\r<br>           variable set to value\r<br>\r<br>   block: transformed parameters\r<br>   use:  random parameters\r<br>   issues:  transformed param block executes before model;\r<br>            inefficient to assign double values to agrad::var\r<br>\r<br>   block:  model\r<br>   use:  random intermediate quantities\r<br>   issues:  no way to save (can use transformed params to save)\r<br>\r<br>   block:  generated quantities\r<br>   use:  forward sampling\r<br>   issues:  none\r<br>\r<br>There are three relevant blocks in the generated code for the model:\r<br>\r<br>    constructor() reading data and transforming data\r<br>    log_prob()    computation\r<br>    write_csv()   transforming params and generating the generated quantities\r<br>\r<br>The model doesn&#39;t hold a reference to the random number generator\r<br>used by the sampler -- the sampler does.  In this case, the hmc_base\r<br>base class holds the random number generators.  The samplers then call\r<br>the constructor once to create the model, including reading data and\r<br>generating transformed data.  The log_prob() function is called repeatedly\r<br>during the leapfrog iterations.  The write_csv() function is called\r<br>once per iteration to do the write.\r<br>\r<br>This just seems odd to me -- having both non-deterministic data\r<br>and a non-deterministic log prob.  The non-deterministic log prob\r<br>means successive calls to log_prob with RNGs in different states\r<br>can produce different answers.  That&#39;s only possible if we allow\r<br>randomization in transformed parameters.\r<br>\r<br>So the sampler would have to pass in an RNG to these functions\r<br>as an argument.  We can&#39;t put the RNG in the model itself, because\r<br>the model&#39;s set up to be called concurrently from multiple threads,\r<br>but RNGs aren&#39;t thread safe.  (The L&#39;Ecuyer setup uses different\r<br>samplers in different threads that are initialized to be independent.)\r<br>\r<br>A remaining issue is whether to specify the RNG argument as a reference\r<br>or as a pointer.  Pointers give us the option of passing 0 in the\r<br>case the log prob function doesn&#39;t need an RNG.  On the other hand,\r<br>simple Boost RNGs are very cheap to construct from a simple seed\r<br>and you only need to do it once, so I&#39;m inclined to go with a reference.\r<br>\r<br>- Bob\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "HuD3vJY-sOYJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-15T20:21:15Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     1,
+     "I&#39;d add a new block as a future use case for the random number generation capability.<br><br>block: parameter initialization<br>use: random initialization of parameters, potentially based on data<br>issues: none that I can see<br>\r\n<br>This is highly relevant for time-series models where, given the parameters of a time series, it makes no sense to sample the state variables of the time series independently.<br><br>Anything which makes log_prob() non-deterministic seems like trouble to me and probably should be avoided.  What&#39;s the real use case for sampling in the transformed parameters?  I can&#39;t think of a valid use for this.  I can see the use for randomly perturbed (or generated) data, but I&#39;m not certain it&#39;s necessary as most people using Stan will be getting their data from other environments (eg, R, Matlab, etc) which can happily synthesize data.<br>\r\n<br>Cheers,<br>Marcus<br><br><div class=\"gmail_quote\"></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\">On Wed, Aug 15, 2012 at 4:00 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nWe want to be able to have random number generating<br>\r\nfunctions accessible through the models.   I see<br>\r\nthem being used in the following blocks for the following<br>\r\npurposes (please help me fill in things I&#39;ve missed here):<br>\r\n<br>\r\n  block: transformed data<br>\r\n  use: random data generation<br>\r\n  issue:  only way to save is with generated quantity<br>\r\n          variable set to value<br>\r\n<br>\r\n  block: transformed parameters<br>\r\n  use:  random parameters<br>\r\n  issues:  transformed param block executes before model;<br>\r\n           inefficient to assign double values to agrad::var<br>\r\n<br>\r\n  block:  model<br>\r\n  use:  random intermediate quantities<br>\r\n  issues:  no way to save (can use transformed params to save)<br>\r\n<br>\r\n  block:  generated quantities<br>\r\n  use:  forward sampling<br>\r\n  issues:  none<br>\r\n<br>\r\nThere are three relevant blocks in the generated code for the model:<br>\r\n<br>\r\n   constructor() reading data and transforming data<br>\r\n   log_prob()    computation<br>\r\n   write_csv()   transforming params and generating the generated quantities<br>\r\n<br>\r\nThe model doesn&#39;t hold a reference to the random number generator<br>\r\nused by the sampler -- the sampler does.  In this case, the hmc_base<br>\r\nbase class holds the random number generators.  The samplers then call<br>\r\nthe constructor once to create the model, including reading data and<br>\r\ngenerating transformed data.  The log_prob() function is called repeatedly<br>\r\nduring the leapfrog iterations.  The write_csv() function is called<br>\r\nonce per iteration to do the write.<br>\r\n<br>\r\nThis just seems odd to me -- having both non-deterministic data<br>\r\nand a non-deterministic log prob.  The non-deterministic log prob<br>\r\nmeans successive calls to log_prob with RNGs in different states<br>\r\ncan produce different answers.  That&#39;s only possible if we allow<br>\r\nrandomization in transformed parameters.<br>\r\n<br>\r\nSo the sampler would have to pass in an RNG to these functions<br>\r\nas an argument.  We can&#39;t put the RNG in the model itself, because<br>\r\nthe model&#39;s set up to be called concurrently from multiple threads,<br>\r\nbut RNGs aren&#39;t thread safe.  (The L&#39;Ecuyer setup uses different<br>\r\nsamplers in different threads that are initialized to be independent.)<br>\r\n<br>\r\nA remaining issue is whether to specify the RNG argument as a reference<br>\r\nor as a pointer.  Pointers give us the option of passing 0 in the<br>\r\ncase the log prob function doesn&#39;t need an RNG.  On the other hand,<br>\r\nsimple Boost RNGs are very cheap to construct from a simple seed<br>\r\nand you only need to do it once, so I&#39;m inclined to go with a reference.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><span><font color=\"#888888\"><br>\r\n<br>\r\n- Bob<br>\r\n<br>\r\n<br>\r\n-- <br>\r\n<br>\r\n<br>\r\n</font></span></blockquote></div><br>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "-VFpe9h61xAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-15T21:06:03Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 8/15/12 4:21 PM, Marcus Brubaker wrote:\r<br>&gt; I&#39;d add a new block as a future use case for the random number generation capability.\r<br>&gt;\r<br>&gt; block: parameter initialization\r<br>&gt; use: random initialization of parameters, potentially based on data\r<br>&gt; issues: none that I can see\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s a great idea, and I think we should do it.\r<br>All the code&#39;s already in place to test the bounds\r<br>and do the transforms.\r<br>\r<br>We probably want to somehow test that all the parameters\r<br>got initialized this way, or provide some way to\r<br>auto-initialize the others.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; This is highly relevant for time-series models where, given the parameters of a time series, it makes no sense to sample\r<br>&gt; the state variables of the time series independently.\r<br>&gt;\r<br>&gt; Anything which makes log_prob() non-deterministic seems like trouble to me and probably should be avoided.  What&#39;s the\r<br>&gt; real use case for sampling in the transformed parameters?  I can&#39;t think of a valid use for this.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I was thinking random latent variables that weren&#39;t recorded.\r<br>Things like making a choice of latent mixture component.\r<br>That seems like weak justification at best, though, and\r<br>couldn&#39;t really be communicated to other parameters.\r<br>\r<br>I also can&#39;t think of another case where you might want\r<br>to generate a random quantity based on the value of a parameter.\r<br>"
+    ],
+    [
+     2,
+     "\r<br> &gt; I can see the use for\r<br>&gt; randomly perturbed (or generated) data, but I&#39;m not certain it&#39;s necessary as most people using Stan will be getting\r<br>&gt; their data from other environments (eg, R, Matlab, etc) which can happily synthesize data.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Andrew made the point that we don&#39;t want to have to\r<br>write the same model multiple times.  On the other hand,\r<br>I don&#39;t see how to avoid that, even if we can put it all\r<br>in Stan, because the generated quantities block would look\r<br>different.\r<br>\r<br>The main use is motivated by Andrew&#39;s desire to do what\r<br>he calls &quot;forward sampling&quot;, meaning generating fake data\r<br>based on fitted parameters.  That will all go in the\r<br>generated quantities block, though, and again, there are\r<br>no issues there I can see.\r<br>\r<br>If we restrict random functions to transformed data and\r<br>generated quantities (plus future inits), then we can overload\r<br>sampling notation for them w/o ambiguity.  That is, write\r<br>\r<br>    x ~ normal(0,1);\r<br>\r<br>to assign x to a random unit normal variate instead of\r<br>\r<br>    x &lt;- normal_random(0,1);\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "N9qJArFi-o0J",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-15T21:50:22Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     2,
+     "<div class=\"gmail_quote\">On Wed, Aug 15, 2012 at 5:06 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div><br>\r\n<br>\r\nOn 8/15/12 4:21 PM, Marcus Brubaker wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nI&#39;d add a new block as a future use case for the random number generation capability.<br>\r\n<br>\r\nblock: parameter initialization<br>\r\nuse: random initialization of parameters, potentially based on data<br>\r\nissues: none that I can see<br>\r\n</blockquote>\r\n<br></div>\r\nThat&#39;s a great idea, and I think we should do it.<br>\r\nAll the code&#39;s already in place to test the bounds<br>\r\nand do the transforms.<br>\r\n<br>\r\nWe probably want to somehow test that all the parameters<br>\r\ngot initialized this way, or provide some way to<br>\r\nauto-initialize the others.</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>The easiest way to do this is to automatically initialize all parameters using the default mechanism and then pass the parameter vector off and allow the code in the parameter initialization block to overwrite values as desired.<br>\r\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><br>\r\n<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nThis is highly relevant for time-series models where, given the parameters of a time series, it makes no sense to sample<br>\r\nthe state variables of the time series independently.<br>\r\n<br>\r\nAnything which makes log_prob() non-deterministic seems like trouble to me and probably should be avoided.  What&#39;s the<br>\r\nreal use case for sampling in the transformed parameters?  I can&#39;t think of a valid use for this.<br>\r\n</blockquote>\r\n<br></div>\r\nI was thinking random latent variables that weren&#39;t recorded.<br>\r\nThings like making a choice of latent mixture component.<br>\r\nThat seems like weak justification at best, though, and<br>\r\ncouldn&#39;t really be communicated to other parameters.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Wouldn&#39;t the choice of a latent mixture component be marginalized out or explicitly parameterized?<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n\r\n<br>\r\nI also can&#39;t think of another case where you might want<br>\r\nto generate a random quantity based on the value of a parameter.<div><br>\r\n<br>\r\n&gt; I can see the use for<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nrandomly perturbed (or generated) data, but I&#39;m not certain it&#39;s necessary as most people using Stan will be getting<br>\r\ntheir data from other environments (eg, R, Matlab, etc) which can happily synthesize data.<br>\r\n</blockquote>\r\n<br></div>\r\nAndrew made the point that we don&#39;t want to have to<br>\r\nwrite the same model multiple times.  On the other hand,<br>\r\nI don&#39;t see how to avoid that, even if we can put it all<br>\r\nin Stan, because the generated quantities block would look<br>\r\ndifferent.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I&#39;m not sure how that would require writting the same model multiple times though.  The data would change, but the model itself would remain the same, right?<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n\r\n<br>\r\nThe main use is motivated by Andrew&#39;s desire to do what<br>\r\nhe calls &quot;forward sampling&quot;, meaning generating fake data<br>\r\nbased on fitted parameters.  That will all go in the<br>\r\ngenerated quantities block, though, and again, there are<br>\r\nno issues there I can see.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>The forward sampling case makes sense to me.  It could be done with stan right now without using a generated quantities block, but it wouldn&#39;t be as statistically efficient.<br>\r\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\nIf we restrict random functions to transformed data and<br>\r\ngenerated quantities (plus future inits), then we can overload<br>\r\nsampling notation for them w/o ambiguity.  That is, write<br>\r\n<br>\r\n   x ~ normal(0,1);<br>\r\n<br>\r\nto assign x to a random unit normal variate instead of<br>\r\n<br>\r\n   x &lt;- normal_random(0,1);<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>Agreed.  I also like ~ much more myself.<br><br>Cheers,<br>Marcus<br></div><br></div><br>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "7ANmxX4u1gMJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-15T22:53:19Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     1,
+     "\r<br>\r<br>On 8/15/12 5:50 PM, Marcus Brubaker wrote:\r<br>"
+    ],
+    [
+     2,
+     "&gt; On Wed, Aug 15, 2012 at 5:06 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt;     On 8/15/12 4:21 PM, Marcus Brubaker wrote:\r<br>&gt;\r<br>&gt;         I&#39;d add a new block as a future use case for the random number generation capability.\r<br>&gt;\r<br>&gt;         block: parameter initialization\r<br>&gt;         use: random initialization of parameters, potentially based on data\r<br>&gt;         issues: none that I can see\r<br>&gt;\r<br>&gt;\r<br>&gt;     That&#39;s a great idea, and I think we should do it.\r<br>&gt;     All the code&#39;s already in place to test the bounds\r<br>&gt;     and do the transforms.\r<br>&gt;\r<br>&gt;     We probably want to somehow test that all the parameters\r<br>&gt;     got initialized this way, or provide some way to\r<br>&gt;     auto-initialize the others.\r<br>&gt;\r<br>&gt;\r<br>&gt; The easiest way to do this is to automatically initialize all parameters using the default mechanism and then pass the\r<br>&gt; parameter vector off and allow the code in the parameter initialization block to overwrite values as desired.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s the only way I see how to do it.\r<br>\r<br>   1.  Random inits on the unbounded representation\r<br>   2.  (inverse) transform to the natural scales,\r<br>   3.  user init code overrides vars on natural scales,\r<br>   4.  constraint check on natural scales\r<br>   5.  transform back to unconstrained representation.\r<br>\r<br>The efficiency concern of some extra transforms are nothing\r<br>here because the same transforms are done every leapfrog step!\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt;         This is highly relevant for time-series models where, given the parameters of a time series, it makes no sense\r<br>&gt;         to sample\r<br>&gt;         the state variables of the time series independently.\r<br>&gt;\r<br>&gt;         Anything which makes log_prob() non-deterministic seems like trouble to me and probably should be avoided.\r<br>&gt;           What&#39;s the\r<br>&gt;         real use case for sampling in the transformed parameters?  I can&#39;t think of a valid use for this.\r<br>&gt;\r<br>&gt;\r<br>&gt;     I was thinking random latent variables that weren&#39;t recorded.\r<br>&gt;     Things like making a choice of latent mixture component.\r<br>&gt;     That seems like weak justification at best, though, and\r<br>&gt;     couldn&#39;t really be communicated to other parameters.\r<br>&gt;\r<br>&gt;\r<br>&gt; Wouldn&#39;t the choice of a latent mixture component be marginalized out or explicitly parameterized?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Probably.  It&#39;s unlikely you&#39;d make it and want\r<br>to forget it.   So this motivation&#39;s a stretch at best.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;     I also can&#39;t think of another case where you might want\r<br>&gt;     to generate a random quantity based on the value of a parameter.\r<br>&gt;\r<br>&gt;\r<br>&gt;      &gt; I can see the use for\r<br>&gt;\r<br>&gt;         randomly perturbed (or generated) data, but I&#39;m not certain it&#39;s necessary as most people using Stan will be getting\r<br>&gt;         their data from other environments (eg, R, Matlab, etc) which can happily synthesize data.\r<br>&gt;\r<br>&gt;\r<br>&gt;     Andrew made the point that we don&#39;t want to have to\r<br>&gt;     write the same model multiple times.  On the other hand,\r<br>&gt;     I don&#39;t see how to avoid that, even if we can put it all\r<br>&gt;     in Stan, because the generated quantities block would look\r<br>&gt;     different.\r<br>&gt;\r<br>&gt;\r<br>&gt; I&#39;m not sure how that would require writting the same model multiple times though.  The data would change, but the model\r<br>&gt; itself would remain the same, right?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The problem is that you write matching sampling\r<br>statements both in the model and in the generated quantities,\r<br>as in:\r<br>\r<br>   model {\r<br>    ...\r<br>    y ~ normal(mu,sigma);\r<br>    ...\r<br>   }\r<br>   generated quantities {\r<br>    ...\r<br>    y_rep &lt;- normal_random(mu,sigma);\r<br>    ...\r<br>   }\r<br>\r<br>If we replaced the generated quantities notation with sampling\r<br>notation, that&#39;d just be\r<br>\r<br>   generated quantities {\r<br>     ...\r<br>     y_rep ~ normal(mu,sigma);\r<br>     ...\r<br>"
+    ],
+    [
+     2,
+     "   }\r<br>\r<br>&gt;\r<br>&gt;\r<br>&gt;     The main use is motivated by Andrew&#39;s desire to do what\r<br>&gt;     he calls &quot;forward sampling&quot;, meaning generating fake data\r<br>&gt;     based on fitted parameters.  That will all go in the\r<br>&gt;     generated quantities block, though, and again, there are\r<br>&gt;     no issues there I can see.\r<br>&gt;\r<br>&gt;\r<br>&gt; The forward sampling case makes sense to me.  It could be done with stan right now without using a generated quantities\r<br>&gt; block, but it wouldn&#39;t be as statistically efficient.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Exactly.  That&#39;s why the generated quantities block\r<br>was added.  Instead of using MCMC a la HMC/NUTS with all its\r<br>gradient complexity and multiple leapfrog steps, we&#39;d\r<br>just be doing plain old MC sampling given a parameter and\r<br>its variables, at least in the usual graphical model case.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;\r<br>&gt;\r<br>&gt;     If we restrict random functions to transformed data and\r<br>&gt;     generated quantities (plus future inits), then we can overload\r<br>&gt;     sampling notation for them w/o ambiguity.  That is, write\r<br>&gt;\r<br>&gt;         x ~ normal(0,1);\r<br>&gt;\r<br>&gt;     to assign x to a random unit normal variate instead of\r<br>&gt;\r<br>&gt;         x &lt;- normal_random(0,1);\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt; Agreed.  I also like ~ much more myself.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "As long as nobody else makes a good argument against it,\r<br>I&#39;ll try that and see how it looks.\r<br>\r<br>Thanks for all the great feedback and suggestions.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "_4Ce8Vcvx0QJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-16T00:52:32Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     2,
+     "<div class=\"gmail_quote\">On Wed, Aug 15, 2012 at 6:53 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\n<br>\r\nOn 8/15/12 5:50 PM, Marcus Brubaker wrote:<div><br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nOn Wed, Aug 15, 2012 at 5:06 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:<br>\r\n\r\n<br>\r\n<br>\r\n<br>\r\n    On 8/15/12 4:21 PM, Marcus Brubaker wrote:<br>\r\n<br>\r\n        I&#39;d add a new block as a future use case for the random number generation capability.<br>\r\n<br>\r\n        block: parameter initialization<br>\r\n        use: random initialization of parameters, potentially based on data<br>\r\n        issues: none that I can see<br>\r\n<br>\r\n<br>\r\n    That&#39;s a great idea, and I think we should do it.<br>\r\n    All the code&#39;s already in place to test the bounds<br>\r\n    and do the transforms.<br>\r\n<br>\r\n    We probably want to somehow test that all the parameters<br>\r\n    got initialized this way, or provide some way to<br>\r\n    auto-initialize the others.<br>\r\n<br>\r\n<br>\r\nThe easiest way to do this is to automatically initialize all parameters using the default mechanism and then pass the<br>\r\nparameter vector off and allow the code in the parameter initialization block to overwrite values as desired.<br>\r\n</blockquote>\r\n<br></div>\r\nThat&#39;s the only way I see how to do it.<br>\r\n<br>\r\n  1.  Random inits on the unbounded representation<br>\r\n  2.  (inverse) transform to the natural scales,<br>\r\n  3.  user init code overrides vars on natural scales,<br>\r\n  4.  constraint check on natural scales<br>\r\n  5.  transform back to unconstrained representation.<br>\r\n<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>Exactly!<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nThe efficiency concern of some extra transforms are nothing<br>\r\nhere because the same transforms are done every leapfrog step!</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>I wouldn&#39;t be worried about efficiency here, as it also only happens once to initialize each chain.<br> </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nThe problem is that you write matching sampling<br>\r\nstatements both in the model and in the generated quantities,<br>\r\nas in:<br>\r\n<br>\r\n  model {<br>\r\n   ...<br>\r\n   y ~ normal(mu,sigma);<br>\r\n   ...<br>\r\n  }<br>\r\n  generated quantities {<br>\r\n   ...<br>\r\n   y_rep &lt;- normal_random(mu,sigma);<br>\r\n   ...<br>\r\n  }<br>\r\n<br>\r\nIf we replaced the generated quantities notation with sampling<br>\r\nnotation, that&#39;d just be<br>\r\n<br>\r\n  generated quantities {<br>\r\n    ...<br>\r\n    y_rep ~ normal(mu,sigma);<br>\r\n    ...<div><br>\r\n  }<br>\r\n<br></div></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>Ah, I see.  I think that repetition of code will be really hard to avoid though unless something like macros are added to the syntax.  If we wanted to do fairly powerful macros in a cheap and cheerful way we could use the C preprocessor :)<br>\r\n<br>Cheers,<br>Marcus<br><br></div></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "GyyZgtgQCQoJ",
+   "from": "Daniel Lee",
+   "author": "cab04b8f0759c712",
+   "date": "2012-08-16T04:23:40Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     2,
+     "On Wed, Aug 15, 2012 at 8:52 PM, Marcus Brubaker\r<br>&lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt; wrote:\r<br>&gt;\r<br>&gt; Ah, I see.  I think that repetition of code will be really hard to avoid\r<br>&gt; though unless something like macros are added to the syntax.  If we wanted\r<br>&gt; to do fairly powerful macros in a cheap and cheerful way we could use the C\r<br>&gt; preprocessor :)\r<br>&gt;\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Would it be hard to have a #include like mechanism? Perhaps something\r<br>simplistic to start, just a straight include of text in a file without\r<br>any checking.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "ikoc21ZCA00J",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-16T15:33:48Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     1,
+     "The C preprocessor is completely distinct from the rest of the compiler and can be used separately to use #include, #define, #if, etc.  In fact, you can do this already with a script.  For instance:<br><br>cpp -I&lt;incdir&gt; model-withmacros.stan model.stan<br>\r\nstanc model.stan<br>...<br><br>The call to cpp could be done directly in stanc if we wanted to support that functionality directly but you can also just call it yourself.<br><br>Cheers,<br>Marcus<br><br><br><br><div class=\"gmail_quote\"></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\">\r\nOn Thu, Aug 16, 2012 at 12:23 AM, Daniel Lee <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">bea...@alum.mit.edu</a>&gt;</span> wrote:<br></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div>On Wed, Aug 15, 2012 at 8:52 PM, Marcus Brubaker<br>\r\n&lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt; wrote:<br>\r\n&gt;<br>\r\n&gt; Ah, I see.  I think that repetition of code will be really hard to avoid<br>\r\n&gt; though unless something like macros are added to the syntax.  If we wanted<br>\r\n&gt; to do fairly powerful macros in a cheap and cheerful way we could use the C<br>\r\n&gt; preprocessor :)<br>\r\n&gt;<br>\r\n<br>\r\n</div>Would it be hard to have a #include like mechanism? Perhaps something<br>\r\nsimplistic to start, just a straight include of text in a file without<br>\r\nany checking.<br>\r\n</blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><span><font color=\"#888888\"><br>\r\n--<br>\r\n<br>\r\n<br>\r\n</font></span></blockquote></div><br>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "ws_6pJXiJ5gJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-16T18:53:19Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     3,
+     "\r<br>\r<br>On 8/16/12 12:23 AM, Daniel Lee wrote:\r<br>&gt; On Wed, Aug 15, 2012 at 8:52 PM, Marcus Brubaker\r<br>&gt; &lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt; wrote:\r<br>&gt;&gt;\r<br>&gt;&gt; Ah, I see.  I think that repetition of code will be really hard to avoid\r<br>&gt;&gt; though unless something like macros are added to the syntax.  If we wanted\r<br>&gt;&gt; to do fairly powerful macros in a cheap and cheerful way we could use the C\r<br>&gt;&gt; preprocessor :)\r<br>&gt;&gt;\r<br>&gt;\r<br>&gt; Would it be hard to have a #include like mechanism? Perhaps something\r<br>&gt; simplistic to start, just a straight include of text in a file without\r<br>&gt; any checking.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "We could write our own little preprocessor\r<br>for #include.  We could also use C&#39;s as Marcus\r<br>suggests, which would give us that for free.\r<br>The biggest issue is dealing with things like line\r<br>numbers in error output.  The parser&#39;s taking\r<br>in a string iterator with line number tracking, and\r<br>it&#39;s not sophisticated enough to know it&#39;s in a\r<br>subfile.  We&#39;d have to do something like translate\r<br>the error outputs.\r<br>\r<br>I&#39;m very anti-macro, though, as it makes things\r<br>very hard to debug, even if we get line numbers right.\r<br>\r<br>I&#39;d rather introduce simple macro-like function\r<br>definitions.  If we have syntax that&#39;s context dependent,\r<br>the issue is whether we could reuse it or not.\r<br>\r<br>- Bob\r<br>\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "xLpi6kmy_dAJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-16T19:36:59Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     2,
+     "<div class=\"gmail_quote\">On Thu, Aug 16, 2012 at 2:53 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div><div><br>\r\n<br>\r\nOn 8/16/12 12:23 AM, Daniel Lee wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nOn Wed, Aug 15, 2012 at 8:52 PM, Marcus Brubaker<br>\r\n&lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt; wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\nAh, I see.  I think that repetition of code will be really hard to avoid<br>\r\nthough unless something like macros are added to the syntax.  If we wanted<br>\r\nto do fairly powerful macros in a cheap and cheerful way we could use the C<br>\r\npreprocessor :)<br>\r\n<br>\r\n</blockquote>\r\n<br>\r\nWould it be hard to have a #include like mechanism? Perhaps something<br>\r\nsimplistic to start, just a straight include of text in a file without<br>\r\nany checking.<br>\r\n</blockquote>\r\n<br></div></div>\r\nWe could write our own little preprocessor<br>\r\nfor #include.  We could also use C&#39;s as Marcus<br>\r\nsuggests, which would give us that for free.<br>\r\nThe biggest issue is dealing with things like line<br>\r\nnumbers in error output.  The parser&#39;s taking<br>\r\nin a string iterator with line number tracking, and<br>\r\nit&#39;s not sophisticated enough to know it&#39;s in a<br>\r\nsubfile.  We&#39;d have to do something like translate<br>\r\nthe error outputs.<br></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>cpp produces markers in the output which indicate the file and line where things came from.  It would take a little work to keep track of them, but they could be parsed.<br>\r\n </div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nI&#39;m very anti-macro, though, as it makes things<br>\r\nvery hard to debug, even if we get line numbers right.<br>\r\n<br>\r\nI&#39;d rather introduce simple macro-like function<br>\r\ndefinitions.  If we have syntax that&#39;s context dependent,<br>\r\nthe issue is whether we could reuse it or not.<span><font color=\"#888888\"><br></font></span></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br><br>It&#39;s true macros are kind of a brute force solution.  That said, I&#39;m not sure you can get much more without a huge amount of complexity precisely because of the context dependence.  Since expressions can have different interpretations, you&#39;d need to effectively replace them locally and parse the replaced expression which gets you back to macros.<br>\r\n<br>Cheers,<br>Marcus<br><br></div></div><br>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "imUW1TK1zbwJ",
+   "from": "Andrew Gelman",
+   "author": "da33143a8db60ce8",
+   "date": "2012-08-16T20:21:58Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     1,
+     "<div style=\"word-wrap:break-word\">Another way to solve the problem is to make it (relatively) easy to define complicated new model classes.  For example, suppose that I start using the varying-intercepts, varying-slopes model all over the place and I&#39;d like to &quot;macro&quot; it.  Then I could create a new model class that expresses this model as a function of its list of parameters.  Creating a model class is more effort than writing a macro but it could be worth it for models that are used over and over again.<div>A</div><div><br><div><br><div></div></div></div></div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><div><div><div><div>On Aug 16, 2012, at 9:36 PM, Marcus Brubaker wrote:</div><br></div></div></div></div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><div><div><div><blockquote type=\"cite\"><div class=\"gmail_quote\">On Thu, Aug 16, 2012 at 2:53 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div><div><br>\r\n<br>\r\nOn 8/16/12 12:23 AM, Daniel Lee wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nOn Wed, Aug 15, 2012 at 8:52 PM, Marcus Brubaker<br>\r\n&lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt; wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\nAh, I see.  I think that repetition of code will be really hard to avoid<br>\r\nthough unless something like macros are added to the syntax.  If we wanted<br>\r\nto do fairly powerful macros in a cheap and cheerful way we could use the C<br>\r\npreprocessor :)<br>\r\n<br>\r\n</blockquote>\r\n<br>\r\nWould it be hard to have a #include like mechanism? Perhaps something<br>\r\nsimplistic to start, just a straight include of text in a file without<br>\r\nany checking.<br>\r\n</blockquote>\r\n<br></div></div>\r\nWe could write our own little preprocessor<br>\r\nfor #include.  We could also use C&#39;s as Marcus<br>\r\nsuggests, which would give us that for free.<br>\r\nThe biggest issue is dealing with things like line<br>\r\nnumbers in error output.  The parser&#39;s taking<br>\r\nin a string iterator with line number tracking, and<br>\r\nit&#39;s not sophisticated enough to know it&#39;s in a<br>\r\nsubfile.  We&#39;d have to do something like translate<br>\r\nthe error outputs.<br></blockquote><div><br><br>cpp produces markers in the output which indicate the file and line where things came from.  It would take a little work to keep track of them, but they could be parsed.<br>\r\n </div><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nI&#39;m very anti-macro, though, as it makes things<br>\r\nvery hard to debug, even if we get line numbers right.<br>\r\n<br>\r\nI&#39;d rather introduce simple macro-like function<br>\r\ndefinitions.  If we have syntax that&#39;s context dependent,<br>\r\nthe issue is whether we could reuse it or not.<span><font color=\"#888888\"><br></font></span></blockquote><div><br><br>It&#39;s true macros are kind of a brute force solution.  That said, I&#39;m not sure you can get much more without a huge amount of complexity precisely because of the context dependence.  Since expressions can have different interpretations, you&#39;d need to effectively replace them locally and parse the replaced expression which gets you back to macros.<br>\r\n<br>Cheers,<br>Marcus<br><br></div></div><br><div><br></div></blockquote></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div style=\"word-wrap:break-word\"><div><div><div><blockquote type=\"cite\">\r\n\r\n-- <br>\r\n <br>\r\n <br>\r\n</blockquote></div><br></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "pGaV32d_9EkJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-16T20:43:58Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 8/16/12 4:21 PM, Andrew Gelman wrote:\r<br>&gt; Another way to solve the problem is to make it (relatively) easy to define complicated new model classes.  For example,\r<br>&gt; suppose that I start using the varying-intercepts, varying-slopes model all over the place and I&#39;d like to &quot;macro&quot; it.\r<br>&gt;   Then I could create a new model class that expresses this model as a function of its list of parameters.  Creating a\r<br>&gt; model class is more effort than writing a macro but it could be worth it for models that are used over and over again.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right -- that&#39;s exactly what I was saying.\r<br>It&#39;s one of the bigger items on the to-do list.\r<br>\r<br>I&#39;ve thought about how to do this and the\r<br>context-sensitive interpretation of ~\r<br>is relevant for how it&#39;ll be designed and interpreted.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;\r<br>&gt;\r<br>&gt; On Aug 16, 2012, at 9:36 PM, Marcus Brubaker wrote:\r<br>&gt;\r<br>"
+    ],
+    [
+     3,
+     "&gt;&gt; On Thu, Aug 16, 2012 at 2:53 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;     On 8/16/12 12:23 AM, Daniel Lee wrote:\r<br>&gt;&gt;\r<br>&gt;&gt;         On Wed, Aug 15, 2012 at 8:52 PM, Marcus Brubaker\r<br>&gt;&gt;         &lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt;&gt; wrote:\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;             Ah, I see.  I think that repetition of code will be really hard to avoid\r<br>&gt;&gt;             though unless something like macros are added to the syntax.  If we wanted\r<br>&gt;&gt;             to do fairly powerful macros in a cheap and cheerful way we could use the C\r<br>&gt;&gt;             preprocessor :)\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;         Would it be hard to have a #include like mechanism? Perhaps something\r<br>&gt;&gt;         simplistic to start, just a straight include of text in a file without\r<br>&gt;&gt;         any checking.\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;     We could write our own little preprocessor\r<br>&gt;&gt;     for #include.  We could also use C&#39;s as Marcus\r<br>&gt;&gt;     suggests, which would give us that for free.\r<br>&gt;&gt;     The biggest issue is dealing with things like line\r<br>&gt;&gt;     numbers in error output.  The parser&#39;s taking\r<br>&gt;&gt;     in a string iterator with line number tracking, and\r<br>&gt;&gt;     it&#39;s not sophisticated enough to know it&#39;s in a\r<br>&gt;&gt;     subfile.  We&#39;d have to do something like translate\r<br>&gt;&gt;     the error outputs.\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; cpp produces markers in the output which indicate the file and line where things came from.  It would take a little\r<br>&gt;&gt; work to keep track of them, but they could be parsed.\r<br>&gt;&gt;\r<br>&gt;&gt;     I&#39;m very anti-macro, though, as it makes things\r<br>&gt;&gt;     very hard to debug, even if we get line numbers right.\r<br>&gt;&gt;\r<br>&gt;&gt;     I&#39;d rather introduce simple macro-like function\r<br>&gt;&gt;     definitions.  If we have syntax that&#39;s context dependent,\r<br>&gt;&gt;     the issue is whether we could reuse it or not.\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; It&#39;s true macros are kind of a brute force solution.  That said, I&#39;m not sure you can get much more without a huge\r<br>&gt;&gt; amount of complexity precisely because of the context dependence.  Since expressions can have different\r<br>&gt;&gt; interpretations, you&#39;d need to effectively replace them locally and parse the replaced expression which gets you back\r<br>&gt;&gt; to macros.\r<br>&gt;&gt;\r<br>&gt;&gt; Cheers,\r<br>&gt;&gt; Marcus\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; --\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; --\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Sg2l-RDHXHgJ",
+   "from": "Andrew Gelman",
+   "author": "da33143a8db60ce8",
+   "date": "2012-08-16T20:45:58Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     1,
+     "I would say, no rush on this, we will probably have a better idea of what we want, once we&#39;re applying Stan on some real models.\r<br>A\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Aug 16, 2012, at 10:43 PM, Bob Carpenter wrote:\r<br>\r<br>&gt; \r<br>&gt; \r<br>&gt; On 8/16/12 4:21 PM, Andrew Gelman wrote:\r<br>&gt;&gt; Another way to solve the problem is to make it (relatively) easy to define complicated new model classes.  For example,\r<br>&gt;&gt; suppose that I start using the varying-intercepts, varying-slopes model all over the place and I&#39;d like to &quot;macro&quot; it.\r<br>&gt;&gt;  Then I could create a new model class that expresses this model as a function of its list of parameters.  Creating a\r<br>&gt;&gt; model class is more effort than writing a macro but it could be worth it for models that are used over and over again.\r<br>&gt; \r<br>&gt; Right -- that&#39;s exactly what I was saying.\r<br>&gt; It&#39;s one of the bigger items on the to-do list.\r<br>&gt; \r<br>&gt; I&#39;ve thought about how to do this and the\r<br>&gt; context-sensitive interpretation of ~\r<br>&gt; is relevant for how it&#39;ll be designed and interpreted.\r<br>&gt; \r<br>&gt; - Bob\r<br>&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; On Aug 16, 2012, at 9:36 PM, Marcus Brubaker wrote:\r<br>&gt;&gt; \r<br>&gt;&gt;&gt; On Thu, Aug 16, 2012 at 2:53 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;    On 8/16/12 12:23 AM, Daniel Lee wrote:\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;        On Wed, Aug 15, 2012 at 8:52 PM, Marcus Brubaker\r<br>&gt;&gt;&gt;        &lt;<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">marcus.a...@gmail.com</a>&gt;&gt; wrote:\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;            Ah, I see.  I think that repetition of code will be really hard to avoid\r<br>&gt;&gt;&gt;            though unless something like macros are added to the syntax.  If we wanted\r<br>&gt;&gt;&gt;            to do fairly powerful macros in a cheap and cheerful way we could use the C\r<br>&gt;&gt;&gt;            preprocessor :)\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;        Would it be hard to have a #include like mechanism? Perhaps something\r<br>&gt;&gt;&gt;        simplistic to start, just a straight include of text in a file without\r<br>&gt;&gt;&gt;        any checking.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;    We could write our own little preprocessor\r<br>&gt;&gt;&gt;    for #include.  We could also use C&#39;s as Marcus\r<br>&gt;&gt;&gt;    suggests, which would give us that for free.\r<br>&gt;&gt;&gt;    The biggest issue is dealing with things like line\r<br>&gt;&gt;&gt;    numbers in error output.  The parser&#39;s taking\r<br>&gt;&gt;&gt;    in a string iterator with line number tracking, and\r<br>&gt;&gt;&gt;    it&#39;s not sophisticated enough to know it&#39;s in a\r<br>&gt;&gt;&gt;    subfile.  We&#39;d have to do something like translate\r<br>&gt;&gt;&gt;    the error outputs.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; cpp produces markers in the output which indicate the file and line where things came from.  It would take a little\r<br>&gt;&gt;&gt; work to keep track of them, but they could be parsed.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;    I&#39;m very anti-macro, though, as it makes things\r<br>&gt;&gt;&gt;    very hard to debug, even if we get line numbers right.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt;    I&#39;d rather introduce simple macro-like function\r<br>&gt;&gt;&gt;    definitions.  If we have syntax that&#39;s context dependent,\r<br>&gt;&gt;&gt;    the issue is whether we could reuse it or not.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; It&#39;s true macros are kind of a brute force solution.  That said, I&#39;m not sure you can get much more without a huge\r<br>&gt;&gt;&gt; amount of complexity precisely because of the context dependence.  Since expressions can have different\r<br>&gt;&gt;&gt; interpretations, you&#39;d need to effectively replace them locally and parse the replaced expression which gets you back\r<br>&gt;&gt;&gt; to macros.\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; Cheers,\r<br>&gt;&gt;&gt; Marcus\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; --\r<br>&gt;&gt;&gt; \r<br>&gt;&gt;&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; --\r<br>&gt;&gt; \r<br>&gt;&gt; \r<br>&gt; \r<br>"
+    ],
+    [
+     1,
+     "&gt; -- \r<br>&gt; \r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "sRsBuJno0CsJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-16T20:59:42Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 8/16/12 11:33 AM, Marcus Brubaker wrote:\r<br>&gt; The C preprocessor is completely distinct from the rest of the compiler and can be used separately to use #include,\r<br>&gt; #define, #if, etc.  In fact, you can do this already with a script.  For instance:\r<br>&gt;\r<br>&gt; cpp -I&lt;incdir&gt; model-withmacros.stan model.stan\r<br>&gt; stanc model.stan\r<br>&gt; ...\r<br>&gt;\r<br>&gt; The call to cpp could be done directly in stanc if we wanted to support that functionality directly but you can also\r<br>&gt; just call it yourself.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I knew it was possible, but didn&#39;t realize it\r<br>was this easy -- the C++ compilers let\r<br>you see all sorts of intermediate stages of the\r<br>work they do.\r<br>\r<br>I&#39;m very tempted NOT to mention this in manuals,\r<br>etc., and leave it to the C whizzes to do on their\r<br>own.  The only issue is that then their models\r<br>wouldn&#39;t work in the in the R interface.  (Maybe\r<br>we could put an expert mode expand macros in or\r<br>something.)\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "XQ3JpdYlcPsJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-08-16T22:28:40Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     3,
+     "On Thu, Aug 16, 2012 at 4:59 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div><br>\r\n<br>\r\nOn 8/16/12 11:33 AM, Marcus Brubaker wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nThe C preprocessor is completely distinct from the rest of the compiler and can be used separately to use #include,<br>\r\n#define, #if, etc.  In fact, you can do this already with a script.  For instance:<br>\r\n<br>\r\ncpp -I&lt;incdir&gt; model-withmacros.stan model.stan<br>\r\nstanc model.stan<br>\r\n...<br>\r\n<br>\r\nThe call to cpp could be done directly in stanc if we wanted to support that functionality directly but you can also<br>\r\njust call it yourself.<br>\r\n</blockquote>\r\n<br></div>\r\nI knew it was possible, but didn&#39;t realize it<br>\r\nwas this easy -- the C++ compilers let<br>\r\nyou see all sorts of intermediate stages of the<br>\r\nwork they do.<br>\r\n<br>\r\nI&#39;m very tempted NOT to mention this in manuals,<br>\r\netc., and leave it to the C whizzes to do on their<br>\r\nown.  The only issue is that then their models<br>\r\nwouldn&#39;t work in the in the R interface.  (Maybe<br>\r\nwe could put an expert mode expand macros in or<br>\r\nsomething.)<span><font color=\"#888888\"><br></font></span></blockquote></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_quote\"><div><br>The brute force approach is to call cpp with a system call from the parser to produce a temp file which gets parsed per usual.  More sophisticated (although perhaps more work?) is to use something like Wave (<a href=\"http://www.boost.org/doc/libs/1_50_0/libs/wave/index.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.boost.org/doc/libs/1_50_0/libs/wave/index.html&amp;source=gmail&amp;ust=1792478439004000&amp;usg=AOvVaw2rm09ykHRDQU51AsP7w2Mi\">http://www.boost.org/doc/libs/1_50_0/libs/wave/index.html</a>).  I&#39;m not sure how it fits into the existing parser framework, but given that it&#39;s part of boost, it may work well.<br>\r\n<br>Cheers,<br>Marcus<br><br></div></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "yxL0_6G0BLcJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-16T22:38:51Z",
+   "subject": "Re: [stan-dev] RNG functions in models - design issues",
+   "parts": [
+    [
+     2,
+     "On 8/16/12 6:28 PM, Marcus Brubaker wrote:\r<br>\r<br>&gt; The brute force approach is to call cpp with a system call from the parser to produce a temp file which gets parsed per\r<br>&gt; usual.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The beauty of this approach is that it just drops into\r<br>the makefiles.  The problem is debugging.\r<br>"
+    ],
+    [
+     2,
+     "\r<br> &gt;  More sophisticated (although perhaps more work?) is to use something like Wave\r<br>&gt; (<a href=\"http://www.boost.org/doc/libs/1_50_0/libs/wave/index.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.boost.org/doc/libs/1_50_0/libs/wave/index.html&amp;source=gmail&amp;ust=1792478439005000&amp;usg=AOvVaw1x73wPI35T66Xvj2co7drh\">http://www.boost.org/doc/libs/1_50_0/libs/wave/index.html</a>).  I&#39;m not sure how it fits into the existing parser\r<br>&gt; framework, but given that it&#39;s part of boost, it may work well.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "There&#39;s some hope.  It&#39;s written by Hartmut Kaiser, the same guy who wrote\r<br>the Spirit parser.  It&#39;s a C++ preprocessor, but I may be able to\r<br>plug it together with Spirit.  As for Spirit, I&#39;m finding their doc very very\r<br>hard to follow.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "im93F0ff4RcJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-08-17T07:49:02Z",
+   "subject": "won't work: Boost Wave as standalone macro preprocessor",
+   "parts": [
+    [
+     1,
+     "Looks like we can&#39;t use Boost Wave as a standalone\r<br>preprocessor because it&#39;s tied into the C lexer.\r<br>\r<br>Here&#39;s a query to the Boost Spirit mailing list and a reply from\r<br>Hartmut Kaiser, the developer:\r<br>\r<br>   &gt; Yes the use case is Use wave as **only** for preprocessing ...\r<br>   &gt; I need to iterate characters and some direction on writing the NEW\r<br>   &gt; iterator.\r<br>\r<br>   Sorry that does not work. You can&#39;t use Wave for preprocessing only. It is\r<br>   built on top of a tokenizer (lexer) and operates itself with tokens.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  }
+ ]
+}
