@@ -1,0 +1,146 @@
+{
+ "thread": "3pS-ky_LQFU",
+ "subject": "Reparameterizing hierarchical lifetime model",
+ "messages_listed": 5,
+ "last_activity": "2016-12-08T21:54:12Z",
+ "messages": [
+  {
+   "id": "IqY6KVzQCQAJ",
+   "from": "Eric Mittman",
+   "author": "e174d246020b1d33",
+   "date": "2016-12-08T16:21:41Z",
+   "subject": "Reparameterizing hierarchical lifetime model",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\"><br><div>I am getting a few divergent transitions, which appear where the acceptance probability is below the median (lower diagonal of the pairs plot) and I have exhausted my knowledge of techniques to increase the numerical stability of my problem. Any suggestions?</div><div><br></div><div>The model consists of M distributions of the form F = 1 - (1 - pi * F_1) * (1 - F_2) where pi represents the probability that a unit is susceptible to a mechanism that results in &quot;infant mortality&quot;. This is a competing risks model where we are agnostic about which failure mode was responsible for an observed failure.</div><div><br></div>The data we are modeling are either observed failures or right-censored and there is unit-specific left truncation. Because most observations are right-censored, we reparameterize in terms of a lower quantile rather than the mean of F_2.<div><div><br></div><div><div>//modified competing risk model</div><div><br></div><div>functions {</div><div>  real sev_logpdf(real y, real mu, real log_sigma){</div><div>    real z;</div><div>    z = (y - mu) / exp(log_sigma);</div><div>    return -log_sigma + z - exp(z);</div><div>  }</div><div>  </div><div>  real sev_logccdf(real y, real mu, real log_sigma){</div><div>    return -exp((y - mu) / exp(log_sigma));</div><div>  }</div><div>  </div><div>  real sev_logcdf(real y, real mu, real log_sigma){</div><div>    return log1m_exp(-exp((y - mu) / exp(log_sigma)));</div><div>  }</div><div>}</div><div><br></div><div>data {</div><div>  int M;</div><div>  int N_obs;</div><div>  int N_cens;</div><div>  real endtime_obs[N_obs];</div><div>  real endtime_cens[N_cens];</div><div>  real starttime_obs[N_obs];</div><div>  real starttime_cens[N_cens];</div><div>  int&lt;lower=1, upper=M&gt; dm_obs[N_obs];</div><div>  int&lt;lower=1, upper=M&gt; dm_cens[N_cens];</div><div>  vector&lt;lower=0, upper=1&gt;[2] p; # quantiles to model</div><div>}</div><div>transformed data{</div><div>  vector[2] z_corr;</div><div>  for(i in 1:2)</div><div>    z_corr[i] = log(-1.0 * log1m(p[i])); # used to get location(mu) from quantile(t_p)</div><div>}</div><div>parameters{</div><div>  real eta_ltp1; #locations</div><div>  real eta_ltp2;</div><div>  real eta_ls1;</div><div>  real eta_ls2;</div><div>  real eta_pi;</div><div>  real&lt;lower=0&gt; tau_ltp1; #scales</div><div>  real&lt;lower=0&gt; tau_ltp2;</div><div>  real&lt;lower=0&gt; tau_ls1;</div><div>  real&lt;lower=0&gt; tau_ls2;</div><div>  real&lt;lower=0&gt; tau_pi;</div><div>  vector[M] log_tp1_raw;</div><div>  vector[M] log_tp2_raw;</div><div>  vector[M] log_sigma1_raw;</div><div>  vector[M] log_sigma2_raw;</div><div>  vector[M] logit_pi_raw;</div><div>}</div><div><br></div><div>transformed parameters{</div><div>  vector[M] mu1;</div><div>  vector[M] mu2;</div><div>  vector[M] log_sigma1;</div><div>  vector[M] log_sigma2;</div><div>  vector[M] log_pi;</div><div>  log_sigma1 = eta_ls1 + tau_ls1 * log_sigma1_raw;</div><div>  log_sigma2 = eta_ls2 + tau_ls2 * log_sigma2_raw;</div><div>  mu1 = (eta_ltp1 + tau_ltp1 * log_tp1_raw) - (exp(log_sigma1) * z_corr[1]);</div><div>  mu2 = (eta_ltp2 + tau_ltp2 * log_tp2_raw) - (exp(log_sigma2) * z_corr[2]);</div><div>  for(m in 1:M)</div><div>    log_pi[m] = log_inv_logit(eta_pi + tau_pi * logit_pi_raw[m]);</div><div>}</div><div><br></div><div>model{</div><div>  real tmp[2];</div><div>  int m;</div><div>  real logpi;</div><div>  real mu_1;</div><div>  real mu_2;</div><div>  real ls_1;</div><div>  real ls_2;</div><div>  </div><div>  for(i in 1:N_obs){</div><div>    m = dm_obs[i];</div><div>    logpi = log_pi[m];</div><div>    mu_1 = mu1[m];</div><div>    mu_2 = mu2[m];</div><div>    ls_1 = log_sigma1[m];</div><div>    ls_2 = log_sigma2[m];</div><div>    // numerator:   log( p * f1 * (1 - F2) + f2 * (1 - p * F1) )</div><div>    //            = log( exp(log(p) + log(f1) + log(1 - F2)) + exp(log(f2) + log(1 - exp(log(p) + log(F1)))) )</div><div>    tmp[1] = log_sum_exp(logpi + sev_logpdf(endtime_obs[i], mu_1, ls_1) +</div><div>               sev_logccdf(endtime_obs[i], mu_2, ls_2),</div><div>               sev_logpdf( endtime_obs[i], mu_2, ls_2) + </div><div>               log1m_exp(logpi + sev_logcdf(endtime_obs[i], mu_1, ls_1)</div><div>               )</div><div>             );</div><div>    // denominator:  log((1 - p * F1) * (1 - F2))</div><div>    //            =  log(1 - p * F1) + log(1 - F2)</div><div>    tmp[2] = log1m_exp(logpi + sev_logcdf(starttime_obs[i], mu_1, ls_1)) + </div><div>             sev_logccdf(starttime_obs[i], mu_2, ls_2);</div><div>             </div><div>    target += tmp[1] - tmp[2];</div><div>  }</div><div>  </div><div>  for(i in 1:N_cens){</div><div>    m = dm_cens[i];</div><div>    logpi = log_pi[m];</div><div>    mu_1 = mu1[m];</div><div>    mu_2 = mu2[m];</div><div>    ls_1 = log_sigma1[m];</div><div>    ls_2 = log_sigma2[m];</div><div>  </div><div>    // numerator:   log((1 - p * F1) * (1 - F2))</div><div>    //            =  log(1 - p * F1) + log(1 - F2)</div><div>    tmp[1] = log1m_exp(logpi + sev_logcdf(endtime_cens[i], mu_1, ls_1)) + </div><div>             sev_logccdf(endtime_cens[i], mu_2, ls_2);</div><div>    // denominator:  log((1 - p * F1) * (1 - F2))</div><div>    //            =  log(1 - p * F1) + log(1 - F2)</div><div>    tmp[2] = log1m_exp(logpi + sev_logcdf(starttime_cens[i], mu_1, ls_1)) + </div><div>             sev_logccdf(starttime_cens[i], mu_2, ls_2);</div><div>             </div><div>    target += tmp[1] - tmp[2];</div><div>  }</div><div>  </div><div>  log_tp1_raw    ~ normal(0,1);</div><div>  log_tp2_raw    ~ normal(0,1);</div><div>  log_sigma1_raw ~ normal(0,1);</div><div>  log_sigma2_raw ~ normal(0,1);</div><div>  logit_pi_raw   ~ normal(0,1);</div><div>  eta_ltp1       ~ normal(7, 2);</div><div>  eta_ltp2       ~ normal(9, 2);</div><div>  eta_ls1        ~ normal(0, 1);</div><div>  eta_ls2        ~ normal(0, 1);</div><div>  eta_pi         ~ normal(-3, 1);</div><div>  tau_ltp1       ~ exponential(1);</div><div>  tau_ltp2       ~ exponential(1);</div><div>  tau_ls1        ~ exponential(1);</div><div>  tau_ls2        ~ exponential(1);</div><div>  tau_pi         ~ exponential(1);</div><div>}</div></div><div><br></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "6EI_cDzUCQAJ",
+   "from": "Michael Betancourt",
+   "author": "a5e83218c834e013",
+   "date": "2016-12-08T17:32:43Z",
+   "subject": "Re: [stan-users] Reparameterizing hierarchical lifetime model",
+   "parts": [
+    [
+     1,
+     "<div style=\"word-wrap:break-word\">You’ll definitely want to go through this implementation and make the<div>numerical calculations more robust.  For example, replace all of the</div><div>ratios of exponentials, exp(a) / exp(b), with a single exponential,</div><div>exp(a - b).<br><div><br><div></div></div></div></div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><div><div><div><div>On Dec 8, 2016, at 11:21 AM, Eric Mittman &lt;<a href data-email-masked rel=\"nofollow\">mathteach...@gmail.com</a>&gt; wrote:</div><br></div></div></div></div>"
+    ],
+    [
+     3,
+     "<div style=\"word-wrap:break-word\"><div><div><div><blockquote type=\"cite\"><div dir=\"ltr\"><br><div>I am getting a few divergent transitions, which appear where the acceptance probability is below the median (lower diagonal of the pairs plot) and I have exhausted my knowledge of techniques to increase the numerical stability of my problem. Any suggestions?</div><div><br></div><div>The model consists of M distributions of the form F = 1 - (1 - pi * F_1) * (1 - F_2) where pi represents the probability that a unit is susceptible to a mechanism that results in &quot;infant mortality&quot;. This is a competing risks model where we are agnostic about which failure mode was responsible for an observed failure.</div><div><br></div>The data we are modeling are either observed failures or right-censored and there is unit-specific left truncation. Because most observations are right-censored, we reparameterize in terms of a lower quantile rather than the mean of F_2.<div><div><br></div><div><div>//modified competing risk model</div><div><br></div><div>functions {</div><div>  real sev_logpdf(real y, real mu, real log_sigma){</div><div>    real z;</div><div>    z = (y - mu) / exp(log_sigma);</div><div>    return -log_sigma + z - exp(z);</div><div>  }</div><div>  </div><div>  real sev_logccdf(real y, real mu, real log_sigma){</div><div>    return -exp((y - mu) / exp(log_sigma));</div><div>  }</div><div>  </div><div>  real sev_logcdf(real y, real mu, real log_sigma){</div><div>    return log1m_exp(-exp((y - mu) / exp(log_sigma)));</div><div>  }</div><div>}</div><div><br></div><div>data {</div><div>  int M;</div><div>  int N_obs;</div><div>  int N_cens;</div><div>  real endtime_obs[N_obs];</div><div>  real endtime_cens[N_cens];</div><div>  real starttime_obs[N_obs];</div><div>  real starttime_cens[N_cens];</div><div>  int&lt;lower=1, upper=M&gt; dm_obs[N_obs];</div><div>  int&lt;lower=1, upper=M&gt; dm_cens[N_cens];</div><div>  vector&lt;lower=0, upper=1&gt;[2] p; # quantiles to model</div><div>}</div><div>transformed data{</div><div>  vector[2] z_corr;</div><div>  for(i in 1:2)</div><div>    z_corr[i] = log(-1.0 * log1m(p[i])); # used to get location(mu) from quantile(t_p)</div><div>}</div><div>parameters{</div><div>  real eta_ltp1; #locations</div><div>  real eta_ltp2;</div><div>  real eta_ls1;</div><div>  real eta_ls2;</div><div>  real eta_pi;</div><div>  real&lt;lower=0&gt; tau_ltp1; #scales</div><div>  real&lt;lower=0&gt; tau_ltp2;</div><div>  real&lt;lower=0&gt; tau_ls1;</div><div>  real&lt;lower=0&gt; tau_ls2;</div><div>  real&lt;lower=0&gt; tau_pi;</div><div>  vector[M] log_tp1_raw;</div><div>  vector[M] log_tp2_raw;</div><div>  vector[M] log_sigma1_raw;</div><div>  vector[M] log_sigma2_raw;</div><div>  vector[M] logit_pi_raw;</div><div>}</div><div><br></div><div>transformed parameters{</div><div>  vector[M] mu1;</div><div>  vector[M] mu2;</div><div>  vector[M] log_sigma1;</div><div>  vector[M] log_sigma2;</div><div>  vector[M] log_pi;</div><div>  log_sigma1 = eta_ls1 + tau_ls1 * log_sigma1_raw;</div><div>  log_sigma2 = eta_ls2 + tau_ls2 * log_sigma2_raw;</div><div>  mu1 = (eta_ltp1 + tau_ltp1 * log_tp1_raw) - (exp(log_sigma1) * z_corr[1]);</div><div>  mu2 = (eta_ltp2 + tau_ltp2 * log_tp2_raw) - (exp(log_sigma2) * z_corr[2]);</div><div>  for(m in 1:M)</div><div>    log_pi[m] = log_inv_logit(eta_pi + tau_pi * logit_pi_raw[m]);</div><div>}</div><div><br></div><div>model{</div><div>  real tmp[2];</div><div>  int m;</div><div>  real logpi;</div><div>  real mu_1;</div><div>  real mu_2;</div><div>  real ls_1;</div><div>  real ls_2;</div><div>  </div><div>  for(i in 1:N_obs){</div><div>    m = dm_obs[i];</div><div>    logpi = log_pi[m];</div><div>    mu_1 = mu1[m];</div><div>    mu_2 = mu2[m];</div><div>    ls_1 = log_sigma1[m];</div><div>    ls_2 = log_sigma2[m];</div><div>    // numerator:   log( p * f1 * (1 - F2) + f2 * (1 - p * F1) )</div><div>    //            = log( exp(log(p) + log(f1) + log(1 - F2)) + exp(log(f2) + log(1 - exp(log(p) + log(F1)))) )</div><div>    tmp[1] = log_sum_exp(logpi + sev_logpdf(endtime_obs[i], mu_1, ls_1) +</div><div>               sev_logccdf(endtime_obs[i], mu_2, ls_2),</div><div>               sev_logpdf( endtime_obs[i], mu_2, ls_2) + </div><div>               log1m_exp(logpi + sev_logcdf(endtime_obs[i], mu_1, ls_1)</div><div>               )</div><div>             );</div><div>    // denominator:  log((1 - p * F1) * (1 - F2))</div><div>    //            =  log(1 - p * F1) + log(1 - F2)</div><div>    tmp[2] = log1m_exp(logpi + sev_logcdf(starttime_obs[i], mu_1, ls_1)) + </div><div>             sev_logccdf(starttime_obs[i], mu_2, ls_2);</div><div>             </div><div>    target += tmp[1] - tmp[2];</div><div>  }</div><div>  </div><div>  for(i in 1:N_cens){</div><div>    m = dm_cens[i];</div><div>    logpi = log_pi[m];</div><div>    mu_1 = mu1[m];</div><div>    mu_2 = mu2[m];</div><div>    ls_1 = log_sigma1[m];</div><div>    ls_2 = log_sigma2[m];</div><div>  </div><div>    // numerator:   log((1 - p * F1) * (1 - F2))</div><div>    //            =  log(1 - p * F1) + log(1 - F2)</div><div>    tmp[1] = log1m_exp(logpi + sev_logcdf(endtime_cens[i], mu_1, ls_1)) + </div><div>             sev_logccdf(endtime_cens[i], mu_2, ls_2);</div><div>    // denominator:  log((1 - p * F1) * (1 - F2))</div><div>    //            =  log(1 - p * F1) + log(1 - F2)</div><div>    tmp[2] = log1m_exp(logpi + sev_logcdf(starttime_cens[i], mu_1, ls_1)) + </div><div>             sev_logccdf(starttime_cens[i], mu_2, ls_2);</div><div>             </div><div>    target += tmp[1] - tmp[2];</div><div>  }</div><div>  </div><div>  log_tp1_raw    ~ normal(0,1);</div><div>  log_tp2_raw    ~ normal(0,1);</div><div>  log_sigma1_raw ~ normal(0,1);</div><div>  log_sigma2_raw ~ normal(0,1);</div><div>  logit_pi_raw   ~ normal(0,1);</div><div>  eta_ltp1       ~ normal(7, 2);</div><div>  eta_ltp2       ~ normal(9, 2);</div><div>  eta_ls1        ~ normal(0, 1);</div><div>  eta_ls2        ~ normal(0, 1);</div><div>  eta_pi         ~ normal(-3, 1);</div><div>  tau_ltp1       ~ exponential(1);</div><div>  tau_ltp2       ~ exponential(1);</div><div>  tau_ls1        ~ exponential(1);</div><div>  tau_ls2        ~ exponential(1);</div><div>  tau_pi         ~ exponential(1);</div><div>}</div></div><div><br></div></div></div><div><br></div></blockquote></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div style=\"word-wrap:break-word\"><div><div><div><blockquote type=\"cite\">\r\n\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.<br>\r\nTo post to this group, send email to <a href data-email-masked rel=\"nofollow\">stan-...@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792459309947000&amp;usg=AOvVaw1AoXlOCLnvZmSQ3uNVxmLu\">https://groups.google.com/d/optout</a>.<br>\r\n</blockquote></div><br></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "ZLS3_SbcCQAJ",
+   "from": "Eric Mittman",
+   "author": "e174d246020b1d33",
+   "date": "2016-12-08T19:57:47Z",
+   "subject": "Re: [stan-users] Reparameterizing hierarchical lifetime model",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Thank you for the suggestion.<div><br></div><div>Are the edits below addressing that issue?</div><div><br></div><div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><div>functions {</div><div>  real sev_logpdf(real y, real mu, real log_sigma){</div><div>    real z;</div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div>    z = (y - mu) / exp(log_sigma); //  z = exp( log(y - mu) - log_sigma );</div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><div>    return -log_sigma + z - exp(z);</div><div>  }</div><div>  </div><div>  real sev_logccdf(real y, real mu, real log_sigma){</div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div>    return -exp((y - mu) / exp(log_sigma)); // return -exp( exp ( log(y - mu) - log_sigma ) );</div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><div>  }</div><div>  </div><div>  real sev_logcdf(real y, real mu, real log_sigma){</div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><div>    return log1m_exp(-exp((y - mu) / exp(log_sigma))); // return log1m_exp( -exp( exp ( log(y - mu) - log_sigma ) ) </div><div>  }</div><div>}</div></div><div><br></div><div><br></div><div>Are there any more specific issues related to numerical stability that stick out?</div><div><br></div><div>FYI, the ratio (number of divergent transitions/ number of post warm-up iterations) is about .001.</div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div><br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div style=\"word-wrap:break-word\"><div><div><div><blockquote type=\"cite\"><div><br></div>\r\n\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a rel=\"nofollow\">stan-users+...@googlegroups.com</a>.<br>\r\nTo post to this group, send email to <a rel=\"nofollow\">stan-...@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/d/optout\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792459309948000&amp;usg=AOvVaw2_HLeEGSQS3FuDfV3JU1Oe\">https://groups.google.com/d/optout</a>.<br>\r\n</blockquote></div><br></div></div></div></blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "w9ZWxYPcCQAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-12-08T20:04:25Z",
+   "subject": "Re: [stan-users] Reparameterizing hierarchical lifetime model",
+   "parts": [
+    [
+     1,
+     "Those are nasty functions for numerical stability.  exp()\r<br>is bad enough, but exp() inside of exp() is really nasty.\r<br>I just want to make sure that those are realy CCDFs on\r<br>the log scale.  Because generally, the way to get stability\r<br>is to move to a lot scale.\r<br>\r<br>Are you sure the divergences are post warmup?  There was a bug\r<br>in reporting those in RStan, where warmup divergences were being\r<br>reported as post-warmup.  That&#39;s fixed in the release about to come out.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>&gt; On Dec 8, 2016, at 2:57 PM, Eric Mittman &lt;<a href data-email-masked rel=\"nofollow\">mathteach...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; Thank you for the suggestion.\r<br>&gt; \r<br>&gt; Are the edits below addressing that issue?\r<br>&gt; \r<br>&gt; functions {\r<br>&gt;   real sev_logpdf(real y, real mu, real log_sigma){\r<br>&gt;     real z;\r<br>&gt;     z = (y - mu) / exp(log_sigma); //  z = exp( log(y - mu) - log_sigma );\r<br>&gt;     return -log_sigma + z - exp(z);\r<br>&gt;   }\r<br>&gt;   \r<br>&gt;   real sev_logccdf(real y, real mu, real log_sigma){\r<br>&gt;     return -exp((y - mu) / exp(log_sigma)); // return -exp( exp ( log(y - mu) - log_sigma ) );\r<br>&gt;   }\r<br>&gt;   \r<br>&gt;   real sev_logcdf(real y, real mu, real log_sigma){\r<br>&gt;     return log1m_exp(-exp((y - mu) / exp(log_sigma))); // return log1m_exp( -exp( exp ( log(y - mu) - log_sigma ) ) \r<br>&gt;   }\r<br>&gt; }\r<br>&gt; \r<br>&gt; \r<br>&gt; Are there any more specific issues related to numerical stability that stick out?\r<br>&gt; \r<br>&gt; FYI, the ratio (number of divergent transitions/ number of post warm-up iterations) is about .001.\r<br>&gt; \r<br>&gt;&gt; \r<br>&gt;&gt; -- \r<br>&gt;&gt; You received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.\r<br>&gt;&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r<br>&gt;&gt; To post to this group, send email to <a href data-email-masked rel=\"nofollow\">stan-...@googlegroups.com</a>.\r<br>&gt;&gt; For more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792459309950000&amp;usg=AOvVaw2tpgEIiXnY-OAYNf9JC8Ow\">https://groups.google.com/d/optout</a>.\r<br>&gt; \r<br>&gt; \r<br>&gt; -- \r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r<br>&gt; To post to this group, send email to <a href data-email-masked rel=\"nofollow\">stan-...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792459309950000&amp;usg=AOvVaw2tpgEIiXnY-OAYNf9JC8Ow\">https://groups.google.com/d/optout</a>.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "cjaCWYHiCQAJ",
+   "from": "Eric Mittman",
+   "author": "e174d246020b1d33",
+   "date": "2016-12-08T21:54:12Z",
+   "subject": "Re: [stan-users] Reparameterizing hierarchical lifetime model",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\">Those are nasty functions for numerical stability.  exp() <br>is bad enough, but exp() inside of exp() is really nasty. <br>I just want to make sure that those are realy CCDFs on <br>the log scale.  Because generally, the way to get stability <br>is to move to a lot scale. <div><br></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div>Yes. The &#39;sev&#39; distribution is a reflected Gumbel, so it does have a nested exponentiation. One of the &quot;exp&quot;s is there because I am modeling log(sigma). Alternatively, I could declare sigma &gt; 0 in the parameters block and then use sigma ~ lognormal(eta_ls, tau_ls) (or some other distribution). I used the Matt trick for all of my group-level parameters, is that wrong-headed for scale parameters?</div><div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div><br>Are you sure the divergences are post warmup?  There was a bug <br>in reporting those in RStan, where warmup divergences were being <br>reported as post-warmup.  That&#39;s fixed in the release about to come out. <br><br></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div>I saw something about that on here and I checked. They are post-warmup, happen sporadically, and they seem to be pretty evenly distributed across chains.</div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div><br></div><div><br>On Thursday, December 8, 2016 at 2:04:25 PM UTC-6, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Those are nasty functions for numerical stability.  exp()\r\n<br>is bad enough, but exp() inside of exp() is really nasty.\r\n<br>I just want to make sure that those are realy CCDFs on\r\n<br>the log scale.  Because generally, the way to get stability\r\n<br>is to move to a lot scale.\r\n<br>\r\n<br>Are you sure the divergences are post warmup?  There was a bug\r\n<br>in reporting those in RStan, where warmup divergences were being\r\n<br>reported as post-warmup.  That&#39;s fixed in the release about to come out.\r\n<br>\r\n<br>- Bob\r\n<br>\r\n<br>&gt; On Dec 8, 2016, at 2:57 PM, Eric Mittman &lt;<a rel=\"nofollow\">mathteach...@gmail.com</a>&gt; wrote:\r\n<br>&gt; \r\n<br>&gt; Thank you for the suggestion.\r\n<br>&gt; \r\n<br>&gt; Are the edits below addressing that issue?\r\n<br>&gt; \r\n<br>&gt; functions {\r\n<br>&gt;   real sev_logpdf(real y, real mu, real log_sigma){\r\n<br>&gt;     real z;\r\n<br>&gt;     z = (y - mu) / exp(log_sigma); //  z = exp( log(y - mu) - log_sigma );\r\n<br>&gt;     return -log_sigma + z - exp(z);\r\n<br>&gt;   }\r\n<br>&gt;   \r\n<br>&gt;   real sev_logccdf(real y, real mu, real log_sigma){\r\n<br>&gt;     return -exp((y - mu) / exp(log_sigma)); // return -exp( exp ( log(y - mu) - log_sigma ) );\r\n<br>&gt;   }\r\n<br>&gt;   \r\n<br>&gt;   real sev_logcdf(real y, real mu, real log_sigma){\r\n<br>&gt;     return log1m_exp(-exp((y - mu) / exp(log_sigma))); // return log1m_exp( -exp( exp ( log(y - mu) - log_sigma ) ) \r\n<br>&gt;   }\r\n<br>&gt; }\r\n<br>&gt; \r\n<br>&gt; \r\n<br>&gt; Are there any more specific issues related to numerical stability that stick out?\r\n<br>&gt; \r\n<br>&gt; FYI, the ratio (number of divergent transitions/ number of post warm-up iterations) is about .001.\r\n<br>&gt; \r\n<br>&gt;&gt; \r\n<br>&gt;&gt; -- \r\n<br>&gt;&gt; You received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.\r\n<br>&gt;&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r\n<br>&gt;&gt; To post to this group, send email to <a rel=\"nofollow\">stan-...@googlegroups.com</a>.\r\n<br>&gt;&gt; For more options, visit <a href=\"https://groups.google.com/d/optout\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792459309951000&amp;usg=AOvVaw0Tp3r5Q0uNRieO0j4_ESiJ\">https://groups.google.com/d/optout</a>.\r\n<br>&gt; \r\n<br>&gt; \r\n<br>&gt; -- \r\n<br>&gt; You received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.\r\n<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r\n<br>&gt; To post to this group, send email to <a rel=\"nofollow\">stan-...@googlegroups.com</a>.\r\n<br>&gt; For more options, visit <a href=\"https://groups.google.com/d/optout\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792459309951000&amp;usg=AOvVaw0Tp3r5Q0uNRieO0j4_ESiJ\">https://groups.google.com/d/optout</a>.\r\n<br>\r\n<br></blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "dvYL5VKQCgAJ",
+   "from": "",
+   "author": "d0d6d503f5acae62",
+   "date": "2016-12-11T02:59:28Z",
+   "subject": "",
+   "parts": [
+    [
+     1,
+     ""
+    ]
+   ]
+  }
+ ]
+}

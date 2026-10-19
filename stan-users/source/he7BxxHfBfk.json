@@ -1,0 +1,421 @@
+{
+ "thread": "he7BxxHfBfk",
+ "subject": "GMRF / CAR model - initialization/acceptance problems",
+ "messages_listed": 17,
+ "last_activity": "2013-02-25T04:26:51Z",
+ "messages": [
+  {
+   "id": "V6s1K14nRfgJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-02-01T16:19:39Z",
+   "subject": "GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "Hello all,<div><br></div><div>I&#39;m attempting to fit a conditional autoregressive (CAR) model in Stan. To begin with, I&#39;m just trying to replicate the <a href=\"http://www.openbugs.info/Manuals/GeoBUGS/Examples/Scotland.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.openbugs.info/Manuals/GeoBUGS/Examples/Scotland.html&amp;source=gmail&amp;ust=1792468498751000&amp;usg=AOvVaw1CUKXbl0Nnqb1yCJRcwMYG\">Scotland Lip Cancer example</a> from GeoBUGS.</div><div><br></div><div>I&#39;ve opted to use a more generalized GMRF with a CAR covariance in order to allow for joint sampling in Stan. Equation 3 of <a href=\"http://www.ncbi.nlm.nih.gov/pmc/articles/PMC2724012/#S3\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.ncbi.nlm.nih.gov/pmc/articles/PMC2724012/%23S3&amp;source=gmail&amp;ust=1792468498751000&amp;usg=AOvVaw1WkX4Cvwxk5qiT22eTTDLp\">this paper</a> gives one such formulation, which is what I&#39;ve tried to implement. (<a href=\"http://www.stat.berkeley.edu/~paciorek/research/techVignettes/techVignette5.pdf\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.stat.berkeley.edu/~paciorek/research/techVignettes/techVignette5.pdf&amp;source=gmail&amp;ust=1792468498751000&amp;usg=AOvVaw0AodcGEE6VmuX_YVDHCzKT\">This paper</a> gives another, slightly different formulation.)</div><div><br></div><div>The model (attached or below) compiles but fails to initialize (&quot;Initialization failed after 100 attempts.  Try specifying initial values, reducing ranges of constrained values, or reparameterizing the model.&quot;). I&#39;ve tried a wide range of priors/initial values with no success.</div><div><br></div><div>In <a href=\"http://epub.ub.uni-muenchen.de/1600/1/paper_210.pdf\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://epub.ub.uni-muenchen.de/1600/1/paper_210.pdf&amp;source=gmail&amp;ust=1792468498751000&amp;usg=AOvVaw35qOQChCa61N9xIB5-2puU\">Knorr-Held &amp; Rue 2001</a> they implement a &quot;Cholesky factor algorithm&quot; in order to draw from GMRFs with a much higher acceptance rate. However, this would require subsampling (running their algorithm for the GMRF proposal inside every step in the overall model fitting).</div><div><br></div><div>Can anyone suggest ways to fit the model? I&#39;m guessing the subsampling algorithm might be the ultimate direction I&#39;ll have to go down, but not quite sure how to implement it in Stan.</div><div><br></div><div>Thanks for any suggestions!</div><div>Kyle</div><div><br></div><div>ps I haven&#39;t yet tried optimizing the model for speed aside from vectorization, but I&#39;m sure there is plenty of room for improvement in that respect.</div><div><br></div><div><div style=\"border:1px solid rgb(187,187,187);background-color:rgb(250,250,250);word-wrap:break-word\"><code><div><font color=\"#660066\"><div>data {</div><div>    int&lt;lower=1&gt; N;     // number of areas</div><div>    vector[N] O;        // observed cases</div><div>    vector[N] E;        // expected cases</div><div>    vector[N] x;        // covariate (pct agric)</div><div>    matrix[N,N] A;      // area adjacency matrix</div><div>}</div><div>transformed data {</div><div>    matrix[N,N] D;      // diagonal matrix with d_ii = sum(c_ij)</div><div>    for (i in 1:N)</div><div>        for (j in 1:N)</div><div>            D[i,j] &lt;- if_else(i==j, sum(row(A, i)), 0.0);</div><div>}</div><div>parameters {</div><div>    real alpha0;            // intercept</div><div>    real alpha1;            // coefficient on covariate</div><div>    vector[N] beta1;        // area-specific random effect (CAR)</div><div>    real&lt;lower=0&gt; tau;      // precision of CAR</div><div>    real&lt;lower=0,upper=1&gt; p;// strength of spatial correlation</div><div>}</div><div>transformed parameters {</div><div>    real sigma_sq;</div><div>    vector[N] zeros;        // zeros for mean of MVN</div><div>    sigma_sq &lt;- 1 / (tau * tau);</div><div>    for (i in 1:N)</div><div>        zeros[i] &lt;- 0.0;    </div><div>                // not sure if transformed parameters is the best place for this</div><div>}</div><div>model {</div><div>    // declarations</div><div>        matrix[N,N] Sigma;  // covariance matrix for CAR</div><div>        real beta1_mean;</div><div>        vector[N] beta1_stz;</div><div>        vector[N] log_mu;</div><div>        vector[N] mu;</div><div>    // priors on model parameters</div><div>        // no prior on alpha0 (improper flat prior)</div><div>        alpha1 ~ normal(0.0, 100.0);</div><div>        tau ~ gamma(0.5, 0.0005);</div><div>    // covariance matrix</div><div>        Sigma &lt;- sigma_sq * inverse(D - p * A);</div><div>            // note: look into efficiencies of matrix inversion in stan</div><div>            // may also set p=1 and move inverse(D-A) into transformed parameters</div><div>    // CAR model</div><div>        beta1 ~ multi_normal(zeros, Sigma);</div><div>            // more efficient parameterizations in stan?</div><div>    // impose sum-to-zero constraint on CAR</div><div>        beta1_mean &lt;- mean(beta1);</div><div>        beta1_stz &lt;- beta1 - beta1_mean;</div><div>    // model prediction</div><div>        log_mu &lt;- log(E) + alpha0 + alpha1 * x + beta1_stz;</div><div>        mu &lt;- exp(log_mu);</div><div>    // likelihood</div><div>        O ~ poisson(mu);</div><div>}</div></font></div></code></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "k92CD1zHX_cJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-02-01T16:48:14Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     2,
+     "On Friday, February 1, 2013 11:19:39 AM UTC-5, Kyle Foreman wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>I&#39;m attempting to fit a conditional autoregressive (CAR) model in Stan. To begin with, I&#39;m just trying to replicate the <a href=\"http://www.openbugs.info/Manuals/GeoBUGS/Examples/Scotland.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.openbugs.info/Manuals/GeoBUGS/Examples/Scotland.html&amp;source=gmail&amp;ust=1792468498759000&amp;usg=AOvVaw3Ib27sS7NTDO1nZIEWjb6t\">Scotland Lip Cancer example</a> from GeoBUGS.</div><div><br></div><div>I&#39;ve opted to use a more generalized GMRF with a CAR covariance in order to allow for joint sampling in Stan. Equation 3 of <a href=\"http://www.ncbi.nlm.nih.gov/pmc/articles/PMC2724012/#S3\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.ncbi.nlm.nih.gov/pmc/articles/PMC2724012/%23S3&amp;source=gmail&amp;ust=1792468498759000&amp;usg=AOvVaw3_1KqaJirQSlauT6ddOnqb\">this paper</a> gives one such formulation, which is what I&#39;ve tried to implement. (<a href=\"http://www.stat.berkeley.edu/~paciorek/research/techVignettes/techVignette5.pdf\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.stat.berkeley.edu/~paciorek/research/techVignettes/techVignette5.pdf&amp;source=gmail&amp;ust=1792468498759000&amp;usg=AOvVaw2eRtn7I0Ku9DGJpeGp_2ul\">This paper</a> gives another, slightly different formulation.)</div></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>Right. I guess you figured this out but for anyone else who may later Google this thread, whereas GeoBUGS has these conditional auto-regressive priors where the distribution of one element of a vector is known given all the other elements of the vector, in Stan you need to be using whatever joint distribution is implied by the union of these conditionals distributions.<br> </div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div></div><div>The model (attached or below) compiles but fails to initialize (&quot;Initialization failed after 100 attempts.  Try specifying initial values, reducing ranges of constrained values, or reparameterizing the model.&quot;). I&#39;ve tried a wide range of priors/initial values with no success.</div></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>If you initialize the parameters to zero, you get<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">goodrich@CYBERPOWERPC</span><span style=\"color:#660\">:</span><span style=\"color:#080\">/tmp/</span><span style=\"color:#000\">SU</span><span style=\"color:#660\">/</span><span style=\"color:#000\">KF$ </span><span style=\"color:#660\">./</span><span style=\"color:#000\">lip_cancer </span><span style=\"color:#660\">--</span><span style=\"color:#000\">data</span><span style=\"color:#660\">=</span><span style=\"color:#000\">lip_cancer</span><span style=\"color:#660\">.</span><span style=\"color:#000\">data</span><span style=\"color:#660\">.</span><span style=\"color:#000\">txt </span><span style=\"color:#660\">--</span><span style=\"color:#000\">init</span><span style=\"color:#660\">=</span><span style=\"color:#066\">0</span><span style=\"color:#000\"><br>STAN SAMPLING COMMAND<br>data </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> lip_cancer</span><span style=\"color:#660\">.</span><span style=\"color:#000\">data</span><span style=\"color:#660\">.</span><span style=\"color:#000\">txt<br>init </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0</span><span style=\"color:#000\"><br>samples </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> samples</span><span style=\"color:#660\">.</span><span style=\"color:#000\">csv<br>append_samples </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0</span><span style=\"color:#000\"><br>save_warmup </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0</span><span style=\"color:#000\"><br>seed </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">2647205100</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#000\">randomly generated</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br>chain_id </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">1</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#008\">default</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br>iter </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">2000</span><span style=\"color:#000\"><br>warmup </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">1000</span><span style=\"color:#000\"><br>thin </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">1</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#008\">default</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br>equal_step_sizes </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0</span><span style=\"color:#000\"><br>leapfrog_steps </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#660\">-</span><span style=\"color:#066\">1</span><span style=\"color:#000\"><br>max_treedepth </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">10</span><span style=\"color:#000\"><br>epsilon </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#660\">-</span><span style=\"color:#066\">1</span><span style=\"color:#000\"><br>epsilon_pm </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0</span><span style=\"color:#000\"><br>delta </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.5</span><span style=\"color:#000\"><br>gamma </span><span style=\"color:#660\">=</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.05</span><span style=\"color:#000\"><br><br></span><span style=\"color:#606\">Iteration</span><span style=\"color:#660\">:</span><span style=\"color:#000\">    </span><span style=\"color:#066\">1</span><span style=\"color:#000\"> </span><span style=\"color:#660\">/</span><span style=\"color:#000\"> </span><span style=\"color:#066\">2000</span><span style=\"color:#000\"> </span><span style=\"color:#660\">[</span><span style=\"color:#000\">  </span><span style=\"color:#066\">0</span><span style=\"color:#660\">%]</span><span style=\"color:#000\">  </span><span style=\"color:#660\">(</span><span style=\"color:#606\">Adapting</span><span style=\"color:#660\">)</span><span style=\"color:#000\"><br><br></span><span style=\"color:#606\">Informational</span><span style=\"color:#000\"> </span><span style=\"color:#606\">Message</span><span style=\"color:#660\">:</span><span style=\"color:#000\"> </span><span style=\"color:#606\">The</span><span style=\"color:#000\"> parameter state </span><span style=\"color:#008\">is</span><span style=\"color:#000\"> about to be </span><span style=\"color:#606\">Metropolis</span><span style=\"color:#000\"> rejected due to the following underlying</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> non</span><span style=\"color:#660\">-</span><span style=\"color:#000\">fatal </span><span style=\"color:#660\">(</span><span style=\"color:#000\">really</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> issue </span><span style=\"color:#660\">(</span><span style=\"color:#008\">and</span><span style=\"color:#000\"> please ignore that what comes </span><span style=\"color:#008\">next</span><span style=\"color:#000\"> might say </span><span style=\"color:#080\">&#39;error&#39;</span><span style=\"color:#660\">):</span><span style=\"color:#000\"> </span><span style=\"color:#606\">Error</span><span style=\"color:#000\"> </span><span style=\"color:#008\">in</span><span style=\"color:#000\"> </span><span style=\"color:#008\">function</span><span style=\"color:#000\"> stan</span><span style=\"color:#660\">::</span><span style=\"color:#000\">prob</span><span style=\"color:#660\">::</span><span style=\"color:#000\">gamma_log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">N4stan5agrad3varE</span><span style=\"color:#660\">):</span><span style=\"color:#000\"> </span><span style=\"color:#606\">Random</span><span style=\"color:#000\"> variable </span><span style=\"color:#008\">is</span><span style=\"color:#000\"> </span><span style=\"color:#660\">-</span><span style=\"color:#000\">nan</span><span style=\"color:#660\">:</span><span style=\"color:#066\">0</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> but must </span><span style=\"color:#008\">not</span><span style=\"color:#000\"> be nan</span><span style=\"color:#660\">!</span><span style=\"color:#000\"><br></span><span style=\"color:#606\">If</span><span style=\"color:#000\"> the problem persists across multiple draws</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> you might have a problem </span><span style=\"color:#008\">with</span><span style=\"color:#000\"> an initial state </span><span style=\"color:#008\">or</span><span style=\"color:#000\"> a gradient somewhere</span><span style=\"color:#660\">.</span><span style=\"color:#000\"><br> </span><span style=\"color:#606\">If</span><span style=\"color:#000\"> the problem does </span><span style=\"color:#008\">not</span><span style=\"color:#000\"> persist</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> the resulting samples will still be drawn </span><span style=\"color:#008\">from</span><span style=\"color:#000\"> the posterior</span><span style=\"color:#660\">.</span><span style=\"color:#000\"><br><br></span><span style=\"color:#606\">Informational</span><span style=\"color:#000\"> </span><span style=\"color:#606\">Message</span><span style=\"color:#660\">:</span><span style=\"color:#000\"> </span><span style=\"color:#606\">The</span><span style=\"color:#000\"> parameter state </span><span style=\"color:#008\">is</span><span style=\"color:#000\"> about to be </span><span style=\"color:#606\">Metropolis</span><span style=\"color:#000\"> rejected due to the following underlying</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> non</span><span style=\"color:#660\">-</span><span style=\"color:#000\">fatal </span><span style=\"color:#660\">(</span><span style=\"color:#000\">really</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> issue </span><span style=\"color:#660\">(</span><span style=\"color:#008\">and</span><span style=\"color:#000\"> please ignore that what comes </span><span style=\"color:#008\">next</span><span style=\"color:#000\"> might say </span><span style=\"color:#080\">&#39;error&#39;</span><span style=\"color:#660\">):</span><span style=\"color:#000\"> </span><span style=\"color:#606\">Error</span><span style=\"color:#000\"> </span><span style=\"color:#008\">in</span><span style=\"color:#000\"> </span><span style=\"color:#008\">function</span><span style=\"color:#000\"> stan</span><span style=\"color:#660\">::</span><span style=\"color:#000\">prob</span><span style=\"color:#660\">::</span><span style=\"color:#000\">normal_log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">N4stan5agrad3varE</span><span style=\"color:#660\">):</span><span style=\"color:#000\"> </span><span style=\"color:#606\">Random</span><span style=\"color:#000\"> variable </span><span style=\"color:#008\">is</span><span style=\"color:#000\"> nan</span><span style=\"color:#660\">:</span><span style=\"color:#066\">0</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> but must </span><span style=\"color:#008\">not</span><span style=\"color:#000\"> be nan</span><span style=\"color:#660\">!</span><span style=\"color:#000\"><br></span><span style=\"color:#606\">If</span><span style=\"color:#000\"> the problem persists across multiple draws</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> you might have a problem </span><span style=\"color:#008\">with</span><span style=\"color:#000\"> an initial state </span><span style=\"color:#008\">or</span><span style=\"color:#000\"> a gradient somewhere</span><span style=\"color:#660\">.</span><span style=\"color:#000\"><br> </span><span style=\"color:#606\">If</span><span style=\"color:#000\"> the problem does </span><span style=\"color:#008\">not</span><span style=\"color:#000\"> persist</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> the resulting samples will still be drawn </span><span style=\"color:#008\">from</span><span style=\"color:#000\"> the posterior</span><span style=\"color:#660\">.</span><span style=\"color:#000\"><br><br></span></div></code></div><br>and then the informational message (about normal_log)  repeats often. I&#39;m pretty busy today, but my guess would be that you have some parameter that is not constrained right. You can put some print statements into your .stan code. And it would be better to put zeros into a transformed data{} block, rather than transformed parameters. And there are much faster ways to deal with the covariance matrix that we can help you with once we get to that point.<br><br>Ben<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "t4xM2egKIIkJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-02-01T17:44:39Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "Thanks, Ben! With better inits (attached) I am able to get it to sample but just break at the gamma distribution (on tau). I&#39;m not sure why it would be getting a nan on tau, since gamma(.5, .0005) should be fine (I also tried gamma(.1, .1) etc).<br><div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><span style=\"color:#000\">alpha1 </span><span style=\"color:#660\">~</span><span style=\"color:#000\"> normal</span><span style=\"color:#660\">(</span><span style=\"color:#066\">0.0</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> </span><span style=\"color:#066\">100.0</span><span style=\"color:#660\">);</span><span style=\"color:#000\"><br></span><span style=\"color:#008\">print</span><span style=\"color:#660\">(</span><span style=\"color:#080\">&quot;alpha1=&quot;</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> alpha1</span><span style=\"color:#660\">);</span><span style=\"color:#000\"><br>tau </span><span style=\"color:#660\">~</span><span style=\"color:#000\"> gamma</span><span style=\"color:#660\">(</span><span style=\"color:#066\">0.5</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.0005</span><span style=\"color:#660\">);</span><span style=\"color:#000\"><br></span><span style=\"color:#008\">print</span><span style=\"color:#660\">(</span><span style=\"color:#080\">&quot;tau=&quot;</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> tau</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> </span><span style=\"color:#080\">&quot;; sigma_sq=&quot;</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> sigma_sq</span><span style=\"color:#660\">);</span></div></code></div><div><br></div></div><div>results in:</div><div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">STAN SAMPLING COMMAND</font></div><div><font color=\"#660066\">data = lip_cancer.data.R</font></div><div><font color=\"#660066\">init = lip_cancer.init.R</font></div></div></code></div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">samples = samples.csv</font></div><div><font color=\"#660066\">append_samples = 0</font></div><div><font color=\"#660066\">save_warmup = 0</font></div></div></code></div></div>"
+    ],
+    [
+     1,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">seed = 2650504660 (randomly generated)</font></div><div><font color=\"#660066\">chain_id = 1 (default)</font></div><div><font color=\"#660066\">iter = 1</font></div><div><font color=\"#660066\">warmup = 0</font></div></div></code></div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">thin = 1 (default)</font></div><div><font color=\"#660066\">equal_step_sizes = 0</font></div><div><font color=\"#660066\">leapfrog_steps = -1</font></div><div><font color=\"#660066\">max_treedepth = 10</font></div><div><font color=\"#660066\">epsilon = -1</font></div><div><font color=\"#660066\">epsilon_pm = 0</font></div><div><font color=\"#660066\">delta = 0.5</font></div><div><font color=\"#660066\">gamma = 0.05</font></div><div><font color=\"#660066\"><br></font></div></div></code></div></div>"
+    ],
+    [
+     1,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">Iteration: 1 / 1 [100%]  (Sampling)</font></div><div><font color=\"#660066\">alpha1=917.554</font></div><div><font color=\"#660066\"><br></font></div><div><font color=\"#660066\">Informational Message: The parameter state is about to be Metropolis rejected due to the following underlying, non-fatal (really) issue (and please ignore that what comes next might say &#39;error&#39;): Error in function stan::prob::gamma_log(N4stan5agrad3varE): Random variable is nan:0, but must not be nan!</font></div></div></code></div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">If the problem persists across multiple draws, you might have a problem with an initial state or a gradient somewhere.</font></div><div><font color=\"#660066\"> If the problem does not persist, the resulting samples will still be drawn from the posterior.</font></div><div><br></div></div></code></div></div>"
+    ],
+    [
+     1,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div></div></code></div><br>It never prints tau/sigma_sq and the error/warning is for gamma_log, so it doesn&#39;t seem to be getting past tau ~ gamma(). tau has a lower=0 constraint, and I&#39;m initializing it at 1, so I can&#39;t imagine why it&#39;s coming up as nan.</div><div><br></div><div>Will keep playing around with it, thanks for the help!</div>"
+    ]
+   ]
+  },
+  {
+   "id": "S0fkdctQSnIJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-02-01T17:53:54Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     2,
+     "On Friday, February 1, 2013 12:44:39 PM UTC-5, Kyle Foreman wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>It never prints tau/sigma_sq and the error/warning is for gamma_log, so it doesn&#39;t seem to be getting past tau ~ gamma(). tau has a lower=0 constraint, and I&#39;m initializing it at 1, so I can&#39;t imagine why it&#39;s coming up as nan.</div><div><br></div><div>Will keep playing around with it, thanks for the help!</div></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>In times like these, I usually make the lower bounds be slightly greater than zero rather than literally zero. Something like<br><br>real&lt;lower=0.00000001&gt; tau;<br><br>See if that runs better.<br><br>Ben<br> <br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "0qFeCGVoFRoJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-02-01T17:57:34Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     2,
+     "<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>In times like these, I usually make the lower bounds be slightly greater than zero rather than literally zero. Something like<br><br>real&lt;lower=0.00000001&gt; tau;<br><br>See if that runs better.<br></div></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Sorry, I should&#39;ve mentioned I have tried <font face=\"courier new, monospace\">real&lt;lower=0.1&gt; tau;</font> without luck! Same error.</div>"
+    ]
+   ]
+  },
+  {
+   "id": "QGMr6g4adV0J",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-02-01T19:10:04Z",
+   "subject": "Re: [stan-users] Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "I&#39;m digging into what&#39;s going on with this model.\r<br>\r<br>I removed all the model sampling statements to make\r<br>sure it wasn&#39;t a problem with inits, and it&#39;s not.\r<br>\r<br>The problem arises when I include the model.  One of\r<br>the statements in it is driving the overall log probability\r<br>to NaN, which then does the same favor to the gradients (note\r<br>that the dump below the parameters are the unconstrained parameters).\r<br>\r<br>~/temp2/foreman&gt;./lip_cancer --data=lip_cancer.data.R --init=0 --test_grad\r<br>\r<br>TEST GRADIENT MODE\r<br>\r<br>  Log probability=nan\r<br>\r<br>  param idx           value           model     finite diff           error\r<br>          0               0             nan             nan             nan\r<br>          1               0            -0.2             nan             nan\r<br>          2               0          1835.6             nan             nan\r<br>          3               0             nan             nan             nan\r<br>          4               0             nan             nan             nan\r<br>          5               0             nan             nan             nan\r<br>          6               0             nan             nan             nan\r<br>          7               0             nan             nan             nan\r<br>          8               0             nan             nan             nan\r<br>          9               0             nan             nan             nan\r<br>         10               0             nan             nan             nan\r<br>         11               0             nan             nan             nan\r<br>         12               0             nan             nan             nan\r<br>         13               0             nan             nan             nan\r<br>         14               0             nan             nan             nan\r<br>         15               0             nan             nan             nan\r<br>         16               0             nan             nan             nan\r<br>         17               0             nan             nan             nan\r<br>         18               0             nan             nan             nan\r<br>         19               0             nan             nan             nan\r<br>         20               0             nan             nan             nan\r<br>         21               0             nan             nan             nan\r<br>         22               0             nan             nan             nan\r<br>         23               0             nan             nan             nan\r<br>         24               0             nan             nan             nan\r<br>         25               0             nan             nan             nan\r<br>         26               0             nan             nan             nan\r<br>         27               0             nan             nan             nan\r<br>         28               0             nan             nan             nan\r<br>         29               0             nan             nan             nan\r<br>         30               0             nan             nan             nan\r<br>         31               0             nan             nan             nan\r<br>         32               0             nan             nan             nan\r<br>         33               0             nan             nan             nan\r<br>         34               0             nan             nan             nan\r<br>         35               0             nan             nan             nan\r<br>         36               0             nan             nan             nan\r<br>         37               0             nan             nan             nan\r<br>         38               0             nan             nan             nan\r<br>         39               0             nan             nan             nan\r<br>         40               0             nan             nan             nan\r<br>         41               0             nan             nan             nan\r<br>         42               0             nan             nan             nan\r<br>         43               0             nan             nan             nan\r<br>         44               0             nan             nan             nan\r<br>         45               0             nan             nan             nan\r<br>         46               0             nan             nan             nan\r<br>         47               0             nan             nan             nan\r<br>         48               0             nan             nan             nan\r<br>         49               0             nan             nan             nan\r<br>         50               0             nan             nan             nan\r<br>         51               0             nan             nan             nan\r<br>         52               0             nan             nan             nan\r<br>         53               0             nan             nan             nan\r<br>         54               0             nan             nan             nan\r<br>         55               0             nan             nan             nan\r<br>         56               0             nan             nan             nan\r<br>         57               0             nan             nan             nan\r<br>         58               0             nan             nan             nan\r<br>         59               0             nan             nan             nan\r<br>\r<br>Printing all your params in the transformed parameter\r<br>block, I see the expected behavior, which is that only\r<br>the parameters with gradients survive the model evaluation step.\r<br>\r<br>tau=nan\r<br>alpha0=-0.125513\r<br>alpha1=917.943\r<br>beta1=[nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan]\r<br>p=nan\r<br>sigma_sq=nan\r<br>\r<br>So I&#39;d suggest adding the bits of the model back in one\r<br>statement at a time to isolate which statement is causing\r<br>the NaN value.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On 2/1/13 12:44 PM, Kyle Foreman wrote:\r<br>&gt; Thanks, Ben! With better inits (attached) I am able to get it to sample but just break at the gamma distribution (on\r<br>&gt; tau). I&#39;m not sure why it would be getting a nan on tau, since gamma(.5, .0005) should be fine (I also tried gamma(.1,\r<br>&gt; .1) etc).\r<br>&gt;\r<br>&gt; |\r<br>&gt; alpha1 ~ normal(0.0, 100.0);\r<br>&gt; print(&quot;alpha1=&quot;, alpha1);\r<br>&gt; tau ~ gamma(0.5, 0.0005);\r<br>&gt; print(&quot;tau=&quot;, tau, &quot;; sigma_sq=&quot;, sigma_sq);\r<br>&gt; |\r<br>&gt;\r<br>&gt; results in:\r<br>&gt;\r<br>&gt; |\r<br>&gt; STAN SAMPLING COMMAND\r<br>&gt; data = lip_cancer.data.R\r<br>&gt; init = lip_cancer.init.R\r<br>&gt; samples = samples.csv\r<br>&gt; append_samples = 0\r<br>&gt; save_warmup = 0\r<br>&gt; seed = 2650504660 (randomly generated)\r<br>&gt; chain_id = 1 (default)\r<br>&gt; iter = 1\r<br>&gt; warmup = 0\r<br>&gt; thin = 1 (default)\r<br>&gt; equal_step_sizes = 0\r<br>&gt; leapfrog_steps = -1\r<br>&gt; max_treedepth = 10\r<br>&gt; epsilon = -1\r<br>&gt; epsilon_pm = 0\r<br>&gt; delta = 0.5\r<br>&gt; gamma = 0.05\r<br>&gt;\r<br>&gt; Iteration: 1 / 1 [100%]  (Sampling)\r<br>&gt; alpha1=917.554\r<br>&gt;\r<br>&gt; Informational Message: The parameter state is about to be Metropolis rejected due to the following underlying, non-fatal\r<br>&gt; (really) issue (and please ignore that what comes next might say &#39;error&#39;): Error in function\r<br>&gt; stan::prob::gamma_log(N4stan5agrad3varE): Random variable is nan:0, but must not be nan!\r<br>&gt; If the problem persists across multiple draws, you might have a problem with an initial state or a gradient somewhere.\r<br>&gt;   If the problem does not persist, the resulting samples will still be drawn from the posterior.\r<br>&gt;\r<br>&gt; |\r<br>&gt;\r<br>&gt; It never prints tau/sigma_sq and the error/warning is for gamma_log, so it doesn&#39;t seem to be getting past tau ~\r<br>&gt; gamma(). tau has a lower=0 constraint, and I&#39;m initializing it at 1, so I can&#39;t imagine why it&#39;s coming up as nan.\r<br>&gt;\r<br>&gt; Will keep playing around with it, thanks for the help!\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; --\r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan users mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792468498768000&amp;usg=AOvVaw1DlctHqt03xWocQV3Sios9\">https://groups.google.com/groups/opt_out</a>.\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "urjTqsB7y3cJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-02-02T01:30:18Z",
+   "subject": "Re: [stan-users] Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "Thanks for the debugging advice, Bob!"
+    ],
+    [
+     2,
+     "<br><br>On Friday, February 1, 2013 7:10:04 PM UTC, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>So I&#39;d suggest adding the bits of the model back in one\r\n<br>statement at a time to isolate which statement is causing\r\n<br>the NaN value.\r\n<br><br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>It&#39;s when I include </div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\"><span style=\"color:#000\">beta1 </span><span style=\"color:#660\">~</span><span style=\"color:#000\"> multi_normal</span><span style=\"color:#660\">(</span><span style=\"color:#000\">zeros</span><span style=\"color:#660\">,</span><span style=\"color:#000\"> </span><span style=\"color:#606\">Sigma</span><span style=\"color:#660\">);</span></font><span style=\"color:#000\"><br></span></div></code></div>that it falls apart. </div><div><br></div><div>One thing I don&#39;t understand is this:</div><div><br></div><div>If I run this in the model block:</div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\"></font></div></code></div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\"><div>alpha1 ~ normal(0.0, 100.0);</div><div>print(&quot;alpha1=&quot;, alpha1);</div><div>tau ~ gamma(0.5, 0.0005);</div><div>print(&quot;tau=&quot;, tau, &quot;; sigma_sq=&quot;, sigma_sq);</div></font></div></code></div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\"><div>Sigma &lt;- sigma_sq * inverse(D - p * A);</div></font></div></code></div></div>"
+    ],
+    [
+     1,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\"><div>print(Sigma);</div></font></div></code></div>then it runs and prints alpha1, tau/sigma, and Sigma.</div><div><br></div><div>But once I add in beta1 like so:</div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div></div></code></div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div style=\"color:rgb(102,0,102)\">alpha1 ~ normal(0.0, 100.0);</div><div style=\"color:rgb(102,0,102)\">print(&quot;alpha1=&quot;, alpha1);</div><div style=\"color:rgb(102,0,102)\">tau ~ gamma(0.5, 0.0005);</div><div style=\"color:rgb(102,0,102)\">print(&quot;tau=&quot;, tau, &quot;; sigma_sq=&quot;, sigma_sq);</div></div></code></div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div style=\"color:rgb(102,0,102)\">Sigma &lt;- sigma_sq * inverse(D - p * A);</div></div></code></div></div>"
+    ],
+    [
+     1,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div style=\"color:rgb(102,0,102)\">print(Sigma);<br>beta1 ~ multi_normal(zeros, Sigma);</div></div></code></div><div>then it only prints alpha1. And the error is again related to the gamma_log for tau.</div><div><br></div><div>How is it that tau ~ gamma on its own is ok, but once the beta1 ~ multi_normal is added in it no longer works (even for what I believe would be the initial iteration)? I thought the model block was executed sequentially, but I guess I&#39;m misunderstanding that aspect.</div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "OGGghsqRtPgJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-02-02T04:25:46Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     2,
+     "On Friday, February 1, 2013 11:19:39 AM UTC-5, Kyle Foreman wrote:"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Can anyone suggest ways to fit the model? I&#39;m guessing the subsampling algorithm might be the ultimate direction I&#39;ll have to go down, but not quite sure how to implement it in Stan.</blockquote>"
+    ],
+    [
+     1,
+     "<div><br>It turns out that the fundamental cause of the problem is that it has numerical problems with inverse(), and that causes the gradient to have nans, and that causes some proposed parameters to be nan. Replace all this <br></div>"
+    ],
+    [
+     2,
+     "<div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div></div><div><div style=\"border:1px solid rgb(187,187,187);background-color:rgb(250,250,250);word-wrap:break-word\"><code><div>    // covariance matrix<font color=\"#660066\"><div>        Sigma &lt;- sigma_sq * inverse(D - p * A);</div><div>            // note: look into efficiencies of matrix inversion in stan</div><div>            // may also set p=1 and move inverse(D-A) into transformed parameters</div><div>    // CAR model</div><div>        beta1 ~ multi_normal(zeros, Sigma);</div><div>            // more efficient parameterizations in stan?</div></font></div></code></div></div></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>with<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">lp__ </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> lp__ </span><span style=\"color:#660\">-</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.5</span><span style=\"color:#000\"> </span><span style=\"color:#660\">/</span><span style=\"color:#000\"> sigma_sq </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#000\">beta1</span><span style=\"color:#080\">&#39; * D * beta1 - p * (beta1&#39;</span><span style=\"color:#000\"> </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> A </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> beta1</span><span style=\"color:#660\">));</span><span style=\"color:#000\"> </span><span style=\"color:#800\">// MVN prior on beta1</span><span style=\"color:#000\"><br></span></div></code></div><br>Also, it would be better to change all this <br> <br></div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div style=\"border:1px solid rgb(187,187,187);background-color:rgb(250,250,250);word-wrap:break-word\"><code><div>    // model prediction<font color=\"#660066\"><div>        log_mu &lt;- log(E) + alpha0 + alpha1 * x + beta1_stz;</div><div>        mu &lt;- exp(log_mu);</div><div>    // likelihood</div><div>        O ~ poisson(mu);</div></font></div></code></div></div></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>to<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">log_mu </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> </span><code><font color=\"#660066\"><span style=\"color:#000\">log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">E</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha0 </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha1 </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> x </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> beta1_stz</span><span style=\"color:#660\">;</span><span style=\"color:#000\"><br>O </span><span style=\"color:#660\">~</span><span style=\"color:#000\"> poisson_log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">log_mu</span><span style=\"color:#660\">);</span><span style=\"color:#000\"><br></span></font></code></div></code></div><br>Ben<br> </div>"
+    ]
+   ]
+  },
+  {
+   "id": "fbB9pXSjCZsJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-02-02T04:59:55Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     2,
+     "On Friday, February 1, 2013 11:25:46 PM UTC-5, Ben Goodrich wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">On Friday, February 1, 2013 11:19:39 AM UTC-5, Kyle Foreman wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Can anyone suggest ways to fit the model? I&#39;m guessing the subsampling algorithm might be the ultimate direction I&#39;ll have to go down, but not quite sure how to implement it in Stan.</blockquote><div><br>It turns out that the fundamental cause of the problem is that it has numerical problems with inverse(), and that causes the gradient to have nans, and that causes some proposed parameters to be nan. Replace all this <br></div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div></div><div><div style=\"border:1px solid rgb(187,187,187);background-color:rgb(250,250,250);word-wrap:break-word\"><code><div>    // covariance matrix<font color=\"#660066\"><div>        Sigma &lt;- sigma_sq * inverse(D - p * A);</div><div>            // note: look into efficiencies of matrix inversion in stan</div><div>            // may also set p=1 and move inverse(D-A) into transformed parameters</div><div>    // CAR model</div><div>        beta1 ~ multi_normal(zeros, Sigma);</div><div>            // more efficient parameterizations in stan?</div></font></div></code></div></div></blockquote><div><br>with<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">lp__ </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> lp__ </span><span style=\"color:#660\">-</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.5</span><span style=\"color:#000\"> </span><span style=\"color:#660\">/</span><span style=\"color:#000\"> sigma_sq </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#000\">beta1</span><span style=\"color:#080\">&#39; * D * beta1 - p * (beta1&#39;</span><span style=\"color:#000\"> </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> A </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> beta1</span><span style=\"color:#660\">));</span><span style=\"color:#000\"> </span><span style=\"color:#800\">// MVN prior on beta1</span><span style=\"color:#000\"><br></span></div></code></div></div></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>Crap. I forgot to include the determinant part of the multivariate normal. I should have said to also add this line:<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">lp__ </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> lp__ </span><span style=\"color:#660\">-</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.5</span><span style=\"color:#000\"> </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">sigma_sq</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.5</span><span style=\"color:#000\"> </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">det</span><span style=\"color:#660\">(</span><span style=\"color:#000\">D </span><span style=\"color:#660\">-</span><span style=\"color:#000\"> p </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> A</span><span style=\"color:#660\">)));</span><span style=\"color:#000\"><br></span></div></code></div><br>However, if seems that D - p * A is singular in your model because some diagonal elements of D are zero, so that will blow up. <br><br>Ben<br><br> </div>"
+    ],
+    [
+     3,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>Also, it would be better to change all this <br> <br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div style=\"border:1px solid rgb(187,187,187);background-color:rgb(250,250,250);word-wrap:break-word\"><code><div>    // model prediction<font color=\"#660066\"><div>        log_mu &lt;- log(E) + alpha0 + alpha1 * x + beta1_stz;</div><div>        mu &lt;- exp(log_mu);</div><div>    // likelihood</div><div>        O ~ poisson(mu);</div></font></div></code></div></div></blockquote><div><br>to<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">log_mu </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> </span><code><font color=\"#660066\"><span style=\"color:#000\">log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">E</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha0 </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha1 </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> x </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> beta1_stz</span><span style=\"color:#660\">;</span><span style=\"color:#000\"><br>O </span><span style=\"color:#660\">~</span><span style=\"color:#000\"> poisson_log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">log_mu</span><span style=\"color:#660\">);</span><span style=\"color:#000\"><br></span></font></code></div></code></div><br>Ben<br> </div></blockquote>"
+    ]
+   ]
+  },
+  {
+   "id": "kuzxDQTwJxgJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2013-02-02T19:43:40Z",
+   "subject": "Re: [stan-users] Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">What you really want here is the multi_normal_prec, which I just implemented in Stan.  It should be in the next release.<div><br></div><div>Cheers,</div><div>Marcus</div></div><div class=\"gmail_extra\">\r\n<br><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\">On Fri, Feb 1, 2013 at 11:59 PM, Ben Goodrich <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;</span> wrote:<br></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div>On Friday, February 1, 2013 11:25:46 PM UTC-5, Ben Goodrich wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">On Friday, February 1, 2013 11:19:39 AM UTC-5, Kyle Foreman wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nCan anyone suggest ways to fit the model? I&#39;m guessing the subsampling algorithm might be the ultimate direction I&#39;ll have to go down, but not quite sure how to implement it in Stan.</blockquote><div><br>It turns out that the fundamental cause of the problem is that it has numerical problems with inverse(), and that causes the gradient to have nans, and that causes some proposed parameters to be nan. Replace all this <br>\r\n</div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div></div><div><div style=\"border:1px solid rgb(187,187,187);background-color:rgb(250,250,250);word-wrap:break-word\">\r\n<code><div>    // covariance matrix<font color=\"#660066\"><div>        Sigma &lt;- sigma_sq * inverse(D - p * A);</div><div>            // note: look into efficiencies of matrix inversion in stan</div><div>            // may also set p=1 and move inverse(D-A) into transformed parameters</div>\r\n<div>    // CAR model</div><div>        beta1 ~ multi_normal(zeros, Sigma);</div><div>            // more efficient parameterizations in stan?</div></font></div></code></div></div></blockquote><div><br>with<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\">\r\n<code><div><span>lp__ </span><span style=\"color:#660\">&lt;-</span><span> lp__ </span><span style=\"color:#660\">-</span><span> </span><span style=\"color:#066\">0.5</span><span> </span><span style=\"color:#660\">/</span><span> sigma_sq </span><span style=\"color:#660\">*</span><span> </span><span style=\"color:#660\">(</span><span>beta1</span><span style=\"color:#080\">&#39; * D * beta1 - p * (beta1&#39;</span><span> </span><span style=\"color:#660\">*</span><span> A </span><span style=\"color:#660\">*</span><span> beta1</span><span style=\"color:#660\">));</span><span> </span><span style=\"color:#800\">// MVN prior on beta1</span><span><br>\r\n</span></div></code></div></div></blockquote></div><div><br>Crap. I forgot to include the determinant part of the multivariate normal. I should have said to also add this line:<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\">\r\n<code><div><span>lp__ </span><span style=\"color:#660\">&lt;-</span><span> lp__ </span><span style=\"color:#660\">-</span><span> </span><span style=\"color:#066\">0.5</span><span> </span><span style=\"color:#660\">*</span><span> log</span><span style=\"color:#660\">(</span><span>sigma_sq</span><span style=\"color:#660\">)</span><span> </span><span style=\"color:#660\">+</span><span> </span><span style=\"color:#066\">0.5</span><span> </span><span style=\"color:#660\">*</span><span> log</span><span style=\"color:#660\">(</span><span>det</span><span style=\"color:#660\">(</span><span>D </span><span style=\"color:#660\">-</span><span> p </span><span style=\"color:#660\">*</span><span> A</span><span style=\"color:#660\">)));</span><span><br>\r\n</span></div></code></div><br>However, if seems that D - p * A is singular in your model because some diagonal elements of D are zero, so that will blow up. <br><span><font color=\"#888888\"><br>Ben<br><br> </font></span></div>\r\n</blockquote></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>Also, it would be better to change all this <br> <br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<div><div style=\"border:1px solid rgb(187,187,187);background-color:rgb(250,250,250);word-wrap:break-word\"><code><div>    // model prediction<font color=\"#660066\"><div>        log_mu &lt;- log(E) + alpha0 + alpha1 * x + beta1_stz;</div>\r\n<div>        mu &lt;- exp(log_mu);</div><div>    // likelihood</div><div>        O ~ poisson(mu);</div></font></div></code></div></div></blockquote><div><br>to<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\">\r\n<code><div><span>log_mu </span><span style=\"color:#660\">&lt;-</span><span> </span><code><font color=\"#660066\"><span>log</span><span style=\"color:#660\">(</span><span>E</span><span style=\"color:#660\">)</span><span> </span><span style=\"color:#660\">+</span><span> alpha0 </span><span style=\"color:#660\">+</span><span> alpha1 </span><span style=\"color:#660\">*</span><span> x </span><span style=\"color:#660\">+</span><span> beta1_stz</span><span style=\"color:#660\">;</span><span><br>\r\nO </span><span style=\"color:#660\">~</span><span> poisson_log</span><span style=\"color:#660\">(</span><span>log_mu</span><span style=\"color:#660\">);</span><span><br></span></font></code></div></code></div>\r\n<br>Ben<br> </div></blockquote>\r\n\r\n<p></p></div></div></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n\r\n-- <br></div></div></blockquote></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan users mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792468498778000&amp;usg=AOvVaw0OgdKL8mpiAsqm-loXHkyz\">https://groups.google.com/groups/opt_out</a>.<br>\r\n <br>\r\n <br>\r\n</div></div></blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "-bKvqGa0ooUJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-02-03T02:17:28Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "Thanks, Ben! This indeed works (I just set the 3 islands as neighbors for testing purposes for now). <div><br></div><div>It successfully samples now, but sigma is huge (/tau is miniscule), on the order of ~8000. Compared to ~1.5 for GeoBUGS. I&#39;ll start digging into this further on Monday and will keep the list updated. Current code/data attached for posterity.</div><div><br></div><div></div>"
+    ],
+    [
+     2,
+     "<div>On Saturday, February 2, 2013 2:43:40 PM UTC-5, Marcus wrote:<blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\"><div dir=\"ltr\">What you really want here is the multi_normal_prec, which I just implemented in Stan.  It should be in the next release.</div><div><br></div></blockquote></div>"
+    ],
+    [
+     1,
+     "<div><div>Thanks Marcus, that&#39;s great to hear! If time allows I&#39;ll try building from source on Monday to test this out. <br></div></div><div><br></div><div>Best,</div><div>Kyle</div>"
+    ]
+   ]
+  },
+  {
+   "id": "K4Eh0M4Nk3IJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-02-03T05:06:55Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     2,
+     "On Saturday, February 2, 2013 9:17:28 PM UTC-5, Kyle Foreman wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Thanks, Ben! This indeed works (I just set the 3 islands as neighbors for testing purposes for now). <div><br></div><div>It successfully samples now, but sigma is huge (/tau is miniscule), on the order of ~8000. Compared to ~1.5 for GeoBUGS. I&#39;ll start digging into this further on Monday and will keep the list updated. Current code/data attached for posterity.</div></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>I fucked up the determinant thing again. Should be<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">lp__ </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> lp__ </span><span style=\"color:#660\">-</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.5</span><span style=\"color:#000\"> </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> N </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">sigma_sq</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> </span><span style=\"color:#066\">0.5</span><span style=\"color:#000\"> </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">determinant</span><span style=\"color:#660\">(</span><span style=\"color:#000\">D </span><span style=\"color:#660\">-</span><span style=\"color:#000\"> p </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> A</span><span style=\"color:#660\">));</span><span style=\"color:#000\"><br></span></div></code></div><br>with the multiplication by N. Also, if you do the second part of my original post, changing</div>"
+    ],
+    [
+     2,
+     "<div><br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">    </span><span style=\"color:#800\">// model prediction</span><span style=\"color:#000\"><br>        log_mu </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">E</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha0 </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha1 </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> x </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> beta1_stz</span><span style=\"color:#660\">;</span><span style=\"color:#000\"><br>        mu </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> exp</span><span style=\"color:#660\">(</span><span style=\"color:#000\">log_mu</span><span style=\"color:#660\">);</span><span style=\"color:#000\"><br>    </span><span style=\"color:#800\">// likelihood</span><span style=\"color:#000\"><br>        O </span><span style=\"color:#660\">~</span><span style=\"color:#000\"> poisson</span><span style=\"color:#660\">(</span><span style=\"color:#000\">mu</span><span style=\"color:#660\">);</span><span style=\"color:#000\"><br><br></span></div></code></div><br>to<br><br></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">    </span><span style=\"color:#800\">// model prediction</span><span style=\"color:#000\"><br>        log_mu </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">E</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha0 </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha1 </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> x </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> beta1_stz</span><span style=\"color:#660\">;</span></div></code></div></div>"
+    ],
+    [
+     1,
+     "<div><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\"><br>    </span><span style=\"color:#800\">// likelihood</span><span style=\"color:#000\"><br>        O </span><span style=\"color:#660\">~</span><span style=\"color:#000\"> poisson_log</span><span style=\"color:#660\">(</span><span style=\"color:#000\">log_mu</span><span style=\"color:#660\">);</span><span style=\"color:#000\"><br><br></span></div></code></div><br>It will go much faster and with less risk of overflow.<br><br>Ben<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "h-PnPLdI6MIJ",
+   "from": "John",
+   "author": "d54aba6af40f8c5e",
+   "date": "2013-02-04T09:51:01Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "When it&#39;s all working, would you mind giving us a rough idea of how fast it is compared to GeoBUGS?<div><br></div><div>Thanks!</div><div><br></div><div>John</div>"
+    ],
+    [
+     3,
+     "<div><br><br>On Saturday, February 2, 2013 6:17:28 PM UTC-8, Kyle Foreman wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Thanks, Ben! This indeed works (I just set the 3 islands as neighbors for testing purposes for now). <div><br></div><div>It successfully samples now, but sigma is huge (/tau is miniscule), on the order of ~8000. Compared to ~1.5 for GeoBUGS. I&#39;ll start digging into this further on Monday and will keep the list updated. Current code/data attached for posterity.</div><div><br></div><div>On Saturday, February 2, 2013 2:43:40 PM UTC-5, Marcus wrote:<blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left-width:1px;border-left-color:rgb(204,204,204);border-left-style:solid;padding-left:1ex\"><div dir=\"ltr\">What you really want here is the multi_normal_prec, which I just implemented in Stan.  It should be in the next release.</div><div><br></div></blockquote><div>Thanks Marcus, that&#39;s great to hear! If time allows I&#39;ll try building from source on Monday to test this out. <br></div></div><div><br></div><div>Best,</div><div>Kyle</div></blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "qra-MJKs3koJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-02-24T22:50:58Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "Apologies for the radio silence, I got sidetracked with paper writing and just came back to this project yesterday.<div><br></div><div>Using Ben&#39;s lp method for explicitly writing out the MVN without requiring inversion (attached, model1.txt - and thanks again, Ben!), it runs quickly and comes up with mean estimates similar to those of bugs for alpha0 and sigma:</div><div><ul><li><span style=\"line-height:normal\">sigma</span></li><ul><li><span style=\"line-height:normal\">bugs</span></li><ul><li><span style=\"line-height:normal\">mean:  .65</span></li><li><span style=\"line-height:normal\">sd:  .11</span></li></ul><li><span style=\"line-height:normal\">stan</span></li><ul><li><span style=\"line-height:normal\">mean:  .7</span></li><li><span style=\"line-height:normal\">sd  .1</span></li></ul></ul><li><span style=\"line-height:normal\">alpha0</span></li><ul><li><span style=\"line-height:normal\">bugs</span></li><ul><li><span style=\"line-height:normal\">mean:  -.30</span></li><li><span style=\"line-height:normal\">sd:  .11</span></li></ul><li><span style=\"line-height:normal\">stan</span></li><ul><li><span style=\"line-height:normal\">mean:  -.2</span></li><li><span style=\"line-height:normal\">sd:  .1</span></li></ul></ul></ul>At first glance the betas are reasonable, but I&#39;m having trouble getting OpenBUGS to run on OSX right now so I haven&#39;t yet directly compared for specific regions.</div><div><br></div><div>The main difference thus far is alpha1 (which is the coefficient on the covariate):</div><div><br></div><div><ul><li><span style=\"line-height:normal\">alpha1</span></li><ul><li><span style=\"line-height:normal\">bugs</span></li><ul><li><span style=\"line-height:normal\">mean:  .46</span></li><li><span style=\"line-height:normal\">sd:  .12</span></li></ul><li><span style=\"line-height:normal\">stan</span></li><ul><li><span style=\"line-height:normal\">mean:  .0</span></li><li><span style=\"line-height:normal\">sd:  .0</span></li></ul></ul></ul>Not sure why alpha0 stays at zero. I&#39;m using a relatively weak prior [N(0,1e5) to match with bugs&#39; N(0,1e-5)] and have experimented with lots of different values for the precision. I&#39;ve also tried changing the initial value from 0, but it always ends up back there, even with extreme initials.</div><div><br></div><div>Sorry there&#39;s not more to report on that front, but I&#39;ll continue experimenting and see if I can&#39;t get figure out what&#39;s going on there. Any ideas are again appreciated!</div><div><br></div><div>I&#39;ve also tried using the new multi_normal_prec. The thought was I could avoid the computationally expensive inversions but still use the probability distribution convenience functions instead of relying on lp -=.</div><div><br></div><div>The version using multi_normal_prec is attached as model2.txt. It picks absolutely gigantic values for tau (on the order of 1e6, compared to ~1.3 for model1), which translates to a sigma close to 0. There&#39;s not much documentation in the source for multi_normal_prec yet, so maybe I&#39;m missing something there. I&#39;ve simply used MVN_prec(0 vector, (D - p * A) * tau^2). </div><div><br></div><div>John, I can&#39;t yet give you a good speed comparison, but once I have the model working well I&#39;ll look into it and post to the list.</div>"
+    ]
+   ]
+  },
+  {
+   "id": "O0NmU0O-M5oJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-02-25T01:11:46Z",
+   "subject": "Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     2,
+     "On Sunday, February 24, 2013 5:50:58 PM UTC-5, Kyle Foreman wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Not sure why alpha0 stays at zero. I&#39;m using a relatively weak prior [N(0,1e5) to match with bugs&#39; N(0,1e-5)] and have experimented with lots of different values for the precision. I&#39;ve also tried changing the initial value from 0, but it always ends up back there, even with extreme initials.</blockquote>"
+    ],
+    [
+     1,
+     "<div><br>That doesn&#39;t quite match up. In Stan, 1e5 is a standard deviation, while in the BUGS-family 1e-5 is a precision. With sqrt(1e5), I get alpha0 to move a little bit away from zero.<br> </div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I&#39;ve also tried using the new multi_normal_prec. The thought was I could avoid the computationally expensive inversions but still use the probability distribution convenience functions instead of relying on lp -=.<div><br></div><div>The version using multi_normal_prec is attached as model2.txt. It picks absolutely gigantic values for tau (on the order of 1e6, compared to ~1.3 for model1), which translates to a sigma close to 0. There&#39;s not much documentation in the source for multi_normal_prec yet, so maybe I&#39;m missing something there. I&#39;ve simply used MVN_prec(0 vector, (D - p * A) * tau^2). </div></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>That&#39;s the right syntax, I think.<br><br>Ben<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "qxUSPIetgfkJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-02-25T04:04:56Z",
+   "subject": "Re: [stan-users] Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_default\" style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\">Ah, that&#39;s right - I had N(0, 1e2) originally and forgot why I did that after a couple weeks away from the code... oops! Thanks for pointing that out.</div>\r\n\r\n<div class=\"gmail_default\" style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\"><br></div><div class=\"gmail_default\" style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\">Sorry, I meant to say alpha1 is stuck at 0, not alpha0. (not the best naming, I know - was just trying to remain consistent with the geobugs example). Lots of changes in inits and priors on alpha1 and still see little to no movement.</div>\r\n\r\n<div class=\"gmail_default\" style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\"><br></div><div class=\"gmail_default\" style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\">Thanks for confirming the syntax for the precision version, I&#39;ll play with it further.</div>\r\n\r\n</div><div class=\"gmail_extra\"><br><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\">On Sun, Feb 24, 2013 at 8:11 PM, Ben Goodrich <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;</span> wrote:<br>\r\n\r\n</div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>On Sunday, February 24, 2013 5:50:58 PM UTC-5, Kyle Foreman wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n\r\nNot sure why alpha0 stays at zero. I&#39;m using a relatively weak prior [N(0,1e5) to match with bugs&#39; N(0,1e-5)] and have experimented with lots of different values for the precision. I&#39;ve also tried changing the initial value from 0, but it always ends up back there, even with extreme initials.</blockquote>\r\n\r\n</div><div><br>That doesn&#39;t quite match up. In Stan, 1e5 is a standard deviation, while in the BUGS-family 1e-5 is a precision. With sqrt(1e5), I get alpha0 to move a little bit away from zero.<br> </div><div>\r\n\r\n<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I&#39;ve also tried using the new multi_normal_prec. The thought was I could avoid the computationally expensive inversions but still use the probability distribution convenience functions instead of relying on lp -=.<div>\r\n\r\n<br></div><div>The version using multi_normal_prec is attached as model2.txt. It picks absolutely gigantic values for tau (on the order of 1e6, compared to ~1.3 for model1), which translates to a sigma close to 0. There&#39;s not much documentation in the source for multi_normal_prec yet, so maybe I&#39;m missing something there. I&#39;ve simply used MVN_prec(0 vector, (D - p * A) * tau^2). </div>\r\n\r\n</blockquote></div><div><br>That&#39;s the right syntax, I think.<span><font color=\"#888888\"><br><br>Ben<br><br></font></span></div></blockquote></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n\r\n<p></p>\r\n\r\n-- <br>\r\nYou received this message because you are subscribed to the Google Groups &quot;stan users mailing list&quot; group.<br>\r\nTo unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792468498789000&amp;usg=AOvVaw2fJiJLDlSwpuySW5tpKiKT\">https://groups.google.com/groups/opt_out</a>.<br>\r\n <br>\r\n <br>\r\n</div></div></blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "nsrFz1EaWVMJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2013-02-25T04:26:51Z",
+   "subject": "Re: [stan-users] Re: GMRF / CAR model - initialization/acceptance problems",
+   "parts": [
+    [
+     2,
+     "On Sunday, February 24, 2013 11:04:56 PM UTC-5, Kyle Foreman wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\"><div style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\">Ah, that&#39;s right - I had N(0, 1e2) originally and forgot why I did that after a couple weeks away from the code... oops! Thanks for pointing that out.</div>\r\n\r\n<div style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\"><br></div><div style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\">Sorry, I meant to say alpha1 is stuck at 0, not alpha0. (not the best naming, I know - was just trying to remain consistent with the geobugs example). Lots of changes in inits and priors on alpha1 and still see little to no movement.</div>\r\n\r\n<div style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\"><br></div><div style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\">Thanks for confirming the syntax for the precision version, I&#39;ll play with it further.</div></div></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Actually, I meant alpha1 too</div><div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><font color=\"#660066\">&gt; samples &lt;- read.csv(&quot;samples.csv&quot;, comment.char = &quot;#&quot;)</font></div><div><font color=\"#660066\">&gt; summary(samples$alpha1)</font></div><div><font color=\"#660066\">    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. </font></div><div><font color=\"#660066\">0.001514 0.032360 0.040110 0.040770 0.049110 0.091900 </font></div><div><br></div></div></code></div><br>Ben</div><div> </div>"
+    ]
+   ]
+  }
+ ]
+}

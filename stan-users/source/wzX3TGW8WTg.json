@@ -1,0 +1,104 @@
+{
+ "thread": "wzX3TGW8WTg",
+ "subject": "Sampling lagging/stopping during execution",
+ "messages_listed": 4,
+ "last_activity": "2016-12-08T06:50:51Z",
+ "messages": [
+  {
+   "id": "SvoEwsYRCQAJ",
+   "from": "astfalckl",
+   "author": "a5567b807fffaf34",
+   "date": "2016-12-06T06:09:12Z",
+   "subject": "Sampling lagging/stopping during execution",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\"><div>When executing stan, the iterations lag/hang around the 400 mark. I&#39;ve specified only a limited amount of parameters to save, thinned the samples and still it won&#39;t move. I notice that the warm up stage moves quite fast and then gets slower and slower as the iteration progress until it eventually hangs.</div><div><br></div><div>I&#39;m trying to reproduce the analysis in <a href=\"http://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=7173066\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber%3D7173066&amp;source=gmail&amp;ust=1792459333427000&amp;usg=AOvVaw0urKwH71J6N4I7cCKNlKyM\">http://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=7173066</a> but using HMC methods as to avoid the requirement for conjugacy.  The general gist is that the degradation data is provided for a Li-ion battery, with capacitance decreasing over time. The voltage-discharge curves are fit with a spline using a single knot, the location of which is itself a parameter. The sampler runs fine when I just look at the first 10 discharge profiles, however when I incorporate all 168 lines it stuffs up.</div><div><br></div><div>My Stan model is:</div><div><br></div><div>```</div><div>data{</div><div>  int&lt;lower=1&gt; J;               // Number of groups</div><div>  int&lt;lower=1&gt; N;               // Number of points</div><div>  int&lt;lower=1&gt; C;               // Number of covariates in theta</div><div>  int&lt;lower=1&gt; K;               // Number of gammas</div><div>  int&lt;lower=1, upper=J&gt; jj[N];  // Individual indicator of group (integer reading out of vector of length N)</div><div>  vector[N] times;              // Time intercept variables for each point</div><div>  vector[N] U;                  // Voltage measurement for each point</div><div>  matrix[C,K] C_j[J];            // Array of design matricies for each point</div><div>}</div><div><br></div><div><br></div><div>parameters {</div><div>  cholesky_factor_corr[C] L;    // Hyperprior correlation matrix</div><div>  vector&lt;lower=0&gt;[C] scale;     // Hyperprior scale matrix for covariance</div><div>  vector[K] gamma;              // Hyperprior for the theta means in terms of gamma. This is resolved down to a vector of length C with the design matrix C_j</div><div>  real&lt;lower=0&gt; sigma;          // Noise parameter</div><div>  matrix[J,C] theta;            // Individual group coefficents (reads vector length K from a vector of length J)</div><div>}</div><div><br></div><div><br></div><div>transformed parameters {</div><div>  vector[J] a0;                 // Theta parameters</div><div>  vector[J] a1;</div><div>  vector[J] a2;</div><div>  vector[J] a3;</div><div>  vector[J] b3;</div><div>  vector[J] tau;</div><div>  </div><div>  vector[J] b0;</div><div>  vector[J] b1;</div><div>  vector[J] b2;</div><div>  </div><div>  vector[C] mu[J];</div><div>  </div><div>  a0 = theta[,1];</div><div>  a1 = theta[,2];</div><div>  a2 = theta[,3];</div><div>  a3 = theta[,4];</div><div>  b3 = theta[,5];</div><div>  tau = theta[,6];</div><div>  </div><div>  b0 = a0 + rows_dot_product(a1,tau) + rows_dot_product(a2,rows_dot_product(tau,tau)) + rows_dot_product(a3,rows_dot_product(tau,rows_dot_product(tau,tau)));</div><div>  b1 = a1 + 2*rows_dot_product(a2,tau) + 3*rows_dot_product(a3,rows_dot_product(tau,tau));</div><div>  b2 = a2 + 3*rows_dot_product(a3,tau);</div><div>  </div><div>  for (j in 1:J) {</div><div>    mu[j] = C_j[j] * gamma;</div><div>  }</div><div>  </div><div>}</div><div><br></div><div><br></div><div>model {</div><div>  // Priors</div><div>  scale ~ cauchy(0,10);          //</div><div>  L ~ lkj_corr_cholesky(1);      // Set to one for identity matrix (no covariance)</div><div>  </div><div>  for (j in 1:J) {</div><div>    theta[j] ~ multi_normal_cholesky(mu[j], diag_pre_multiply(scale,L));</div><div>  }</div><div>  </div><div>  for (n in 1:N) {</div><div>    if (times[n] &lt; tau[jj[n]]) {</div><div>      U[n] ~ normal(a0[jj[n]] + a1[jj[n]]*times[n] + a2[jj[n]]*times[n]^2 + a3[jj[n]]*times[n]^3,sigma);</div><div>    } else {</div><div>      U[n] ~ normal(b0[jj[n]] + b1[jj[n]]*(times[n]-tau[jj[n]]) + b2[jj[n]]*(times[n]-tau[jj[n]])^2 + b3[jj[n]]*(times[n]-tau[jj[n]])^3,sigma);</div><div>    }</div><div>  }</div><div>}</div><div><br></div><div>generated quantities {</div><div>  matrix[C,C] Omega;</div><div>  matrix[C,C] Sigma_big;</div><div>  Omega = multiply_lower_tri_self_transpose(L);</div><div>  Sigma_big = quad_form_diag(Omega, scale);  </div><div>}</div><div>```</div><div><br></div><div><br></div><div>I am calling stan with:</div><div>`fit &lt;- stan(file = &quot;./model6-simple.stan&quot;, data = regressdata, iter = iterations, pars = &quot;gamma&quot;, chains = 1, thin = 10)`</div><div><br></div><div>I am not an experienced programmer so please forgive me if the code isn&#39;t great. Happy to also supply the dataset and the rest of my R code if required.</div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "eN5Ekf2NCQAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-12-07T20:05:27Z",
+   "subject": "Re: [stan-users] Sampling lagging/stopping during execution",
+   "parts": [
+    [
+     1,
+     "If it fits OK with simulated data and for small data sets,\r<br>it&#39;s probably just a problem with more data making the posterior\r<br>curvature very sharp.\r<br>\r<br>What&#39;s probably happening is that adaptation is locking\r<br>into a very small step size with a lot of steps and it appears\r<br>as if it&#39;s frozen (if you look at your process monitor, you&#39;ll\r<br>probably see it still churning through the compute cycles;  if\r<br>not let us know).\r<br>\r<br>I didn&#39;t know which variable in your model corresponded\r<br>to &quot;lines&quot;, but if you build big covariance matrices, it\r<br>can be very numerically unstable without strong regularization.\r<br>This:\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;   L ~ lkj_corr_cholesky(1);      // Set to one for identity matrix (no covariance)\r<br>\r<br>"
+    ],
+    [
+     1,
+     "is putting a uniform distribution over the Cholesky\r<br>factors that form correlation matrices.  The 1 there\r<br>makes it uniform;  larger values than 1 concentrate the\r<br>mass around the unit correlation matrix.\r<br>\r<br>But if that&#39;s not a problem, then you are going to have\r<br>to look at either better initialization (for instance, from\r<br>a fit with 20 items rather than 150).  \r<br>\r<br>There&#39;s some opportunities for more efficient coding, but\r<br>if it appears locked, just speeding up the code isn&#39;t going\r<br>to help.  If some of these are hierarchical priors, you may\r<br>want to use a non-centered parameterization.\r<br>\r<br>Also, having up to a third order (fitting a cubic polynomial)\r<br>may not be appropriate for your problem.  We know that x, x^2\r<br>and x^3 are going to be closely related, so you may wind up\r<br>overparameterizing the model.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>\r<br>\r<br>&gt; On Dec 6, 2016, at 1:09 AM, astfalckl &lt;<a href data-email-masked rel=\"nofollow\">astf...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; When executing stan, the iterations lag/hang around the 400 mark. I&#39;ve specified only a limited amount of parameters to save, thinned the samples and still it won&#39;t move. I notice that the warm up stage moves quite fast and then gets slower and slower as the iteration progress until it eventually hangs.\r<br>&gt; \r<br>&gt; I&#39;m trying to reproduce the analysis in <a href=\"http://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=7173066\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber%3D7173066&amp;source=gmail&amp;ust=1792459333431000&amp;usg=AOvVaw2N7uDoAvBHn5QaiEht3AAY\">http://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=7173066</a> but using HMC methods as to avoid the requirement for conjugacy.  The general gist is that the degradation data is provided for a Li-ion battery, with capacitance decreasing over time. The voltage-discharge curves are fit with a spline using a single knot, the location of which is itself a parameter. The sampler runs fine when I just look at the first 10 discharge profiles, however when I incorporate all 168 lines it stuffs up.\r<br>&gt; \r<br>&gt; My Stan model is:\r<br>&gt; \r<br>&gt; ```\r<br>&gt; data{\r<br>&gt;   int&lt;lower=1&gt; J;               // Number of groups\r<br>&gt;   int&lt;lower=1&gt; N;               // Number of points\r<br>&gt;   int&lt;lower=1&gt; C;               // Number of covariates in theta\r<br>&gt;   int&lt;lower=1&gt; K;               // Number of gammas\r<br>&gt;   int&lt;lower=1, upper=J&gt; jj[N];  // Individual indicator of group (integer reading out of vector of length N)\r<br>&gt;   vector[N] times;              // Time intercept variables for each point\r<br>&gt;   vector[N] U;                  // Voltage measurement for each point\r<br>&gt;   matrix[C,K] C_j[J];            // Array of design matricies for each point\r<br>&gt; }\r<br>&gt; \r<br>&gt; \r<br>&gt; parameters {\r<br>&gt;   cholesky_factor_corr[C] L;    // Hyperprior correlation matrix\r<br>&gt;   vector&lt;lower=0&gt;[C] scale;     // Hyperprior scale matrix for covariance\r<br>&gt;   vector[K] gamma;              // Hyperprior for the theta means in terms of gamma. This is resolved down to a vector of length C with the design matrix C_j\r<br>&gt;   real&lt;lower=0&gt; sigma;          // Noise parameter\r<br>&gt;   matrix[J,C] theta;            // Individual group coefficents (reads vector length K from a vector of length J)\r<br>&gt; }\r<br>&gt; \r<br>&gt; \r<br>&gt; transformed parameters {\r<br>&gt;   vector[J] a0;                 // Theta parameters\r<br>&gt;   vector[J] a1;\r<br>&gt;   vector[J] a2;\r<br>&gt;   vector[J] a3;\r<br>&gt;   vector[J] b3;\r<br>&gt;   vector[J] tau;\r<br>&gt;   \r<br>&gt;   vector[J] b0;\r<br>&gt;   vector[J] b1;\r<br>&gt;   vector[J] b2;\r<br>&gt;   \r<br>&gt;   vector[C] mu[J];\r<br>&gt;   \r<br>&gt;   a0 = theta[,1];\r<br>&gt;   a1 = theta[,2];\r<br>&gt;   a2 = theta[,3];\r<br>&gt;   a3 = theta[,4];\r<br>&gt;   b3 = theta[,5];\r<br>&gt;   tau = theta[,6];\r<br>&gt;   \r<br>&gt;   b0 = a0 + rows_dot_product(a1,tau) + rows_dot_product(a2,rows_dot_product(tau,tau)) + rows_dot_product(a3,rows_dot_product(tau,rows_dot_product(tau,tau)));\r<br>&gt;   b1 = a1 + 2*rows_dot_product(a2,tau) + 3*rows_dot_product(a3,rows_dot_product(tau,tau));\r<br>&gt;   b2 = a2 + 3*rows_dot_product(a3,tau);\r<br>&gt;   \r<br>&gt;   for (j in 1:J) {\r<br>&gt;     mu[j] = C_j[j] * gamma;\r<br>&gt;   }\r<br>&gt;   \r<br>&gt; }\r<br>&gt; \r<br>&gt; \r<br>&gt; model {\r<br>&gt;   // Priors\r<br>&gt;   scale ~ cauchy(0,10);          //\r<br>&gt;   L ~ lkj_corr_cholesky(1);      // Set to one for identity matrix (no covariance)\r<br>&gt;   \r<br>&gt;   for (j in 1:J) {\r<br>&gt;     theta[j] ~ multi_normal_cholesky(mu[j], diag_pre_multiply(scale,L));\r<br>&gt;   }\r<br>&gt;   \r<br>&gt;   for (n in 1:N) {\r<br>&gt;     if (times[n] &lt; tau[jj[n]]) {\r<br>&gt;       U[n] ~ normal(a0[jj[n]] + a1[jj[n]]*times[n] + a2[jj[n]]*times[n]^2 + a3[jj[n]]*times[n]^3,sigma);\r<br>&gt;     } else {\r<br>&gt;       U[n] ~ normal(b0[jj[n]] + b1[jj[n]]*(times[n]-tau[jj[n]]) + b2[jj[n]]*(times[n]-tau[jj[n]])^2 + b3[jj[n]]*(times[n]-tau[jj[n]])^3,sigma);\r<br>&gt;     }\r<br>&gt;   }\r<br>&gt; }\r<br>&gt; \r<br>&gt; generated quantities {\r<br>&gt;   matrix[C,C] Omega;\r<br>&gt;   matrix[C,C] Sigma_big;\r<br>&gt;   Omega = multiply_lower_tri_self_transpose(L);\r<br>&gt;   Sigma_big = quad_form_diag(Omega, scale);  \r<br>&gt; }\r<br>&gt; ```\r<br>&gt; \r<br>&gt; \r<br>&gt; I am calling stan with:\r<br>&gt; `fit &lt;- stan(file = &quot;./model6-simple.stan&quot;, data = regressdata, iter = iterations, pars = &quot;gamma&quot;, chains = 1, thin = 10)`\r<br>&gt; \r<br>&gt; I am not an experienced programmer so please forgive me if the code isn&#39;t great. Happy to also supply the dataset and the rest of my R code if required.\r<br>&gt; \r<br>"
+    ],
+    [
+     1,
+     "&gt; -- \r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r<br>&gt; To post to this group, send email to <a href data-email-masked rel=\"nofollow\">stan-...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792459333431000&amp;usg=AOvVaw1HK1JbF6kPcJbztSaaabgH\">https://groups.google.com/d/optout</a>.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "sXYZr_ifCQAJ",
+   "from": "astfalckl",
+   "author": "a5567b807fffaf34",
+   "date": "2016-12-08T01:34:57Z",
+   "subject": "Re: [stan-users] Sampling lagging/stopping during execution",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Thanks for the reply Bob. The sample is currently at around 7000 samples in 24 hours so nothing patience can&#39;t solve. Good to know that this wasn&#39;t (entirely) a problem with my code or stan. The &quot;lines&quot; are my J (group) variables. The covariance matrices are only 6 x 6. <div><br></div><div>Is there a was to increase the resolution on what sample stan is running during the sampling as opposed to it being broken down into 10 steps (1/10000, 1000/10000, 2000/10000 etc.)?</div><div><br></div><div>Thanks for the correction on the Cholesky factors. Admittedly I don&#39;t know a huge amount about them and copied this part out of the manual.</div><div><br></div><div>Could you give me a one sentence tip on where the coding can be improved? Always keen for development.</div><div><br></div><div>I agree this may not be the best model for fitting the data, however we&#39;re trying to recreate the results from the aforementioned paper to demonstrate the usefulness of HMC when we can&#39;t assume conjugacy. Unfortunately, a lot that is published in our field assumes conjugacy so that a Gibbs sampler can be used, even though often it seems inappropriate to do so (normal error when it is clearly skewed etc.). </div><div><br></div><div>Thanks for your time,</div><div><br></div><div>Lachlan</div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "hwpNpzWxCQAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-12-08T06:50:51Z",
+   "subject": "Re: [stan-users] Sampling lagging/stopping during execution",
+   "parts": [
+    [
+     2,
+     "\r<br>&gt; On Dec 7, 2016, at 8:34 PM, astfalckl &lt;<a href data-email-masked rel=\"nofollow\">astf...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; Thanks for the reply Bob. The sample is currently at around 7000 samples in 24 hours so nothing patience can&#39;t solve. Good to know that this wasn&#39;t (entirely) a problem with my code or stan. The &quot;lines&quot; are my J (group) variables. The covariance matrices are only 6 x 6. \r<br>\r<br>"
+    ],
+    [
+     1,
+     "Are you sure you need that many draws?  What target effective\r<br>sample size are you after and what&#39;s the mixing rate \r<br>(iterations / n_eff)?\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Is there a was to increase the resolution on what sample stan is running during the sampling as opposed to it being broken down into 10 steps (1/10000, 1000/10000, 2000/10000 etc.)?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Yes, but how to control the refresh rate\r<br>depends on the Stan interface.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Thanks for the correction on the Cholesky factors. Admittedly I don&#39;t know a huge amount about them and copied this part out of the manual.\r<br>&gt; \r<br>&gt; Could you give me a one sentence tip on where the coding can be improved? Always keen for development.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Stan code&#39;s like any other code, which means writing\r<br>it means knowing how it gets compiled and executed.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I agree this may not be the best model for fitting the data, however we&#39;re trying to recreate the results from the aforementioned paper to demonstrate the usefulness of HMC when we can&#39;t assume conjugacy. Unfortunately, a lot that is published in our field assumes conjugacy so that a Gibbs sampler can be used, even though often it seems inappropriate to do so (normal error when it is clearly skewed etc.).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "But Gibbs samplers can have problems converging and mixing\r<br>even when everything&#39;s conjugate.  So I hope they&#39;re\r<br>being careful about monitoring that at least.\r<br>\r<br>- Bob"
+    ]
+   ]
+  }
+ ]
+}

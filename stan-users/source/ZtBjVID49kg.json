@@ -1,0 +1,55 @@
+{
+ "thread": "ZtBjVID49kg",
+ "subject": "Understanding stan_betareg",
+ "messages_listed": 3,
+ "last_activity": "2017-01-14T10:43:21Z",
+ "messages": [
+  {
+   "id": "pvTpZ4YqAAAJ",
+   "from": "Thomas Klebel",
+   "author": "45c566c2cd194b03",
+   "date": "2017-01-13T21:01:22Z",
+   "subject": "Understanding stan_betareg",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Hi all,<div><br></div><div>I&#39;m quite new to bayesian modeling, and in that regard I appreciate rstanarm a lot, since it makes bayesian methods way more approachable.</div><div><br></div><div>In order to get estimates and uncertainty intervals for a proportion I was trying out stan_betareg by simulating fake data. From what I understand (which might be wrong), I can calculate the mean of a beta distribution with mean = alpha / (alpha + beta). I simulated data with rbeta for different groups and sample sizes and tried to recover their means by using stan_betareg(y ~ 0 + group, ..). I transformed the resulting coefficients with arm::invlogit, so I could interpret them on the probability scale. As far as I understand it, my true means should fall 9 out of 10 times within a 90% interval from tidy(stanreg) or using mcmc_recover_intervals.</div><div><br></div><div>Unfortunately I was unsuccessful with my attempts. The true mean fell only 52 out of 100 times within the interval. Especially for a group with simulated data from rbeta(n, 34, 6), the estimate was always off. Most likely I&#39;m misunderstanding, what I am estimating with beta regression, and how I should treat the resulting coefficients. If you could give me any pointers on what I&#39;m missing, I&#39;d appreciate it a lot.</div><div><br></div><div>I used the following code:</div><div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><br></div><div>library(tidyverse)</div><div>library(rstanarm)</div><div>library(broom)</div><div><br></div><div>sim_setup &lt;- data_frame(</div><div>  group = letters[1:5],</div><div>  alpha = c(4, 4, 34, 1, .6),</div><div>  beta = c(4, 2, 6, 3, .9),</div><div>  size = c(10, 40, 70, 150, 300)</div><div>) %&gt;%</div><div>  mutate(mean = alpha / (alpha + beta))</div><div><br></div><div># simulation</div><div>true &lt;- sim_setup$mean</div><div><br></div><div>simulate_data &lt;- function(setup) {</div><div>  setup %&gt;%</div><div>    by_row(~rbeta(.$size, .$alpha, .$beta)) %&gt;%</div><div>    unnest(y = .out)</div><div>}</div><div><br></div><div><br></div><div>find_values &lt;- function(data) {</div><div>  bayes &lt;- stan_betareg(y ~ 0 + group, data, iter = 400)</div><div><br></div><div>  tidy(bayes, intervals = T) %&gt;%</div><div>    dplyr::select(-std.error) %&gt;%</div><div>    filter(term != &quot;(phi)&quot;) %&gt;%</div><div>    dmap_if(is_numeric, arm::invlogit) %&gt;%</div><div>    mutate(hit = case_when(true &lt; .$lower | true &gt; .$upper ~ FALSE,</div><div>                           TRUE ~ TRUE))</div><div>}</div><div><br></div><div>sim_res &lt;- rerun(20, simulate_data(sim_setup)) %&gt;%</div><div>  map(find_values)</div><div><br></div><div>sim_res_collected &lt;- sim_res %&gt;%</div><div>  bind_rows(.id = &quot;id&quot;) %&gt;%</div><div>  mutate(true = rep(true, 20),</div><div>         id = factor(id, levels = 1:20))</div><div><br></div><div>sim_res_collected %&gt;% count(hit)</div><div><br></div><div>ggplot(sim_res_collected, aes(term, estimate, ymin = lower, ymax = upper)) +</div><div>  geom_pointrange() +</div><div>  geom_point(aes(y = true), colour = &quot;red&quot;) +</div><div>  facet_wrap(~id) +</div><div>  labs(x = NULL, y = NULL, title = &quot;Results from 20 simulation draws&quot;)</div></div></code></div><br></div><div><br></div><div><br></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "ffspegwtAAAJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2017-01-13T21:47:36Z",
+   "subject": "Re: Understanding stan_betareg",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\">On Friday, January 13, 2017 at 4:01:22 PM UTC-5, Thomas Klebel wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">In order to get estimates and uncertainty intervals for a proportion I was trying out stan_betareg by simulating fake data. From what I understand (which might be wrong), I can calculate the mean of a beta distribution with mean = alpha / (alpha + beta). I simulated data with rbeta for different groups and sample sizes and tried to recover their means by using stan_betareg(y ~ 0 + group, ..). I transformed the resulting coefficients with arm::invlogit, so I could interpret them on the probability scale. As far as I understand it, my true means should fall 9 out of 10 times within a 90% interval from tidy(stanreg) or using mcmc_recover_intervals.</div></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div dir=\"ltr\"><br>First, it is easy to confuse yourself if you average over simulated datasets. Bayesian methods should work fine in this frequentist setting but that is because they work fine on each simulated dataset, which is what Bayesians should care about in practice. <br><br>Second, any X% credible interval should have a X / 100 probability of containing the true value, but we don&#39;t like X = 90 because the endpoints are not estimated very precisely. This is compounded when you only do 400 iterations and keep 200 of them; stick with the defaults. <br><br>Third, the usual way to evaluate something like this is to simulate one dataset, obtain the posterior distribution, obtain the posterior predictive distribution, and  check what proportion of the observations in the one dataset fall within some quantiles of the posterior predictive distribution for each observation. In your case, it would look like<br><br><font face=\"courier new,monospace\">dat &lt;- simulate_data(sim_setup)<br>post &lt;- stan_betareg(y ~ 0 + group, data = dat)<br>PPD &lt;- posterior_predict(post)<br>Qs &lt;- apply(PPD, 2, FUN = quantile, probs = c(0.25, 0.75))<br>mean(dat$y &gt; Qs[1,] &amp; dat$y &lt; Qs[2,]) # usually a little more than 0.5</font> <br><div><br>It is true that posterior_interval(post, prob = 0.5) reflects a belief that the true parameters (in log-odds) are contained within these intervals with probability 0.5, but you are not going to have the true parameters to verify that with real data. But you will always have the data, so you can always check whether the posterior predictions of the data are well-calibrated.<br><br>Ben<br><br></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "gAqQYGFXAAAJ",
+   "from": "Thomas Klebel",
+   "author": "45c566c2cd194b03",
+   "date": "2017-01-14T10:43:21Z",
+   "subject": "Re: Understanding stan_betareg",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Thanks for clarifying a few issues.<div><br></div><div>I still don&#39;t understand, why stan_betareg seems to be less precise when trying to recover this particular setup than say stan_aov. loo and pp_check look far worse for stan_aov, but the point estimates and intervals are closer for stan_aov. Ultimately, this has nothing to do with the bayesian approach, so thanks for giving pointers on how to evaluate the fit. </div></div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><div><br><br>Am Freitag, 13. Januar 2017 22:47:36 UTC+1 schrieb Ben Goodrich:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">On Friday, January 13, 2017 at 4:01:22 PM UTC-5, Thomas Klebel wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">In order to get estimates and uncertainty intervals for a proportion I was trying out stan_betareg by simulating fake data. From what I understand (which might be wrong), I can calculate the mean of a beta distribution with mean = alpha / (alpha + beta). I simulated data with rbeta for different groups and sample sizes and tried to recover their means by using stan_betareg(y ~ 0 + group, ..). I transformed the resulting coefficients with arm::invlogit, so I could interpret them on the probability scale. As far as I understand it, my true means should fall 9 out of 10 times within a 90% interval from tidy(stanreg) or using mcmc_recover_intervals.</div></blockquote><div dir=\"ltr\"><br>First, it is easy to confuse yourself if you average over simulated datasets. Bayesian methods should work fine in this frequentist setting but that is because they work fine on each simulated dataset, which is what Bayesians should care about in practice. <br><br>Second, any X% credible interval should have a X / 100 probability of containing the true value, but we don&#39;t like X = 90 because the endpoints are not estimated very precisely. This is compounded when you only do 400 iterations and keep 200 of them; stick with the defaults. <br><br>Third, the usual way to evaluate something like this is to simulate one dataset, obtain the posterior distribution, obtain the posterior predictive distribution, and  check what proportion of the observations in the one dataset fall within some quantiles of the posterior predictive distribution for each observation. In your case, it would look like<br><br><font face=\"courier new,monospace\">dat &lt;- simulate_data(sim_setup)<br>post &lt;- stan_betareg(y ~ 0 + group, data = dat)<br>PPD &lt;- posterior_predict(post)<br>Qs &lt;- apply(PPD, 2, FUN = quantile, probs = c(0.25, 0.75))<br>mean(dat$y &gt; Qs[1,] &amp; dat$y &lt; Qs[2,]) # usually a little more than 0.5</font> <br><div><br>It is true that posterior_interval(post, prob = 0.5) reflects a belief that the true parameters (in log-odds) are contained within these intervals with probability 0.5, but you are not going to have the true parameters to verify that with real data. But you will always have the data, so you can always check whether the posterior predictions of the data are well-calibrated.<br><br>Ben<br><br></div></div></div></blockquote></div></div>"
+    ]
+   ]
+  }
+ ]
+}

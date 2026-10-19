@@ -1,0 +1,99 @@
+{
+ "thread": "fBHNn2WvwXo",
+ "subject": "Wondering about LKJ prior - is it really sensible? How to implement on constructed matrix?",
+ "messages_listed": 3,
+ "last_activity": "2016-11-02T14:26:50Z",
+ "messages": [
+  {
+   "id": "i9aw7oszBAAJ",
+   "from": "Charles Driver",
+   "author": "cf47bbe63da1f3ae",
+   "date": "2016-10-31T10:28:27Z",
+   "subject": "Wondering about LKJ prior - is it really sensible? How to implement on constructed matrix?",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Have been trying to re-engineer the LKJ prior for use in a cholesky matrix constructed out of individual elements. Along the way I found that, in contrast to what I had been told / read here a few times before, setting an lkj_cholesky_corr(1) prior on a cholesky_factor_corr matrix *does* have a purpose - otherwise there are different priors for different correlations in the resulting correlation matrix. The contrast in the script below, between density plots for the fit with and fit without the lkj prior, on a 4x4 correlation matrix, shows this.<br><br>Further, I am wondering about a justification for the decreasing prior probability of high correlations as the number of dimensions increases. If I have started with a dataset of two variables that involves a single correlation, and then add another variable to my analysis, why should that decrease the probability of a high correlation between my first two variables? Does anyone have thoughts on this?  For those unfamiliar, the R script below compares the 4 vs 2 variable case.<br><br>Finally - can anyone help me implement the LKJ prior on a constructed matrix? It might get messy in here I&#39;m not sure if I should create a 2nd post, but for the moment I put my current attempt below...<br><br>#### testing LKJ prior<br>require(rstan)<br><br>sm &lt;- &#39;<br>data{<br>int ndim;<br>int lkj;<br>}<br>parameters{<br>real dummy;<br>cholesky_factor_corr[ndim] cholcorrmat;<br>}<br>model{<br>dummy~normal(0,1);<br>if(lkj==1) cholcorrmat~lkj_corr_cholesky(1);<br>}<br>generated quantities{<br>matrix[ndim,ndim] corrmat_out;<br>corrmat_out = cholcorrmat * cholcorrmat\\&#39;;<br>}<br>&#39;<br>par(mfrow=c(3,1))<br>ndim=4<br>fit=stan(model_code=sm,data=list(ndim=ndim,lkj=0),iter=5000,chains=3)<br>summary(fit,fit@model_pars[grep(&#39;out&#39;,fit@model_pars)],)$summary<br>stan_dens(fit,pars=fit@model_pars[grep(&#39;out&#39;,fit@model_pars)])<br><br>fit=stan(fit=fit,data=list(ndim=ndim,lkj=1),iter=5000,chains=3)<br>summary(fit,fit@model_pars[grep(&#39;out&#39;,fit@model_pars)],)$summary<br>stan_dens(fit,pars=fit@model_pars[grep(&#39;out&#39;,fit@model_pars)])<br><br><br>ndim=2<br>fit=stan(fit=fit,data=list(ndim=ndim,lkj=1),iter=5000,chains=3)<br>summary(fit,fit@model_pars[grep(&#39;out&#39;,fit@model_pars)],)$summary<br>stan_dens(fit,pars=fit@model_pars[grep(&#39;out&#39;,fit@model_pars)])<br><br><br><br><br><br><br>#### Constructing the cholesky factor cov from partial correlations and sd&#39;s - how to implement lkj prior?<br><br>sm2 &lt;- &#39;<br>functions{<br><br>row_vector vecpower(row_vector vec, real power){<br>      row_vector[num_elements(vec)] out;<br>for(i in 1:num_elements(vec)){<br>out[i] = vec[i]^power;<br>}<br>return out;<br>}<br><br>matrix sdpcorr2cov(matrix mat,int chol){ //converts from lower pcor and diag sd to chol or cov matrix<br>int ndim;<br>matrix[rows(mat),cols(mat)] mscale;<br>matrix[rows(mat),cols(mat)] mcholcor;<br>matrix[rows(mat),cols(mat)] out;<br>real tempsum;<br><br>ndim = cols(mat);<br>mcholcor=diag_matrix(rep_vector(1,ndim));<br>mscale = diag_matrix(diagonal(mat));<br><br>if(ndim &gt; 1){<br>for(coli in 1:ndim){<br>for(rowi in coli:ndim){<br>if(rowi &gt; coli){<br>mcholcor[rowi,coli] =  mat[rowi,coli]; <br>mcholcor[coli,rowi] = 0;<br>}<br>}<br>}<br>for(rowi in 2:ndim){<br>mcholcor[rowi,rowi]&lt;-sqrt(fabs(1-sum(vecpower(mcholcor[rowi,1:(rowi-1)],2))));<br>}<br>}<br><br>out = mscale * mcholcor; //cholesky<br>if(chol == 0) out=multiply_lower_tri_self_transpose(out); //cov<br>return out;<br>} //end sdpcorr2cov<br><br>}<br><br>data{<br>int ndim;<br>}<br><br>parameters{<br>vector&lt;lower=-1,upper=1&gt;[(ndim*ndim-ndim)/2] pcorrvec;<br>real dummy;<br>}<br><br>transformed parameters{<br>vector[ndim] scalevec;<br>matrix[ndim,ndim] sdpcorrmat;<br>matrix[ndim,ndim] cholcorrmat;<br>scalevec=rep_vector(1,ndim);<br><br>{<br>int counter;<br>counter=0;<br>sdpcorrmat=diag_matrix(scalevec);<br><br>for(rowi in 2:ndim){ // fill lower tri of sdpcorrmat<br>for(coli in 1:(rowi-1)){<br>counter=counter+1;<br>sdpcorrmat[rowi,coli]=pcorrvec[counter];<br>}<br>}<br>}<br><br>cholcorrmat = sdpcorr2cov(sdpcorrmat,1); //convert sd and lower tri partial cor matrix to cholesky factor cov<br><br><br>}<br>model{<br>dummy~normal(0,1); //just putting something here...<br>// sdpcorrmat ~ lkj_corr_cholesky(1); //as expected, this doesnt work<br>}<br>generated quantities{<br>matrix[ndim,ndim] corrmat_out;<br>corrmat_out = cholcorrmat * cholcorrmat\\&#39;; //the matrix of actual interest<br>}<br>&#39;<br><br><br><br>ndim=4<br>fit=stan(model_code=sm2,data=list(ndim=ndim),iter=5000,chains=3,cores=3)<br>summary(fit,fit@model_pars[grep(&#39;out&#39;,fit@model_pars)],)$summary<br>stan_dens(fit,pars=fit@model_pars[grep(&#39;out&#39;,fit@model_pars)])<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "my_jcuw4BAAJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2016-10-31T12:06:59Z",
+   "subject": "Re: Wondering about LKJ prior - is it really sensible? How to implement on constructed matrix?",
+   "parts": [
+    [
+     2,
+     "<div dir=\"ltr\">On Monday, October 31, 2016 at 6:28:27 AM UTC-4, Charles Driver wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><div dir=\"ltr\">Further, I am wondering about a justification for the decreasing prior probability of high correlations as the number of dimensions increases. If I have started with a dataset of two variables that involves a single correlation, and then add another variable to my analysis, why should that decrease the probability of a high correlation between my first two variables? Does anyone have thoughts on this?<br></div></blockquote></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div><br>The positive definiteness constraint means you cannot have independent prior beliefs about the correlations. In the 3x3 case, you can think of the density as<br><br><span style=\"font-family:courier new,monospace\">f(rho_{12} | rho_{13}, rho_{23}) * f(rho_{13}, rho_{23})<br></span><br>Why should f(rho_{12} | rho_{13}, rho_{23}} in the 3x3 case be the same as f(rho_{12}) in the 2x2 case? Of course, in the 3x3 case, you can also think of the density as<br><br><span style=\"font-family:courier new,monospace\">f(rho_{12}) * f(rho_{13}, rho_{23} | rho_{12})<br></span><br>but then you have to have weird beliefs about rho_{13} and rho_{23} given rho_{12} if your beliefs about rho_{12} are the same as in the 2x2 case. Basically, rho_{13} and rho_{23} have to be more concentrated near zero than rho_{12} is to satisfy the positive definiteness constraint. <br><br>For K &gt; 6, increasing K decreases the hypervolume of correlation matrices satisfying the positive definiteness constraint and the ones that do tend to be close to the identity matrix. To construct one, you are better off using the onion method, which yields the same distribution of correlation matrices. Search for onion.stan in Google Groups.<br><br>Ben<br><br></div><div><br><br><div dir=\"ltr\"><br></div></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "QnQoMbfdBAAJ",
+   "from": "Charles Driver",
+   "author": "cf47bbe63da1f3ae",
+   "date": "2016-11-02T14:26:50Z",
+   "subject": "Re: Wondering about LKJ prior - is it really sensible? How to implement on constructed matrix?",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Thanks Ben, I think that makes sense, though I&#39;ve only partially got my head around these vines and onions... nevertheless I have a working vine approach in case anyone needs it in future - I couldn&#39;t see how to make the onion approach work for my needs, it seemed I would have to include additional parameters for the diagonal which I didn&#39;t want.<br><br>rscript to generate and plot distributions of random correlation matrices built up from elements (with a few tweaks edited in hours after initial post):</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br><br>sm2 &lt;- &#39;<br>functions{<br><br>row_vector vecpower(row_vector vec, real power){<br>row_vector[num_elements(vec)] out;<br>for(i in 1:num_elements(vec)){<br>out[i] = vec[i]^power;<br>}<br>return out;<br>}<br><br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">row_vector vecsqrt(row_vector vec){</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>row_vector[num_elements(vec)] out;<br>for(i in 1:num_elements(vec)){<br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">out[i]=sqrt(vec[i]);<br>}<br>return out;<br>}<br><br>matrix cholcor_lp(matrix mat, int chol, real eta){ //converts from lower partial cor matrix to cholesky cor<br>  int ndim;<br>  matrix[rows(mat),cols(mat)] mcholcor;<br>  real betad;<br>  <br>  ndim = cols(mat);<br>  mcholcor=diag_matrix(rep_vector(0,ndim)); <br>  betad = eta + (ndim-1)/2;<br>  mcholcor[1,1]=1;<br><br>  <br>  if(ndim &gt; 1){<br>    betad = eta + (ndim-1)/2;<br>    for(coli in 1:ndim){<br>      betad = betad - .5;<br>      for(rowi in coli:ndim){<br>        if(rowi &gt; coli) mat[rowi,coli]/2+.5 ~ beta(betad,betad);<br>        if(coli==1 &amp;&amp; rowi &gt; 1) mcholcor[rowi,coli] =  mat[rowi,coli]; <br>        if(coli &gt; 1){<br>          if(rowi == coli) mcholcor[rowi,coli] = prod(vecsqrt(1-vecpower(mat[rowi,1:(coli-1)],2)));<br>          if(rowi &gt; coli) mcholcor[rowi,coli] = mat[rowi,coli] * prod(vecsqrt(1-vecpower(mat[rowi,1:(coli-1)],2)));<br>        }<br>      }<br>    }<br>  }<br>  return mcholcor;<br>}<br><br>}<br><br>data{<br>int ndim;<br>real eta;</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>}<br><br>parameters{<br>vector&lt;lower=-1,upper=1&gt;[(ndim*ndim-ndim)/2] pcorrvec;<br>real dummy;<br>}<br><br>transformed parameters{<br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">matrix[ndim,ndim] pcorrmat;<br>matrix[ndim,ndim] cholcorrmat;<br><br>{<br>  int counter;<br>  counter=0;<br>  pcorrmat=diag_matrix(rep_vector(0,ndim)); <br>  <br>  for(rowi in 2:ndim){ // fill lower tri of pcorrmat</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>  for(coli in 1:(rowi-1)){<br>  counter=counter+1;<br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">  pcorrmat[rowi,coli]=pcorrvec[counter];<br>  }<br>  }<br>}<br><br>cholcorrmat = cholcor_lp(pcorrmat,1,eta); //convert lower tri partial cor matrix to cholesky factor cor</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br><br><br>}<br>model{<br>dummy~normal(0,1); //just putting something here...<br>}<br></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\">generated quantities{<br>matrix[ndim,ndim] corrmat_out;<br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">corrmat_out = cholcorrmat * cholcorrmat\\&#39;; //the full correlation matrix<br>}<br>&#39;<br><br><br><br>ndim=6<br>eta=1<br>fit=stan(model_code=sm2,data=list(ndim=ndim,eta=eta),warmup=10,iter=50000,chains=3,cores=3)</div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><br>summary(fit,fit@model_pars[grep(&#39;out&#39;,fit@model_pars)],)$summary<br>stan_dens(fit,pars=fit@model_pars[grep(&#39;out&#39;,fit@model_pars)])<br></div>"
+    ]
+   ]
+  }
+ ]
+}

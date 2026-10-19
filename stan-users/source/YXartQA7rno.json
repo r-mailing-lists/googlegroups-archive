@@ -1,0 +1,350 @@
+{
+ "thread": "YXartQA7rno",
+ "subject": "assigning random effects to observations",
+ "messages_listed": 10,
+ "last_activity": "2013-04-07T17:32:32Z",
+ "messages": [
+  {
+   "id": "fBCu2uJhVmQJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-04-02T01:21:08Z",
+   "subject": "assigning random effects to observations",
+   "parts": [
+    [
+     1,
+     "Hello again all,<div><br></div><div>I&#39;m playing around with a model that has a random effect for each US state, with seven observations over time for each state. So, there&#39;s a vector of 51 random effects in a GMRF/CAR structure (based off of the GeoBUGS lip cancer model I&#39;ve discussed on the list previously), and they in turn need to be factored into the likelihoods of 357 datapoints. </div><div><br></div><div>I&#39;ve tried a few different methods and am curious as to what you&#39;d recommend as the best method for Stan.</div><div><br></div><div>The first thing I tried was just looping through each observation to add in its random effects, as one would do in BUGS (attached as CAR_model_loop.stan.txt):</div><div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\"><div>for (n in 1:N) {</div><div>    s &lt;- state[n];</div><div>    beta1_long[n] &lt;- beta1_stz[s];<br><span style=\"font-family:Arial,Helvetica,sans-serif\">}</span></div></font></div></code></div><br>this works, but I thought I should try to vectorize if possible and remove the loop.</div><div><br></div><div>So next (in CAR_model_matrix.stan.txt) I built a binary matrix[357,51] that when multiplied by beta_stz[51] gives the filled in random effects for each observation:</div><div><br></div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\"><div>matrix[N,S] state_mat;<br>for (n in 1:N)</div><div>    for (s in 1:S)</div><div>        state_mat[n,s] &lt;- if_else(state[n]==s, 1.0, 0.0);</div></font></div></code></div><div><br></div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font color=\"#660066\">beta1_long &lt;- state_mat * beta1_stz;</font><br></div></code></div><br>I was surprised to find this takes about 3x longer than the looping version.</div><div><br></div><div>In PyMC I&#39;ve always found a slight speedup using the matrix version. And by switching to sparse matrix libraries for state_mat in python I get an order of magnitude further speedup or more.</div><div><br></div><div>Any suggestions on how to best handle these types of operations in Stan? Thanks again!</div>"
+    ]
+   ]
+  },
+  {
+   "id": "6ucBpOOjuEUJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-04-02T19:44:35Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     1,
+     "Comments inlined.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>On 4/1/13 9:21 PM, Kyle Foreman wrote:\r<br>&gt; Hello again all,\r<br>&gt;\r<br>&gt; I&#39;m playing around with a model that has a random effect for each US state, with seven observations over time for each\r<br>&gt; state. So, there&#39;s a vector of 51 random effects in a GMRF/CAR structure (based off of the GeoBUGS lip cancer model I&#39;ve\r<br>&gt; discussed on the list previously), and they in turn need to be factored into the likelihoods of 357 datapoints.\r<br>&gt;\r<br>&gt; I&#39;ve tried a few different methods and am curious as to what you&#39;d recommend as the best method for Stan.\r<br>&gt;\r<br>&gt; The first thing I tried was just looping through each observation to add in its random effects, as one would do in BUGS\r<br>&gt; (attached as CAR_model_loop.stan.txt):\r<br>&gt;\r<br>&gt; |\r<br>&gt; for (n in 1:N) {\r<br>&gt;      s &lt;- state[n];\r<br>&gt;      beta1_long[n] &lt;- beta1_stz[s];\r<br>&gt; }\r<br>&gt; |\r<br>&gt;\r<br>&gt; this works, but I thought I should try to vectorize if possible and remove the loop.\r<br>&gt;\r<br>&gt; So next (in CAR_model_matrix.stan.txt) I built a binary matrix[357,51] that when multiplied by beta_stz[51] gives the\r<br>&gt; filled in random effects for each observation:\r<br>&gt;\r<br>&gt; |\r<br>&gt; matrix[N,S] state_mat;\r<br>&gt; for (n in 1:N)\r<br>&gt;      for (s in 1:S)\r<br>&gt;          state_mat[n,s] &lt;- if_else(state[n]==s, 1.0, 0.0);\r<br>&gt; |\r<br>&gt;\r<br>&gt; |\r<br>&gt; beta1_long &lt;- state_mat * beta1_stz;\r<br>&gt; |\r<br>&gt;\r<br>&gt; I was surprised to find this takes about 3x longer than the looping version.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Loops are very very fast in Stan -- they just get compiled to\r<br>C++ and most modern CPUs can easily parallelize the integer arithmetic\r<br>and comparisons in the loop and any floating point/assignments within\r<br>the loop.\r<br>\r<br>The matrix operations are relatively slow because it&#39;s doing a ton of\r<br>extra work because of the sparsity.\r<br>\r<br>We are going to add sparse matrix data types eventually, at which point\r<br>the matrix version might be faster.\r<br>\r<br>The real issue is whether the operations are working exclusively\r<br>on variables declared in data or transformed data, or whether\r<br>they involve parameters (parameter, transformed parameter, local\r<br>variable in transformed parameter, or local variable in model block).\r<br>\r<br>With parameters, so-called &quot;reduction&quot; operations that have a single\r<br>output are much faster when vectorized because we can vectorize the gradient calc,\r<br>which is otherwise slow.\r<br>\r<br>So if either x or y is a parameter or transformed parameter of a local\r<br>variable declared in the model or transformed parameter\r<br>\r<br>vector[N] x;\r<br>vector[N] y;\r<br>real sum;\r<br>...\r<br>sum &lt;- 0;\r<br>"
+    ],
+    [
+     2,
+     "for (n in 1:N)\r<br>"
+    ],
+    [
+     1,
+     "    sum &lt;- sum + x[n] * y[n];\r<br>\r<br>is much slower than\r<br>\r<br>    sum &lt;- x&#39; * y;\r<br>\r<br>which is in turn a little bit slower than\r<br>\r<br>    sum &lt;- dot_product(x,y);\r<br>\r<br>\r<br>On the other hand, you won&#39;t see much difference\r<br>between:\r<br>\r<br>   z &lt;- exp(x);\r<br>\r<br>and\r<br>"
+    ],
+    [
+     2,
+     "\r<br>   for (n in 1:N)\r<br>"
+    ],
+    [
+     1,
+     "     z[n] &lt;- exp(x[n]);\r<br>\r<br>because we can&#39;t vectorize the gradients because of the\r<br>multiple outputs for z[n], which need to be stored and\r<br>reasoned about independently.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; In PyMC I&#39;ve always found a slight speedup using the matrix version. And by switching to sparse matrix libraries for\r<br>&gt; state_mat in python I get an order of magnitude further speedup or more.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s because loops are slow in Python (unless you&#39;re using\r<br>something like Cython that compiles them to C++).\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; Any suggestions on how to best handle these types of operations in Stan? Thanks again!\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I hope that helps.  If not, please keep asking questions!\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "-USQLXAJ8tUJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-04-03T04:53:00Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_default\" style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\">Thanks so much, Bob! I always like to learn more about what&#39;s going on under the hood. I haven&#39;t worked with C++ much til now and hadn&#39;t realized it automatically parallelized loops like that - good to know.</div>\r\n\r\n</div><div class=\"gmail_extra\"><br><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\">On Tue, Apr 2, 2013 at 12:44 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br>\r\n\r\n</div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">Comments inlined.<div><br>\r\n<br>\r\nOn 4/1/13 9:21 PM, Kyle Foreman wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nHello again all,<br>\r\n<br>\r\nI&#39;m playing around with a model that has a random effect for each US state, with seven observations over time for each<br>\r\nstate. So, there&#39;s a vector of 51 random effects in a GMRF/CAR structure (based off of the GeoBUGS lip cancer model I&#39;ve<br>\r\ndiscussed on the list previously), and they in turn need to be factored into the likelihoods of 357 datapoints.<br>\r\n<br>\r\nI&#39;ve tried a few different methods and am curious as to what you&#39;d recommend as the best method for Stan.<br>\r\n<br>\r\nThe first thing I tried was just looping through each observation to add in its random effects, as one would do in BUGS<br>\r\n(attached as CAR_model_loop.stan.txt):<br>\r\n<br>\r\n|<br>\r\nfor (n in 1:N) {<br>\r\n     s &lt;- state[n];<br>\r\n     beta1_long[n] &lt;- beta1_stz[s];<br>\r\n}<br>\r\n|<br>\r\n<br>\r\nthis works, but I thought I should try to vectorize if possible and remove the loop.<br>\r\n<br>\r\nSo next (in CAR_model_matrix.stan.txt) I built a binary matrix[357,51] that when multiplied by beta_stz[51] gives the<br>\r\nfilled in random effects for each observation:<br>\r\n<br>\r\n|<br>\r\nmatrix[N,S] state_mat;<br>\r\nfor (n in 1:N)<br>\r\n     for (s in 1:S)<br>\r\n         state_mat[n,s] &lt;- if_else(state[n]==s, 1.0, 0.0);<br>\r\n|<br>\r\n<br>\r\n|<br>\r\nbeta1_long &lt;- state_mat * beta1_stz;<br>\r\n|<br>\r\n<br>\r\nI was surprised to find this takes about 3x longer than the looping version.<br>\r\n</blockquote>\r\n<br></div>\r\nLoops are very very fast in Stan -- they just get compiled to<br>\r\nC++ and most modern CPUs can easily parallelize the integer arithmetic<br>\r\nand comparisons in the loop and any floating point/assignments within<br>\r\nthe loop.<br>\r\n<br>\r\nThe matrix operations are relatively slow because it&#39;s doing a ton of<br>\r\nextra work because of the sparsity.<br>\r\n<br>\r\nWe are going to add sparse matrix data types eventually, at which point<br>\r\nthe matrix version might be faster.<br>\r\n<br>\r\nThe real issue is whether the operations are working exclusively<br>\r\non variables declared in data or transformed data, or whether<br>\r\nthey involve parameters (parameter, transformed parameter, local<br>\r\nvariable in transformed parameter, or local variable in model block).<br>\r\n<br>\r\nWith parameters, so-called &quot;reduction&quot; operations that have a single<br>\r\noutput are much faster when vectorized because we can vectorize the gradient calc,<br>\r\nwhich is otherwise slow.<br>\r\n<br>\r\nSo if either x or y is a parameter or transformed parameter of a local<br>\r\nvariable declared in the model or transformed parameter<br>\r\n<br>\r\nvector[N] x;<br>\r\nvector[N] y;<br>\r\nreal sum;<br>\r\n...<br>\r\nsum &lt;- 0;<div><br>\r\nfor (n in 1:N)<br></div>\r\n   sum &lt;- sum + x[n] * y[n];<br>\r\n<br>\r\nis much slower than<br>\r\n<br>\r\n   sum &lt;- x&#39; * y;<br>\r\n<br>\r\nwhich is in turn a little bit slower than<br>\r\n<br>\r\n   sum &lt;- dot_product(x,y);<br>\r\n<br>\r\n<br>\r\nOn the other hand, you won&#39;t see much difference<br>\r\nbetween:<br>\r\n<br>\r\n  z &lt;- exp(x);<br>\r\n<br>\r\nand<div><br>\r\n<br>\r\n  for (n in 1:N)<br></div>\r\n    z[n] &lt;- exp(x[n]);<br>\r\n<br>\r\nbecause we can&#39;t vectorize the gradients because of the<br>\r\nmultiple outputs for z[n], which need to be stored and<br>\r\nreasoned about independently.<div><br>\r\n<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nIn PyMC I&#39;ve always found a slight speedup using the matrix version. And by switching to sparse matrix libraries for<br>\r\nstate_mat in python I get an order of magnitude further speedup or more.<br>\r\n</blockquote>\r\n<br></div>\r\nThat&#39;s because loops are slow in Python (unless you&#39;re using<br>\r\nsomething like Cython that compiles them to C++).<div><br>\r\n<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nAny suggestions on how to best handle these types of operations in Stan? Thanks again!<br>\r\n</blockquote>\r\n<br></div>\r\nI hope that helps.  If not, please keep asking questions!<span><font color=\"#888888\"><br>\r\n<br>\r\n- Bob</font></span></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><br>\r\n<br>\r\n-- <br>\r\nYou received this message because you are subscribed to a topic in the Google Groups &quot;stan users mailing list&quot; group.<br>\r\nTo unsubscribe from this topic, visit <a href=\"https://groups.google.com/d/topic/stan-users/YXartQA7rno/unsubscribe?hl=en\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/topic/stan-users/YXartQA7rno/unsubscribe?hl%3Den&amp;source=gmail&amp;ust=1792468380278000&amp;usg=AOvVaw3JrDmFpar3ExzN0c2LIKCB\">https://groups.google.com/d/<u></u>topic/stan-users/YXartQA7rno/<u></u>unsubscribe?hl=en</a>.<br>\r\n\r\n\r\nTo unsubscribe from this group and all its topics, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+unsubscribe@<u></u>googlegroups.com</a>.<br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792468380278000&amp;usg=AOvVaw0N_zq9UhTySEwYOm7p5WGy\">https://groups.google.com/<u></u>groups/opt_out</a>.<br>\r\n<br>\r\n<br>\r\n</div></div></blockquote></div><br></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "O-7NtnLRVb0J",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-04-03T06:35:19Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     1,
+     "It&#39;s not just C++ and it&#39;s not just loops.  Modern\r<br>compilers try to execute a pipeline of instructions in\r<br>parallel.  The biggest performance costs are for branches\r<br>that can&#39;t be predicted and expensive operations like\r<br>math lib calls or even division.\r<br>\r<br>A good compiler can help lay out instructions to make\r<br>the CPU&#39;s job easier.\r<br>\r<br>If you want to know more, Agner Fog&#39;s free online book on\r<br>optimizing C++ is great and it discusses both hardware and C++\r<br>in particular:\r<br>\r<br>   <a href=\"http://www.agner.org/optimize/optimizing_cpp.pdf\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.agner.org/optimize/optimizing_cpp.pdf&amp;source=gmail&amp;ust=1792468380281000&amp;usg=AOvVaw11NQ2BroW49yMBMuJIhRrt\">http://www.agner.org/optimize/optimizing_cpp.pdf</a>\r<br>\r<br>Just don&#39;t take the comments about the evils of templates too\r<br>seriously.\r<br>\r<br>We&#39;ve tried to be fairly careful in laying out Stan, but\r<br>there&#39;s a lot of room for improvement, and we&#39;re getting\r<br>some expert help in that direction.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On 4/3/13 12:53 AM, Kyle Foreman wrote:\r<br>&gt; Thanks so much, Bob! I always like to learn more about what&#39;s going on under the hood. I haven&#39;t worked with C++ much\r<br>&gt; til now and hadn&#39;t realized it automatically parallelized loops like that - good to know.\r<br>&gt;\r<br>&gt;\r<br>&gt; On Tue, Apr 2, 2013 at 12:44 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a> &lt;mailto:<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;&gt; wrote:\r<br>&gt;\r<br>&gt;     Comments inlined.\r<br>&gt;\r<br>&gt;\r<br>&gt;     On 4/1/13 9:21 PM, Kyle Foreman wrote:\r<br>&gt;\r<br>&gt;         Hello again all,\r<br>&gt;\r<br>&gt;         I&#39;m playing around with a model that has a random effect for each US state, with seven observations over time\r<br>&gt;         for each\r<br>&gt;         state. So, there&#39;s a vector of 51 random effects in a GMRF/CAR structure (based off of the GeoBUGS lip cancer\r<br>&gt;         model I&#39;ve\r<br>&gt;         discussed on the list previously), and they in turn need to be factored into the likelihoods of 357 datapoints.\r<br>&gt;\r<br>&gt;         I&#39;ve tried a few different methods and am curious as to what you&#39;d recommend as the best method for Stan.\r<br>&gt;\r<br>&gt;         The first thing I tried was just looping through each observation to add in its random effects, as one would do\r<br>&gt;         in BUGS\r<br>&gt;         (attached as CAR_model_loop.stan.txt):\r<br>&gt;\r<br>&gt;         |\r<br>&gt;         for (n in 1:N) {\r<br>&gt;               s &lt;- state[n];\r<br>&gt;               beta1_long[n] &lt;- beta1_stz[s];\r<br>&gt;         }\r<br>&gt;         |\r<br>&gt;\r<br>&gt;         this works, but I thought I should try to vectorize if possible and remove the loop.\r<br>&gt;\r<br>&gt;         So next (in CAR_model_matrix.stan.txt) I built a binary matrix[357,51] that when multiplied by beta_stz[51]\r<br>&gt;         gives the\r<br>&gt;         filled in random effects for each observation:\r<br>&gt;\r<br>&gt;         |\r<br>&gt;         matrix[N,S] state_mat;\r<br>&gt;         for (n in 1:N)\r<br>&gt;               for (s in 1:S)\r<br>&gt;                   state_mat[n,s] &lt;- if_else(state[n]==s, 1.0, 0.0);\r<br>&gt;         |\r<br>&gt;\r<br>&gt;         |\r<br>&gt;         beta1_long &lt;- state_mat * beta1_stz;\r<br>&gt;         |\r<br>&gt;\r<br>&gt;         I was surprised to find this takes about 3x longer than the looping version.\r<br>&gt;\r<br>&gt;\r<br>&gt;     Loops are very very fast in Stan -- they just get compiled to\r<br>&gt;     C++ and most modern CPUs can easily parallelize the integer arithmetic\r<br>&gt;     and comparisons in the loop and any floating point/assignments within\r<br>&gt;     the loop.\r<br>&gt;\r<br>&gt;     The matrix operations are relatively slow because it&#39;s doing a ton of\r<br>&gt;     extra work because of the sparsity.\r<br>&gt;\r<br>&gt;     We are going to add sparse matrix data types eventually, at which point\r<br>&gt;     the matrix version might be faster.\r<br>&gt;\r<br>&gt;     The real issue is whether the operations are working exclusively\r<br>&gt;     on variables declared in data or transformed data, or whether\r<br>&gt;     they involve parameters (parameter, transformed parameter, local\r<br>&gt;     variable in transformed parameter, or local variable in model block).\r<br>&gt;\r<br>&gt;     With parameters, so-called &quot;reduction&quot; operations that have a single\r<br>&gt;     output are much faster when vectorized because we can vectorize the gradient calc,\r<br>&gt;     which is otherwise slow.\r<br>&gt;\r<br>&gt;     So if either x or y is a parameter or transformed parameter of a local\r<br>&gt;     variable declared in the model or transformed parameter\r<br>&gt;\r<br>&gt;     vector[N] x;\r<br>&gt;     vector[N] y;\r<br>&gt;     real sum;\r<br>&gt;     ...\r<br>&gt;     sum &lt;- 0;\r<br>&gt;\r<br>&gt;     for (n in 1:N)\r<br>&gt;         sum &lt;- sum + x[n] * y[n];\r<br>&gt;\r<br>&gt;     is much slower than\r<br>&gt;\r<br>&gt;         sum &lt;- x&#39; * y;\r<br>&gt;\r<br>&gt;     which is in turn a little bit slower than\r<br>&gt;\r<br>&gt;         sum &lt;- dot_product(x,y);\r<br>&gt;\r<br>&gt;\r<br>&gt;     On the other hand, you won&#39;t see much difference\r<br>&gt;     between:\r<br>&gt;\r<br>&gt;        z &lt;- exp(x);\r<br>&gt;\r<br>&gt;     and\r<br>&gt;\r<br>&gt;\r<br>&gt;        for (n in 1:N)\r<br>&gt;          z[n] &lt;- exp(x[n]);\r<br>&gt;\r<br>&gt;     because we can&#39;t vectorize the gradients because of the\r<br>&gt;     multiple outputs for z[n], which need to be stored and\r<br>&gt;     reasoned about independently.\r<br>&gt;\r<br>&gt;\r<br>&gt;         In PyMC I&#39;ve always found a slight speedup using the matrix version. And by switching to sparse matrix libraries for\r<br>&gt;         state_mat in python I get an order of magnitude further speedup or more.\r<br>&gt;\r<br>&gt;\r<br>&gt;     That&#39;s because loops are slow in Python (unless you&#39;re using\r<br>&gt;     something like Cython that compiles them to C++).\r<br>&gt;\r<br>&gt;\r<br>&gt;         Any suggestions on how to best handle these types of operations in Stan? Thanks again!\r<br>&gt;\r<br>&gt;\r<br>&gt;     I hope that helps.  If not, please keep asking questions!\r<br>&gt;\r<br>&gt;     - Bob\r<br>&gt;\r<br>&gt;\r<br>&gt;     --\r<br>&gt;     You received this message because you are subscribed to a topic in the Google Groups &quot;stan users mailing list&quot; group.\r<br>"
+    ],
+    [
+     1,
+     "&gt;     To unsubscribe from this topic, visit <a href=\"https://groups.google.com/d/__topic/stan-users/YXartQA7rno/__unsubscribe?hl=en\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/__topic/stan-users/YXartQA7rno/__unsubscribe?hl%3Den&amp;source=gmail&amp;ust=1792468380281000&amp;usg=AOvVaw3kGZJjBMmcUWQhFdna8BdZ\">https://groups.google.com/d/__topic/stan-users/YXartQA7rno/__unsubscribe?hl=en</a>\r<br>&gt;     &lt;<a href=\"https://groups.google.com/d/topic/stan-users/YXartQA7rno/unsubscribe?hl=en\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/topic/stan-users/YXartQA7rno/unsubscribe?hl%3Den&amp;source=gmail&amp;ust=1792468380281000&amp;usg=AOvVaw3QiKmIN6s-MAgKYJQ9l9DM\">https://groups.google.com/d/topic/stan-users/YXartQA7rno/unsubscribe?hl=en</a>&gt;.\r<br>&gt;     To unsubscribe from this group and all its topics, send an email to stan-users+unsubscribe@__<a href=\"http://googlegroups.com\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://googlegroups.com&amp;source=gmail&amp;ust=1792468380281000&amp;usg=AOvVaw2pnQvSP1G1cD7DfjvxVWew\">googlegroups.com</a>\r<br>&gt;     &lt;mailto:<a href data-email-masked rel=\"nofollow\">stan-users%2Bunsu...@googlegroups.com</a>&gt;.\r<br>&gt;     For more options, visit <a href=\"https://groups.google.com/__groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/__groups/opt_out&amp;source=gmail&amp;ust=1792468380281000&amp;usg=AOvVaw0iTDgn7C8XJjJWD7yGJSGR\">https://groups.google.com/__groups/opt_out</a> &lt;<a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792468380281000&amp;usg=AOvVaw0MO9OwKNKLPUBcQ-W9Xmbn\">https://groups.google.com/groups/opt_out</a>&gt;.\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt; --\r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;stan users mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r<br>"
+    ],
+    [
+     3,
+     "&gt; For more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792468380281000&amp;usg=AOvVaw0MO9OwKNKLPUBcQ-W9Xmbn\">https://groups.google.com/groups/opt_out</a>.\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "rTncRZMaeXMJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-04-05T00:09:08Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">If you want to know more, Agner Fog&#39;s free online book on\r\n<br>optimizing C++ is great and it discusses both hardware and C++\r\n<br>in particular:\r\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Thanks, Bob, adding that to the reading list! </div><div><br></div><div>On a somewhat related note, when I&#39;m generating interim quantities in a model like this, is there a way to store the final quantity but not the intermediate ones?</div><div><br></div><div>For instance, I&#39;d like to store the traces of log_mu</div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><span style=\"color:#000\">log_mu </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> log_pop </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha0 </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#000\">alpha1 </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> year</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> beta1_long</span><span style=\"color:#660\">;</span><span style=\"color:#000\"><br></span></div></code></div><div><br></div>but I don&#39;t need beta1_long or beta1_stz</div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div>beta1_stz &lt;- beta1 - mean(beta1);</div></div></code></div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div>for (n in 1:N) {<br></div></div></code></div></div>"
+    ],
+    [
+     1,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div>    beta1_long[n] &lt;- beta1_stz[state[n]];</div></div></code></div><div><br></div>In order to move log_mu from model to transformed parameters, I have to also put beta1_stz and beta1_long there. (Otherwise they&#39;re of course out of scope and log_mu can&#39;t be computed in transformed parameters).</div><div><br></div><div>If I instead try to generate a new quantity from log_mu in generated quantities I get an error that log_mu doesn&#39;t exist, since it&#39;s local to the model block.</div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div>generated quantities {</div><div>    vector[N] mu;</div><div>    mu &lt;- exp(log_mu);</div><div>}</div></div></code></div><div><br></div><div>The only way I can think to save log_mu without also storing beta1_stz/beta1_long is to bypass them altogether, but that prevents vectorization:</div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div>transformed parameters {<br>    vector[N] log_mu;</div></div></code></div></div></div>"
+    ],
+    [
+     2,
+     "<div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div><br>    for (n in 1:N) <br></div></div></code></div></div></div>"
+    ],
+    [
+     1,
+     "<div><div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><div>        log_mu[n] &lt;- log_pop[n] + alpha0 + (alpha1 * year[n]) + (beta1[state[n]] - mean(beta1));<br>}</div></div></code></div></div><div><br></div>Based on the manual and <a href=\"https://groups.google.com/d/msg/stan-users/lybDQTpMWRw/QduePUFLcp0J\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msg/stan-users/lybDQTpMWRw/QduePUFLcp0J&amp;source=gmail&amp;ust=1792468380284000&amp;usg=AOvVaw0zKlaosQE7ed4Y1PS9H1Am\">this thread</a> I&#39;m guessing my only option is to also store the interim quantities by putting them all in the transformed parameters block. Is that accurate? Not a big deal for this model, just keeping an eye towards my eventual model which is huge...</div>"
+    ]
+   ]
+  },
+  {
+   "id": "c-MrEXOyoXYJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-04-05T02:22:51Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 4/4/13 8:09 PM, Kyle Foreman wrote:\r<br>&gt;     If you want to know more, Agner Fog&#39;s free online book on\r<br>&gt;     optimizing C++ is great and it discusses both hardware and C++\r<br>&gt;     in particular:\r<br>&gt;\r<br>&gt;\r<br>&gt; Thanks, Bob, adding that to the reading list!\r<br>&gt;\r<br>&gt; On a somewhat related note, when I&#39;m generating interim quantities in a model like this, is there a way to store the\r<br>&gt; final quantity but not the intermediate ones?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The only values saved during sampling are variables\r<br>declared in the parameters block, in the transformed parameters\r<br>block, or in the generated quantities block.\r<br>\r<br>So define what you want to save in one of those blocks,\r<br>and define everything else as a local variable.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;\r<br>&gt; For instance, I&#39;d like to store the traces of log_mu\r<br>&gt; |\r<br>&gt; log_mu &lt;- log_pop + alpha0 + (alpha1 * year) + beta1_long;\r<br>&gt; |\r<br>&gt;\r<br>&gt; but I don&#39;t need beta1_long or beta1_stz\r<br>&gt; |\r<br>&gt; beta1_stz &lt;- beta1 - mean(beta1);\r<br>&gt; for (n in 1:N) {\r<br>&gt;      beta1_long[n] &lt;- beta1_stz[state[n]];\r<br>&gt; |\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s fine.  Declare beta1_long and beta1_stz as local variables\r<br>and they won&#39;t be written out.  They can still be used to define\r<br>log_mu, and log_mu will still be visible outside the transformed\r<br>parameter block.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; In order to move log_mu from model to transformed parameters, I have to also put beta1_stz and beta1_long there.\r<br>&gt; (Otherwise they&#39;re of course out of scope and log_mu can&#39;t be computed in transformed parameters).\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Right.  Which means they won&#39;t be visible in the model\r<br>block.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; If I instead try to generate a new quantity from log_mu in generated quantities I get an error that log_mu doesn&#39;t\r<br>&gt; exist, since it&#39;s local to the model block.\r<br>&gt; |\r<br>&gt; generated quantities {\r<br>&gt;      vector[N] mu;\r<br>&gt;      mu &lt;- exp(log_mu);\r<br>&gt; }\r<br>&gt; |\r<br>&gt;\r<br>&gt; The only way I can think to save log_mu without also storing beta1_stz/beta1_long is to bypass them altogether, but that\r<br>&gt; prevents vectorization:\r<br>&gt; |\r<br>&gt; transformed parameters {\r<br>&gt;      vector[N] log_mu;\r<br>&gt;      for (n in 1:N)\r<br>&gt;          log_mu[n] &lt;- log_pop[n] + alpha0 + (alpha1 * year[n]) + (beta1[state[n]] - mean(beta1));\r<br>&gt; }\r<br>&gt; |\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I&#39;m not sure what you mean by &quot;prevents vectorization&quot;.  What\r<br>gets saved is orthogonal to what&#39;s vectorized.\r<br>\r<br>&gt; Based on the manual and this thread &lt;<a href=\"https://groups.google.com/d/msg/stan-users/lybDQTpMWRw/QduePUFLcp0J\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msg/stan-users/lybDQTpMWRw/QduePUFLcp0J&amp;source=gmail&amp;ust=1792468380286000&amp;usg=AOvVaw33xxtX8thwNEbem6L5KWQt\">https://groups.google.com/d/msg/stan-users/lybDQTpMWRw/QduePUFLcp0J</a>&gt; I&#39;m guessing\r<br>"
+    ],
+    [
+     2,
+     "&gt; my only option is to also store the interim quantities by putting them all in the transformed parameters block. Is that\r<br>&gt; accurate? Not a big deal for this model, just keeping an eye towards my eventual model which is huge...\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Can you send a working model that perhaps saves too much\r<br>and indicate which variables you want to save?  It&#39;s hard\r<br>to tell from code fragments.\r<br>\r<br>You can (re)define whatever you want in generated quantities and\r<br>it&#39;ll get saved.  The generated quantities are only computed\r<br>once per iteration, not once per leapfrog step, and they&#39;re\r<br>computed with double values rather than auto-dif variables for\r<br>gradients, so they&#39;re much faster.  The problem is that it\r<br>can require redundant definitions.\r<br>\r<br>For example, you can add this to generated quantities and log_mu\r<br>will get saved:\r<br>\r<br>   generated quantities {\r<br>"
+    ],
+    [
+     2,
+     "     vector[N] log_mu;\r<br>     for (n in 1:N)\r<br>       log_mu[n] &lt;- log_pop[n] + alpha0 + (alpha1 * year[n]) + (beta1[state[n]] - mean(beta1));\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That is, assuming everything on the right side is either data, a parameter,\r<br>or a transformed parameter.  If not, the values might be able to be\r<br>recomputed.\r<br>\r<br>Loops involving only arithmetic on double values, like the above,\r<br>are very fast in Stan.\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "ILCAaCAV5MsJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-04-05T04:51:58Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     1,
+     "Sorry, should have reattached the model to the latest email! It&#39;s attached here. In this version I&#39;ve put the desired quantity (log_mu) plus the interim ones not needed (beta1_stz &amp; beta1_long) in transformed parameters. I&#39;ll stick with this for now, will see if it&#39;s still tenable in terms of memory when I get to the full implementation.<div><br></div><div>And what I meant by &quot;prevents vectorization&quot; was that I had to use a loop like</div><div></div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font face=\"courier new, monospace\"><span style=\"color:rgb(80,0,80);background-color:rgb(255,255,255)\"><span style=\"color:#008\">for</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#000\">n </span><span style=\"color:#008\">in</span><span style=\"color:#000\"> </span><span style=\"color:#066\">1</span><span style=\"color:#660\">:</span><span style=\"color:#000\">N</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span></span><span style=\"color:#000\"><br></span></font><span style=\"color:rgb(80,0,80);background-color:rgb(255,255,255)\"><font face=\"courier new, monospace\"><span style=\"color:#000\">    log_mu</span><span style=\"color:#660\">[</span><span style=\"color:#000\">n</span><span style=\"color:#660\">]</span><span style=\"color:#000\"> </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> log_pop</span><span style=\"color:#660\">[</span><span style=\"color:#000\">n</span><span style=\"color:#660\">]</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha0 </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#000\">alpha1 </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> year</span><span style=\"color:#660\">[</span><span style=\"color:#000\">n</span><span style=\"color:#660\">])</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#000\">beta1</span><span style=\"color:#660\">[</span><span style=\"color:#000\">state</span><span style=\"color:#660\">[</span><span style=\"color:#000\">n</span><span style=\"color:#660\">]]</span><span style=\"color:#000\"> </span><span style=\"color:#660\">-</span><span style=\"color:#000\"> mean</span><span style=\"color:#660\">(</span><span style=\"color:#000\">beta1</span><span style=\"color:#660\">));</span></font><span style=\"color:#000\"> </span></span></div></code></div></div>"
+    ],
+    [
+     1,
+     "<div>instead of vector addition/multiplication like</div>"
+    ],
+    [
+     2,
+     "<div><div style=\"background-color:rgb(250,250,250);border:1px solid rgb(187,187,187);word-wrap:break-word\"><code><div><font face=\"courier new, monospace\"><span style=\"color:#000\">log_mu </span><span style=\"color:#660\">&lt;-</span><span style=\"color:#000\"> log_pop </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> alpha0 </span><span style=\"color:#660\">+</span><span style=\"color:#000\"> </span><span style=\"color:#660\">(</span><span style=\"color:#000\">alpha1 </span><span style=\"color:#660\">*</span><span style=\"color:#000\"> year</span><span style=\"color:#660\">)</span><span style=\"color:#000\"> </span><span style=\"color:#660\">+</span><font color=\"#000000\"><span style=\"color:#000\"> beta1_long</span><span style=\"color:#660\">;</span></font><font color=\"#666600\"></font></font></div></code></div></div><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Thanks again! Kyle</div>"
+    ],
+    [
+     3,
+     "<div><br>On Thursday, April 4, 2013 7:22:51 PM UTC-7, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>\r\n<br>On 4/4/13 8:09 PM, Kyle Foreman wrote:\r\n<br>&gt;     If you want to know more, Agner Fog&#39;s free online book on\r\n<br>&gt;     optimizing C++ is great and it discusses both hardware and C++\r\n<br>&gt;     in particular:\r\n<br>&gt;\r\n<br>&gt;\r\n<br>&gt; Thanks, Bob, adding that to the reading list!\r\n<br>&gt;\r\n<br>&gt; On a somewhat related note, when I&#39;m generating interim quantities in a model like this, is there a way to store the\r\n<br>&gt; final quantity but not the intermediate ones?\r\n<br>\r\n<br>The only values saved during sampling are variables\r\n<br>declared in the parameters block, in the transformed parameters\r\n<br>block, or in the generated quantities block.\r\n<br>\r\n<br>So define what you want to save in one of those blocks,\r\n<br>and define everything else as a local variable.\r\n<br>\r\n<br>&gt;\r\n<br>&gt; For instance, I&#39;d like to store the traces of log_mu\r\n<br>&gt; |\r\n<br>&gt; log_mu &lt;- log_pop + alpha0 + (alpha1 * year) + beta1_long;\r\n<br>&gt; |\r\n<br>&gt;\r\n<br>&gt; but I don&#39;t need beta1_long or beta1_stz\r\n<br>&gt; |\r\n<br>&gt; beta1_stz &lt;- beta1 - mean(beta1);\r\n<br>&gt; for (n in 1:N) {\r\n<br>&gt;      beta1_long[n] &lt;- beta1_stz[state[n]];\r\n<br>&gt; |\r\n<br>\r\n<br>That&#39;s fine.  Declare beta1_long and beta1_stz as local variables\r\n<br>and they won&#39;t be written out.  They can still be used to define\r\n<br>log_mu, and log_mu will still be visible outside the transformed\r\n<br>parameter block.\r\n<br>\r\n<br>&gt; In order to move log_mu from model to transformed parameters, I have to also put beta1_stz and beta1_long there.\r\n<br>&gt; (Otherwise they&#39;re of course out of scope and log_mu can&#39;t be computed in transformed parameters).\r\n<br>\r\n<br>Right.  Which means they won&#39;t be visible in the model\r\n<br>block.\r\n<br>\r\n<br>&gt; If I instead try to generate a new quantity from log_mu in generated quantities I get an error that log_mu doesn&#39;t\r\n<br>&gt; exist, since it&#39;s local to the model block.\r\n<br>&gt; |\r\n<br>&gt; generated quantities {\r\n<br>&gt;      vector[N] mu;\r\n<br>&gt;      mu &lt;- exp(log_mu);\r\n<br>&gt; }\r\n<br>&gt; |\r\n<br>&gt;\r\n<br>&gt; The only way I can think to save log_mu without also storing beta1_stz/beta1_long is to bypass them altogether, but that\r\n<br>&gt; prevents vectorization:\r\n<br>&gt; |\r\n<br>&gt; transformed parameters {\r\n<br>&gt;      vector[N] log_mu;\r\n<br>&gt;      for (n in 1:N)\r\n<br>&gt;          log_mu[n] &lt;- log_pop[n] + alpha0 + (alpha1 * year[n]) + (beta1[state[n]] - mean(beta1));\r\n<br>&gt; }\r\n<br>&gt; |\r\n<br>\r\n<br>I&#39;m not sure what you mean by &quot;prevents vectorization&quot;.  What\r\n<br>gets saved is orthogonal to what&#39;s vectorized.\r\n<br>\r\n<br>&gt; Based on the manual and this thread &lt;<a href=\"https://groups.google.com/d/msg/stan-users/lybDQTpMWRw/QduePUFLcp0J\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msg/stan-users/lybDQTpMWRw/QduePUFLcp0J&amp;source=gmail&amp;ust=1792468380291000&amp;usg=AOvVaw2eVfX2jhG9S_iNwtiO4bUF\">https://groups.google.com/d/msg/stan-users/lybDQTpMWRw/QduePUFLcp0J</a>&gt; I&#39;m guessing\r\n<br>&gt; my only option is to also store the interim quantities by putting them all in the transformed parameters block. Is that\r\n<br>&gt; accurate? Not a big deal for this model, just keeping an eye towards my eventual model which is huge...\r\n<br>\r\n<br>Can you send a working model that perhaps saves too much\r\n<br>and indicate which variables you want to save?  It&#39;s hard\r\n<br>to tell from code fragments.\r\n<br>\r\n<br>You can (re)define whatever you want in generated quantities and\r\n<br>it&#39;ll get saved.  The generated quantities are only computed\r\n<br>once per iteration, not once per leapfrog step, and they&#39;re\r\n<br>computed with double values rather than auto-dif variables for\r\n<br>gradients, so they&#39;re much faster.  The problem is that it\r\n<br>can require redundant definitions.\r\n<br>\r\n<br>For example, you can add this to generated quantities and log_mu\r\n<br>will get saved:\r\n<br>\r\n<br>   generated quantities {\r\n<br>     vector[N] log_mu;\r\n<br>     for (n in 1:N)\r\n<br>       log_mu[n] &lt;- log_pop[n] + alpha0 + (alpha1 * year[n]) + (beta1[state[n]] - mean(beta1));\r\n<br>\r\n<br>That is, assuming everything on the right side is either data, a parameter,\r\n<br>or a transformed parameter.  If not, the values might be able to be\r\n<br>recomputed.\r\n<br>\r\n<br>Loops involving only arithmetic on double values, like the above,\r\n<br>are very fast in Stan.\r\n<br>\r\n<br>- Bob\r\n<br></blockquote></div>"
+    ]
+   ]
+  },
+  {
+   "id": "iL7v95-FMKAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-04-06T05:45:46Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 4/5/13 12:51 AM, Kyle Foreman wrote:\r<br>&gt; Sorry, should have reattached the model to the latest email! It&#39;s attached here. In this version I&#39;ve put the desired\r<br>&gt; quantity (log_mu) plus the interim ones not needed (beta1_stz &amp; beta1_long) in transformed parameters. I&#39;ll stick with\r<br>&gt; this for now, will see if it&#39;s still tenable in terms of memory when I get to the full implementation.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Given that the variables you don&#39;t\r<br>need to store show up only in the transformed parameters\r<br>block, this is easy.  You just want to replace your:\r<br>\r<br>   transformed parameters {\r<br>     vector[N] log_mu;       // need to store this\r<br>     vector[S] beta1_stz;    // don&#39;t need to store this\r<br>     vector[N] beta1_long;   // don&#39;t need to store this\r<br>"
+    ],
+    [
+     2,
+     "     beta1_stz &lt;- beta1 - mean(beta1);\r<br>     for (n in 1:N)\r<br>         beta1_long[n] &lt;- beta1_stz[state[n]];\r<br>"
+    ],
+    [
+     2,
+     "     log_mu &lt;- log_pop + alpha0 + (alpha1 * year) + beta1_long;\r<br>   }\r<br>\r<br>"
+    ],
+    [
+     1,
+     "with this:\r<br>\r<br>   transformed parameters {\r<br>     vector[N] log_mu;       // need to store this\r<br>     {\r<br>        vector[S] beta1_stz;    // don&#39;t need to store this\r<br>        vector[N] beta1_long;   // don&#39;t need to store this\r<br>"
+    ],
+    [
+     2,
+     "        beta1_stz &lt;- beta1 - mean(beta1);\r<br>        for (n in 1:N)\r<br>           beta1_long[n] &lt;- beta1_stz[state[n]];\r<br>"
+    ],
+    [
+     2,
+     "        log_mu &lt;- log_pop + alpha0 + (alpha1 * year) + beta1_long;\r<br>     }\r<br>}\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That makes beta1_stz and beta1_long local variables, but exposes\r<br>log_mu to the model.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; And what I meant by &quot;prevents vectorization&quot; was that I had to use a loop like\r<br>&gt; |\r<br>&gt; for (n in 1:N)\r<br>&gt;      log_mu[n] &lt;- log_pop[n] + alpha0 + (alpha1 * year[n]) + (beta1[state[n]] - mean(beta1));\r<br>&gt; |\r<br>&gt; instead of vector addition/multiplication like\r<br>&gt; |\r<br>&gt; log_mu &lt;- log_pop + alpha0 + (alpha1 * year) +beta1_long;\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Looping, assignment and arithmetic are all compiled to C++,\r<br>so they&#39;re much faster than in an interpreted language.\r<br>In fact, the loop version can be faster because it doesn&#39;t\r<br>do any intermediate allocations of vectors.\r<br>\r<br>Where you get a big boost from vectorization in Stan\r<br>is where there&#39;s a reduction, such as a dot product, that takes\r<br>two vectors and produces a scalar.  For those, we can partially\r<br>evaluate the derivatives so the gradients are computed much faster.\r<br>Same for the sampling statements with vectorized inputs.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "zHMCvaE4t1cJ",
+   "from": "Kyle Foreman",
+   "author": "9d7e54e3329f305f",
+   "date": "2013-04-06T05:53:47Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_default\" style=\"font-family:&#39;trebuchet ms&#39;,sans-serif\">Thanks Bob, that&#39;s great! I guess I didn&#39;t understand &quot;Stan allows local variables to be declared in blocks&quot; (from the manual) - I was thinking about that in terms of loops, didn&#39;t think to extrapolate...</div>\r\n\r\n</div><div class=\"gmail_extra\"><br><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\">On Fri, Apr 5, 2013 at 10:45 PM, Bob Carpenter <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt;</span> wrote:<br>\r\n\r\n</div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><br>\r\n<br>\r\nOn 4/5/13 12:51 AM, Kyle Foreman wrote:<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nSorry, should have reattached the model to the latest email! It&#39;s attached here. In this version I&#39;ve put the desired<br>\r\nquantity (log_mu) plus the interim ones not needed (beta1_stz &amp; beta1_long) in transformed parameters. I&#39;ll stick with<br>\r\nthis for now, will see if it&#39;s still tenable in terms of memory when I get to the full implementation.<br>\r\n</blockquote>\r\n<br></div>\r\nGiven that the variables you don&#39;t<br>\r\nneed to store show up only in the transformed parameters<br>\r\nblock, this is easy.  You just want to replace your:<br>\r\n<br>\r\n  transformed parameters {<br>\r\n    vector[N] log_mu;       // need to store this<br>\r\n    vector[S] beta1_stz;    // don&#39;t need to store this<br>\r\n    vector[N] beta1_long;   // don&#39;t need to store this<div><br>\r\n    beta1_stz &lt;- beta1 - mean(beta1);<br>\r\n    for (n in 1:N)<br>\r\n        beta1_long[n] &lt;- beta1_stz[state[n]];<br></div><div>\r\n    log_mu &lt;- log_pop + alpha0 + (alpha1 * year) + beta1_long;<br>\r\n  }<br>\r\n<br></div>\r\nwith this:<br>\r\n<br>\r\n  transformed parameters {<br>\r\n    vector[N] log_mu;       // need to store this<br>\r\n    {<br>\r\n       vector[S] beta1_stz;    // don&#39;t need to store this<br>\r\n       vector[N] beta1_long;   // don&#39;t need to store this<div><br>\r\n       beta1_stz &lt;- beta1 - mean(beta1);<br>\r\n       for (n in 1:N)<br>\r\n          beta1_long[n] &lt;- beta1_stz[state[n]];<br></div><div>\r\n       log_mu &lt;- log_pop + alpha0 + (alpha1 * year) + beta1_long;<br>\r\n    }<br>\r\n}<br>\r\n<br></div>\r\nThat makes beta1_stz and beta1_long local variables, but exposes<br>\r\nlog_mu to the model.<div><br>\r\n<br>\r\n<blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\nAnd what I meant by &quot;prevents vectorization&quot; was that I had to use a loop like<br>\r\n|<br>\r\nfor (n in 1:N)<br>\r\n     log_mu[n] &lt;- log_pop[n] + alpha0 + (alpha1 * year[n]) + (beta1[state[n]] - mean(beta1));<br>\r\n|<br>\r\ninstead of vector addition/multiplication like<br>\r\n|<br>\r\nlog_mu &lt;- log_pop + alpha0 + (alpha1 * year) +beta1_long;<br>\r\n</blockquote>\r\n<br></div>\r\nLooping, assignment and arithmetic are all compiled to C++,<br>\r\nso they&#39;re much faster than in an interpreted language.<br>\r\nIn fact, the loop version can be faster because it doesn&#39;t<br>\r\ndo any intermediate allocations of vectors.<br>\r\n<br>\r\nWhere you get a big boost from vectorization in Stan<br>\r\nis where there&#39;s a reduction, such as a dot product, that takes<br>\r\ntwo vectors and produces a scalar.  For those, we can partially<br>\r\nevaluate the derivatives so the gradients are computed much faster.<br>\r\nSame for the sampling statements with vectorized inputs.</blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><br>\r\n<br>\r\n- Bob<br>\r\n<br></div></div></blockquote></div></div>"
+    ],
+    [
+     2,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\n-- <br>\r\nYou received this message because you are subscribed to a topic in the Google Groups &quot;stan users mailing list&quot; group.<br></div></div></blockquote></div></div>"
+    ],
+    [
+     1,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div>\r\nTo unsubscribe from this topic, visit <a href=\"https://groups.google.com/d/topic/stan-users/YXartQA7rno/unsubscribe?hl=en\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/topic/stan-users/YXartQA7rno/unsubscribe?hl%3Den&amp;source=gmail&amp;ust=1792468380295000&amp;usg=AOvVaw2FGr_5vPQHEFbaGjomu-6P\">https://groups.google.com/d/<u></u>topic/stan-users/YXartQA7rno/<u></u>unsubscribe?hl=en</a>.<br>\r\n\r\n\r\nTo unsubscribe from this group and all its topics, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+unsubscribe@<u></u>googlegroups.com</a>.</div></div></blockquote></div></div>"
+    ],
+    [
+     3,
+     "<div class=\"gmail_extra\"><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div><div><br>\r\nFor more options, visit <a href=\"https://groups.google.com/groups/opt_out\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/groups/opt_out&amp;source=gmail&amp;ust=1792468380295000&amp;usg=AOvVaw3EJDejB9PIRllHaxgaUyHN\">https://groups.google.com/<u></u>groups/opt_out</a>.<br>\r\n<br>\r\n<br>\r\n</div></div></blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "dbbpBDE_HKIJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2013-04-07T17:32:32Z",
+   "subject": "Re: [stan-users] assigning random effects to observations",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 4/6/13 1:53 AM, Kyle Foreman wrote:\r<br>&gt; Thanks Bob, that&#39;s great! I guess I didn&#39;t understand &quot;Stan allows local variables to be declared in blocks&quot; (from the\r<br>&gt; manual) - I was thinking about that in terms of loops, didn&#39;t think to extrapolate...\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I should add an example that makes this clearer in\r<br>the manual.\r<br>\r<br>It&#39;s pretty opaque if you&#39;re not looking at the\r<br>grammar of the language itself (which I&#39;m afraid\r<br>I do all too often).\r<br>\r<br>- Bob\r<br>"
+    ]
+   ]
+  }
+ ]
+}

@@ -1,0 +1,66 @@
+{
+ "thread": "Qv1ZumNtm6M",
+ "subject": "Reducing memory usage in a matrix factorization model",
+ "messages_listed": 2,
+ "last_activity": "2015-10-22T17:49:52Z",
+ "messages": [
+  {
+   "id": "LTC8KKgmBgAJ",
+   "from": "Kui Tang",
+   "author": "6416ec9b5425a0d3",
+   "date": "2015-10-21T21:04:51Z",
+   "subject": "Reducing memory usage in a matrix factorization model",
+   "parts": [
+    [
+     1,
+     "Hello,\r<br>\r<br>I am working on what is essentially a matrix factorization model using\r<br>ADVI. I have two questions:\r<br>\r<br>1) How do I reduce my memory usage? Fitting a model with 10,000 latent\r<br>factors uses ~19G on my machine. I would like to fit a model of\r<br>200,000 latent factors (runs out of memory), and eventually millions.\r<br>\r<br>Where is the overhead coming from? According to my calculations, I\r<br>should only need 1.61 (GB 101 dimensions * 10000 factors * 8\r<br>bytes/double * 2 [one copy for means, one copy for standard\r<br>deviations] ] * 100 ELBO samples) to store 100 samples of the random\r<br>variables.\r<br>\r<br>Could it be due to the overhead of constructing a large expression\r<br>tree for a for loop over all the observations? (See code below).\r<br>\r<br>2) Is there a way to vectorize my two loops below?\r<br>\r<br>The size of my dataset is\r<br>\r<br>n_dim = 100 (dimension of latent variables)\r<br>n_words = 10000 (number of latent variables)\r<br>n_obs = 10,410,392 (number of observations)\r<br>\r<br>It is only 269M in the RData format. Each observation is a scalar, and\r<br>the ratings matrix is represented in coordinate format (separate row\r<br>index, column index, and data vectors).\r<br>\r<br>My model is the following:\r<br>\r<br>data {\r<br>    // Dimensions\r<br>    int&lt;lower=0&gt; n_obs;\r<br>    int&lt;lower=0&gt; n_words;\r<br>    int&lt;lower=0&gt; n_dim;\r<br>\r<br>    // Hyperparmeters\r<br>    real&lt;lower=0&gt; a_b;\r<br>    real&lt;lower=0&gt; b_b;\r<br>\r<br>    vector&lt;lower=0&gt;[n_dim] a_w;\r<br>    vector&lt;lower=0&gt;[n_dim] b_w;\r<br>\r<br>    // Data\r<br>    int&lt;lower=0&gt; rows_[n_obs];\r<br>    int&lt;lower=0&gt; cols_[n_obs];\r<br>    real logx[n_obs];\r<br>}\r<br>\r<br>parameters {\r<br>    vector&lt;lower=0&gt;[n_words] inv_gb;\r<br>    vector[n_words] b;\r<br>\r<br>    matrix&lt;lower=0&gt;[n_dim,n_words] inv_gw;\r<br>    matrix[n_dim,n_words] w;\r<br>\r<br>    real&lt;lower=0&gt; sigma;\r<br>}\r<br>\r<br>transformed parameters {\r<br>    vector[n_dim] zero_vec;\r<br>    zero_vec &lt;- rep_vector(0, n_dim);\r<br>}\r<br>\r<br>model {\r<br>\r<br>    inv_gb ~ inv_gamma(a_b, b_b);\r<br>    b ~ normal(0, inv_gb);\r<br>\r<br>    for (v in 1:n_words) {\r<br>        col(inv_gw, v) ~ inv_gamma(a_w, b_w);\r<br>        col(w, v) ~ normal(zero_vec, col(inv_gw, v));\r<br>    }\r<br>\r<br>    for (n in 1:n_obs) {\r<br>        logx[n] ~ normal(dot_product(col(w, rows_[n]), col(w, cols_[n]))\r<br>                         + b[rows_[n]] + b[cols_[n]],\r<br>                         sigma);\r<br>    }\r<br>\r<br>}\r<br>\r<br>-- \r<br>Sincerely,\r<br>Kui Tang\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Q7wMzZhqBgAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2015-10-22T17:49:52Z",
+   "subject": "Re: [stan-users] Reducing memory usage in a matrix factorization model",
+   "parts": [
+    [
+     1,
+     "Yes, we have an arXiv paper now on the autodiff.  Roughly, it&#39;s\r<br>about 40 bytes per expression evaluated in the log density.\r<br>\r<br>What will help is if you vectorize these:\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;    for (v in 1:n_words) {\r<br>&gt;        col(inv_gw, v) ~ inv_gamma(a_w, b_w);\r<br>&gt;        col(w, v) ~ normal(zero_vec, col(inv_gw, v));\r<br>&gt;    }\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Reduce this to:\r<br>\r<br>  to_vector(inv_gw) ~ inv_gamma(a_w, b_w);\r<br>  to_vector(w) ~ normal(0, to_vector(inv_gw));\r<br>\r<br>Note that the normal broadcasts, so you don&#39;t need a zero vector,\r<br>just the zero argument.  \r<br>   \r<br>\r<br>And this:\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;    for (n in 1:n_obs) {\r<br>&gt;        logx[n] ~ normal(dot_product(col(w, rows_[n]), col(w, cols_[n]))\r<br>&gt;                         + b[rows_[n]] + b[cols_[n]],\r<br>&gt;                         sigma);\r<br>&gt;    }\r<br>\r<br>\r<br>"
+    ],
+    [
+     1,
+     "  {\r<br>    real mu[n];\r<br>"
+    ],
+    [
+     2,
+     "    for (n in 1:n_obs)\r<br>"
+    ],
+    [
+     1,
+     "      mu[n] &lt;- dot_product(w[rows_[n]], w[cols_[n]]) + b[rows_[n]] + b[cols_[n]];\r<br>\r<br>    logx ~ normal(mu, sigma);\r<br>  }\r<br>\r<br>This is also moving w to a data type that&#39;s an array of vectors.\r<br>The reason to do this is both speed and size.  It only has to do log(sigma)\r<br>once, and it cuts down the number of expressions from n to 1.  And using\r<br>an array of vectors removes the need to copy out rows or columns.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>&gt; On Oct 21, 2015, at 5:04 PM, Kui Tang &lt;<a href data-email-masked rel=\"nofollow\">kui...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; Hello,\r<br>&gt; \r<br>&gt; I am working on what is essentially a matrix factorization model using\r<br>&gt; ADVI. I have two questions:\r<br>&gt; \r<br>&gt; 1) How do I reduce my memory usage? Fitting a model with 10,000 latent\r<br>&gt; factors uses ~19G on my machine. I would like to fit a model of\r<br>&gt; 200,000 latent factors (runs out of memory), and eventually millions.\r<br>&gt; \r<br>&gt; Where is the overhead coming from? According to my calculations, I\r<br>&gt; should only need 1.61 (GB 101 dimensions * 10000 factors * 8\r<br>&gt; bytes/double * 2 [one copy for means, one copy for standard\r<br>&gt; deviations] ] * 100 ELBO samples) to store 100 samples of the random\r<br>&gt; variables.\r<br>&gt; \r<br>&gt; Could it be due to the overhead of constructing a large expression\r<br>&gt; tree for a for loop over all the observations? (See code below).\r<br>&gt; \r<br>&gt; 2) Is there a way to vectorize my two loops below?\r<br>&gt; \r<br>&gt; The size of my dataset is\r<br>&gt; \r<br>&gt; n_dim = 100 (dimension of latent variables)\r<br>&gt; n_words = 10000 (number of latent variables)\r<br>&gt; n_obs = 10,410,392 (number of observations)\r<br>&gt; \r<br>&gt; It is only 269M in the RData format. Each observation is a scalar, and\r<br>&gt; the ratings matrix is represented in coordinate format (separate row\r<br>&gt; index, column index, and data vectors).\r<br>&gt; \r<br>&gt; My model is the following:\r<br>&gt; \r<br>&gt; data {\r<br>&gt;    // Dimensions\r<br>&gt;    int&lt;lower=0&gt; n_obs;\r<br>&gt;    int&lt;lower=0&gt; n_words;\r<br>&gt;    int&lt;lower=0&gt; n_dim;\r<br>&gt; \r<br>&gt;    // Hyperparmeters\r<br>&gt;    real&lt;lower=0&gt; a_b;\r<br>&gt;    real&lt;lower=0&gt; b_b;\r<br>&gt; \r<br>&gt;    vector&lt;lower=0&gt;[n_dim] a_w;\r<br>&gt;    vector&lt;lower=0&gt;[n_dim] b_w;\r<br>&gt; \r<br>&gt;    // Data\r<br>&gt;    int&lt;lower=0&gt; rows_[n_obs];\r<br>&gt;    int&lt;lower=0&gt; cols_[n_obs];\r<br>&gt;    real logx[n_obs];\r<br>&gt; }\r<br>&gt; \r<br>&gt; parameters {\r<br>&gt;    vector&lt;lower=0&gt;[n_words] inv_gb;\r<br>&gt;    vector[n_words] b;\r<br>&gt; \r<br>&gt;    matrix&lt;lower=0&gt;[n_dim,n_words] inv_gw;\r<br>&gt;    matrix[n_dim,n_words] w;\r<br>&gt; \r<br>&gt;    real&lt;lower=0&gt; sigma;\r<br>&gt; }\r<br>&gt; \r<br>&gt; transformed parameters {\r<br>&gt;    vector[n_dim] zero_vec;\r<br>&gt;    zero_vec &lt;- rep_vector(0, n_dim);\r<br>&gt; }\r<br>&gt; \r<br>&gt; model {\r<br>&gt; \r<br>&gt;    inv_gb ~ inv_gamma(a_b, b_b);\r<br>&gt;    b ~ normal(0, inv_gb);\r<br>&gt; \r<br>&gt;    for (v in 1:n_words) {\r<br>&gt;        col(inv_gw, v) ~ inv_gamma(a_w, b_w);\r<br>&gt;        col(w, v) ~ normal(zero_vec, col(inv_gw, v));\r<br>&gt;    }\r<br>&gt; \r<br>&gt;    for (n in 1:n_obs) {\r<br>&gt;        logx[n] ~ normal(dot_product(col(w, rows_[n]), col(w, cols_[n]))\r<br>&gt;                         + b[rows_[n]] + b[cols_[n]],\r<br>&gt;                         sigma);\r<br>&gt;    }\r<br>&gt; \r<br>&gt; }\r<br>&gt; \r<br>&gt; -- \r<br>&gt; Sincerely,\r<br>&gt; Kui Tang\r<br>&gt; \r<br>"
+    ],
+    [
+     1,
+     "&gt; -- \r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r<br>&gt; To post to this group, send email to <a href data-email-masked rel=\"nofollow\">stan-...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792463431950000&amp;usg=AOvVaw3vOQ6e1tCxirr0AE8ZhaIM\">https://groups.google.com/d/optout</a>.\r<br>&gt; \r<br>\r<br>"
+    ]
+   ]
+  }
+ ]
+}

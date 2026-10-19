@@ -1,0 +1,572 @@
+{
+ "thread": "w_qJ7uUOs0I",
+ "subject": "hierarchical mixture modelling",
+ "messages_listed": 24,
+ "last_activity": "2012-10-15T06:58:22Z",
+ "messages": [
+  {
+   "id": "3euGIE_-R4gJ",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2012-09-16T23:44:29Z",
+   "subject": "hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Hi folks,\r<br>\r<br>I&#39;m trying to implement a hierarchical mixture model and I was hoping\r<br>to get some help with a few sticking points I&#39;ve encountered thus far.\r<br>I&#39;ve created a gist (<a href=\"https://gist.github.com/3734783\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://gist.github.com/3734783&amp;source=gmail&amp;ust=1792468826156000&amp;usg=AOvVaw2YKh1DFWP24TI7MzQg_e_e\">https://gist.github.com/3734783</a>) that has R code\r<br>for explaining/generating the data that I&#39;m attempting to model. The\r<br>gist also has my attempt thus far at coding the stan model.\r<br>\r<br>\r<br>2 Technical questions:\r<br>\r<br>1) How would I go about defining the VonMises distribution for use in\r<br>Stan? (In R, I just use the rvm() and dvm() functions from the\r<br>CircStats package.)\r<br>\r<br>2) Does it look like I implemented the mixture appropriately? I tried\r<br>to understand and extend the mixture example from the docs, but I\r<br>might have missed something.\r<br>\r<br>\r<br>And a more theory-related question:\r<br>\r<br>So far the data-generating R code and stan fitting code assumes zero\r<br>covariance amongst the three parameters that get sampled per &quot;person&quot;\r<br>(&quot;person_rho&quot;, &quot;person_mu&quot;, &quot;person_kappa&quot;). Sampling of person_rho\r<br>and person_kappa are both from Gaussians, so I could use\r<br>multi_normal() as illustrated in the docs to estimate the covariance\r<br>between these parameters. However, where person_mu is sampled from a\r<br>VonMises, I&#39;m guessing there&#39;s no way to simultaneously estimate all 3\r<br>covariances? In this case, I guess I could still use multi_normal() to\r<br>estimate the covariance between person_rho and person_kappa, then\r<br>simply assume that the other 2 covariances are zero (coincidentally,\r<br>I&#39;m not *as* interested in those covariances anyway). However, I\r<br>wonder if I should be concerned about any influence on the accuracy of\r<br>inference this assumption might have if it is violated by the data.\r<br>Thoughts?\r<br>\r<br>Another solution might be to give up use of the Von Mises for\r<br>representing the distribution of person_mu values; my data is unlikely\r<br>to have dramatic variability in person_mu values (they&#39;re likely all\r<br>pretty close to zero), so I suspect I could get away with using a\r<br>Gaussian. Though presumably in this case I&#39;d still need to ensure that\r<br>the sampled person_mu values are constrained to the finite range (-pi\r<br>to pi) that mu can take, which I&#39;m guessing might be achieved by\r<br>sampling the Gaussian on the real then transforming the result\r<br>(something like: inverse_logit(sample)*2*pi-pi ). In this case,\r<br>however, I&#39;m not sure how to extend the docs example of using\r<br>multi_normal() in the 2-parameter case to the 3-parameter case;\r<br>specifically, do I need to do anything to ensure that sigma is\r<br>positive definite?\r<br>\r<br>Thanks to anyone who suffered through this long post,\r<br>\r<br>Mike\r<br>\r<br>--\r<br>Mike Lawrence\r<br>Graduate Student\r<br>Department of Psychology\r<br>Dalhousie University\r<br>\r<br>Looking to arrange a meeting? Check my public calendar: <a href=\"http://goo.gl/BYH99\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://goo.gl/BYH99&amp;source=gmail&amp;ust=1792468826156000&amp;usg=AOvVaw1y2rCr8T3aqhhKVrcwnuS7\">http://goo.gl/BYH99</a>\r<br>\r<br>~ Certainty is folly... I think. ~\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Wni3Fyihr0QJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-09-17T04:27:11Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "The model looks pretty close to what you&#39;d need.\r<br>\r<br>Just a couple of sticking points in the loop:\r<br>\r<br>   real ps[2];\r<br>   for (t in 1:T) {\r<br>       ps[1] &lt;- log(person_rho) + log(vonMises(person_mu,person_kappa));\r<br>       ps[2] &lt;- log(1-person_rho) + log(uniform(-pi(),pi()));\r<br>       lp__ &lt;- lp__ + log_sum_exp(ps);\r<br>\r<br>First, you want to replace the term\r<br>\r<br>   log(uniform(-pi(),pi()))\r<br>\r<br>with\r<br>\r<br>   uniform_log(person_mu, -pi(), pi());\r<br>\r<br>The notation uniform(L,H) is for when there is a sampling\r<br>statement, as in:\r<br>\r<br>   person_mu ~ uniform(-pi(), pi());\r<br>\r<br>This just translates into a form that calls the three-argument\r<br>uniform_log() function.\r<br>\r<br>Next, you can eliminate the ps[2] local variable and just\r<br>use the binary log_sum_exp function and simplify the loop to:\r<br>\r<br>   for (t in 1:T) {\r<br>       lp__ &lt;- lp__ + log_sum_exp(log(person_rho) + log(vonMises(person_mu,person_kappa)),\r<br>                                  log(1-person_rho) + uniform_log(person_mu,-pi(),pi()));\r<br>\r<br>But person_mu isn&#39;t constrained to lie in (-pi, pi) in the model,\r<br>and if it&#39;s a mixture of von Mises and uniform, the uniform needs\r<br>to have all of the person_mu in its support or you&#39;ll get an error\r<br>when evaluating the uniform_log.\r<br>\r<br>Now as for how to do the von Mises, that looks a bit\r<br>sticky, because there&#39;s a (log) Bessel function of\r<br>order 0 that depends on the concentration parameter:\r<br>\r<br><a href=\"http://en.wikipedia.org/wiki/Von_Mises_distribution\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://en.wikipedia.org/wiki/Von_Mises_distribution&amp;source=gmail&amp;ust=1792468826158000&amp;usg=AOvVaw2DgqDF_Xmpv2Ij3c_8zjJI\">http://en.wikipedia.org/wiki/Von_Mises_distribution</a>\r<br>\r<br>Now if we had Bessel functions available in Stan, you could\r<br>code the distribution as with the mixture by incrementing\r<br>the log probability accumulator lp__ appropriately.  Or if\r<br>the concentration parameters were constant, you could do\r<br>the same but drop the Bessel term.\r<br>\r<br>What we would need to do to support Bessel functions would\r<br>be to write a C++ implementation of the function and its\r<br>derivative.  I think we&#39;d just need order 0 and order 1\r<br>functions.  Looks like Boost provides a generic implementation\r<br>for any order, so it shouldn&#39;t actually be too hard:\r<br>\r<br><a href=\"http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html&amp;source=gmail&amp;ust=1792468826158000&amp;usg=AOvVaw2kXMnIMOMLLg3psBwO_2Xx\">http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html</a>\r<br>\r<br>I&#39;ll add it to our function to-do list.  Maybe someone will\r<br>take it up sooner rather than later.\r<br>\r<br>By the way, this is also what we&#39;d need to add the\r<br>von Mises distribution to Stan, which would save you the\r<br>work of coding its density.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>\r<br>On 9/16/12 7:44 PM, Mike Lawrence wrote:\r<br>&gt; Hi folks,\r<br>&gt;\r<br>&gt; I&#39;m trying to implement a hierarchical mixture model and I was hoping\r<br>&gt; to get some help with a few sticking points I&#39;ve encountered thus far.\r<br>&gt; I&#39;ve created a gist (<a href=\"https://gist.github.com/3734783\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://gist.github.com/3734783&amp;source=gmail&amp;ust=1792468826158000&amp;usg=AOvVaw2Siy6srCx0IEO4py3FpFrF\">https://gist.github.com/3734783</a>) that has R code\r<br>&gt; for explaining/generating the data that I&#39;m attempting to model. The\r<br>&gt; gist also has my attempt thus far at coding the stan model.\r<br>&gt;\r<br>&gt;\r<br>&gt; 2 Technical questions:\r<br>&gt;\r<br>&gt; 1) How would I go about defining the VonMises distribution for use in\r<br>&gt; Stan? (In R, I just use the rvm() and dvm() functions from the\r<br>&gt; CircStats package.)\r<br>&gt;\r<br>&gt; 2) Does it look like I implemented the mixture appropriately? I tried\r<br>&gt; to understand and extend the mixture example from the docs, but I\r<br>&gt; might have missed something.\r<br>&gt;\r<br>&gt;\r<br>&gt; And a more theory-related question:\r<br>&gt;\r<br>&gt; So far the data-generating R code and stan fitting code assumes zero\r<br>&gt; covariance amongst the three parameters that get sampled per &quot;person&quot;\r<br>&gt; (&quot;person_rho&quot;, &quot;person_mu&quot;, &quot;person_kappa&quot;). Sampling of person_rho\r<br>&gt; and person_kappa are both from Gaussians, so I could use\r<br>&gt; multi_normal() as illustrated in the docs to estimate the covariance\r<br>&gt; between these parameters. However, where person_mu is sampled from a\r<br>&gt; VonMises, I&#39;m guessing there&#39;s no way to simultaneously estimate all 3\r<br>&gt; covariances? In this case, I guess I could still use multi_normal() to\r<br>&gt; estimate the covariance between person_rho and person_kappa, then\r<br>&gt; simply assume that the other 2 covariances are zero (coincidentally,\r<br>&gt; I&#39;m not *as* interested in those covariances anyway). However, I\r<br>&gt; wonder if I should be concerned about any influence on the accuracy of\r<br>&gt; inference this assumption might have if it is violated by the data.\r<br>&gt; Thoughts?\r<br>&gt;\r<br>&gt; Another solution might be to give up use of the Von Mises for\r<br>&gt; representing the distribution of person_mu values; my data is unlikely\r<br>&gt; to have dramatic variability in person_mu values (they&#39;re likely all\r<br>&gt; pretty close to zero), so I suspect I could get away with using a\r<br>&gt; Gaussian. Though presumably in this case I&#39;d still need to ensure that\r<br>&gt; the sampled person_mu values are constrained to the finite range (-pi\r<br>&gt; to pi) that mu can take, which I&#39;m guessing might be achieved by\r<br>&gt; sampling the Gaussian on the real then transforming the result\r<br>&gt; (something like: inverse_logit(sample)*2*pi-pi ). In this case,\r<br>&gt; however, I&#39;m not sure how to extend the docs example of using\r<br>&gt; multi_normal() in the 2-parameter case to the 3-parameter case;\r<br>&gt; specifically, do I need to do anything to ensure that sigma is\r<br>&gt; positive definite?\r<br>&gt;\r<br>&gt; Thanks to anyone who suffered through this long post,\r<br>&gt;\r<br>&gt; Mike\r<br>&gt;\r<br>&gt; --\r<br>&gt; Mike Lawrence\r<br>&gt; Graduate Student\r<br>&gt; Department of Psychology\r<br>&gt; Dalhousie University\r<br>&gt;\r<br>&gt; Looking to arrange a meeting? Check my public calendar: <a href=\"http://goo.gl/BYH99\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://goo.gl/BYH99&amp;source=gmail&amp;ust=1792468826158000&amp;usg=AOvVaw13vgrcnaPQ1yBcuTI1-xoQ\">http://goo.gl/BYH99</a>\r<br>&gt;\r<br>&gt; ~ Certainty is folly... I think. ~\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "wR7htpOd1bEJ",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2012-09-18T16:18:39Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Thanks for the tips on fixing my model. Attacking the bessel\r<br>implementation is beyond my own meagre technical skills, but I&#39;ve\r<br>forwarded this to a more programmatically/mathematically savvy\r<br>colleague who might be able to contribute. I see that Von Mises is\r<br>also missing from JAGS\r<br>(<a href=\"http://sourceforge.net/p/mcmc-jags/feature-requests/14/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://sourceforge.net/p/mcmc-jags/feature-requests/14/&amp;source=gmail&amp;ust=1792468826160000&amp;usg=AOvVaw3mCe7UuIL4zsi6q4UnjEde\">http://sourceforge.net/p/mcmc-jags/feature-requests/14/</a>), so its\r<br>implementation in stan would possibly be yet another win for stan over\r<br>JAGS.\r<br>\r<br>Mike\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Mon, Sep 17, 2012 at 1:27 AM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt; The model looks pretty close to what you&#39;d need.\r<br>&gt;\r<br>&gt; Just a couple of sticking points in the loop:\r<br>&gt;\r<br>&gt;   real ps[2];\r<br>&gt;   for (t in 1:T) {\r<br>&gt;       ps[1] &lt;- log(person_rho) + log(vonMises(person_mu,person_kappa));\r<br>&gt;       ps[2] &lt;- log(1-person_rho) + log(uniform(-pi(),pi()));\r<br>&gt;       lp__ &lt;- lp__ + log_sum_exp(ps);\r<br>&gt;\r<br>&gt; First, you want to replace the term\r<br>&gt;\r<br>&gt;   log(uniform(-pi(),pi()))\r<br>&gt;\r<br>&gt; with\r<br>&gt;\r<br>&gt;   uniform_log(person_mu, -pi(), pi());\r<br>&gt;\r<br>&gt; The notation uniform(L,H) is for when there is a sampling\r<br>&gt; statement, as in:\r<br>&gt;\r<br>&gt;   person_mu ~ uniform(-pi(), pi());\r<br>&gt;\r<br>&gt; This just translates into a form that calls the three-argument\r<br>&gt; uniform_log() function.\r<br>&gt;\r<br>&gt; Next, you can eliminate the ps[2] local variable and just\r<br>&gt; use the binary log_sum_exp function and simplify the loop to:\r<br>&gt;\r<br>&gt;   for (t in 1:T) {\r<br>&gt;       lp__ &lt;- lp__ + log_sum_exp(log(person_rho) +\r<br>&gt; log(vonMises(person_mu,person_kappa)),\r<br>&gt;                                  log(1-person_rho) +\r<br>&gt; uniform_log(person_mu,-pi(),pi()));\r<br>&gt;\r<br>&gt; But person_mu isn&#39;t constrained to lie in (-pi, pi) in the model,\r<br>&gt; and if it&#39;s a mixture of von Mises and uniform, the uniform needs\r<br>&gt; to have all of the person_mu in its support or you&#39;ll get an error\r<br>&gt; when evaluating the uniform_log.\r<br>&gt;\r<br>&gt; Now as for how to do the von Mises, that looks a bit\r<br>&gt; sticky, because there&#39;s a (log) Bessel function of\r<br>&gt; order 0 that depends on the concentration parameter:\r<br>&gt;\r<br>&gt; <a href=\"http://en.wikipedia.org/wiki/Von_Mises_distribution\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://en.wikipedia.org/wiki/Von_Mises_distribution&amp;source=gmail&amp;ust=1792468826160000&amp;usg=AOvVaw39vIZ-6MNg7olegLIqicml\">http://en.wikipedia.org/wiki/Von_Mises_distribution</a>\r<br>&gt;\r<br>&gt; Now if we had Bessel functions available in Stan, you could\r<br>&gt; code the distribution as with the mixture by incrementing\r<br>&gt; the log probability accumulator lp__ appropriately.  Or if\r<br>&gt; the concentration parameters were constant, you could do\r<br>&gt; the same but drop the Bessel term.\r<br>&gt;\r<br>&gt; What we would need to do to support Bessel functions would\r<br>&gt; be to write a C++ implementation of the function and its\r<br>&gt; derivative.  I think we&#39;d just need order 0 and order 1\r<br>&gt; functions.  Looks like Boost provides a generic implementation\r<br>&gt; for any order, so it shouldn&#39;t actually be too hard:\r<br>&gt;\r<br>&gt; <a href=\"http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html&amp;source=gmail&amp;ust=1792468826160000&amp;usg=AOvVaw25OnVLyRzF0yJPTQ4KL_tI\">http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html</a>\r<br>&gt;\r<br>&gt; I&#39;ll add it to our function to-do list.  Maybe someone will\r<br>&gt; take it up sooner rather than later.\r<br>&gt;\r<br>&gt; By the way, this is also what we&#39;d need to add the\r<br>&gt; von Mises distribution to Stan, which would save you the\r<br>&gt; work of coding its density.\r<br>&gt;\r<br>&gt; - Bob\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt; On 9/16/12 7:44 PM, Mike Lawrence wrote:\r<br>&gt;&gt;\r<br>&gt;&gt; Hi folks,\r<br>&gt;&gt;\r<br>&gt;&gt; I&#39;m trying to implement a hierarchical mixture model and I was hoping\r<br>&gt;&gt; to get some help with a few sticking points I&#39;ve encountered thus far.\r<br>&gt;&gt; I&#39;ve created a gist (<a href=\"https://gist.github.com/3734783\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://gist.github.com/3734783&amp;source=gmail&amp;ust=1792468826160000&amp;usg=AOvVaw0Ohye6_G4tgpngFg7AQ41H\">https://gist.github.com/3734783</a>) that has R code\r<br>&gt;&gt; for explaining/generating the data that I&#39;m attempting to model. The\r<br>&gt;&gt; gist also has my attempt thus far at coding the stan model.\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; 2 Technical questions:\r<br>&gt;&gt;\r<br>&gt;&gt; 1) How would I go about defining the VonMises distribution for use in\r<br>&gt;&gt; Stan? (In R, I just use the rvm() and dvm() functions from the\r<br>&gt;&gt; CircStats package.)\r<br>&gt;&gt;\r<br>&gt;&gt; 2) Does it look like I implemented the mixture appropriately? I tried\r<br>&gt;&gt; to understand and extend the mixture example from the docs, but I\r<br>&gt;&gt; might have missed something.\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; And a more theory-related question:\r<br>&gt;&gt;\r<br>&gt;&gt; So far the data-generating R code and stan fitting code assumes zero\r<br>&gt;&gt; covariance amongst the three parameters that get sampled per &quot;person&quot;\r<br>&gt;&gt; (&quot;person_rho&quot;, &quot;person_mu&quot;, &quot;person_kappa&quot;). Sampling of person_rho\r<br>&gt;&gt; and person_kappa are both from Gaussians, so I could use\r<br>&gt;&gt; multi_normal() as illustrated in the docs to estimate the covariance\r<br>&gt;&gt; between these parameters. However, where person_mu is sampled from a\r<br>&gt;&gt; VonMises, I&#39;m guessing there&#39;s no way to simultaneously estimate all 3\r<br>&gt;&gt; covariances? In this case, I guess I could still use multi_normal() to\r<br>&gt;&gt; estimate the covariance between person_rho and person_kappa, then\r<br>&gt;&gt; simply assume that the other 2 covariances are zero (coincidentally,\r<br>&gt;&gt; I&#39;m not *as* interested in those covariances anyway). However, I\r<br>&gt;&gt; wonder if I should be concerned about any influence on the accuracy of\r<br>&gt;&gt; inference this assumption might have if it is violated by the data.\r<br>&gt;&gt; Thoughts?\r<br>&gt;&gt;\r<br>&gt;&gt; Another solution might be to give up use of the Von Mises for\r<br>&gt;&gt; representing the distribution of person_mu values; my data is unlikely\r<br>&gt;&gt; to have dramatic variability in person_mu values (they&#39;re likely all\r<br>&gt;&gt; pretty close to zero), so I suspect I could get away with using a\r<br>&gt;&gt; Gaussian. Though presumably in this case I&#39;d still need to ensure that\r<br>&gt;&gt; the sampled person_mu values are constrained to the finite range (-pi\r<br>&gt;&gt; to pi) that mu can take, which I&#39;m guessing might be achieved by\r<br>&gt;&gt; sampling the Gaussian on the real then transforming the result\r<br>&gt;&gt; (something like: inverse_logit(sample)*2*pi-pi ). In this case,\r<br>&gt;&gt; however, I&#39;m not sure how to extend the docs example of using\r<br>&gt;&gt; multi_normal() in the 2-parameter case to the 3-parameter case;\r<br>&gt;&gt; specifically, do I need to do anything to ensure that sigma is\r<br>&gt;&gt; positive definite?\r<br>&gt;&gt;\r<br>&gt;&gt; Thanks to anyone who suffered through this long post,\r<br>&gt;&gt;\r<br>&gt;&gt; Mike\r<br>&gt;&gt;\r<br>&gt;&gt; --\r<br>&gt;&gt; Mike Lawrence\r<br>&gt;&gt; Graduate Student\r<br>&gt;&gt; Department of Psychology\r<br>&gt;&gt; Dalhousie University\r<br>&gt;&gt;\r<br>&gt;&gt; Looking to arrange a meeting? Check my public calendar:\r<br>&gt;&gt; <a href=\"http://goo.gl/BYH99\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://goo.gl/BYH99&amp;source=gmail&amp;ust=1792468826160000&amp;usg=AOvVaw1O7phkkWF1eK_biLuBd2lc\">http://goo.gl/BYH99</a>\r<br>&gt;&gt;\r<br>&gt;&gt; ~ Certainty is folly... I think. ~\r<br>&gt;&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "AgDc6SUG_XoJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-09-18T18:05:50Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "I was talking to Michael Betancourt today who said\r<br>that we&#39;d also have problems with HMC on the\r<br>von Mises distro because of the way it wraps -- there&#39;s\r<br>no way to unconstrain and retain the locality probperties\r<br>in R^N.\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On 9/18/12 12:18 PM, Mike Lawrence wrote:\r<br>&gt; Thanks for the tips on fixing my model. Attacking the bessel\r<br>&gt; implementation is beyond my own meagre technical skills, but I&#39;ve\r<br>&gt; forwarded this to a more programmatically/mathematically savvy\r<br>&gt; colleague who might be able to contribute. I see that Von Mises is\r<br>&gt; also missing from JAGS\r<br>&gt; (<a href=\"http://sourceforge.net/p/mcmc-jags/feature-requests/14/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://sourceforge.net/p/mcmc-jags/feature-requests/14/&amp;source=gmail&amp;ust=1792468826162000&amp;usg=AOvVaw2Y4_WntjY1ALjGbbDy2m34\">http://sourceforge.net/p/mcmc-jags/feature-requests/14/</a>), so its\r<br>&gt; implementation in stan would possibly be yet another win for stan over\r<br>&gt; JAGS.\r<br>&gt;\r<br>&gt; Mike\r<br>&gt;\r<br>&gt; On Mon, Sep 17, 2012 at 1:27 AM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;&gt; The model looks pretty close to what you&#39;d need.\r<br>&gt;&gt;\r<br>&gt;&gt; Just a couple of sticking points in the loop:\r<br>&gt;&gt;\r<br>&gt;&gt;    real ps[2];\r<br>&gt;&gt;    for (t in 1:T) {\r<br>&gt;&gt;        ps[1] &lt;- log(person_rho) + log(vonMises(person_mu,person_kappa));\r<br>&gt;&gt;        ps[2] &lt;- log(1-person_rho) + log(uniform(-pi(),pi()));\r<br>&gt;&gt;        lp__ &lt;- lp__ + log_sum_exp(ps);\r<br>&gt;&gt;\r<br>&gt;&gt; First, you want to replace the term\r<br>&gt;&gt;\r<br>&gt;&gt;    log(uniform(-pi(),pi()))\r<br>&gt;&gt;\r<br>&gt;&gt; with\r<br>&gt;&gt;\r<br>&gt;&gt;    uniform_log(person_mu, -pi(), pi());\r<br>&gt;&gt;\r<br>&gt;&gt; The notation uniform(L,H) is for when there is a sampling\r<br>&gt;&gt; statement, as in:\r<br>&gt;&gt;\r<br>&gt;&gt;    person_mu ~ uniform(-pi(), pi());\r<br>&gt;&gt;\r<br>&gt;&gt; This just translates into a form that calls the three-argument\r<br>&gt;&gt; uniform_log() function.\r<br>&gt;&gt;\r<br>&gt;&gt; Next, you can eliminate the ps[2] local variable and just\r<br>&gt;&gt; use the binary log_sum_exp function and simplify the loop to:\r<br>&gt;&gt;\r<br>&gt;&gt;    for (t in 1:T) {\r<br>&gt;&gt;        lp__ &lt;- lp__ + log_sum_exp(log(person_rho) +\r<br>&gt;&gt; log(vonMises(person_mu,person_kappa)),\r<br>&gt;&gt;                                   log(1-person_rho) +\r<br>&gt;&gt; uniform_log(person_mu,-pi(),pi()));\r<br>&gt;&gt;\r<br>&gt;&gt; But person_mu isn&#39;t constrained to lie in (-pi, pi) in the model,\r<br>&gt;&gt; and if it&#39;s a mixture of von Mises and uniform, the uniform needs\r<br>&gt;&gt; to have all of the person_mu in its support or you&#39;ll get an error\r<br>&gt;&gt; when evaluating the uniform_log.\r<br>&gt;&gt;\r<br>&gt;&gt; Now as for how to do the von Mises, that looks a bit\r<br>&gt;&gt; sticky, because there&#39;s a (log) Bessel function of\r<br>&gt;&gt; order 0 that depends on the concentration parameter:\r<br>&gt;&gt;\r<br>&gt;&gt; <a href=\"http://en.wikipedia.org/wiki/Von_Mises_distribution\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://en.wikipedia.org/wiki/Von_Mises_distribution&amp;source=gmail&amp;ust=1792468826162000&amp;usg=AOvVaw0kvGsw-WWH6Cn-783OKYWg\">http://en.wikipedia.org/wiki/Von_Mises_distribution</a>\r<br>&gt;&gt;\r<br>&gt;&gt; Now if we had Bessel functions available in Stan, you could\r<br>&gt;&gt; code the distribution as with the mixture by incrementing\r<br>&gt;&gt; the log probability accumulator lp__ appropriately.  Or if\r<br>&gt;&gt; the concentration parameters were constant, you could do\r<br>&gt;&gt; the same but drop the Bessel term.\r<br>&gt;&gt;\r<br>&gt;&gt; What we would need to do to support Bessel functions would\r<br>&gt;&gt; be to write a C++ implementation of the function and its\r<br>&gt;&gt; derivative.  I think we&#39;d just need order 0 and order 1\r<br>&gt;&gt; functions.  Looks like Boost provides a generic implementation\r<br>&gt;&gt; for any order, so it shouldn&#39;t actually be too hard:\r<br>&gt;&gt;\r<br>&gt;&gt; <a href=\"http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html&amp;source=gmail&amp;ust=1792468826162000&amp;usg=AOvVaw0Qfe0nvQ8hQs1uwvTRhUNr\">http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html</a>\r<br>&gt;&gt;\r<br>&gt;&gt; I&#39;ll add it to our function to-do list.  Maybe someone will\r<br>&gt;&gt; take it up sooner rather than later.\r<br>&gt;&gt;\r<br>&gt;&gt; By the way, this is also what we&#39;d need to add the\r<br>&gt;&gt; von Mises distribution to Stan, which would save you the\r<br>&gt;&gt; work of coding its density.\r<br>&gt;&gt;\r<br>&gt;&gt; - Bob\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; On 9/16/12 7:44 PM, Mike Lawrence wrote:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Hi folks,\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; I&#39;m trying to implement a hierarchical mixture model and I was hoping\r<br>&gt;&gt;&gt; to get some help with a few sticking points I&#39;ve encountered thus far.\r<br>&gt;&gt;&gt; I&#39;ve created a gist (<a href=\"https://gist.github.com/3734783\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://gist.github.com/3734783&amp;source=gmail&amp;ust=1792468826162000&amp;usg=AOvVaw3nVmoBtBHKWUN3I1OsbMBS\">https://gist.github.com/3734783</a>) that has R code\r<br>&gt;&gt;&gt; for explaining/generating the data that I&#39;m attempting to model. The\r<br>&gt;&gt;&gt; gist also has my attempt thus far at coding the stan model.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; 2 Technical questions:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; 1) How would I go about defining the VonMises distribution for use in\r<br>&gt;&gt;&gt; Stan? (In R, I just use the rvm() and dvm() functions from the\r<br>&gt;&gt;&gt; CircStats package.)\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; 2) Does it look like I implemented the mixture appropriately? I tried\r<br>&gt;&gt;&gt; to understand and extend the mixture example from the docs, but I\r<br>&gt;&gt;&gt; might have missed something.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; And a more theory-related question:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; So far the data-generating R code and stan fitting code assumes zero\r<br>&gt;&gt;&gt; covariance amongst the three parameters that get sampled per &quot;person&quot;\r<br>&gt;&gt;&gt; (&quot;person_rho&quot;, &quot;person_mu&quot;, &quot;person_kappa&quot;). Sampling of person_rho\r<br>&gt;&gt;&gt; and person_kappa are both from Gaussians, so I could use\r<br>&gt;&gt;&gt; multi_normal() as illustrated in the docs to estimate the covariance\r<br>&gt;&gt;&gt; between these parameters. However, where person_mu is sampled from a\r<br>&gt;&gt;&gt; VonMises, I&#39;m guessing there&#39;s no way to simultaneously estimate all 3\r<br>&gt;&gt;&gt; covariances? In this case, I guess I could still use multi_normal() to\r<br>&gt;&gt;&gt; estimate the covariance between person_rho and person_kappa, then\r<br>&gt;&gt;&gt; simply assume that the other 2 covariances are zero (coincidentally,\r<br>&gt;&gt;&gt; I&#39;m not *as* interested in those covariances anyway). However, I\r<br>&gt;&gt;&gt; wonder if I should be concerned about any influence on the accuracy of\r<br>&gt;&gt;&gt; inference this assumption might have if it is violated by the data.\r<br>&gt;&gt;&gt; Thoughts?\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Another solution might be to give up use of the Von Mises for\r<br>&gt;&gt;&gt; representing the distribution of person_mu values; my data is unlikely\r<br>&gt;&gt;&gt; to have dramatic variability in person_mu values (they&#39;re likely all\r<br>&gt;&gt;&gt; pretty close to zero), so I suspect I could get away with using a\r<br>&gt;&gt;&gt; Gaussian. Though presumably in this case I&#39;d still need to ensure that\r<br>&gt;&gt;&gt; the sampled person_mu values are constrained to the finite range (-pi\r<br>&gt;&gt;&gt; to pi) that mu can take, which I&#39;m guessing might be achieved by\r<br>&gt;&gt;&gt; sampling the Gaussian on the real then transforming the result\r<br>&gt;&gt;&gt; (something like: inverse_logit(sample)*2*pi-pi ). In this case,\r<br>&gt;&gt;&gt; however, I&#39;m not sure how to extend the docs example of using\r<br>&gt;&gt;&gt; multi_normal() in the 2-parameter case to the 3-parameter case;\r<br>&gt;&gt;&gt; specifically, do I need to do anything to ensure that sigma is\r<br>&gt;&gt;&gt; positive definite?\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Thanks to anyone who suffered through this long post,\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Mike\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; --\r<br>&gt;&gt;&gt; Mike Lawrence\r<br>&gt;&gt;&gt; Graduate Student\r<br>&gt;&gt;&gt; Department of Psychology\r<br>&gt;&gt;&gt; Dalhousie University\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Looking to arrange a meeting? Check my public calendar:\r<br>&gt;&gt;&gt; <a href=\"http://goo.gl/BYH99\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://goo.gl/BYH99&amp;source=gmail&amp;ust=1792468826162000&amp;usg=AOvVaw1B0TEFuCmZPZ-e2L7c02su\">http://goo.gl/BYH99</a>\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; ~ Certainty is folly... I think. ~\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "5piYcOBi0CsJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-09-18T18:20:40Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     2,
+     "On Tue, Sep 18, 2012 at 2:05 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt; I was talking to Michael Betancourt today who said\r<br>&gt; that we&#39;d also have problems with HMC on the\r<br>&gt; von Mises distro because of the way it wraps -- there&#39;s\r<br>&gt; no way to unconstrain and retain the locality probperties\r<br>&gt; in R^N.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "In practice I expect that if you left the von Mises distributed\r<br>parameter unconstrained but evaluated it mod 2pi there wouldn&#39;t be any\r<br>issues.  Technically, this produces an improper distribution over R\r<br>but I don&#39;t think it would cause a real problem.\r<br>\r<br>That said, distributions like the von Mises are one big motivation to\r<br>implement a version of NUTS with nonlinear parameter constraints.\r<br>\r<br>Cheers,\r<br>Marcus\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "YI2AEvLvUwgJ",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2012-09-18T18:26:40Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Does this apply to models that (1) use a Von Mises as the data\r<br>distribution, (2) use the Von Mises as a distribution of\r<br>hyperparameters, or both?\r<br>\r<br>As I noted earlier, with my data, I expect that most of the\r<br>hyperparameter values specifying the VonMises location are going to be\r<br>pretty close to zero, so I could replace the Von Mises there with a\r<br>Gaussian (truncated or on a transformed scale that accounts for the\r<br>-pi to pi bounds).\r<br>\r<br>If the problem applies to using Von Mises as the data distribution,\r<br>then this is more troublesome. Though I&#39;m now thinking that my data is\r<br>also likely to have pretty high values for the concentration\r<br>parameter, so a uniform-plus-truncated-Gaussian mixture for the data\r<br>distribution might be an ok approximation to the\r<br>uniform-plus-VonMises. Since this is already possible in stan, I&#39;ll\r<br>give this a shot later today and see how things go.\r<br>"
+    ],
+    [
+     3,
+     "\r<br>\r<br>\r<br>On Tue, Sep 18, 2012 at 3:05 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt; I was talking to Michael Betancourt today who said\r<br>&gt; that we&#39;d also have problems with HMC on the\r<br>&gt; von Mises distro because of the way it wraps -- there&#39;s\r<br>&gt; no way to unconstrain and retain the locality probperties\r<br>&gt; in R^N.\r<br>&gt;\r<br>&gt; - Bob\r<br>&gt;\r<br>&gt;\r<br>&gt; On 9/18/12 12:18 PM, Mike Lawrence wrote:\r<br>&gt;&gt;\r<br>&gt;&gt; Thanks for the tips on fixing my model. Attacking the bessel\r<br>&gt;&gt; implementation is beyond my own meagre technical skills, but I&#39;ve\r<br>&gt;&gt; forwarded this to a more programmatically/mathematically savvy\r<br>&gt;&gt; colleague who might be able to contribute. I see that Von Mises is\r<br>&gt;&gt; also missing from JAGS\r<br>&gt;&gt; (<a href=\"http://sourceforge.net/p/mcmc-jags/feature-requests/14/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://sourceforge.net/p/mcmc-jags/feature-requests/14/&amp;source=gmail&amp;ust=1792468826165000&amp;usg=AOvVaw1M56XXkb2K7KXrR0jP7PyD\">http://sourceforge.net/p/mcmc-jags/feature-requests/14/</a>), so its\r<br>&gt;&gt; implementation in stan would possibly be yet another win for stan over\r<br>&gt;&gt; JAGS.\r<br>&gt;&gt;\r<br>&gt;&gt; Mike\r<br>&gt;&gt;\r<br>&gt;&gt; On Mon, Sep 17, 2012 at 1:27 AM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; The model looks pretty close to what you&#39;d need.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Just a couple of sticking points in the loop:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;    real ps[2];\r<br>&gt;&gt;&gt;    for (t in 1:T) {\r<br>&gt;&gt;&gt;        ps[1] &lt;- log(person_rho) + log(vonMises(person_mu,person_kappa));\r<br>&gt;&gt;&gt;        ps[2] &lt;- log(1-person_rho) + log(uniform(-pi(),pi()));\r<br>&gt;&gt;&gt;        lp__ &lt;- lp__ + log_sum_exp(ps);\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; First, you want to replace the term\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;    log(uniform(-pi(),pi()))\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; with\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;    uniform_log(person_mu, -pi(), pi());\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; The notation uniform(L,H) is for when there is a sampling\r<br>&gt;&gt;&gt; statement, as in:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;    person_mu ~ uniform(-pi(), pi());\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; This just translates into a form that calls the three-argument\r<br>&gt;&gt;&gt; uniform_log() function.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Next, you can eliminate the ps[2] local variable and just\r<br>&gt;&gt;&gt; use the binary log_sum_exp function and simplify the loop to:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;    for (t in 1:T) {\r<br>&gt;&gt;&gt;        lp__ &lt;- lp__ + log_sum_exp(log(person_rho) +\r<br>&gt;&gt;&gt; log(vonMises(person_mu,person_kappa)),\r<br>&gt;&gt;&gt;                                   log(1-person_rho) +\r<br>&gt;&gt;&gt; uniform_log(person_mu,-pi(),pi()));\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; But person_mu isn&#39;t constrained to lie in (-pi, pi) in the model,\r<br>&gt;&gt;&gt; and if it&#39;s a mixture of von Mises and uniform, the uniform needs\r<br>&gt;&gt;&gt; to have all of the person_mu in its support or you&#39;ll get an error\r<br>&gt;&gt;&gt; when evaluating the uniform_log.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Now as for how to do the von Mises, that looks a bit\r<br>&gt;&gt;&gt; sticky, because there&#39;s a (log) Bessel function of\r<br>&gt;&gt;&gt; order 0 that depends on the concentration parameter:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; <a href=\"http://en.wikipedia.org/wiki/Von_Mises_distribution\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://en.wikipedia.org/wiki/Von_Mises_distribution&amp;source=gmail&amp;ust=1792468826165000&amp;usg=AOvVaw14ELTbK8jDVgXmsmPgP0k1\">http://en.wikipedia.org/wiki/Von_Mises_distribution</a>\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Now if we had Bessel functions available in Stan, you could\r<br>&gt;&gt;&gt; code the distribution as with the mixture by incrementing\r<br>&gt;&gt;&gt; the log probability accumulator lp__ appropriately.  Or if\r<br>&gt;&gt;&gt; the concentration parameters were constant, you could do\r<br>&gt;&gt;&gt; the same but drop the Bessel term.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; What we would need to do to support Bessel functions would\r<br>&gt;&gt;&gt; be to write a C++ implementation of the function and its\r<br>&gt;&gt;&gt; derivative.  I think we&#39;d just need order 0 and order 1\r<br>&gt;&gt;&gt; functions.  Looks like Boost provides a generic implementation\r<br>&gt;&gt;&gt; for any order, so it shouldn&#39;t actually be too hard:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; <a href=\"http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html&amp;source=gmail&amp;ust=1792468826165000&amp;usg=AOvVaw3Ws1Xs90ya-hWhTmS7lP36\">http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html</a>\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; I&#39;ll add it to our function to-do list.  Maybe someone will\r<br>&gt;&gt;&gt; take it up sooner rather than later.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; By the way, this is also what we&#39;d need to add the\r<br>&gt;&gt;&gt; von Mises distribution to Stan, which would save you the\r<br>&gt;&gt;&gt; work of coding its density.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; - Bob\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; On 9/16/12 7:44 PM, Mike Lawrence wrote:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Hi folks,\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; I&#39;m trying to implement a hierarchical mixture model and I was hoping\r<br>&gt;&gt;&gt;&gt; to get some help with a few sticking points I&#39;ve encountered thus far.\r<br>&gt;&gt;&gt;&gt; I&#39;ve created a gist (<a href=\"https://gist.github.com/3734783\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://gist.github.com/3734783&amp;source=gmail&amp;ust=1792468826165000&amp;usg=AOvVaw1WUGAryByBwQJmCFLxoyf7\">https://gist.github.com/3734783</a>) that has R code\r<br>&gt;&gt;&gt;&gt; for explaining/generating the data that I&#39;m attempting to model. The\r<br>&gt;&gt;&gt;&gt; gist also has my attempt thus far at coding the stan model.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; 2 Technical questions:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; 1) How would I go about defining the VonMises distribution for use in\r<br>&gt;&gt;&gt;&gt; Stan? (In R, I just use the rvm() and dvm() functions from the\r<br>&gt;&gt;&gt;&gt; CircStats package.)\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; 2) Does it look like I implemented the mixture appropriately? I tried\r<br>&gt;&gt;&gt;&gt; to understand and extend the mixture example from the docs, but I\r<br>&gt;&gt;&gt;&gt; might have missed something.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; And a more theory-related question:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; So far the data-generating R code and stan fitting code assumes zero\r<br>&gt;&gt;&gt;&gt; covariance amongst the three parameters that get sampled per &quot;person&quot;\r<br>&gt;&gt;&gt;&gt; (&quot;person_rho&quot;, &quot;person_mu&quot;, &quot;person_kappa&quot;). Sampling of person_rho\r<br>&gt;&gt;&gt;&gt; and person_kappa are both from Gaussians, so I could use\r<br>&gt;&gt;&gt;&gt; multi_normal() as illustrated in the docs to estimate the covariance\r<br>&gt;&gt;&gt;&gt; between these parameters. However, where person_mu is sampled from a\r<br>&gt;&gt;&gt;&gt; VonMises, I&#39;m guessing there&#39;s no way to simultaneously estimate all 3\r<br>&gt;&gt;&gt;&gt; covariances? In this case, I guess I could still use multi_normal() to\r<br>&gt;&gt;&gt;&gt; estimate the covariance between person_rho and person_kappa, then\r<br>&gt;&gt;&gt;&gt; simply assume that the other 2 covariances are zero (coincidentally,\r<br>&gt;&gt;&gt;&gt; I&#39;m not *as* interested in those covariances anyway). However, I\r<br>&gt;&gt;&gt;&gt; wonder if I should be concerned about any influence on the accuracy of\r<br>&gt;&gt;&gt;&gt; inference this assumption might have if it is violated by the data.\r<br>&gt;&gt;&gt;&gt; Thoughts?\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Another solution might be to give up use of the Von Mises for\r<br>&gt;&gt;&gt;&gt; representing the distribution of person_mu values; my data is unlikely\r<br>&gt;&gt;&gt;&gt; to have dramatic variability in person_mu values (they&#39;re likely all\r<br>&gt;&gt;&gt;&gt; pretty close to zero), so I suspect I could get away with using a\r<br>&gt;&gt;&gt;&gt; Gaussian. Though presumably in this case I&#39;d still need to ensure that\r<br>&gt;&gt;&gt;&gt; the sampled person_mu values are constrained to the finite range (-pi\r<br>&gt;&gt;&gt;&gt; to pi) that mu can take, which I&#39;m guessing might be achieved by\r<br>&gt;&gt;&gt;&gt; sampling the Gaussian on the real then transforming the result\r<br>&gt;&gt;&gt;&gt; (something like: inverse_logit(sample)*2*pi-pi ). In this case,\r<br>&gt;&gt;&gt;&gt; however, I&#39;m not sure how to extend the docs example of using\r<br>&gt;&gt;&gt;&gt; multi_normal() in the 2-parameter case to the 3-parameter case;\r<br>&gt;&gt;&gt;&gt; specifically, do I need to do anything to ensure that sigma is\r<br>&gt;&gt;&gt;&gt; positive definite?\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Thanks to anyone who suffered through this long post,\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Mike\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; --\r<br>&gt;&gt;&gt;&gt; Mike Lawrence\r<br>&gt;&gt;&gt;&gt; Graduate Student\r<br>&gt;&gt;&gt;&gt; Department of Psychology\r<br>&gt;&gt;&gt;&gt; Dalhousie University\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Looking to arrange a meeting? Check my public calendar:\r<br>&gt;&gt;&gt;&gt; <a href=\"http://goo.gl/BYH99\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://goo.gl/BYH99&amp;source=gmail&amp;ust=1792468826165000&amp;usg=AOvVaw2dB7d70LFb_4yiH1diyW7H\">http://goo.gl/BYH99</a>\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; ~ Certainty is folly... I think. ~\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "wtkPQptT-KoJ",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-09-18T18:35:02Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Stan should have no trouble with von Mises as a data distribution once\r<br>the Bessel function support has been implemented.  The issue will be\r<br>if you have x ~ vonMises(...) in the model where x is a parameter or\r<br>function of parameters.\r<br>\r<br>Cheers,\r<br>Marcus\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Tue, Sep 18, 2012 at 2:26 PM, Mike Lawrence &lt;<a href data-email-masked rel=\"nofollow\">mike....@gmail.com</a>&gt; wrote:\r<br>&gt; Does this apply to models that (1) use a Von Mises as the data\r<br>&gt; distribution, (2) use the Von Mises as a distribution of\r<br>&gt; hyperparameters, or both?\r<br>&gt;\r<br>&gt; As I noted earlier, with my data, I expect that most of the\r<br>&gt; hyperparameter values specifying the VonMises location are going to be\r<br>&gt; pretty close to zero, so I could replace the Von Mises there with a\r<br>&gt; Gaussian (truncated or on a transformed scale that accounts for the\r<br>&gt; -pi to pi bounds).\r<br>&gt;\r<br>&gt; If the problem applies to using Von Mises as the data distribution,\r<br>&gt; then this is more troublesome. Though I&#39;m now thinking that my data is\r<br>&gt; also likely to have pretty high values for the concentration\r<br>&gt; parameter, so a uniform-plus-truncated-Gaussian mixture for the data\r<br>&gt; distribution might be an ok approximation to the\r<br>&gt; uniform-plus-VonMises. Since this is already possible in stan, I&#39;ll\r<br>&gt; give this a shot later today and see how things go.\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt; On Tue, Sep 18, 2012 at 3:05 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;&gt; I was talking to Michael Betancourt today who said\r<br>&gt;&gt; that we&#39;d also have problems with HMC on the\r<br>&gt;&gt; von Mises distro because of the way it wraps -- there&#39;s\r<br>&gt;&gt; no way to unconstrain and retain the locality probperties\r<br>&gt;&gt; in R^N.\r<br>&gt;&gt;\r<br>&gt;&gt; - Bob\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;&gt; On 9/18/12 12:18 PM, Mike Lawrence wrote:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Thanks for the tips on fixing my model. Attacking the bessel\r<br>&gt;&gt;&gt; implementation is beyond my own meagre technical skills, but I&#39;ve\r<br>&gt;&gt;&gt; forwarded this to a more programmatically/mathematically savvy\r<br>&gt;&gt;&gt; colleague who might be able to contribute. I see that Von Mises is\r<br>&gt;&gt;&gt; also missing from JAGS\r<br>&gt;&gt;&gt; (<a href=\"http://sourceforge.net/p/mcmc-jags/feature-requests/14/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://sourceforge.net/p/mcmc-jags/feature-requests/14/&amp;source=gmail&amp;ust=1792468826168000&amp;usg=AOvVaw3JMHPVv0C2cWcjis405VuO\">http://sourceforge.net/p/mcmc-jags/feature-requests/14/</a>), so its\r<br>&gt;&gt;&gt; implementation in stan would possibly be yet another win for stan over\r<br>&gt;&gt;&gt; JAGS.\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; Mike\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; On Mon, Sep 17, 2012 at 1:27 AM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; The model looks pretty close to what you&#39;d need.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Just a couple of sticking points in the loop:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    real ps[2];\r<br>&gt;&gt;&gt;&gt;    for (t in 1:T) {\r<br>&gt;&gt;&gt;&gt;        ps[1] &lt;- log(person_rho) + log(vonMises(person_mu,person_kappa));\r<br>&gt;&gt;&gt;&gt;        ps[2] &lt;- log(1-person_rho) + log(uniform(-pi(),pi()));\r<br>&gt;&gt;&gt;&gt;        lp__ &lt;- lp__ + log_sum_exp(ps);\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; First, you want to replace the term\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    log(uniform(-pi(),pi()))\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; with\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    uniform_log(person_mu, -pi(), pi());\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; The notation uniform(L,H) is for when there is a sampling\r<br>&gt;&gt;&gt;&gt; statement, as in:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    person_mu ~ uniform(-pi(), pi());\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; This just translates into a form that calls the three-argument\r<br>&gt;&gt;&gt;&gt; uniform_log() function.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Next, you can eliminate the ps[2] local variable and just\r<br>&gt;&gt;&gt;&gt; use the binary log_sum_exp function and simplify the loop to:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;    for (t in 1:T) {\r<br>&gt;&gt;&gt;&gt;        lp__ &lt;- lp__ + log_sum_exp(log(person_rho) +\r<br>&gt;&gt;&gt;&gt; log(vonMises(person_mu,person_kappa)),\r<br>&gt;&gt;&gt;&gt;                                   log(1-person_rho) +\r<br>&gt;&gt;&gt;&gt; uniform_log(person_mu,-pi(),pi()));\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; But person_mu isn&#39;t constrained to lie in (-pi, pi) in the model,\r<br>&gt;&gt;&gt;&gt; and if it&#39;s a mixture of von Mises and uniform, the uniform needs\r<br>&gt;&gt;&gt;&gt; to have all of the person_mu in its support or you&#39;ll get an error\r<br>&gt;&gt;&gt;&gt; when evaluating the uniform_log.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Now as for how to do the von Mises, that looks a bit\r<br>&gt;&gt;&gt;&gt; sticky, because there&#39;s a (log) Bessel function of\r<br>&gt;&gt;&gt;&gt; order 0 that depends on the concentration parameter:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; <a href=\"http://en.wikipedia.org/wiki/Von_Mises_distribution\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://en.wikipedia.org/wiki/Von_Mises_distribution&amp;source=gmail&amp;ust=1792468826168000&amp;usg=AOvVaw3xoKlRnGmrYsPjifaPhWKJ\">http://en.wikipedia.org/wiki/Von_Mises_distribution</a>\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; Now if we had Bessel functions available in Stan, you could\r<br>&gt;&gt;&gt;&gt; code the distribution as with the mixture by incrementing\r<br>&gt;&gt;&gt;&gt; the log probability accumulator lp__ appropriately.  Or if\r<br>&gt;&gt;&gt;&gt; the concentration parameters were constant, you could do\r<br>&gt;&gt;&gt;&gt; the same but drop the Bessel term.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; What we would need to do to support Bessel functions would\r<br>&gt;&gt;&gt;&gt; be to write a C++ implementation of the function and its\r<br>&gt;&gt;&gt;&gt; derivative.  I think we&#39;d just need order 0 and order 1\r<br>&gt;&gt;&gt;&gt; functions.  Looks like Boost provides a generic implementation\r<br>&gt;&gt;&gt;&gt; for any order, so it shouldn&#39;t actually be too hard:\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; <a href=\"http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html&amp;source=gmail&amp;ust=1792468826168000&amp;usg=AOvVaw2AzjkbvvusRQMj8U3mo7TW\">http://www.boost.org/doc/libs/1_51_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/bessel/bessel.html</a>\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; I&#39;ll add it to our function to-do list.  Maybe someone will\r<br>&gt;&gt;&gt;&gt; take it up sooner rather than later.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; By the way, this is also what we&#39;d need to add the\r<br>&gt;&gt;&gt;&gt; von Mises distribution to Stan, which would save you the\r<br>&gt;&gt;&gt;&gt; work of coding its density.\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; - Bob\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt; On 9/16/12 7:44 PM, Mike Lawrence wrote:\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; Hi folks,\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; I&#39;m trying to implement a hierarchical mixture model and I was hoping\r<br>&gt;&gt;&gt;&gt;&gt; to get some help with a few sticking points I&#39;ve encountered thus far.\r<br>&gt;&gt;&gt;&gt;&gt; I&#39;ve created a gist (<a href=\"https://gist.github.com/3734783\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://gist.github.com/3734783&amp;source=gmail&amp;ust=1792468826168000&amp;usg=AOvVaw1jLTYH8pHZpI_ZBEFtl6gC\">https://gist.github.com/3734783</a>) that has R code\r<br>&gt;&gt;&gt;&gt;&gt; for explaining/generating the data that I&#39;m attempting to model. The\r<br>&gt;&gt;&gt;&gt;&gt; gist also has my attempt thus far at coding the stan model.\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; 2 Technical questions:\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; 1) How would I go about defining the VonMises distribution for use in\r<br>&gt;&gt;&gt;&gt;&gt; Stan? (In R, I just use the rvm() and dvm() functions from the\r<br>&gt;&gt;&gt;&gt;&gt; CircStats package.)\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; 2) Does it look like I implemented the mixture appropriately? I tried\r<br>&gt;&gt;&gt;&gt;&gt; to understand and extend the mixture example from the docs, but I\r<br>&gt;&gt;&gt;&gt;&gt; might have missed something.\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; And a more theory-related question:\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; So far the data-generating R code and stan fitting code assumes zero\r<br>&gt;&gt;&gt;&gt;&gt; covariance amongst the three parameters that get sampled per &quot;person&quot;\r<br>&gt;&gt;&gt;&gt;&gt; (&quot;person_rho&quot;, &quot;person_mu&quot;, &quot;person_kappa&quot;). Sampling of person_rho\r<br>&gt;&gt;&gt;&gt;&gt; and person_kappa are both from Gaussians, so I could use\r<br>&gt;&gt;&gt;&gt;&gt; multi_normal() as illustrated in the docs to estimate the covariance\r<br>&gt;&gt;&gt;&gt;&gt; between these parameters. However, where person_mu is sampled from a\r<br>&gt;&gt;&gt;&gt;&gt; VonMises, I&#39;m guessing there&#39;s no way to simultaneously estimate all 3\r<br>&gt;&gt;&gt;&gt;&gt; covariances? In this case, I guess I could still use multi_normal() to\r<br>&gt;&gt;&gt;&gt;&gt; estimate the covariance between person_rho and person_kappa, then\r<br>&gt;&gt;&gt;&gt;&gt; simply assume that the other 2 covariances are zero (coincidentally,\r<br>&gt;&gt;&gt;&gt;&gt; I&#39;m not *as* interested in those covariances anyway). However, I\r<br>&gt;&gt;&gt;&gt;&gt; wonder if I should be concerned about any influence on the accuracy of\r<br>&gt;&gt;&gt;&gt;&gt; inference this assumption might have if it is violated by the data.\r<br>&gt;&gt;&gt;&gt;&gt; Thoughts?\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; Another solution might be to give up use of the Von Mises for\r<br>&gt;&gt;&gt;&gt;&gt; representing the distribution of person_mu values; my data is unlikely\r<br>&gt;&gt;&gt;&gt;&gt; to have dramatic variability in person_mu values (they&#39;re likely all\r<br>&gt;&gt;&gt;&gt;&gt; pretty close to zero), so I suspect I could get away with using a\r<br>&gt;&gt;&gt;&gt;&gt; Gaussian. Though presumably in this case I&#39;d still need to ensure that\r<br>&gt;&gt;&gt;&gt;&gt; the sampled person_mu values are constrained to the finite range (-pi\r<br>&gt;&gt;&gt;&gt;&gt; to pi) that mu can take, which I&#39;m guessing might be achieved by\r<br>&gt;&gt;&gt;&gt;&gt; sampling the Gaussian on the real then transforming the result\r<br>&gt;&gt;&gt;&gt;&gt; (something like: inverse_logit(sample)*2*pi-pi ). In this case,\r<br>&gt;&gt;&gt;&gt;&gt; however, I&#39;m not sure how to extend the docs example of using\r<br>&gt;&gt;&gt;&gt;&gt; multi_normal() in the 2-parameter case to the 3-parameter case;\r<br>&gt;&gt;&gt;&gt;&gt; specifically, do I need to do anything to ensure that sigma is\r<br>&gt;&gt;&gt;&gt;&gt; positive definite?\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; Thanks to anyone who suffered through this long post,\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; Mike\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; --\r<br>&gt;&gt;&gt;&gt;&gt; Mike Lawrence\r<br>&gt;&gt;&gt;&gt;&gt; Graduate Student\r<br>&gt;&gt;&gt;&gt;&gt; Department of Psychology\r<br>&gt;&gt;&gt;&gt;&gt; Dalhousie University\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; Looking to arrange a meeting? Check my public calendar:\r<br>&gt;&gt;&gt;&gt;&gt; <a href=\"http://goo.gl/BYH99\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://goo.gl/BYH99&amp;source=gmail&amp;ust=1792468826168000&amp;usg=AOvVaw161aicjg8e_Ld4fjsJuHBW\">http://goo.gl/BYH99</a>\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;&gt; ~ Certainty is folly... I think. ~\r<br>&gt;&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;&gt;\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "1qPgwu0AyAUJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-09-18T20:47:55Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     2,
+     "On Tuesday, September 18, 2012 2:20:42 PM UTC-4, Marcus wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">On Tue, Sep 18, 2012 at 2:05 PM, Bob Carpenter &lt;<a rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\n<br>&gt; I was talking to Michael Betancourt today who said\n<br>&gt; that we&#39;d also have problems with HMC on the\n<br>&gt; von Mises distro because of the way it wraps -- there&#39;s\n<br>&gt; no way to unconstrain and retain the locality probperties\n<br>&gt; in R^N.\n<br>\n<br>In practice I expect that if you left the von Mises distributed\n<br>parameter unconstrained but evaluated it mod 2pi there wouldn&#39;t be any\n<br>issues.  Technically, this produces an improper distribution over R\n<br>but I don&#39;t think it would cause a real problem.\n<br></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>I think I am misunderstanding something. In the von Mises distribution,<br><br>f(x | u,k) = e^( k * cos(x - u) ) / ( 2 * pi * I(k) )<br><br>if we substitute the random variable y := cos(x - u), constrain y to be on [-1,1], unwind to get the transformed parameter x = acos(y) + u, and deal with the change of variables, then what is the problem besides implementing the log of the Bessel function(s)? <br><br></div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">That said, distributions like the von Mises are one big motivation to\n<br>implement a version of NUTS with nonlinear parameter constraints.\n<br></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>True.<br><br>Ben<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "9v3m-zhXTK8J",
+   "from": "Marcus Brubaker",
+   "author": "2a7f346506a3e9ff",
+   "date": "2012-09-18T21:40:38Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     2,
+     "On Tue, Sep 18, 2012 at 4:47 PM, Ben Goodrich &lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt; wrote:\r<br>&gt; On Tuesday, September 18, 2012 2:20:42 PM UTC-4, Marcus wrote:\r<br>&gt;&gt;\r<br>&gt;&gt; On Tue, Sep 18, 2012 at 2:05 PM, Bob Carpenter &lt;<a href data-email-masked rel=\"nofollow\">ca...@alias-i.com</a>&gt; wrote:\r<br>&gt;&gt; &gt; I was talking to Michael Betancourt today who said\r<br>&gt;&gt; &gt; that we&#39;d also have problems with HMC on the\r<br>&gt;&gt; &gt; von Mises distro because of the way it wraps -- there&#39;s\r<br>&gt;&gt; &gt; no way to unconstrain and retain the locality probperties\r<br>&gt;&gt; &gt; in R^N.\r<br>&gt;&gt;\r<br>&gt;&gt; In practice I expect that if you left the von Mises distributed\r<br>&gt;&gt; parameter unconstrained but evaluated it mod 2pi there wouldn&#39;t be any\r<br>&gt;&gt; issues.  Technically, this produces an improper distribution over R\r<br>&gt;&gt; but I don&#39;t think it would cause a real problem.\r<br>&gt;\r<br>&gt;\r<br>&gt; I think I am misunderstanding something. In the von Mises distribution,\r<br>&gt;\r<br>&gt; f(x | u,k) = e^( k * cos(x - u) ) / ( 2 * pi * I(k) )\r<br>&gt;\r<br>&gt; if we substitute the random variable y := cos(x - u), constrain y to be on\r<br>&gt; [-1,1], unwind to get the transformed parameter x = acos(y) + u, and deal\r<br>&gt; with the change of variables, then what is the problem besides implementing\r<br>&gt; the log of the Bessel function(s)?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Note that acos : [-1,1] -&gt; [0,pi] not -&gt; [-pi,pi] so the range of x is\r<br>limited.  It also doesn&#39;t allow users to write x~vonMises(u,k) where x\r<br>is an angle because the transform is not generic on x, but is\r<br>dependent on the distribution parameter u.\r<br>\r<br>To be clear the issue with the other obvious solution of constraining\r<br>x to be in [-pi,pi] is that it breaks the space such that transitions\r<br>from +pi to -pi are practically impossible with a general purpose\r<br>sampler like HMC/NUTS.\r<br>\r<br>Cheers,\r<br>Marcus\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "VheoyzvbSIUJ",
+   "from": "Jiqiang Guo",
+   "author": "ab7b24da45678eac",
+   "date": "2012-09-18T21:40:42Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "I guess it is problematic here since the acos(y) only maps to (0, pi), not (-pi, pi).<div><br></div><div>Jiqiang<br><br><div class=\"gmail_quote\"></div></div>"
+    ],
+    [
+     2,
+     "<div><div class=\"gmail_quote\">On Tue, Sep 18, 2012 at 4:47 PM, Ben Goodrich <span dir=\"ltr\">&lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;</span> wrote:<br>\r\n</div></div>"
+    ],
+    [
+     3,
+     "<div><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex\"><div>I think I am misunderstanding something. In the von Mises distribution,<br><br>f(x | u,k) = e^( k * cos(x - u) ) / ( 2 * pi * I(k) )<br>\r\n<br>if we substitute the random variable y := cos(x - u), constrain y to be on [-1,1], unwind to get the transformed parameter x = acos(y) + u, </div></blockquote></div></div>"
+    ]
+   ]
+  },
+  {
+   "id": "vpBDFJzCr_0J",
+   "from": "Matt Hoffman",
+   "author": "1004dd6f66bb10c3",
+   "date": "2012-09-19T17:21:02Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "How about we map the random variable to two dimensions? I.e., do something like\r<br>\r<br>parameters {\r<br>  real x;\r<br>  real y;\r<br>}\r<br>transformed parameters {\r<br>  real phi;\r<br>  real z;\r<br>  phi &lt;- atan2(x, y);\r<br>  z &lt;- x*x + y*y;\r<br>}\r<br>model {\r<br>  phi ~ von_mises(mu, kappa);\r<br>  z ~ gamma(0.5, 0.5);\r<br>}\r<br>\r<br>The resulting pdf in x-y space is unimodal, which should be a lot\r<br>easier to deal with than sampling on the original (-pi, pi) space.\r<br>\r<br>If you&#39;re not committed to the Von Mises distributional form, you\r<br>could do something easier, like say\r<br>\r<br>parameters {\r<br>  real x;\r<br>  real y;\r<br>}\r<br>transformed parameters {\r<br>  real phi;\r<br>  phi &lt;- atan2(x, y);\r<br>}\r<br>model {\r<br>  x ~ normal(kappa * cos(mu), 1);\r<br>  y ~ normal(kappa * sin(mu), 1);\r<br>}\r<br>\r<br>which will likewise express the idea that phi should be close to mu,\r<br>with a circular variance that goes down as kappa goes up.\r<br>\r<br>Matt\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On Tue, Sep 18, 2012 at 2:40 PM, Jiqiang Guo &lt;<a href data-email-masked rel=\"nofollow\">guo...@gmail.com</a>&gt; wrote:\r<br>&gt; I guess it is problematic here since the acos(y) only maps to (0, pi), not\r<br>&gt; (-pi, pi).\r<br>&gt;\r<br>&gt; Jiqiang\r<br>&gt;\r<br>&gt; On Tue, Sep 18, 2012 at 4:47 PM, Ben Goodrich &lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;\r<br>&gt; wrote:\r<br>&gt;&gt;\r<br>&gt;&gt; I think I am misunderstanding something. In the von Mises distribution,\r<br>&gt;&gt;\r<br>&gt;&gt; f(x | u,k) = e^( k * cos(x - u) ) / ( 2 * pi * I(k) )\r<br>&gt;&gt;\r<br>&gt;&gt; if we substitute the random variable y := cos(x - u), constrain y to be on\r<br>&gt;&gt; [-1,1], unwind to get the transformed parameter x = acos(y) + u,\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "HXtnpov_abcJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-09-19T17:56:43Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Thanks, Matt!  This is totally going in the manual.\r<br>\r<br>We need to upgrade some of the BUGS model translations\r<br>(like the circle and doughnut) which can be made much\r<br>neater using some of these tricks.\r<br>\r<br>Ever since I started thinking about unit hyperspheres,\r<br>I keep thinking we should be able to neatly parameterize\r<br>them via constraints.  For instance, we can constrain x\r<br>directly to be scaled to the unit circle:\r<br>\r<br>   parameters {\r<br>       real&lt;lower=-1,upper=1&gt; x;\r<br>\r<br>The problem is that then y = +/- sqrt(1 - x^2).\r<br>That is, we only need a sign out of y once we have x.\r<br>\r<br>In 3 dimensions, it&#39;s the same problem:\r<br>\r<br>       real&lt;lower=-1,lower=1&gt; x;\r<br>       real&lt;lower=-sqrt(1 - x * x),upper=sqrt(1 - x * x)&gt; y;\r<br>       ?? z\r<br>\r<br>The atan2 deals with both the scale and the sign (and\r<br>answers the question of &quot;who uses atan2?&quot; I had when\r<br>coding the auto-dif lib).  And I&#39;m pretty sure it scales\r<br>up neatly to hyperspheres.\r<br>\r<br>Matt&#39;s reparameterization of the Cauchy is also going in\r<br>the manual (as well as into the appendix of the\r<br>next edition of BDA in Andrew&#39;s discussion of\r<br>HMC in R).\r<br>\r<br>- Bob\r<br>"
+    ],
+    [
+     3,
+     "\r<br>On 9/19/12 1:21 PM, Matt Hoffman wrote:\r<br>&gt; How about we map the random variable to two dimensions? I.e., do something like\r<br>&gt;\r<br>&gt; parameters {\r<br>&gt;    real x;\r<br>&gt;    real y;\r<br>&gt; }\r<br>&gt; transformed parameters {\r<br>&gt;    real phi;\r<br>&gt;    real z;\r<br>&gt;    phi &lt;- atan2(x, y);\r<br>&gt;    z &lt;- x*x + y*y;\r<br>&gt; }\r<br>&gt; model {\r<br>&gt;    phi ~ von_mises(mu, kappa);\r<br>&gt;    z ~ gamma(0.5, 0.5);\r<br>&gt; }\r<br>&gt;\r<br>&gt; The resulting pdf in x-y space is unimodal, which should be a lot\r<br>&gt; easier to deal with than sampling on the original (-pi, pi) space.\r<br>&gt;\r<br>&gt; If you&#39;re not committed to the Von Mises distributional form, you\r<br>&gt; could do something easier, like say\r<br>&gt;\r<br>&gt; parameters {\r<br>&gt;    real x;\r<br>&gt;    real y;\r<br>&gt; }\r<br>&gt; transformed parameters {\r<br>&gt;    real phi;\r<br>&gt;    phi &lt;- atan2(x, y);\r<br>&gt; }\r<br>&gt; model {\r<br>&gt;    x ~ normal(kappa * cos(mu), 1);\r<br>&gt;    y ~ normal(kappa * sin(mu), 1);\r<br>&gt; }\r<br>&gt;\r<br>&gt; which will likewise express the idea that phi should be close to mu,\r<br>&gt; with a circular variance that goes down as kappa goes up.\r<br>&gt;\r<br>&gt; Matt\r<br>&gt;\r<br>&gt; On Tue, Sep 18, 2012 at 2:40 PM, Jiqiang Guo &lt;<a href data-email-masked rel=\"nofollow\">guo...@gmail.com</a>&gt; wrote:\r<br>&gt;&gt; I guess it is problematic here since the acos(y) only maps to (0, pi), not\r<br>&gt;&gt; (-pi, pi).\r<br>&gt;&gt;\r<br>&gt;&gt; Jiqiang\r<br>&gt;&gt;\r<br>&gt;&gt; On Tue, Sep 18, 2012 at 4:47 PM, Ben Goodrich &lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt;\r<br>&gt;&gt; wrote:\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; I think I am misunderstanding something. In the von Mises distribution,\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; f(x | u,k) = e^( k * cos(x - u) ) / ( 2 * pi * I(k) )\r<br>&gt;&gt;&gt;\r<br>&gt;&gt;&gt; if we substitute the random variable y := cos(x - u), constrain y to be on\r<br>&gt;&gt;&gt; [-1,1], unwind to get the transformed parameter x = acos(y) + u,\r<br>&gt;&gt;\r<br>&gt;&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "oDNjNYu1BWYJ",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2012-10-06T17:32:06Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "While I avidly await the implementation of the VonMises, I thought I\r<br>might try my hand at fitting a non-circular Gaussian+uniform\r<br>approximation to the original circular VonMises+uniform model I\r<br>described earlier. What I&#39;m getting stuck with now is that I&#39;d like\r<br>the parameters that determine individual performance (mean of the\r<br>Gaussian, sd of the Gaussian, mixing proportion) to be sampled across\r<br>individuals from a Gaussian multivariate distribution. While the\r<br>documentation describes how to use multi_normal at the level of\r<br>generating data from individuals, but not how to use it to specify the\r<br>sampling of parameter values for individuals, nor how to have a 3D\r<br>multivariate while ensuring that the sigma matrix is positive\r<br>definite. Any help in clarifying how to go about this would be greatly\r<br>appreciated! Here&#39;s the code I have so far, which simply implements\r<br>the sampling of the 3 parameters as from independent Gaussians:\r<br>\r<br>data {\r<br>  int&lt;lower=0&gt; N;\r<br>  int&lt;lower=0&gt; T;\r<br>  real&lt;lower=-pi(),upper=pi()&gt; y[N,T];\r<br>}\r<br>parameters {\r<br>  real logitRho[N];\r<br>  real Mu[N];\r<br>  real logSigmaSq[N];\r<br>\r<br>  real logitRho_mean;\r<br>  real&lt;lower=-pi()/4,upper=pi()/4&gt; Mu_mean;\r<br>  real logSigmaSq_mean;\r<br>\r<br>  real&lt;lower=0&gt; logitRho_sd;\r<br>  real&lt;lower=0&gt; Mu_sd;\r<br>  real&lt;lower=0&gt; logSigmaSq_sd;\r<br>}\r<br>transformed parameters {\r<br>  real Rho[N];\r<br>  real Sigma[N];\r<br>  Rho[N] &lt;- plogis(logitRho[N]);\r<br>  Sigma[N] &lt;- sqrt(exp(logSigmaSq[N]));\r<br>}\r<br>model {\r<br>  logitRho ~ normal(logitRho_mean,logitRho_sd);\r<br>  Mu ~ normal(Mu_mean,Mu_sd);\r<br>  logSigmaSq ~ normal(logSigmaSq_mean,logSigmaSq_sd);\r<br>  for (n in 1:N){\r<br>"
+    ],
+    [
+     2,
+     "\t  for (t in 1:T) {\r<br>\t\tlp__ &lt;- lp__ +\r<br>\t\t\tlog_sum_exp(\r<br>"
+    ],
+    [
+     1,
+     "\t\t\t\tlog(Rho) + normal_log(Mu,Sigma)\r<br>\t\t\t\t, log(1-Rho) + uniform_log(Mu,-pi(),pi())\r<br>\t\t\t);\r<br>\t  }\r<br>}\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "tKJxiuUbQCYJ",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2012-10-06T17:58:20Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Hm. I guess not even the simple non-multivariate version of the code I\r<br>supplied works. First, one needs to replace &quot;plogis&quot; with &quot;inv_logit&quot;,\r<br>but even then I get an error that I can&#39;t seem to understand well\r<br>enough to fix. The error is below; any ideas?\r<br>\r<br>\r<br>Error in stanc(file = file, model_code = model_code, model_name =\r<br>model_name,  :\r<br>  failed to parse Stan model &#39;stan_code&#39; with error message:\r<br>LOCATION:  file=input; line=35, column=17\r<br>\r<br>\t\t\t\t, log(1-Rho) + uniform_log(Mu,-pi(),pi())\r<br>                ^-- here\r<br>\r<br>DIAGNOSTIC(S) FROM PARSER:\r<br>\r<br>no matches for function name=&quot;log&quot;\r<br>    arg 0 type=real[1]\r<br>no matches for function name=&quot;normal_log&quot;\r<br>    arg 0 type=real[1]\r<br>    arg 1 type=real[1]\r<br>no matches for function name=&quot;add&quot;\r<br>    arg 0 type=ill formed\r<br>    arg 1 type=ill formed\r<br>expression is ill formed\r<br>Parser expecting: &lt;eps&gt;\r<br>"
+    ],
+    [
+     3,
+     "\r<br>\r<br>\r<br>\r<br>On Sat, Oct 6, 2012 at 2:32 PM, Mike Lawrence &lt;<a href data-email-masked rel=\"nofollow\">mike....@gmail.com</a>&gt; wrote:\r<br>&gt; While I avidly await the implementation of the VonMises, I thought I\r<br>&gt; might try my hand at fitting a non-circular Gaussian+uniform\r<br>&gt; approximation to the original circular VonMises+uniform model I\r<br>&gt; described earlier. What I&#39;m getting stuck with now is that I&#39;d like\r<br>&gt; the parameters that determine individual performance (mean of the\r<br>&gt; Gaussian, sd of the Gaussian, mixing proportion) to be sampled across\r<br>&gt; individuals from a Gaussian multivariate distribution. While the\r<br>&gt; documentation describes how to use multi_normal at the level of\r<br>&gt; generating data from individuals, but not how to use it to specify the\r<br>&gt; sampling of parameter values for individuals, nor how to have a 3D\r<br>&gt; multivariate while ensuring that the sigma matrix is positive\r<br>&gt; definite. Any help in clarifying how to go about this would be greatly\r<br>&gt; appreciated! Here&#39;s the code I have so far, which simply implements\r<br>&gt; the sampling of the 3 parameters as from independent Gaussians:\r<br>&gt;\r<br>&gt; data {\r<br>&gt;   int&lt;lower=0&gt; N;\r<br>&gt;   int&lt;lower=0&gt; T;\r<br>&gt;   real&lt;lower=-pi(),upper=pi()&gt; y[N,T];\r<br>&gt; }\r<br>&gt; parameters {\r<br>&gt;   real logitRho[N];\r<br>&gt;   real Mu[N];\r<br>&gt;   real logSigmaSq[N];\r<br>&gt;\r<br>&gt;   real logitRho_mean;\r<br>&gt;   real&lt;lower=-pi()/4,upper=pi()/4&gt; Mu_mean;\r<br>&gt;   real logSigmaSq_mean;\r<br>&gt;\r<br>&gt;   real&lt;lower=0&gt; logitRho_sd;\r<br>&gt;   real&lt;lower=0&gt; Mu_sd;\r<br>&gt;   real&lt;lower=0&gt; logSigmaSq_sd;\r<br>&gt; }\r<br>&gt; transformed parameters {\r<br>&gt;   real Rho[N];\r<br>&gt;   real Sigma[N];\r<br>&gt;   Rho[N] &lt;- plogis(logitRho[N]);\r<br>&gt;   Sigma[N] &lt;- sqrt(exp(logSigmaSq[N]));\r<br>&gt; }\r<br>&gt; model {\r<br>&gt;   logitRho ~ normal(logitRho_mean,logitRho_sd);\r<br>&gt;   Mu ~ normal(Mu_mean,Mu_sd);\r<br>&gt;   logSigmaSq ~ normal(logSigmaSq_mean,logSigmaSq_sd);\r<br>&gt;   for (n in 1:N){\r<br>&gt;           for (t in 1:T) {\r<br>&gt;                 lp__ &lt;- lp__ +\r<br>&gt;                         log_sum_exp(\r<br>&gt;                                 log(Rho) + normal_log(Mu,Sigma)\r<br>&gt;                                 , log(1-Rho) + uniform_log(Mu,-pi(),pi())\r<br>&gt;                         );\r<br>&gt;           }\r<br>&gt; }\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "JV_6G3846CsJ",
+   "from": "Mike Lawrence",
+   "author": "cb25d91fd630a4e5",
+   "date": "2012-10-06T18:24:05Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Sorry for spamming the list, but for posterity I thought I&#39;d note that\r<br>I solved the issues associated with the simple non-multivariate case\r<br>by replacing the line:\r<br>\r<br>log(Rho) + normal_log(Mu,Sigma)\r<br>\r<br>with:\r<br>\r<br>log(Rho[n]) + normal_log(y[n,t],Mu[n],Sigma[n])\r<br>\r<br>and replace the line:\r<br>\r<br>, log(1-Rho) + uniform_log(Mu,-pi(),pi())\r<br>\r<br>with:\r<br>\r<br>, log(1-Rho[n]) + uniform_log(y[n,t],-pi(),pi())\r<br>\r<br>\r<br>Now, I still get a error (copied below) when stan moves on to actually\r<br>sampling the model...\r<br>\r<br>Error in sampler$call_sampler(args_list[[i]]) :\r<br>  Error in function stan::prob::normal_log(N4stan5agrad3varE): Scale\r<br>parameter is nan:0, but must be &gt; 0!\r<br>"
+    ],
+    [
+     3,
+     "\r<br>\r<br>\r<br>\r<br>On Sat, Oct 6, 2012 at 2:58 PM, Mike Lawrence &lt;<a href data-email-masked rel=\"nofollow\">mike....@gmail.com</a>&gt; wrote:\r<br>&gt; Hm. I guess not even the simple non-multivariate version of the code I\r<br>&gt; supplied works. First, one needs to replace &quot;plogis&quot; with &quot;inv_logit&quot;,\r<br>&gt; but even then I get an error that I can&#39;t seem to understand well\r<br>&gt; enough to fix. The error is below; any ideas?\r<br>&gt;\r<br>&gt;\r<br>&gt; Error in stanc(file = file, model_code = model_code, model_name =\r<br>&gt; model_name,  :\r<br>&gt;   failed to parse Stan model &#39;stan_code&#39; with error message:\r<br>&gt; LOCATION:  file=input; line=35, column=17\r<br>&gt;\r<br>&gt;                                 , log(1-Rho) + uniform_log(Mu,-pi(),pi())\r<br>&gt;                 ^-- here\r<br>&gt;\r<br>&gt; DIAGNOSTIC(S) FROM PARSER:\r<br>&gt;\r<br>&gt; no matches for function name=&quot;log&quot;\r<br>&gt;     arg 0 type=real[1]\r<br>&gt; no matches for function name=&quot;normal_log&quot;\r<br>&gt;     arg 0 type=real[1]\r<br>&gt;     arg 1 type=real[1]\r<br>&gt; no matches for function name=&quot;add&quot;\r<br>&gt;     arg 0 type=ill formed\r<br>&gt;     arg 1 type=ill formed\r<br>&gt; expression is ill formed\r<br>&gt; Parser expecting: &lt;eps&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt;\r<br>&gt; On Sat, Oct 6, 2012 at 2:32 PM, Mike Lawrence &lt;<a href data-email-masked rel=\"nofollow\">mike....@gmail.com</a>&gt; wrote:\r<br>&gt;&gt; While I avidly await the implementation of the VonMises, I thought I\r<br>&gt;&gt; might try my hand at fitting a non-circular Gaussian+uniform\r<br>&gt;&gt; approximation to the original circular VonMises+uniform model I\r<br>&gt;&gt; described earlier. What I&#39;m getting stuck with now is that I&#39;d like\r<br>&gt;&gt; the parameters that determine individual performance (mean of the\r<br>&gt;&gt; Gaussian, sd of the Gaussian, mixing proportion) to be sampled across\r<br>&gt;&gt; individuals from a Gaussian multivariate distribution. While the\r<br>&gt;&gt; documentation describes how to use multi_normal at the level of\r<br>&gt;&gt; generating data from individuals, but not how to use it to specify the\r<br>&gt;&gt; sampling of parameter values for individuals, nor how to have a 3D\r<br>&gt;&gt; multivariate while ensuring that the sigma matrix is positive\r<br>&gt;&gt; definite. Any help in clarifying how to go about this would be greatly\r<br>&gt;&gt; appreciated! Here&#39;s the code I have so far, which simply implements\r<br>&gt;&gt; the sampling of the 3 parameters as from independent Gaussians:\r<br>&gt;&gt;\r<br>&gt;&gt; data {\r<br>&gt;&gt;   int&lt;lower=0&gt; N;\r<br>&gt;&gt;   int&lt;lower=0&gt; T;\r<br>&gt;&gt;   real&lt;lower=-pi(),upper=pi()&gt; y[N,T];\r<br>&gt;&gt; }\r<br>&gt;&gt; parameters {\r<br>&gt;&gt;   real logitRho[N];\r<br>&gt;&gt;   real Mu[N];\r<br>&gt;&gt;   real logSigmaSq[N];\r<br>&gt;&gt;\r<br>&gt;&gt;   real logitRho_mean;\r<br>&gt;&gt;   real&lt;lower=-pi()/4,upper=pi()/4&gt; Mu_mean;\r<br>&gt;&gt;   real logSigmaSq_mean;\r<br>&gt;&gt;\r<br>&gt;&gt;   real&lt;lower=0&gt; logitRho_sd;\r<br>&gt;&gt;   real&lt;lower=0&gt; Mu_sd;\r<br>&gt;&gt;   real&lt;lower=0&gt; logSigmaSq_sd;\r<br>&gt;&gt; }\r<br>&gt;&gt; transformed parameters {\r<br>&gt;&gt;   real Rho[N];\r<br>&gt;&gt;   real Sigma[N];\r<br>&gt;&gt;   Rho[N] &lt;- plogis(logitRho[N]);\r<br>&gt;&gt;   Sigma[N] &lt;- sqrt(exp(logSigmaSq[N]));\r<br>&gt;&gt; }\r<br>&gt;&gt; model {\r<br>&gt;&gt;   logitRho ~ normal(logitRho_mean,logitRho_sd);\r<br>&gt;&gt;   Mu ~ normal(Mu_mean,Mu_sd);\r<br>&gt;&gt;   logSigmaSq ~ normal(logSigmaSq_mean,logSigmaSq_sd);\r<br>&gt;&gt;   for (n in 1:N){\r<br>&gt;&gt;           for (t in 1:T) {\r<br>&gt;&gt;                 lp__ &lt;- lp__ +\r<br>&gt;&gt;                         log_sum_exp(\r<br>&gt;&gt;                                 log(Rho) + normal_log(Mu,Sigma)\r<br>&gt;&gt;                                 , log(1-Rho) + uniform_log(Mu,-pi(),pi())\r<br>&gt;&gt;                         );\r<br>&gt;&gt;           }\r<br>&gt;&gt; }\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "AU98PnaAeUwJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-10-06T18:50:55Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Hi Mike,"
+    ],
+    [
+     2,
+     "<br><br>On Saturday, October 6, 2012 2:24:26 PM UTC-4, Mike Lawrence wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Sorry for spamming the list, but for posterity I thought I&#39;d note that\r\n<br>I solved the issues associated with the simple non-multivariate case\r\n<br>by replacing the line:\r\n<br></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>Can you just attach the corrected files and then we can hopefully fix the problems easily? It looks like there are a few issues going on here. See<br><br><a href=\"https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J&amp;source=gmail&amp;ust=1792468826178000&amp;usg=AOvVaw3AwtHNdamWNb4zpIRjcmz6\">https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J</a><br><br>for general instructions regarding runtime errors with Stan. More comments inline below ...</div>"
+    ],
+    [
+     2,
+     "<div><br><br>&gt; On Sat, Oct 6, 2012 at 2:32 PM, Mike Lawrence &lt;<a rel=\"nofollow\">mike....@gmail.com</a>&gt; wrote:\r\n<br>&gt;&gt; While I avidly await the implementation of the VonMises, I thought I\r\n<br>&gt;&gt; might try my hand at fitting a non-circular Gaussian+uniform\r\n<br>&gt;&gt; approximation to the original circular VonMises+uniform model I\r\n<br>&gt;&gt; described earlier. What I&#39;m getting stuck with now is that I&#39;d like\r\n<br>&gt;&gt; the parameters that determine individual performance (mean of the\r\n<br>&gt;&gt; Gaussian, sd of the Gaussian, mixing proportion) to be sampled across\r\n<br>&gt;&gt; individuals from a Gaussian multivariate distribution. While the\r\n<br>&gt;&gt; documentation describes how to use multi_normal at the level of\r\n<br>&gt;&gt; generating data from individuals, but not how to use it to specify the\r\n<br>&gt;&gt; sampling of parameter values for individuals, nor how to have a 3D\r\n<br>&gt;&gt; multivariate while ensuring that the sigma matrix is positive\r\n<br>&gt;&gt; definite. Any help in clarifying how to go about this would be greatly\r\n<br>&gt;&gt; appreciated!<br><br></div>"
+    ],
+    [
+     1,
+     "<div>If you declare an otherwise unrestricted covariance matrix as a parameter, it will be positive definite with probability 1.0 (because it is really parameterized in terms of its Cholesky factor). For example,<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">parameters </span><span style=\"color:#660\">{</span><span style=\"color:#000\"><br>  cov_matrix</span><span style=\"color:#660\">[</span><span style=\"color:#066\">3</span><span style=\"color:#660\">]</span><span style=\"color:#000\"> </span><span style=\"color:#606\">Sigma</span><span style=\"color:#660\">;</span><span style=\"color:#000\"><br></span><span style=\"color:#660\">}</span><span style=\"color:#000\"><br></span></div></code></div><br>It gets tricky if you want a covariance matrix that has additional structure, but it is doable (and hopefully will be easy in Stan 2.0.x).<br><br>Ben<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "tvPb6snXVx8J",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2012-10-08T18:01:12Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "I&#39;m more interested in the multivariate case, so I&#39;ve attached what I\r<br>have so far for that model&#39;s stan code. Unfortunately, I&#39;m\r<br>encountering a parsing error now:\r<br>"
+    ],
+    [
+     2,
+     "\r<br>Error in stanc(file = file, model_code = model_code, model_name =\r<br>model_name,  :\r<br>"
+    ],
+    [
+     1,
+     "  failed to parse Stan model &#39;mix&#39; with error message:\r<br>LOCATION:  file=input; line=13, column=40\r<br>\r<br>    mv_sample &lt;- multi_normal(mu,sigma);\r<br>"
+    ],
+    [
+     2,
+     "                                       ^-- here\r<br>\r<br>DIAGNOSTIC(S) FROM PARSER:\r<br>\r<br>"
+    ],
+    [
+     1,
+     "no matches for function name=&quot;multi_normal&quot;\r<br>    arg 0 type=vector\r<br>    arg 1 type=matrix\r<br>"
+    ],
+    [
+     2,
+     "expression is ill formed\r<br>Parser expecting: &lt;eps&gt;\r<br>\r<br>\r<br>"
+    ],
+    [
+     3,
+     "On Sat, Oct 6, 2012 at 3:50 PM, Ben Goodrich &lt;<a href data-email-masked rel=\"nofollow\">goodri...@gmail.com</a>&gt; wrote:\r<br>&gt; Hi Mike,\r<br>&gt;\r<br>&gt;\r<br>&gt; On Saturday, October 6, 2012 2:24:26 PM UTC-4, Mike Lawrence wrote:\r<br>&gt;&gt;\r<br>&gt;&gt; Sorry for spamming the list, but for posterity I thought I&#39;d note that\r<br>&gt;&gt; I solved the issues associated with the simple non-multivariate case\r<br>&gt;&gt; by replacing the line:\r<br>&gt;\r<br>&gt;\r<br>&gt; Can you just attach the corrected files and then we can hopefully fix the\r<br>&gt; problems easily? It looks like there are a few issues going on here. See\r<br>&gt;\r<br>&gt; <a href=\"https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J&amp;source=gmail&amp;ust=1792468826179000&amp;usg=AOvVaw3wP2bJHDhEyvId7-ZR4kA2\">https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J</a>\r<br>&gt;\r<br>&gt; for general instructions regarding runtime errors with Stan. More comments\r<br>&gt; inline below ...\r<br>&gt;\r<br>&gt;\r<br>&gt;&gt; On Sat, Oct 6, 2012 at 2:32 PM, Mike Lawrence &lt;<a href data-email-masked rel=\"nofollow\">mike....@gmail.com</a>&gt; wrote:\r<br>&gt;&gt;&gt; While I avidly await the implementation of the VonMises, I thought I\r<br>&gt;&gt;&gt; might try my hand at fitting a non-circular Gaussian+uniform\r<br>&gt;&gt;&gt; approximation to the original circular VonMises+uniform model I\r<br>&gt;&gt;&gt; described earlier. What I&#39;m getting stuck with now is that I&#39;d like\r<br>&gt;&gt;&gt; the parameters that determine individual performance (mean of the\r<br>&gt;&gt;&gt; Gaussian, sd of the Gaussian, mixing proportion) to be sampled across\r<br>&gt;&gt;&gt; individuals from a Gaussian multivariate distribution. While the\r<br>&gt;&gt;&gt; documentation describes how to use multi_normal at the level of\r<br>&gt;&gt;&gt; generating data from individuals, but not how to use it to specify the\r<br>&gt;&gt;&gt; sampling of parameter values for individuals, nor how to have a 3D\r<br>&gt;&gt;&gt; multivariate while ensuring that the sigma matrix is positive\r<br>&gt;&gt;&gt; definite. Any help in clarifying how to go about this would be greatly\r<br>&gt;&gt;&gt; appreciated!\r<br>&gt;\r<br>&gt; If you declare an otherwise unrestricted covariance matrix as a parameter,\r<br>&gt; it will be positive definite with probability 1.0 (because it is really\r<br>&gt; parameterized in terms of its Cholesky factor). For example,\r<br>&gt;\r<br>&gt; parameters {\r<br>&gt;   cov_matrix[3] Sigma;\r<br>&gt; }\r<br>&gt;\r<br>&gt; It gets tricky if you want a covariance matrix that has additional\r<br>&gt; structure, but it is doable (and hopefully will be easy in Stan 2.0.x).\r<br>&gt;\r<br>&gt; Ben\r<br>&gt;\r<br>"
+    ],
+    [
+     1,
+     "&gt; --\r<br>&gt;\r<br>&gt;\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "B6OIertR20kJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-08T18:34:54Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 10/8/12 2:01 PM, Mike Lawrence wrote:\r<br>&gt; I&#39;m more interested in the multivariate case, so I&#39;ve attached what I\r<br>&gt; have so far for that model&#39;s stan code. Unfortunately, I&#39;m\r<br>&gt; encountering a parsing error now:\r<br>&gt;\r<br>&gt; Error in stanc(file = file, model_code = model_code, model_name =\r<br>&gt; model_name,  :\r<br>&gt;    failed to parse Stan model &#39;mix&#39; with error message:\r<br>&gt; LOCATION:  file=input; line=13, column=40\r<br>&gt;\r<br>&gt;      mv_sample &lt;- multi_normal(mu,sigma);\r<br>&gt;                                         ^-- here\r<br>&gt;\r<br>&gt; DIAGNOSTIC(S) FROM PARSER:\r<br>&gt;\r<br>&gt; no matches for function name=&quot;multi_normal&quot;\r<br>&gt;      arg 0 type=vector\r<br>&gt;      arg 1 type=matrix\r<br>&gt; expression is ill formed\r<br>&gt; Parser expecting: &lt;eps&gt;\r<br>\r<br>"
+    ],
+    [
+     1,
+     "The error message is correct -- when you write multi_normal(mu,sigma)\r<br>on the right side of an assignment, it tries to find a binary\r<br>function called multi_normal(), which doesn&#39;t exist.\r<br>\r<br>I&#39;m guessing that what you&#39;re trying to do is generate a\r<br>random sample from a multivariate normal with mean mu and\r<br>covar matrix sigma.  Stan doesn&#39;t support that and won&#39;t wind\r<br>up supporting it in models because it loses the gradient\r<br>connection.\r<br>\r<br>Instead, you&#39;ll have to define mv_sample as a parameter (not\r<br>a transformed parameter) and write the following:\r<br>\r<br>   mv_sample ~ multi_normal(mu,sigma);\r<br>\r<br>With that change, the model will look like:\r<br>"
+    ],
+    [
+     2,
+     "\r<br>data {\r<br>   int&lt;lower=0&gt; N;\r<br>   int&lt;lower=0&gt; T;\r<br>   real&lt;lower=-pi(),upper=pi()&gt; y[N,T];\r<br>}\r<br>parameters {\r<br>"
+    ],
+    [
+     1,
+     "   vector[3] mu;\r<br>   cov_matrix[3] sigma;\r<br>   vector[3] mv_sample;\r<br>}\r<br>model {\r<br>"
+    ],
+    [
+     2,
+     "   for (n in 1:N) {\r<br>"
+    ],
+    [
+     1,
+     "     mv_sample ~ multi_normal(mu,sigma);\r<br>"
+    ],
+    [
+     2,
+     "     for (t in 1:T) {\r<br>       lp__ &lt;- lp__ + log_sum_exp(\r<br>         log(\r<br>"
+    ],
+    [
+     1,
+     "           inv_logit(mv_sample[1])) +\r<br>           normal_log(y[n,t],mv_sample[2],sqrt(exp(mv_sample[3]))\r<br>         ) ,\r<br>         log1m(\r<br>           inv_logit(mv_sample[1])) +\r<br>           uniform_log(y[n,t],-pi(),pi()\r<br>         )\r<br>       );\r<br>     }\r<br>   }\r<br>}\r<br>\r<br>I also replaced log(1 - x) in the second log_sum_exp term with\r<br>the more arithmetically stable log1m(x).\r<br>\r<br>In terms of style, I would recommend:\r<br>\r<br>      lp__ &lt;- lp__\r<br>            + log_sum_exp(log(inv_logit(mv_sample[1]))\r<br>                              + normal_log(y[n,t],\r<br>                                           mv_sample[2],\r<br>                                           sqrt(exp(mv_sample[3]))),\r<br>                          log1m(inv_logit(mv_sample[1])) +\r<br>                                uniform_log(y[n,t],-pi(),pi())));\r<br>\r<br>Also, you can precompute things like sqrt(exp(mv_sample[3])) out of\r<br>the loop for t and reuse the value.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "_oLqa6WoQAgJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-10-08T18:36:45Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Hi Mike,<br><br>The attached parses by changing that line to<br><br><div style=\"background-color:rgb(250,250,250);border-color:rgb(187,187,187);border-style:solid;border-width:1px;word-wrap:break-word\"><code><div><span style=\"color:#000\">mv_sample </span><span style=\"color:#660\">~</span><span style=\"color:#000\"> multi_normal</span><span style=\"color:#660\">(</span><span style=\"color:#000\">mu</span><span style=\"color:#660\">,</span><span style=\"color:#000\">sigma</span><span style=\"color:#660\">);</span><span style=\"color:#000\"> <br></span></div></code></div><br>See the chapter (currently 16) on Statements in the Stan manual for the differences between sampling and assignment. I am still not sure whether it is going to do the right thing. Actually, I don&#39;t know what the right thing is, and I don&#39;t exactly know what Stan will do in this situation. But if there are more problems, let us know.<br><br>Ben"
+    ],
+    [
+     3,
+     "<br><br>On Monday, October 8, 2012 2:01:33 PM UTC-4, Mike Lawrence wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I&#39;m more interested in the multivariate case, so I&#39;ve attached what I\r\n<br>have so far for that model&#39;s stan code. Unfortunately, I&#39;m\r\n<br>encountering a parsing error now:\r\n<br>\r\n<br>Error in stanc(file = file, model_code = model_code, model_name =\r\n<br>model_name,  :\r\n<br>  failed to parse Stan model &#39;mix&#39; with error message:\r\n<br>LOCATION:  file=input; line=13, column=40\r\n<br>\r\n<br>    mv_sample &lt;- multi_normal(mu,sigma);\r\n<br>                                       ^-- here\r\n<br>\r\n<br>DIAGNOSTIC(S) FROM PARSER:\r\n<br>\r\n<br>no matches for function name=&quot;multi_normal&quot;\r\n<br>    arg 0 type=vector\r\n<br>    arg 1 type=matrix\r\n<br>expression is ill formed\r\n<br>Parser expecting: &lt;eps&gt;\r\n<br>\r\n<br>\r\n<br>On Sat, Oct 6, 2012 at 3:50 PM, Ben Goodrich &lt;<a rel=\"nofollow\">goodri...@gmail.com</a>&gt; wrote:\r\n<br>&gt; Hi Mike,\r\n<br>&gt;\r\n<br>&gt;\r\n<br>&gt; On Saturday, October 6, 2012 2:24:26 PM UTC-4, Mike Lawrence wrote:\r\n<br>&gt;&gt;\r\n<br>&gt;&gt; Sorry for spamming the list, but for posterity I thought I&#39;d note that\r\n<br>&gt;&gt; I solved the issues associated with the simple non-multivariate case\r\n<br>&gt;&gt; by replacing the line:\r\n<br>&gt;\r\n<br>&gt;\r\n<br>&gt; Can you just attach the corrected files and then we can hopefully fix the\r\n<br>&gt; problems easily? It looks like there are a few issues going on here. See\r\n<br>&gt;\r\n<br>&gt; <a href=\"https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J&amp;source=gmail&amp;ust=1792468826183000&amp;usg=AOvVaw32hEEiVSRQZ17fmgE_h8kL\">https://groups.google.com/d/msg/stan-users/4gv3fNCqSNk/FXHj6fn0SC0J</a>\r\n<br>&gt;\r\n<br>&gt; for general instructions regarding runtime errors with Stan. More comments\r\n<br>&gt; inline below ...\r\n<br>&gt;\r\n<br>&gt;\r\n<br>&gt;&gt; On Sat, Oct 6, 2012 at 2:32 PM, Mike Lawrence &lt;<a rel=\"nofollow\">mike....@gmail.com</a>&gt; wrote:\r\n<br>&gt;&gt;&gt; While I avidly await the implementation of the VonMises, I thought I\r\n<br>&gt;&gt;&gt; might try my hand at fitting a non-circular Gaussian+uniform\r\n<br>&gt;&gt;&gt; approximation to the original circular VonMises+uniform model I\r\n<br>&gt;&gt;&gt; described earlier. What I&#39;m getting stuck with now is that I&#39;d like\r\n<br>&gt;&gt;&gt; the parameters that determine individual performance (mean of the\r\n<br>&gt;&gt;&gt; Gaussian, sd of the Gaussian, mixing proportion) to be sampled across\r\n<br>&gt;&gt;&gt; individuals from a Gaussian multivariate distribution. While the\r\n<br>&gt;&gt;&gt; documentation describes how to use multi_normal at the level of\r\n<br>&gt;&gt;&gt; generating data from individuals, but not how to use it to specify the\r\n<br>&gt;&gt;&gt; sampling of parameter values for individuals, nor how to have a 3D\r\n<br>&gt;&gt;&gt; multivariate while ensuring that the sigma matrix is positive\r\n<br>&gt;&gt;&gt; definite. Any help in clarifying how to go about this would be greatly\r\n<br>&gt;&gt;&gt; appreciated!\r\n<br>&gt;\r\n<br>&gt; If you declare an otherwise unrestricted covariance matrix as a parameter,\r\n<br>&gt; it will be positive definite with probability 1.0 (because it is really\r\n<br>&gt; parameterized in terms of its Cholesky factor). For example,\r\n<br>&gt;\r\n<br>&gt; parameters {\r\n<br>&gt;   cov_matrix[3] Sigma;\r\n<br>&gt; }\r\n<br>&gt;\r\n<br>&gt; It gets tricky if you want a covariance matrix that has additional\r\n<br>&gt; structure, but it is doable (and hopefully will be easy in Stan 2.0.x).\r\n<br>&gt;\r\n<br>&gt; Ben\r\n<br>&gt;\r\n<br>&gt; --\r\n<br>&gt;\r\n<br>&gt;\r\n<br></blockquote>"
+    ]
+   ]
+  },
+  {
+   "id": "LErZro6w5BwJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-08T18:44:06Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 10/8/12 2:36 PM, Ben Goodrich wrote:\r<br>&gt; Hi Mike,\r<br>&gt;\r<br>&gt; The attached parses by changing that line to\r<br>&gt;\r<br>&gt; |\r<br>"
+    ],
+    [
+     1,
+     "&gt; mv_sample ~ multi_normal(mu,sigma);&#39;\r<br>\r<br>You also need to declare mv_sample as a parameter\r<br>and I think think it&#39;ll do what the original poster\r<br>intended.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "ESrnkY4GPwAJ",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2012-10-13T01:24:24Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     1,
+     "Thanks to the help in this thread, as well as the speed tweaks\r<br>suggested in the &quot;How can I speed up my code?&quot; FAQ post, I think the\r<br>attached is a fast and sufficient solution to the hierarchical mixture\r<br>I&#39;m seeking to model. While it will be improved when a VonMises is\r<br>eventually implemented, in the meantime I simply constrain the\r<br>variance of a Gaussian to let most of the mass fall within the data\r<br>bounds; certainly I expect the data to conform to this restriction. I\r<br>also avoided problems with the location of the Gaussian approaching\r<br>the bounds by first transforming (before modelling) the data to fall\r<br>within 0 to 1 (instead of -pi to pi), then modelling the location on\r<br>the logit scale. I haven&#39;t done extensive validation, but it seems to\r<br>fit the few simulated data sets I&#39;ve thrown at it pretty quickly and\r<br>accurately.\r<br>\r<br>I do have a couple (final?) questions though:\r<br>\r<br>1) What are the priors implied by this specification? I *think* the\r<br>priors for mu1, mu2 and mu3 are uniform in the range permitted for\r<br>each, and similarly the priors for the correlation matrix is uniform\r<br>between -1 and 1 for each correlation, correct? While I actually don&#39;t\r<br>really have any more informative priors in my head for my data, I do\r<br>wonder what I should do in the future if I wanted non-uniform priors\r<br>implemented.\r<br>\r<br>2) Is there a way to restrict the saved parameter samples to just a\r<br>subset of all parameters? There&#39;s 199 parameters in the full model,\r<br>but where I&#39;m only really interested in 6 of them (mu1, mu2, mu3,\r<br>Tau.1.2, Tau.1.3., Tau.2.3.), it seems like it might be a waste of\r<br>memory to save all 199. Maybe I&#39;m overestimating the memory costs or\r<br>possibly the utility of some of the other 193 parameters?\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "FrMzxFEnccQJ",
+   "from": "Ben Goodrich",
+   "author": "743bbacc59f4b25f",
+   "date": "2012-10-13T06:12:16Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     2,
+     "On Friday, October 12, 2012 9:24:45 PM UTC-4, Mike Lawrence wrote:<br><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I do have a couple (final?) questions though:\n<br>\n<br>1) What are the priors implied by this specification? I *think* the\n<br>priors for mu1, mu2 and mu3 are uniform in the range permitted for\n<br>each, </blockquote>"
+    ],
+    [
+     1,
+     "<div><br>The default prior is always uniform over the support of the parameter.<br> </div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">and similarly the priors for the correlation matrix is uniform\n<br>between -1 and 1 for each correlation, correct? </blockquote>"
+    ],
+    [
+     1,
+     "<div><br>This is a subtle but important misstatement: That prior for the correlation matrix is <b>jointly uniform</b> over KxK correlation matrices (symmetric, PSD, unit diagonal). If the prior were <b>marginally uniform</b> on [-1,1] for each of the K choose 2 correlations, then there would be a (large) region of the parameter space where the correlation matrix was not PSD. A mostly irrelevant fact is that under a <b>jointly uniform</b> prior, the <b>marginal correlations</b> are all scale-and-shifts of a symmetric beta distribution to the [-1,1] interval. <br> </div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">While I actually don&#39;t\nreally have any more informative priors in my head for my data, I do\n<br>wonder what I should do in the future if I wanted non-uniform priors\nimplemented.\n<br></blockquote>"
+    ],
+    [
+     1,
+     "<div><br>At the moment, Stan doesn&#39;t have many great options for priors on a univariate parameter with bounded support on both sides. We should probably have a generalization of the beta distribution for these situations with a minimum, maximum, mean, and dispersion. <br><br>Stan supports an informative prior over a correlation matrix with the lkj_corr(eta) distribution. If eta == 1.0, the distribution is <b>jointly uniform</b>, so it is a (big) waste of time and RAM to call it. But you can choose eta to be something other than 1.0; in particular to the extent that eta is greater than 1.0, the lkj prior has a sharper mode at the identity matrix.<br> </div>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\n2) Is there a way to restrict the saved parameter samples to just a\n<br>subset of all parameters? There&#39;s 199 parameters in the full model,\n<br>but where I&#39;m only really interested in 6 of them (mu1, mu2, mu3,\n<br>Tau.1.2, Tau.1.3., Tau.2.3.), it seems like it might be a waste of\n<br>memory to save all 199. Maybe I&#39;m overestimating the memory costs or\n<br>possibly the utility of some of the other 193 parameters?</blockquote>"
+    ],
+    [
+     1,
+     "<div><br>Yes, instead of defining the nuisance parameters in the transformed parameters {} block, define them at the top of the model {} block.<br> <br>Ben<br><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "IXWbLSITK58J",
+   "from": "Richard McElreath",
+   "author": "0839befa8a8b7d53",
+   "date": "2012-10-13T14:48:00Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     2,
+     "On Friday, October 12, 2012 6:24:45 PM UTC-7, Mike Lawrence wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">2) Is there a way to restrict the saved parameter samples to just a\n<br>subset of all parameters? There&#39;s 199 parameters in the full model,\n<br>but where I&#39;m only really interested in 6 of them (mu1, mu2, mu3,\n<br>Tau.1.2, Tau.1.3., Tau.2.3.), it seems like it might be a waste of\n<br>memory to save all 199. Maybe I&#39;m overestimating the memory costs or\n<br>possibly the utility of some of the other 193 parameters?\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Within rstan, you can add a &quot;pars&quot; vector to your call to stan(), and that will specify the list of parameters to return traces for.</div>"
+    ]
+   ]
+  },
+  {
+   "id": "4xCOOlg7qNkJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2012-10-15T06:58:22Z",
+   "subject": "Re: [stan-users] hierarchical mixture modelling",
+   "parts": [
+    [
+     2,
+     "\r<br>\r<br>On 10/12/12 9:24 PM, Mike Lawrence wrote:\r<br>&gt; Thanks to the help in this thread, as well as the speed tweaks\r<br>&gt; suggested in the &quot;How can I speed up my code?&quot; FAQ post, I think the\r<br>&gt; attached is a fast and sufficient solution to the hierarchical mixture\r<br>&gt; I&#39;m seeking to model.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Great!\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; While it will be improved when a VonMises is\r<br>&gt; eventually implemented,\r<br>\r<br>"
+    ],
+    [
+     1,
+     "That&#39;s about to happen.  We have a new contributor\r<br>who&#39;s almost done with a nice vectorized version.\r<br>\r<br>&gt; ... in the meantime I simply constrain the\r<br>"
+    ],
+    [
+     2,
+     "&gt; variance of a Gaussian to let most of the mass fall within the data\r<br>&gt; bounds; certainly I expect the data to conform to this restriction. I\r<br>&gt; also avoided problems with the location of the Gaussian approaching\r<br>&gt; the bounds by first transforming (before modelling) the data to fall\r<br>&gt; within 0 to 1 (instead of -pi to pi), then modelling the location on\r<br>&gt; the logit scale. I haven&#39;t done extensive validation, but it seems to\r<br>&gt; fit the few simulated data sets I&#39;ve thrown at it pretty quickly and\r<br>&gt; accurately.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Isn&#39;t that a slightly different model?  (Not that\r<br>there&#39;s anything wrong with doing that.  Andrew\r<br>calls it &quot;the Pinocchio Principle&quot;, because\r<br>&quot;A model that is created solely for computational\r<br>reasons can take on a life of its own.&quot;\r<br>See Andrew&#39;s whole evolving statistical lexicon at:\r<br>\r<br><a href=\"http://andrewgelman.com/2009/05/handy_statistic/\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://andrewgelman.com/2009/05/handy_statistic/&amp;source=gmail&amp;ust=1792468826187000&amp;usg=AOvVaw0KimrRPIt2y0LJah5W99GQ\">http://andrewgelman.com/2009/05/handy_statistic/</a>\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; I do have a couple (final?) questions though:\r<br>&gt;\r<br>&gt; 1) What are the priors implied by this specification? I *think* the\r<br>&gt; priors for mu1, mu2 and mu3 are uniform in the range permitted for\r<br>&gt; each,\r<br>\r<br>"
+    ],
+    [
+     1,
+     "If priors aren&#39;t specified, that&#39;s what Stan assumes.  This\r<br>is proper for types such as lower-and-upper-bounded reals,\r<br>simplexes, and correlation matrices, and improper otherwise.\r<br>\r<br>If you specify a prior, it in some sense multiplies by the\r<br>uniform to do the right thing (added on the log scale).\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; and similarly the priors for the correlation matrix is uniform\r<br>&gt; between -1 and 1 for each correlation, correct?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Ben already answered that in the negative -- it&#39;s uniform over\r<br>all positive definite covariance matrices (technically over\r<br>positive semi-definite -- the non positive definite subset\r<br>is very small in theory, but can occur in practice due to\r<br>numerical issues).\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; While I actually don&#39;t\r<br>&gt; really have any more informative priors in my head for my data, I do\r<br>&gt; wonder what I should do in the future if I wanted non-uniform priors\r<br>&gt; implemented.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "You can use any old distribution with truncation.\r<br>\r<br>The trick is keeping everything constrained properly.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt; 2) Is there a way to restrict the saved parameter samples to just a\r<br>&gt; subset of all parameters?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Not right now.  Stan saves all parameters, transformed\r<br>parameters, and generated quantities.  All random quantities\r<br>must be declared as one of these types.\r<br>\r<br>In some cases, you can move transformed parameters into\r<br>local variables.\r<br>"
+    ],
+    [
+     2,
+     "\r<br>&gt;  There&#39;s 199 parameters in the full model,\r<br>&gt; but where I&#39;m only really interested in 6 of them (mu1, mu2, mu3,\r<br>&gt; Tau.1.2, Tau.1.3., Tau.2.3.), it seems like it might be a waste of\r<br>&gt; memory to save all 199.\r<br>\r<br>"
+    ],
+    [
+     1,
+     "You&#39;re right -- that&#39;s mostly wasted memory to save them all\r<br>if you really don&#39;t need them.  (We&#39;re really bad in that we\r<br>save both sides of a symmetric covariance matrix.)\r<br>\r<br>I would argue that you want to at least monitor all the\r<br>parameters for convergence and large enough effective sample\r<br>size, even if you don&#39;t want all of them.  I should call this\r<br>out in the manual somewhere.\r<br>"
+    ],
+    [
+     2,
+     "\r<br> &gt; Maybe I&#39;m overestimating the memory costs or\r<br>&gt; possibly the utility of some of the other 193 parameters?\r<br>\r<br>"
+    ],
+    [
+     1,
+     "It shouldn&#39;t be too bad in size unless you&#39;re storing\r<br>gazillions of them.  But it is mostly wasted, which is\r<br>a shame.\r<br>\r<br>- Bob\r<br>\r<br>"
+    ]
+   ]
+  }
+ ]
+}

@@ -1,0 +1,107 @@
+{
+ "thread": "AtLk48kBtoI",
+ "subject": "Posterior predictive density with latent variables in STAN",
+ "messages_listed": 3,
+ "last_activity": "2016-04-12T12:28:48Z",
+ "messages": [
+  {
+   "id": "V1tJ3OyxAgAJ",
+   "from": "Tobias Madsen",
+   "author": "e151edd4c9d2f4c8",
+   "date": "2016-04-11T13:30:57Z",
+   "subject": "Posterior predictive density with latent variables in STAN",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">This is essentially a repost of this post on statexchange:<br><a href=\"http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan&amp;source=gmail&amp;ust=1792461842665000&amp;usg=AOvVaw1DwSb4i7OPBBawzoJJXmgd\">http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan</a><br><br>Using STAN, how do one calculate the posterior predictive density in a model with latent variables in a specified point.<br><br>As an example consider a model with a single random effect:<br><br>Y_ij = a*delta_i + b*epsilon_ij     i=1,...,N,    j=1,...,K<br><br>where delta_i is N(0,1) and epsilon_ij is N(0,1). The model has two parameters theta=(a,b). We can build the model in STAN with flat priors<br><br>-------- STAN model ----------<br>data {<br>  int N;<br>  int K;<br>  real y[N,K];<br>}<br><br>parameters {<br>  real&lt;lower=0&gt; a;<br>  real&lt;lower=0&gt; b;<br>  real delta[N];<br>}<br><br>model {<br>  for ( n in 1:N){<br>    delta[n] ~ normal(0, a);<br>    y[n] ~ normal(delta[n], b);<br>  }<br>}<br>-----------------------------------------<br><br>Now given a new data point Y = (Y_1,...,Y_K), we want to compute the posterior predictive density<br><br>p_post(Y) =  \\int p(y | theta) p_post(theta)  d theta<br><br>We could use the &quot;generated quantities&quot; block in STAN and compute P(Y|a,b), this however requires us to integrate out delta, i.e.<br><br>p(Y|a,b) = \\int p(Y|a,b,delta)p(delta|a,b) d\\delta<br><br>For this particular model this integration yields a closed-form expression, but for more complex models this is not the case. <br><br>Is there some general scheme that can be exploited in the STAN framework to obtain this posterior density? I have considered numerical integration but I think that it will require a large amount of model specific effort. Naive Monte Carlo integration can easily fail if p(Y|a,b,delta) is large in regions where p(\\delta|a,b) is small.<br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "Pwk8F_XIAgAJ",
+   "from": "Bob Carpenter",
+   "author": "8aa9b8cc06fdc99c",
+   "date": "2016-04-11T20:33:01Z",
+   "subject": "Re: [stan-users] Posterior predictive density with latent variables in STAN",
+   "parts": [
+    [
+     1,
+     "I hadn&#39;t thought about this before, so somebody who&#39;s better at\r<br>importance sampling and integration than me should check my second\r<br>answer.\r<br>\r<br>You can either draw the random delta in the generated quantities,\r<br>which can be problematic if the prior on delta_tilde_n doesn&#39;t have\r<br>much mass near y_tilde[n]:\r<br>\r<br>data {\r<br>  int&lt;lower=0&gt; N_tilde;\r<br>  real y_tilde[N_tilde];   \r<br>  ...\r<br>\r<br>generated quantities {\r<br>  real log_p_y_tilde[N_tilde];\r<br>  for (n in 1:N_tilde) {\r<br>    real delta_tilde_n;\r<br>    delta_tilde_n &lt;- normal_rng(0, a);\r<br>    log_p_y_tilde[n] &lt;- normal_log(y_tilde[n], delta_tilde_n, b);\r<br>  }\r<br>}\r<br>  \r<br>Alternatively, you can declare delta_tilde as a parameter, then \r<br>evaluate log densities on draws from the posterior, which can\r<br>then be importance weighted into an estimate of log p(y_tilde | a, b).\r<br>\r<br>  parameters {\r<br>    real delta_tilde[N_tilde];\r<br>\r<br>  model {\r<br>    delta_tilde ~ normal(0, a);\r<br>    y_tilde ~ normal(delta_tilde, b);  \r<br>\r<br>  generated quantities {\r<br>    real log_p_y_tilde[N_tilde];\r<br>    real weight[N_tilde];\r<br>    for (n in 1:N_tilde) {\r<br>      log_weight[n] &lt;- log_normal(delta_tilde[n], 0, a);\r<br>      log_p_y_tilde[n] &lt;- normal_log(y_tilde[n], delta_tilde[n], b);\r<br>  }\r<br>\r<br>You&#39;ll need to use the log weights from the outside of Stan (because\r<br>it involves multiple draw calculations), to create the appropriate\r<br>importance weighted expectation.\r<br>\r<br>This can also lead to a kind of semi-supervised learning in some\r<br>cases where adding delta_tilde and y_tilde to the model inform the estimates\r<br>of parameters.  I don&#39;t think that happens here.\r<br>\r<br>In both cases, you have to be careful, because the average of logs\r<br>isn&#39;t the same as the log of the average, and we usually want the latter.\r<br>That requires some further log-sum-exp gymnastics, as I outline in the\r<br>case study section &quot;Calculating posterior log density&quot;:\r<br>\r<br><a href=\"http://mc-stan.org/documentation/case-studies/pool-binary-trials.html\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://mc-stan.org/documentation/case-studies/pool-binary-trials.html&amp;source=gmail&amp;ust=1792461842668000&amp;usg=AOvVaw3dgE4mv-k2nii15GQFUTx7\">http://mc-stan.org/documentation/case-studies/pool-binary-trials.html</a>\r<br>\r<br>- Bob\r<br>\r<br>PS.  &quot;Stan&quot; is not an acronym.\r<br>"
+    ],
+    [
+     3,
+     "\r<br>\r<br>&gt; On Apr 11, 2016, at 9:30 AM, Tobias Madsen &lt;<a href data-email-masked rel=\"nofollow\">tobias...@gmail.com</a>&gt; wrote:\r<br>&gt; \r<br>&gt; This is essentially a repost of this post on statexchange:\r<br>&gt; <a href=\"http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan&amp;source=gmail&amp;ust=1792461842668000&amp;usg=AOvVaw1foVg0LfRNbBLj2eZX0Sw7\">http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan</a>\r<br>&gt; \r<br>&gt; Using STAN, how do one calculate the posterior predictive density in a model with latent variables in a specified point.\r<br>&gt; \r<br>&gt; As an example consider a model with a single random effect:\r<br>&gt; \r<br>&gt; Y_ij = a*delta_i + b*epsilon_ij     i=1,...,N,    j=1,...,K\r<br>&gt; \r<br>&gt; where delta_i is N(0,1) and epsilon_ij is N(0,1). The model has two parameters theta=(a,b). We can build the model in STAN with flat priors\r<br>&gt; \r<br>&gt; -------- STAN model ----------\r<br>&gt; data {\r<br>&gt;   int N;\r<br>&gt;   int K;\r<br>&gt;   real y[N,K];\r<br>&gt; }\r<br>&gt; \r<br>&gt; parameters {\r<br>&gt;   real&lt;lower=0&gt; a;\r<br>&gt;   real&lt;lower=0&gt; b;\r<br>&gt;   real delta[N];\r<br>&gt; }\r<br>&gt; \r<br>&gt; model {\r<br>&gt;   for ( n in 1:N){\r<br>&gt;     delta[n] ~ normal(0, a);\r<br>&gt;     y[n] ~ normal(delta[n], b);\r<br>&gt;   }\r<br>&gt; }\r<br>&gt; -----------------------------------------\r<br>&gt; \r<br>&gt; Now given a new data point Y = (Y_1,...,Y_K), we want to compute the posterior predictive density\r<br>&gt; \r<br>&gt; p_post(Y) =  \\int p(y | theta) p_post(theta)  d theta\r<br>&gt; \r<br>&gt; We could use the &quot;generated quantities&quot; block in STAN and compute P(Y|a,b), this however requires us to integrate out delta, i.e.\r<br>&gt; \r<br>&gt; p(Y|a,b) = \\int p(Y|a,b,delta)p(delta|a,b) d\\delta\r<br>&gt; \r<br>&gt; For this particular model this integration yields a closed-form expression, but for more complex models this is not the case. \r<br>&gt; \r<br>&gt; Is there some general scheme that can be exploited in the STAN framework to obtain this posterior density? I have considered numerical integration but I think that it will require a large amount of model specific effort. Naive Monte Carlo integration can easily fail if p(Y|a,b,delta) is large in regions where p(\\delta|a,b) is small.\r<br>&gt; \r<br>"
+    ],
+    [
+     1,
+     "&gt; -- \r<br>&gt; You received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.\r<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a href data-email-masked rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r<br>&gt; To post to this group, send email to <a href data-email-masked rel=\"nofollow\">stan-...@googlegroups.com</a>.\r<br>&gt; For more options, visit <a href=\"https://groups.google.com/d/optout\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792461842668000&amp;usg=AOvVaw1Q-a0mo9Dommdt64My5G7b\">https://groups.google.com/d/optout</a>.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "5FtiLh39AgAJ",
+   "from": "Tobias Madsen",
+   "author": "e151edd4c9d2f4c8",
+   "date": "2016-04-12T12:28:48Z",
+   "subject": "Re: [stan-users] Posterior predictive density with latent variables in STAN",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Thank you for the excellent answer. The importance sampling idea was exactly the kind of thing I was hoping for - using Stan&#39;s MCMC sampler to get at values of delta where P(Y|a,b,delta)*P(delta|a,b) is large. However I am worried about spill-over of information causing, as you say, a kind of semi-supervised learning scenario. This will definitely be a problem for the model from which I derived this example - I believe it is a problem even for the example model. I have included code to show this:<br><br>---------- Stan Model ----------<br>data {<br>  int&lt;lower=0&gt; N;</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>  int K;<br>  real y[N,K];<br><br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">  int&lt;lower=0&gt; N_tilde;<br>  real y_tilde[N_tilde,K];</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>}<br><br>parameters {<br>  real&lt;lower=0&gt; a;<br>  real&lt;lower=0&gt; b;<br>  real delta[N];<br><br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">  real delta_tilde[N_tilde];<br>}<br><br>model {<br>  for(n in 1:N){</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>    delta[n] ~ normal(0, a);<br>    y[n] ~ normal(delta[n], b);<br>  }<br><br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">  for(n in 1:N_tilde){<br>    delta_tilde[n] ~ normal(0, a);<br>    y_tilde[n] ~ normal(delta_tilde[n], b);</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>  }<br>}<br><br>generated quantities {<br>  real log_p_y_tilde[N_tilde];<br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">  real log_weight[N_tilde];</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>  for (n in 1:N_tilde) {<br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">    log_weight[n] &lt;- normal_log(delta_tilde[n], 0, a);</div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><br>    log_p_y_tilde[n] &lt;- normal_log(y_tilde[n], delta_tilde[n], b); <br>  }<br>}<br></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\">--------------------------------<br><br>-------------- R ---------------<br># Test calculation of posterior predictive in mixed effect model<br>N &lt;- 50<br>K &lt;- 5<br>a &lt;- 4<br>b &lt;- 2<br><br>N_tilde &lt;- 50 # N_tilde &lt;- 0<br>a_tilde &lt;- 12<br>b_tilde &lt;- 2<br><br>y &lt;- matrix( a*rnorm(N)+b*rnorm(N*K), N, K)<br>y_tilde &lt;- matrix( a_tilde*rnorm(N_tilde)+b_tilde*rnorm(N*K), N_tilde, K)<br><br>library(rstan)<br>stan_mixed &lt;- stan_model(&quot;stan/test/post_lik.stan&quot;)<br><br>stan_fit &lt;- sampling(stan_mixed)<br># With N_tilde = 0 result in a posterior mean around the true value 4<br># With N_tilde = 50 the posterior mean is around 9<br>stan_hist(stan_fit, pars=c(&#39;a&#39;))<br>----------------------------------<br><br>There seem to be a conflict in wanting to sample delta_tilde without it affecting the likelihood of the model.<br><br>One more thing: The calculation of the importance sampling weight. We are to evaluate<br>  p(Y_tilde|a,b) = \\int p(Y_tilde|a,b,delta_tilde)p(delta_tilde|a,b) d delta_tilde<br>for a fixed theta=(a,b). We do importance sampling so instead of sampling from p(delta_tilde|a,b), we sample from &quot;p_post(delta_tilde)&quot;. The log importance sampling weight would be:<br><br>log p(delta_tilde|a,b) - log p_post(delta_tilde).<br><br>I can see the term log p(delta_tilde|a,b) = normal_log(delta_tilde, 0, a), but where is -log p_post(delta_tilde). Am I missing something here.<br><br>Thanks again,<br>Tobias</div>"
+    ],
+    [
+     3,
+     "<div dir=\"ltr\"><br><br><br>On Monday, April 11, 2016 at 10:33:01 PM UTC+2, Bob Carpenter wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I hadn&#39;t thought about this before, so somebody who&#39;s better at\r\n<br>importance sampling and integration than me should check my second\r\n<br>answer.\r\n<br>\r\n<br>You can either draw the random delta in the generated quantities,\r\n<br>which can be problematic if the prior on delta_tilde_n doesn&#39;t have\r\n<br>much mass near y_tilde[n]:\r\n<br>\r\n<br>data {\r\n<br>  int&lt;lower=0&gt; N_tilde;\r\n<br>  real y_tilde[N_tilde];   \r\n<br>  ...\r\n<br>\r\n<br>generated quantities {\r\n<br>  real log_p_y_tilde[N_tilde];\r\n<br>  for (n in 1:N_tilde) {\r\n<br>    real delta_tilde_n;\r\n<br>    delta_tilde_n &lt;- normal_rng(0, a);\r\n<br>    log_p_y_tilde[n] &lt;- normal_log(y_tilde[n], delta_tilde_n, b);\r\n<br>  }\r\n<br>}\r\n<br>  \r\n<br>Alternatively, you can declare delta_tilde as a parameter, then \r\n<br>evaluate log densities on draws from the posterior, which can\r\n<br>then be importance weighted into an estimate of log p(y_tilde | a, b).\r\n<br>\r\n<br>  parameters {\r\n<br>    real delta_tilde[N_tilde];\r\n<br>\r\n<br>  model {\r\n<br>    delta_tilde ~ normal(0, a);\r\n<br>    y_tilde ~ normal(delta_tilde, b);  \r\n<br>\r\n<br>  generated quantities {\r\n<br>    real log_p_y_tilde[N_tilde];\r\n<br>    real weight[N_tilde];\r\n<br>    for (n in 1:N_tilde) {\r\n<br>      log_weight[n] &lt;- log_normal(delta_tilde[n], 0, a);\r\n<br>      log_p_y_tilde[n] &lt;- normal_log(y_tilde[n], delta_tilde[n], b);\r\n<br>  }\r\n<br>\r\n<br>You&#39;ll need to use the log weights from the outside of Stan (because\r\n<br>it involves multiple draw calculations), to create the appropriate\r\n<br>importance weighted expectation.\r\n<br>\r\n<br>This can also lead to a kind of semi-supervised learning in some\r\n<br>cases where adding delta_tilde and y_tilde to the model inform the estimates\r\n<br>of parameters.  I don&#39;t think that happens here.\r\n<br>\r\n<br>In both cases, you have to be careful, because the average of logs\r\n<br>isn&#39;t the same as the log of the average, and we usually want the latter.\r\n<br>That requires some further log-sum-exp gymnastics, as I outline in the\r\n<br>case study section &quot;Calculating posterior log density&quot;:\r\n<br>\r\n<br><a href=\"http://mc-stan.org/documentation/case-studies/pool-binary-trials.html\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://mc-stan.org/documentation/case-studies/pool-binary-trials.html&amp;source=gmail&amp;ust=1792461842674000&amp;usg=AOvVaw0adV11fKInXtcu3PWNk-Q6\">http://mc-stan.org/documentation/case-studies/pool-binary-trials.html</a>\r\n<br>\r\n<br>- Bob\r\n<br>\r\n<br>PS.  &quot;Stan&quot; is not an acronym.\r\n<br>\r\n<br>\r\n<br>&gt; On Apr 11, 2016, at 9:30 AM, Tobias Madsen &lt;<a rel=\"nofollow\">tobias...@gmail.com</a>&gt; wrote:\r\n<br>&gt; \r\n<br>&gt; This is essentially a repost of this post on statexchange:\r\n<br>&gt; <a href=\"http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan&amp;source=gmail&amp;ust=1792461842674000&amp;usg=AOvVaw3FX_TPGtao2cRV189uIRO8\">http://stats.stackexchange.com/questions/206637/posterior-predictive-density-with-latent-variables-in-stan</a>\r\n<br>&gt; \r\n<br>&gt; Using STAN, how do one calculate the posterior predictive density in a model with latent variables in a specified point.\r\n<br>&gt; \r\n<br>&gt; As an example consider a model with a single random effect:\r\n<br>&gt; \r\n<br>&gt; Y_ij = a*delta_i + b*epsilon_ij     i=1,...,N,    j=1,...,K\r\n<br>&gt; \r\n<br>&gt; where delta_i is N(0,1) and epsilon_ij is N(0,1). The model has two parameters theta=(a,b). We can build the model in STAN with flat priors\r\n<br>&gt; \r\n<br>&gt; -------- STAN model ----------\r\n<br>&gt; data {\r\n<br>&gt;   int N;\r\n<br>&gt;   int K;\r\n<br>&gt;   real y[N,K];\r\n<br>&gt; }\r\n<br>&gt; \r\n<br>&gt; parameters {\r\n<br>&gt;   real&lt;lower=0&gt; a;\r\n<br>&gt;   real&lt;lower=0&gt; b;\r\n<br>&gt;   real delta[N];\r\n<br>&gt; }\r\n<br>&gt; \r\n<br>&gt; model {\r\n<br>&gt;   for ( n in 1:N){\r\n<br>&gt;     delta[n] ~ normal(0, a);\r\n<br>&gt;     y[n] ~ normal(delta[n], b);\r\n<br>&gt;   }\r\n<br>&gt; }\r\n<br>&gt; -----------------------------------------\r\n<br>&gt; \r\n<br>&gt; Now given a new data point Y = (Y_1,...,Y_K), we want to compute the posterior predictive density\r\n<br>&gt; \r\n<br>&gt; p_post(Y) =  \\int p(y | theta) p_post(theta)  d theta\r\n<br>&gt; \r\n<br>&gt; We could use the &quot;generated quantities&quot; block in STAN and compute P(Y|a,b), this however requires us to integrate out delta, i.e.\r\n<br>&gt; \r\n<br>&gt; p(Y|a,b) = \\int p(Y|a,b,delta)p(delta|a,b) d\\delta\r\n<br>&gt; \r\n<br>&gt; For this particular model this integration yields a closed-form expression, but for more complex models this is not the case. \r\n<br>&gt; \r\n<br>&gt; Is there some general scheme that can be exploited in the STAN framework to obtain this posterior density? I have considered numerical integration but I think that it will require a large amount of model specific effort. Naive Monte Carlo integration can easily fail if p(Y|a,b,delta) is large in regions where p(\\delta|a,b) is small.\r\n<br>&gt; \r\n<br>&gt; -- \r\n<br>&gt; You received this message because you are subscribed to the Google Groups &quot;Stan users mailing list&quot; group.\r\n<br>&gt; To unsubscribe from this group and stop receiving emails from it, send an email to <a rel=\"nofollow\">stan-users+...@googlegroups.com</a>.\r\n<br>&gt; To post to this group, send email to <a rel=\"nofollow\">stan-...@googlegroups.com</a>.\r\n<br>&gt; For more options, visit <a href=\"https://groups.google.com/d/optout\" rel=\"nofollow\" target=\"_blank\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://groups.google.com/d/optout&amp;source=gmail&amp;ust=1792461842674000&amp;usg=AOvVaw0qa4P06Xj7vUFJWKxzxlMa\">https://groups.google.com/d/optout</a>.\r\n<br>\r\n<br></blockquote></div>"
+    ]
+   ]
+  }
+ ]
+}

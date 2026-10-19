@@ -1,0 +1,1874 @@
+From ud8b934109b5119b2 at groups.google.com  Thu Jun  1 09:23:59 2017
+From: ud8b934109b5119b2 at groups.google.com (Daniel Padfield)
+Date: Thu, 01 Jun 2017 09:23:59 +0000
+Subject: Correct way to code interactions
+Message-ID: <55WwoEVtOmo.gYObht8dCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/55WwoEVtOmo/m/gYObht8dCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all
+
+Been looking for some documentation on coding interactions in Stan models and haven't found anything explicitly explaining things. Any recommendations for where to look?
+
+My current model looks at how flux of an entire community is influenced by the individuals within it. Consequently I have multiple masses (K) for each rate (N).
+
+Finally came back to this after 2 months and managed to get it working but if I have a group factor for each sample how would I code the interaction on each parameter, especially that a is wrapped up in log_sum_exp(a * segment(mass, pos, mass_n[n]))
+
+Here is the model as it is, not overly complex apart from the log_sum_exp() part.
+
+stan_model <- '
+data{
+  int N;                              // number of samples
+  int K;                              // number of mass samples
+  int mass_n[N];                      // number of masses per sample
+  vector[N] ln_rate;                  // rate
+  vector[N] temp;                     // temperature
+  vector[K] mass;                     // masses
+}
+parameters{
+  real<lower=0> sigma;      // standard deviation
+  real ln_r0;               // community normalisation constant
+  real bT;                  // effect of temperature
+  real a;                   // size scaling exponent
+}
+model{
+  int pos;
+  vector[N] mu;
+  vector[N] ln_biomass;
+  ln_r0 ~ normal(0,10);
+  bT ~ normal(0,10);
+  a ~ normal(0,10);
+  sigma ~ cauchy(0,2);
+
+  pos = 1;
+  for(n in 1:N){
+    ln_biomass[n] = log_sum_exp(a * segment(mass, pos, mass_n[n]));
+    pos = pos + mass_n[n];
+  }
+
+  # likelihood regression for size dependence of rate
+  mu = ln_r0 + ln_biomass + bT*temp;
+  ln_rate ~  normal(mu, sigma);
+
+}'
+
+For ln_r0, I can see I can just add another vector for the group (0 or 1) and add a
+
+ln_r0 + ln_r0_inter * group+ ...
+
+into the model block
+
+And for bT, I have read that I should included a transformed data block:
+
+transformed data{
+vector[N] temp_inter;
+temp_inter = temp .* ancestral;
+}
+
+and then add that into the model block as
+
+... bT*temp + bT_inter*temp_inter...
+
+I have ran this and I am happy these are doing what I want them to. However when it comes to adding in an interaction to allow an interaction between "a" and "group" I do not really know where to start.
+
+I have a reproducible gist <https://gist.github.com/padpadpadpad/e5fa95373217af6586e2fdc173e6c4b9> of this model using rstan. It has the data created for "group" but it has not been incorporated into the model yet...
+
+Cheers
+Dan
+
+From ud0d4a852dcbd9f5b at groups.google.com  Fri Jun  2 09:26:06 2017
+From: ud0d4a852dcbd9f5b at groups.google.com (stijn masschelein)
+Date: Fri, 02 Jun 2017 09:26:06 +0000
+Subject: Re: Help with divergent transitions + noncentered paramterization
+Message-ID: <ANMnLEX447c.fNzix5FsCAAJ@stan-users.groups.google.com>
+In-Reply-To: <ANMnLEX447c.AekdaubMAwAJ@stan-users.groups.google.com>
+References: <ANMnLEX447c.sxM-bDm2BQAJ@stan-users.groups.google.com> <ANMnLEX447c.AekdaubMAwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/ANMnLEX447c/m/fNzix5FsCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think a lot of your troubles come from the fact that your predictors have a perfect linear relationship with y. y = 3 - .5 * pred or y = 2 + pred2. If you would have an intercept in your model and you would be modeling y ~ normal(a0 + a1 pred + a2 pred2, sigma) than the nuts sampler would have to switch between the equally probably modes (a0 = 3, a1 = -.5, a2 = 0) and (a0 = 2, a1 = 0, a2 = 1). This is likely to lead to divergences and weird curvature.
+
+If I read your model correctly, there is no intercept a0 in your model but I still think that the linear relations in your data (see also pred = 2 - 2*pred2) are causing havoc.
+
+Stijn
+
+On Tuesday, May 30, 2017 at 11:10:12 PM UTC+8, Jökull Snæbjarnarson wrote:
+> Can anyone of you help me out diagnosing the problem with this simple example model and maybe give some on advice on how to fix it ?
+> It gives me a bunch of  divergent transitions. Funnel like correlations and a highly curved posterior are apparent but I don't really get where those correlations come from.
+> Maybe I can implement the noncentered paramterization in a different way?
+>
+> Thanks in advance,
+> Jökull
+>
+> nonCentered <- "
+> data {
+>   int<lower=1> Ntotal;
+>   vector[Ntotal] pred;
+>   vector[Ntotal] pred2;
+>   vector[Ntotal] y;
+> }
+> parameters {
+>   real<lower=0.0> sigma;
+>   real<lower=0.0> sigma_w;
+>   real<lower=0.0> sigma_w2;
+>   real mu;
+>   real w_raw;
+>   real w_raw2;
+> }
+> transformed parameters {
+>   real w;
+>   real w2;
+>   vector[Ntotal] y_mu;
+>   for (n in 1:Ntotal) y_mu[n] = 0.0;
+>   w = sigma_w * w_raw + mu;
+>   w2 = sigma_w2 * w_raw2 + mu;
+>   y_mu = w * pred + w2 * pred2;
+> }
+> model {
+>   sigma_w ~ normal(1,1);
+>   sigma_w2 ~ normal(1,1);
+>   sigma ~ normal(1,1);
+>   mu ~ normal(1,0.2);
+>   w_raw ~ normal(0, 1);
+>   w_raw2 ~ normal(0, 1);
+>   y ~ normal(y_mu,sigma);
+> }
+> "
+>
+> fit <-
+>   stan(
+>     model_code = nonCentered,
+>     data = list(pred = c(0,2,0,0,2,0,0,2,0),
+>                 pred2 = c(1,0,1,1,0,1,1,0,1),
+>                 Ntotal =9, y = c(3,2,3,3,2,3,3,2,3)),
+>     model_name =  'example',
+>     iter = 1200,
+>     chains = 2
+>   )
+>
+>
+>
+>
+
+From u8aa9b8cc06fdc99c at groups.google.com  Fri Jun  2 17:14:08 2017
+From: u8aa9b8cc06fdc99c at groups.google.com (Bob Carpenter)
+Date: Fri, 02 Jun 2017 17:14:08 +0000
+Subject: Re: [stan-users] Correct way to code interactions
+Message-ID: <55WwoEVtOmo.OwiiXsCJBQAJ@stan-users.groups.google.com>
+In-Reply-To: <55WwoEVtOmo.gYObht8dCAAJ@stan-users.groups.google.com>
+References: <55WwoEVtOmo.gYObht8dCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/55WwoEVtOmo/m/OwiiXsCJBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I didn't understand what "group" was in your notation.  When you
+say "specify another vector", what exactly did you mean---a parameter,
+data, or what?
+
+Can you write out the model in mathematical terms, specifically what
+you want mu to be in
+
+  mu = ln_r0 + ln_biomass + bT*temp;
+  ln_rate ~  normal(mu, sigma);
+
+Translating to Stan shouldn't be a problem.
+
+- Bob
+
+P.S.  We're shutting this list down in a week or two;  the list
+has moved to:
+
+http://discourse.mc-stan.org
+
+You'll find more people there now than here to answer your question.
+Feel free (nay, encouraged) to cross-post.
+
+> On Jun 1, 2017, at 5:23 AM, Daniel Padfield <d.padfi...@gmail.com> wrote:
+>
+> Hi all
+>
+> Been looking for some documentation on coding interactions in Stan models and haven't found anything explicitly explaining things. Any recommendations for where to look?
+>
+> My current model looks at how flux of an entire community is influenced by the individuals within it. Consequently I have multiple masses (K) for each rate (N).
+>
+> Finally came back to this after 2 months and managed to get it working but if I have a group factor for each sample how would I code the interaction on each parameter, especially that a is wrapped up in log_sum_exp(a * segment(mass, pos, mass_n[n]))
+
+You just need to code up the linear predictor.  So I'm not sure what
+you're having problem with doing this.  I also have problems with
+words like "factor" because it's all tied up with stats terminology I never
+understood and R conventions.
+
+>
+> Here is the model as it is, not overly complex apart from the log_sum_exp() part.
+>
+> stan_model <- '
+> data{
+>   int N;                              // number of samples
+>   int K;                              // number of mass samples
+>   int mass_n[N];                      // number of masses per sample
+>   vector[N] ln_rate;                  // rate
+>   vector[N] temp;                     // temperature
+>   vector[K] mass;                     // masses
+> }
+> parameters{
+>   real<lower=0> sigma;      // standard deviation
+>   real ln_r0;               // community normalisation constant
+>   real bT;                  // effect of temperature
+>   real a;                   // size scaling exponent
+> }
+> model{
+>   int pos;
+>   vector[N] mu;
+>   vector[N] ln_biomass;
+>   ln_r0 ~ normal(0,10);
+>   bT ~ normal(0,10);
+>   a ~ normal(0,10);
+>   sigma ~ cauchy(0,2);
+>
+>
+>   pos = 1;
+>   for(n in 1:N){
+>     ln_biomass[n] = log_sum_exp(a * segment(mass, pos, mass_n[n]));
+>     pos = pos + mass_n[n];
+>   }
+>
+>
+>   # likelihood regression for size dependence of rate
+>   mu = ln_r0 + ln_biomass + bT*temp;
+>   ln_rate ~  normal(mu, sigma);
+>
+>
+> }'
+>
+> For ln_r0, I can see I can just add another vector for the group (0 or 1) and add a
+>
+>
+> ln_r0 + ln_r0_inter * group+ ...
+>
+> into the model block
+>
+> And for bT, I have read that I should included a transformed data block:
+>
+> transformed data{
+> vector[N] temp_inter;
+> temp_inter = temp .* ancestral;
+> }
+>
+> and then add that into the model block as
+>
+> ... bT*temp + bT_inter*temp_inter...
+>
+> I have ran this and I am happy these are doing what I want them to. However when it comes to adding in an interaction to allow an interaction between "a" and "group" I do not really know where to start.
+>
+> I have a reproducible gist of this model using rstan. It has the data created for "group" but it has not been incorporated into the model yet...
+>
+> Cheers
+> Dan
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ua236d3d356ca53fd at groups.google.com  Fri Jun  2 19:50:10 2017
+From: ua236d3d356ca53fd at groups.google.com (Aki Vehtari)
+Date: Fri, 02 Jun 2017 19:50:10 +0000
+Subject: Re: Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.-X73fTV1BwAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/-X73fTV1BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Note that we have moved the user forum to http://discourse.mc-stan.org/
+
+We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+
+Aki
+
+On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> Dear Stan Group,
+>
+> I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+>
+> Thank you
+
+From u68a03e0a37cf0506 at groups.google.com  Fri Jun  2 22:29:02 2017
+From: u68a03e0a37cf0506 at groups.google.com (Michael Ratajczak)
+Date: Fri, 02 Jun 2017 22:29:02 +0000
+Subject: Re: rstanarm: varying intercepts and slopes with ordered logit
+Message-ID: <qBMbi_ZMi2k.fMwJ4eB9BwAJ@stan-users.groups.google.com>
+In-Reply-To: <qBMbi_ZMi2k.o-pmydt4BwAJ@stan-users.groups.google.com>
+References: <qBMbi_ZMi2k.aCLwGxRQBgAJ@stan-users.groups.google.com> <qBMbi_ZMi2k.o-pmydt4BwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/qBMbi_ZMi2k/m/fMwJ4eB9BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am wondering, are there plans for incorporating random effects in the stan_polr function in the future? Or for creating an additional function allowing for random effects in ordinal regression models?
+
+On Monday, May 1, 2017 at 1:42:46 PM UTC+1, Michael Ratajczak wrote:
+> Hi Paul and Andrew,
+>
+> Thank you for your replies.
+>
+> Paul: I am aware of the brms package, but I prefer rstanarm because it is faster. Also, I have many predictors and I would like to fit the model using the R-squared prior.
+>
+> Andrew: I think stan_polr is the only modelling function in rstanarm that models an ordinal response; when I try to vary the intercepts for each participant using lme4-style notation, the following error message appears:
+>
+> Error: Constant variable(s) found: 1 | Subject
+>
+> Michael
+>
+> On Sunday, April 30, 2017 at 9:03:54 PM UTC+1, Andrew Gelman wrote:
+> > I thought rstanarm did allow ordered logit with varying intercepts and slopes using lmer4-style notation.  But maybe Ben and Jonah haven't put this in yet, I'm not sure.
+> > A
+> >
+> > > On Apr 30, 2017, at 1:49 PM, Paul Buerkner <paul.b...@gmail.com> wrote:
+> > >
+> > > As far as I know, rstanarm does currently not support random effects in ordinal models. but the brms package, which is also based on Stan, offers this feature.
+> > >
+> > > Am Donnerstag, 27. April 2017 20:04:13 UTC+2 schrieb Michael Ratajczak:
+> > > > Hi,
+> > > >
+> > > > Is there any way to include random effects in ordinal regression models fitted using rstanarm? stan_polr doesn't seem to have this capability -- is this something that may be added in the future?
+> > > >
+> > > > Thanks,
+> > > > Michael
+> > > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> > > To post to this group, send email to stan-...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+
+From uda33143a8db60ce8 at groups.google.com  Fri Jun  2 22:51:45 2017
+From: uda33143a8db60ce8 at groups.google.com (Andrew Gelman)
+Date: Fri, 02 Jun 2017 22:51:45 +0000
+Subject: Re: [stan-users] rstanarm: varying intercepts and slopes with ordered logit
+Message-ID: <qBMbi_ZMi2k.WYPd3yycBQAJ@stan-users.groups.google.com>
+In-Reply-To: <qBMbi_ZMi2k.fMwJ4eB9BwAJ@stan-users.groups.google.com>
+References: <qBMbi_ZMi2k.aCLwGxRQBgAJ@stan-users.groups.google.com> <qBMbi_ZMi2k.fMwJ4eB9BwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/qBMbi_ZMi2k/m/WYPd3yycBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+There is definitely a plan to do this.  It might be there already, actually.
+A
+
+> On Jun 2, 2017, at 6:29 PM, Michael Ratajczak <healthcom...@gmail.com> wrote:
+>
+> I am wondering, are there plans for incorporating random effects in the stan_polr function in the future? Or for creating an additional function allowing for random effects in ordinal regression models?
+>
+> On Monday, May 1, 2017 at 1:42:46 PM UTC+1, Michael Ratajczak wrote:
+> > Hi Paul and Andrew,
+> >
+> > Thank you for your replies.
+> >
+> > Paul: I am aware of the brms package, but I prefer rstanarm because it is faster. Also, I have many predictors and I would like to fit the model using the R-squared prior.
+> >
+> > Andrew: I think stan_polr is the only modelling function in rstanarm that models an ordinal response; when I try to vary the intercepts for each participant using lme4-style notation, the following error message appears:
+> >
+> > Error: Constant variable(s) found: 1 | Subject
+> >
+> > Michael
+> >
+> > On Sunday, April 30, 2017 at 9:03:54 PM UTC+1, Andrew Gelman wrote:
+> > > I thought rstanarm did allow ordered logit with varying intercepts and slopes using lmer4-style notation.  But maybe Ben and Jonah haven't put this in yet, I'm not sure.
+> > > A
+> > >
+> > > > On Apr 30, 2017, at 1:49 PM, Paul Buerkner <paul.b...@gmail.com> wrote:
+> > > >
+> > > > As far as I know, rstanarm does currently not support random effects in ordinal models. but the brms package, which is also based on Stan, offers this feature.
+> > > >
+> > > > Am Donnerstag, 27. April 2017 20:04:13 UTC+2 schrieb Michael Ratajczak:
+> > > > > Hi,
+> > > > >
+> > > > > Is there any way to include random effects in ordinal regression models fitted using rstanarm? stan_polr doesn't seem to have this capability -- is this something that may be added in the future?
+> > > > >
+> > > > > Thanks,
+> > > > > Michael
+> > > > >
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> > > > To post to this group, send email to stan-...@googlegroups.com.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Sat Jun  3 17:41:52 2017
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin)
+Date: Sat, 03 Jun 2017 17:41:52 +0000
+Subject: Re: Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.Iyp00cm8BwAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.-X73fTV1BwAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com> <21qPDUWd9Fg.-X73fTV1BwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/Iyp00cm8BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, Aki.  I will post there moving forward.   I will look into the generalized inverse Gaussian distribution, too.
+
+In terms of the scaled beta distribution, would that be something I should just define as a new distribution in Stan and then add it as a prior?  I know Stan advocates using priors without bounded support, but in the case of a spatial model, I think there is a justification for using a prior that does not put mass on a range parameter that is beyond the maximum distance in the data.  Would you agree?
+
+Best,
+Colin
+
+On Friday, June 2, 2017 at 2:50:10 PM UTC-5, Aki Vehtari wrote:
+> Note that we have moved the user forum to http://discourse.mc-stan.org/
+>
+> We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+>
+> Aki
+>
+> On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> > Dear Stan Group,
+> >
+> > I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+> >
+> > Thank you
+
+From ua236d3d356ca53fd at groups.google.com  Sat Jun  3 18:26:04 2017
+From: ua236d3d356ca53fd at groups.google.com (Aki Vehtari)
+Date: Sat, 03 Jun 2017 18:26:04 +0000
+Subject: Re: Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.s4_qGDO_BwAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.Iyp00cm8BwAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com> <21qPDUWd9Fg.Iyp00cm8BwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/s4_qGDO_BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Here's the Stan function for the generalized inverse Gaussian
+functions {
+  real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+      real lp =
+      p * 0.5 * log(a / b)
+      - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+      + (p - 1) * log(x) - (a * x + b / x) * 0.5;
+      return lp;
+  }
+}
+
+You can use it set a prior in the usual way
+x ~ generalized_inverse_gaussian(p, a, b);
+
+If the range parameter is the same as the maximum distance in the data then the correlation between the most distant points is still less than 1 and thus it is reasonable to "put mass on a range parameter that is beyond the maximum distance in the data". I'm not aware of cases where we would have just prior information that strict upper bound would be justified. The problem with a strict upper bound is that if you guessed wrong then no amount of data can overcome that. Bounds are ok, when the values outside the bounds are invalid (e.g. lower=0 for the range parameter, or lower=0,upper=1 for probabilities).
+
+Aki
+
+On Saturday, June 3, 2017 at 8:41:52 PM UTC+3, Colin wrote:
+> Thanks, Aki.  I will post there moving forward.   I will look into the generalized inverse Gaussian distribution, too.
+>
+> In terms of the scaled beta distribution, would that be something I should just define as a new distribution in Stan and then add it as a prior?  I know Stan advocates using priors without bounded support, but in the case of a spatial model, I think there is a justification for using a prior that does not put mass on a range parameter that is beyond the maximum distance in the data.  Would you agree?
+>
+> Best,
+> Colin
+>
+> On Friday, June 2, 2017 at 2:50:10 PM UTC-5, Aki Vehtari wrote:
+> > Note that we have moved the user forum to http://discourse.mc-stan.org/
+> >
+> > We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+> >
+> > Aki
+> >
+> > On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> > > Dear Stan Group,
+> > >
+> > > I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+> > >
+> > > Thank you
+
+From u6d020fc5d7c9ee0a at groups.google.com  Sat Jun  3 18:57:09 2017
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin Lewis-Beck)
+Date: Sat, 03 Jun 2017 18:57:09 +0000
+Subject: Re: [stan-users] Re: Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.-hfeFPTdBQAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.s4_qGDO_BwAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com> <21qPDUWd9Fg.s4_qGDO_BwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/-hfeFPTdBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks again, Aki,
+
+I do see your point about the range parameter.   I will give this prior a shot.  The data set I have is pretty small (about 200 obs), so the posteriors for phi were extremely sensitive to the priors, and if the prior on phi was too diffuse the posterior was heavily right skewed with extremely large values.
+
+Below is the model I am fitting with a Matern covariance structure.   I am fixing the smoothness parameter to help simplify the model.  One idea I have to help the MCMC converge is to set the mean parameter of the phi prior equal to a value approximately equal to the range of the empirical variogram--sort of an empirical Bayes approach.   Do you think this would be a reasonable choice?
+
+model {
+   matrix[L,L] H; // Same Spatial Paramters for Each Year
+
+   for (i in 1:(L-1)) {
+     for (j in (i+1):L) {
+       H[i,j] = tau2 * exp(-d[i,j]/ phi);
+       H[j,i] = H[i,j]; // do not calculate twice, utilize symmetry
+     }
+   }
+   for (k in 1:L) {
+     H[k, k] = sigma2 + tau2; //diagonal of covariance matrix
+   }
+
+   for (i in 1:T){
+   Y[,i] ~ multi_normal(alpha[i] + X[,i]*beta[i], H);
+}
+
+   //priors
+   //inproper priors on coefficients
+   sigma ~ cauchy(0,1);
+   tau ~ cauchy(0,1);
+   phi ~ cauchy(0,5);
+}
+
+On Sat, Jun 3, 2017 at 1:26 PM, Aki Vehtari <aki.v...@aalto.fi> wrote:
+
+> Here's the Stan function for the generalized inverse Gaussian
+> functions {
+>   real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+>       real lp =
+>       p * 0.5 * log(a / b)
+>       - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+>       + (p - 1) * log(x) - (a * x + b / x) * 0.5;
+>       return lp;
+>   }
+> }
+>
+> You can use it set a prior in the usual way
+> x ~ generalized_inverse_gaussian(p, a, b);
+>
+> If the range parameter is the same as the maximum distance in the data then the correlation between the most distant points is still less than 1 and thus it is reasonable to "put mass on a range parameter that is beyond the maximum distance in the data". I'm not aware of cases where we would have just prior information that strict upper bound would be justified. The problem with a strict upper bound is that if you guessed wrong then no amount of data can overcome that. Bounds are ok, when the values outside the bounds are invalid (e.g. lower=0 for the range parameter, or lower=0,upper=1 for probabilities).
+>
+> Aki
+>
+> On Saturday, June 3, 2017 at 8:41:52 PM UTC+3, Colin wrote:
+> > Thanks, Aki.  I will post there moving forward.   I will look into the generalized inverse Gaussian distribution, too.
+> >
+> > In terms of the scaled beta distribution, would that be something I should just define as a new distribution in Stan and then add it as a prior?  I know Stan advocates using priors without bounded support, but in the case of a spatial model, I think there is a justification for using a prior that does not put mass on a range parameter that is beyond the maximum distance in the data.  Would you agree?
+> >
+> > Best,
+> > Colin
+> >
+> > On Friday, June 2, 2017 at 2:50:10 PM UTC-5, Aki Vehtari wrote:
+> > > Note that we have moved the user forum to http://discourse.mc-stan.org/
+> > >
+> > > We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+> > >
+> > > Aki
+> > >
+> > > On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> > > > Dear Stan Group,
+> > > >
+> > > > I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+> > > >
+> > > > Thank you
+
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/stan-users/21qPDUWd9Fg/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to stan-users+unsubscribe@googlegroups.com.
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ua236d3d356ca53fd at groups.google.com  Sat Jun  3 20:38:03 2017
+From: ua236d3d356ca53fd at groups.google.com (Aki Vehtari)
+Date: Sat, 03 Jun 2017 20:38:03 +0000
+Subject: Re: [stan-users] Re: Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.uINx52bGBwAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.Iyp00cm8BwAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com> <21qPDUWd9Fg.Iyp00cm8BwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/uINx52bGBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Please post all new questions to http://discourse.mc-stan.org/
+Now you get only my answers, while in Discourse there would be many more reading these.
+
+The next manual version will discuss sensitivity of covariance function priors in more detail.
+
+Cauchy is especially bad choice for phi.
+
+Are you sure you want to use Matern with nu=1/2? That's far for from smooth. With 200 obs, nu will be weakly identifiable. I recommend testing with nu=3/2 or nu=5/2, too,
+
+Setting the prior using empirical variogram is double use of data, and should be used only if the prior is wide enough so that it's still weakly informative.
+
+You could also improve the convergence by using the non-centered parameterization.
+
+Aki
+
+On Saturday, June 3, 2017 at 9:57:09 PM UTC+3, Colin wrote:
+
+> Thanks again, Aki,
+>
+> I do see your point about the range parameter.   I will give this prior a shot.  The data set I have is pretty small (about 200 obs), so the posteriors for phi were extremely sensitive to the priors, and if the prior on phi was too diffuse the posterior was heavily right skewed with extremely large values.
+>
+> Below is the model I am fitting with a Matern covariance structure.   I am fixing the smoothness parameter to help simplify the model.  One idea I have to help the MCMC converge is to set the mean parameter of the phi prior equal to a value approximately equal to the range of the empirical variogram--sort of an empirical Bayes approach.   Do you think this would be a reasonable choice?
+>
+>
+> model {
+>    matrix[L,L] H; // Same Spatial Paramters for Each Year
+>
+>    for (i in 1:(L-1)) {
+>      for (j in (i+1):L) {
+>        H[i,j] = tau2 * exp(-d[i,j]/ phi);
+>        H[j,i] = H[i,j]; // do not calculate twice, utilize symmetry
+>      }
+>    }
+>    for (k in 1:L) {
+>      H[k, k] = sigma2 + tau2; //diagonal of covariance matrix
+>    }
+>
+>    for (i in 1:T){
+>    Y[,i] ~ multi_normal(alpha[i] + X[,i]*beta[i], H);
+> }
+>
+>    //priors
+>    //inproper priors on coefficients
+>    sigma ~ cauchy(0,1);
+>    tau ~ cauchy(0,1);
+>    phi ~ cauchy(0,5);
+> }
+>
+
+> On Sat, Jun 3, 2017 at 1:26 PM, Aki Vehtari <aki.v...@aalto.fi> wrote:
+
+> > Here's the Stan function for the generalized inverse Gaussian
+> > functions {
+> >   real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+> >       real lp =
+> >       p * 0.5 * log(a / b)
+> >       - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+> >       + (p - 1) * log(x) - (a * x + b / x) * 0.5;
+> >       return lp;
+> >   }
+> > }
+> >
+> > You can use it set a prior in the usual way
+> > x ~ generalized_inverse_gaussian(p, a, b);
+> >
+> > If the range parameter is the same as the maximum distance in the data then the correlation between the most distant points is still less than 1 and thus it is reasonable to "put mass on a range parameter that is beyond the maximum distance in the data". I'm not aware of cases where we would have just prior information that strict upper bound would be justified. The problem with a strict upper bound is that if you guessed wrong then no amount of data can overcome that. Bounds are ok, when the values outside the bounds are invalid (e.g. lower=0 for the range parameter, or lower=0,upper=1 for probabilities).
+> >
+> > Aki
+> >
+> > On Saturday, June 3, 2017 at 8:41:52 PM UTC+3, Colin wrote:
+> > > Thanks, Aki.  I will post there moving forward.   I will look into the generalized inverse Gaussian distribution, too.
+> > >
+> > > In terms of the scaled beta distribution, would that be something I should just define as a new distribution in Stan and then add it as a prior?  I know Stan advocates using priors without bounded support, but in the case of a spatial model, I think there is a justification for using a prior that does not put mass on a range parameter that is beyond the maximum distance in the data.  Would you agree?
+> > >
+> > > Best,
+> > > Colin
+> > >
+> > > On Friday, June 2, 2017 at 2:50:10 PM UTC-5, Aki Vehtari wrote:
+> > > > Note that we have moved the user forum to http://discourse.mc-stan.org/
+> > > >
+> > > > We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+> > > >
+> > > > Aki
+> > > >
+> > > > On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> > > > > Dear Stan Group,
+> > > > >
+> > > > > I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+> > > > >
+> > > > > Thank you
+
+> > --
+> > You received this message because you are subscribed to a topic in the Google Groups "Stan users mailing list" group.
+> > To unsubscribe from this topic, visit https://groups.google.com/d/topic/stan-users/21qPDUWd9Fg/unsubscribe.
+
+> > To unsubscribe from this group and all its topics, send an email to stan-users+...@googlegroups.com.
+
+> >
+> > To post to this group, send email to stan-...@googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u6d020fc5d7c9ee0a at groups.google.com  Sat Jun  3 22:10:52 2017
+From: u6d020fc5d7c9ee0a at groups.google.com (Colin Lewis-Beck)
+Date: Sat, 03 Jun 2017 22:10:52 +0000
+Subject: Re: [stan-users] Re: Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.g22EN4boBQAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.uINx52bGBwAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com> <21qPDUWd9Fg.uINx52bGBwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/g22EN4boBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, Aki.  I will post all future questions to the new board.   One final question if I may: when is the new manual planned for release?  I'd be interested in seeing what the default recommendations are for non-informative priors in the case of the GIG distribution.
+
+Best,
+Colin
+
+On Sat, Jun 3, 2017 at 3:38 PM, Aki Vehtari <aki.v...@aalto.fi> wrote:
+
+> Please post all new questions to http://discourse.mc-stan.org/
+> Now you get only my answers, while in Discourse there would be many more reading these.
+>
+> The next manual version will discuss sensitivity of covariance function priors in more detail.
+>
+> Cauchy is especially bad choice for phi.
+>
+> Are you sure you want to use Matern with nu=1/2? That's far for from smooth. With 200 obs, nu will be weakly identifiable. I recommend testing with nu=3/2 or nu=5/2, too,
+>
+> Setting the prior using empirical variogram is double use of data, and should be used only if the prior is wide enough so that it's still weakly informative.
+>
+> You could also improve the convergence by using the non-centered parameterization.
+>
+> Aki
+>
+> On Saturday, June 3, 2017 at 9:57:09 PM UTC+3, Colin wrote:
+> > Thanks again, Aki,
+> >
+> > I do see your point about the range parameter.   I will give this prior a shot.  The data set I have is pretty small (about 200 obs), so the posteriors for phi were extremely sensitive to the priors, and if the prior on phi was too diffuse the posterior was heavily right skewed with extremely large values.
+> >
+> > Below is the model I am fitting with a Matern covariance structure.   I am fixing the smoothness parameter to help simplify the model.  One idea I have to help the MCMC converge is to set the mean parameter of the phi prior equal to a value approximately equal to the range of the empirical variogram--sort of an empirical Bayes approach.   Do you think this would be a reasonable choice?
+> >
+> >
+> > model {
+> >    matrix[L,L] H; // Same Spatial Paramters for Each Year
+> >
+> >    for (i in 1:(L-1)) {
+> >      for (j in (i+1):L) {
+> >        H[i,j] = tau2 * exp(-d[i,j]/ phi);
+> >        H[j,i] = H[i,j]; // do not calculate twice, utilize symmetry
+> >      }
+> >    }
+> >    for (k in 1:L) {
+> >      H[k, k] = sigma2 + tau2; //diagonal of covariance matrix
+> >    }
+> >
+> >    for (i in 1:T){
+> >    Y[,i] ~ multi_normal(alpha[i] + X[,i]*beta[i], H);
+> > }
+> >
+> >    //priors
+> >    //inproper priors on coefficients
+> >    sigma ~ cauchy(0,1);
+> >    tau ~ cauchy(0,1);
+> >    phi ~ cauchy(0,5);
+> > }
+> >
+> >
+> > On Sat, Jun 3, 2017 at 1:26 PM, Aki Vehtari <aki.v...@aalto.fi> wrote:
+> > > Here's the Stan function for the generalized inverse Gaussian
+> > > functions {
+> > >   real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+> > >       real lp =
+> > >       p * 0.5 * log(a / b)
+> > >       - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+> > >       + (p - 1) * log(x) - (a * x + b / x) * 0.5;
+> > >       return lp;
+> > >   }
+> > > }
+> > >
+> > > You can use it set a prior in the usual way
+> > > x ~ generalized_inverse_gaussian(p, a, b);
+> > >
+> > > If the range parameter is the same as the maximum distance in the data then the correlation between the most distant points is still less than 1 and thus it is reasonable to "put mass on a range parameter that is beyond the maximum distance in the data". I'm not aware of cases where we would have just prior information that strict upper bound would be justified. The problem with a strict upper bound is that if you guessed wrong then no amount of data can overcome that. Bounds are ok, when the values outside the bounds are invalid (e.g. lower=0 for the range parameter, or lower=0,upper=1 for probabilities).
+> > >
+> > > Aki
+> > >
+> > > On Saturday, June 3, 2017 at 8:41:52 PM UTC+3, Colin wrote:
+> > > > Thanks, Aki.  I will post there moving forward.   I will look into the generalized inverse Gaussian distribution, too.
+> > > >
+> > > > In terms of the scaled beta distribution, would that be something I should just define as a new distribution in Stan and then add it as a prior?  I know Stan advocates using priors without bounded support, but in the case of a spatial model, I think there is a justification for using a prior that does not put mass on a range parameter that is beyond the maximum distance in the data.  Would you agree?
+> > > >
+> > > > Best,
+> > > > Colin
+> > > >
+> > > > On Friday, June 2, 2017 at 2:50:10 PM UTC-5, Aki Vehtari wrote:
+> > > > > Note that we have moved the user forum to http://discourse.mc-stan.org/
+> > > > >
+> > > > > We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+> > > > >
+> > > > > Aki
+> > > > >
+> > > > > On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> > > > > > Dear Stan Group,
+> > > > > >
+> > > > > > I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+> > > > > >
+> > > > > > Thank you
+> > >
+> > > --
+> > > You received this message because you are subscribed to a topic in the Google Groups "Stan users mailing list" group.
+> > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/stan-users/21qPDUWd9Fg/unsubscribe.
+> > > To unsubscribe from this group and all its topics, send an email to stan-users+...@googlegroups.com.
+> > > To post to this group, send email to stan-...@googlegroups.com.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/stan-users/21qPDUWd9Fg/unsubscribe.
+
+> To unsubscribe from this group and all its topics, send an email to stan-users+unsubscribe@googlegroups.com.
+
+>
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u8aa9b8cc06fdc99c at groups.google.com  Sun Jun  4 18:52:08 2017
+From: u8aa9b8cc06fdc99c at groups.google.com (Bob Carpenter)
+Date: Sun, 04 Jun 2017 18:52:08 +0000
+Subject: Re: [stan-users] Re: Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.6fn6rUIsBgAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.uINx52bGBwAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com> <21qPDUWd9Fg.uINx52bGBwAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/6fn6rUIsBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You don't need to assign---you can just return directly, so that'd
+be
+
+functions {
+  real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+
+    return p * 0.5 * log(a / b)
+
+           - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+           + (p - 1) * log(x)
+           - (a * x + b / x) * 0.5;
+  }
+}
+
+I like to line up the additive terms on the log scale like this
+to see the structure of the kernel;  I'd probably also change x to y
+and move the 0.5 out front, but that's even more cosmetic.
+
+This could be rewritten to be a tiny bit more efficient by consolidating
+terms inside the multiply by 0.5, but that hides the structure.
+
+If you knew constant terms didn't matter, you could drop
+
+* the 2* of the Bessel function
+* if all of {p, a, b} are constants, the
+  first and econd terms can be dropped,
+* if {p, x} are constants, then the third term can be dropped, and
+* if {x, a, b} are constants, the fourth term can be dropped.
+
+Our internal functions all do this, while at the same time being
+careful to return the full result when used explicitly as functions
+so as not to mess up things like mixtures.
+
+- Bob
+
+> On Jun 3, 2017, at 2:26 PM, Aki Vehtari <aki.v...@aalto.fi> wrote:
+>
+> Here's the Stan function for the generalized inverse Gaussian
+> functions {
+>   real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+>       real lp =
+>       p * 0.5 * log(a / b)
+>       - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+>       + (p - 1) * log(x) - (a * x + b / x) * 0.5;
+>       return lp;
+>   }
+> }
+>
+>
+> You can use it set a prior in the usual way
+> x ~ generalized_inverse_gaussian(p, a, b);
+>
+> If the range parameter is the same as the maximum distance in the data then the correlation between the most distant points is still less than 1 and thus it is reasonable to "put mass on a range parameter that is beyond the maximum distance in the data". I'm not aware of cases where we would have just prior information that strict upper bound would be justified. The problem with a strict upper bound is that if you guessed wrong then no amount of data can overcome that. Bounds are ok, when the values outside the bounds are invalid (e.g. lower=0 for the range parameter, or lower=0,upper=1 for probabilities).
+>
+> Aki
+>
+> On Saturday, June 3, 2017 at 8:41:52 PM UTC+3, Colin wrote:
+> Thanks, Aki.  I will post there moving forward.   I will look into the generalized inverse Gaussian distribution, too.
+>
+> In terms of the scaled beta distribution, would that be something I should just define as a new distribution in Stan and then add it as a prior?  I know Stan advocates using priors without bounded support, but in the case of a spatial model, I think there is a justification for using a prior that does not put mass on a range parameter that is beyond the maximum distance in the data.  Would you agree?
+>
+> Best,
+> Colin
+>
+> On Friday, June 2, 2017 at 2:50:10 PM UTC-5, Aki Vehtari wrote:
+> Note that we have moved the user forum to http://discourse.mc-stan.org/
+>
+> We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+>
+> Aki
+>
+> On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> Dear Stan Group,
+>
+> I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+>
+> Thank you
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ua236d3d356ca53fd at groups.google.com  Sun Jun  4 19:03:41 2017
+From: ua236d3d356ca53fd at groups.google.com (Aki Vehtari)
+Date: Sun, 04 Jun 2017 19:03:41 +0000
+Subject: Re: [stan-users] Re: Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.QkwpPdUPCAAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.6fn6rUIsBgAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com> <21qPDUWd9Fg.6fn6rUIsBgAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/QkwpPdUPCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Colin, we prefer weakly informative priors over non-informative priors (especially as truly non-informative priors do not exist).
+If you meant some default values for GIG parameters, the new manual doesn't have anything on those yet (only the recommended shape, ie GIG)
+
+Bob, I copied the code from the manual and the line up was made so that it doesn't overflow to the margins and out of the page.
+We have a problem there that we can't follow the code style recommendations as the stancode environment is using quite large font size compared to the page width.
+
+And you are right that assignment could be removed.
+
+Aki
+
+On Sunday, June 4, 2017 at 9:52:08 PM UTC+3, Bob Carpenter wrote:
+> You don't need to assign---you can just return directly, so that'd
+> be
+>
+> functions {
+>   real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+>     return p * 0.5 * log(a / b)
+>            - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+>            + (p - 1) * log(x)
+>            - (a * x + b / x) * 0.5;
+>   }
+> }
+>
+> I like to line up the additive terms on the log scale like this
+> to see the structure of the kernel;  I'd probably also change x to y
+> and move the 0.5 out front, but that's even more cosmetic.
+>
+> This could be rewritten to be a tiny bit more efficient by consolidating
+> terms inside the multiply by 0.5, but that hides the structure.
+>
+> If you knew constant terms didn't matter, you could drop
+>
+> * the 2* of the Bessel function
+> * if all of {p, a, b} are constants, the
+>   first and econd terms can be dropped,
+> * if {p, x} are constants, then the third term can be dropped, and
+> * if {x, a, b} are constants, the fourth term can be dropped.
+>
+> Our internal functions all do this, while at the same time being
+> careful to return the full result when used explicitly as functions
+> so as not to mess up things like mixtures.
+>
+> - Bob
+>
+> > On Jun 3, 2017, at 2:26 PM, Aki Vehtari <aki.v...@aalto.fi> wrote:
+> >
+> > Here's the Stan function for the generalized inverse Gaussian
+> > functions {
+> >   real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+> >       real lp =
+> >       p * 0.5 * log(a / b)
+> >       - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+> >       + (p - 1) * log(x) - (a * x + b / x) * 0.5;
+> >       return lp;
+> >   }
+> > }
+> >
+> >
+> > You can use it set a prior in the usual way
+> > x ~ generalized_inverse_gaussian(p, a, b);
+> >
+> > If the range parameter is the same as the maximum distance in the data then the correlation between the most distant points is still less than 1 and thus it is reasonable to "put mass on a range parameter that is beyond the maximum distance in the data". I'm not aware of cases where we would have just prior information that strict upper bound would be justified. The problem with a strict upper bound is that if you guessed wrong then no amount of data can overcome that. Bounds are ok, when the values outside the bounds are invalid (e.g. lower=0 for the range parameter, or lower=0,upper=1 for probabilities).
+> >
+> > Aki
+> >
+> > On Saturday, June 3, 2017 at 8:41:52 PM UTC+3, Colin wrote:
+> > Thanks, Aki.  I will post there moving forward.   I will look into the generalized inverse Gaussian distribution, too.
+> >
+> > In terms of the scaled beta distribution, would that be something I should just define as a new distribution in Stan and then add it as a prior?  I know Stan advocates using priors without bounded support, but in the case of a spatial model, I think there is a justification for using a prior that does not put mass on a range parameter that is beyond the maximum distance in the data.  Would you agree?
+> >
+> > Best,
+> > Colin
+> >
+> > On Friday, June 2, 2017 at 2:50:10 PM UTC-5, Aki Vehtari wrote:
+> > Note that we have moved the user forum to http://discourse.mc-stan.org/
+> >
+> > We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+> >
+> > Aki
+> >
+> > On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> > Dear Stan Group,
+> >
+> > I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+> >
+> > Thank you
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> > To post to this group, send email to stan-...@googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u8aa9b8cc06fdc99c at groups.google.com  Mon Jun  5 00:32:07 2017
+From: u8aa9b8cc06fdc99c at groups.google.com (Bob Carpenter)
+Date: Mon, 05 Jun 2017 00:32:07 +0000
+Subject: Re: [stan-users] Scaled Beta Prior
+Message-ID: <21qPDUWd9Fg.rG5yPtA-BgAJ@stan-users.groups.google.com>
+In-Reply-To: <21qPDUWd9Fg.QkwpPdUPCAAJ@stan-users.groups.google.com>
+References: <21qPDUWd9Fg.Xud2tOPiAwAJ@stan-users.groups.google.com> <21qPDUWd9Fg.QkwpPdUPCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/21qPDUWd9Fg/m/rG5yPtA-BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for looking into the formatting.
+
+The real problem is the long function names.   There's
+a tension between not wanting to abbreviate and wanting
+short names that's amplified with these compound names
+and required prefixes.
+
+Maybe that function should've been called mod_bessel_2nd or
+even mod_bessel2 and maybe the defined function should be
+gen_inv_gauss_lpdf or gen_inv_gaussian_lpdf or
+general_inv_gaussian_lpdf.
+
+Also, the Lucida console font we use for the actual manual
+is narrower than Courier.  It's one of the reasons it's a good
+terminal font.
+
+- Bob
+
+> On Jun 4, 2017, at 3:03 PM, Aki Vehtari <aki.v...@aalto.fi> wrote:
+>
+> Colin, we prefer weakly informative priors over non-informative priors (especially as truly non-informative priors do not exist).
+> If you meant some default values for GIG parameters, the new manual doesn't have anything on those yet (only the recommended shape, ie GIG)
+>
+> Bob, I copied the code from the manual and the line up was made so that it doesn't overflow to the margins and out of the page.
+> We have a problem there that we can't follow the code style recommendations as the stancode environment is using quite large font size compared to the page width.
+>
+> And you are right that assignment could be removed.
+>
+> Aki
+>
+> On Sunday, June 4, 2017 at 9:52:08 PM UTC+3, Bob Carpenter wrote:
+> You don't need to assign---you can just return directly, so that'd
+> be
+>
+> functions {
+>   real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+>     return p * 0.5 * log(a / b)
+>            - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+>            + (p - 1) * log(x)
+>            - (a * x + b / x) * 0.5;
+>   }
+> }
+>
+> I like to line up the additive terms on the log scale like this
+> to see the structure of the kernel;  I'd probably also change x to y
+> and move the 0.5 out front, but that's even more cosmetic.
+>
+> This could be rewritten to be a tiny bit more efficient by consolidating
+> terms inside the multiply by 0.5, but that hides the structure.
+>
+> If you knew constant terms didn't matter, you could drop
+>
+> * the 2* of the Bessel function
+> * if all of {p, a, b} are constants, the
+>   first and econd terms can be dropped,
+> * if {p, x} are constants, then the third term can be dropped, and
+> * if {x, a, b} are constants, the fourth term can be dropped.
+>
+> Our internal functions all do this, while at the same time being
+> careful to return the full result when used explicitly as functions
+> so as not to mess up things like mixtures.
+>
+> - Bob
+>
+> > On Jun 3, 2017, at 2:26 PM, Aki Vehtari <aki.v...@aalto.fi> wrote:
+> >
+> > Here's the Stan function for the generalized inverse Gaussian
+> > functions {
+> >   real generalized_inverse_gaussian_lpdf(real x, int p, real a, real b) {
+> >       real lp =
+> >       p * 0.5 * log(a / b)
+> >       - log(2 * modified_bessel_second_kind(p, sqrt(a * b)))
+> >       + (p - 1) * log(x) - (a * x + b / x) * 0.5;
+> >       return lp;
+> >   }
+> > }
+> >
+> >
+> > You can use it set a prior in the usual way
+> > x ~ generalized_inverse_gaussian(p, a, b);
+> >
+> > If the range parameter is the same as the maximum distance in the data then the correlation between the most distant points is still less than 1 and thus it is reasonable to "put mass on a range parameter that is beyond the maximum distance in the data". I'm not aware of cases where we would have just prior information that strict upper bound would be justified. The problem with a strict upper bound is that if you guessed wrong then no amount of data can overcome that. Bounds are ok, when the values outside the bounds are invalid (e.g. lower=0 for the range parameter, or lower=0,upper=1 for probabilities).
+> >
+> > Aki
+> >
+> > On Saturday, June 3, 2017 at 8:41:52 PM UTC+3, Colin wrote:
+> > Thanks, Aki.  I will post there moving forward.   I will look into the generalized inverse Gaussian distribution, too.
+> >
+> > In terms of the scaled beta distribution, would that be something I should just define as a new distribution in Stan and then add it as a prior?  I know Stan advocates using priors without bounded support, but in the case of a spatial model, I think there is a justification for using a prior that does not put mass on a range parameter that is beyond the maximum distance in the data.  Would you agree?
+> >
+> > Best,
+> > Colin
+> >
+> > On Friday, June 2, 2017 at 2:50:10 PM UTC-5, Aki Vehtari wrote:
+> > Note that we have moved the user forum to http://discourse.mc-stan.org/
+> >
+> > We are just updating the GP section in the manual and adding prior recommendations https://github.com/stan-dev/stan/pull/2301. In the case you mention, our (default) recommendation is generalized inverse Gaussian distribution. There's not yet a builtin density function for that, although it will be added soon.
+> >
+> > Aki
+> >
+> > On Wednesday, May 31, 2017 at 6:54:16 PM UTC+3, Colin wrote:
+> > Dear Stan Group,
+> >
+> > I am having trouble identifying the range parameter in a GP model with a Matern covariance function.  Priors such as a Cauchy or other diffuse priors on phi result in draws that are way outside the spatial range of the data.  I was thinking a scaled beta prior on phi (the range) parameter, could be a good option.  I was wondering if there was an option to do a scaled beta prior in Rstan or if there were other suggestions for alternative priors that would respect the spatial range of the data.
+> >
+> > Thank you
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> > To post to this group, send email to stan-...@googlegroups.com.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u8aa9b8cc06fdc99c at groups.google.com  Mon Jun  5 00:33:07 2017
+From: u8aa9b8cc06fdc99c at groups.google.com (Bob Carpenter)
+Date: Mon, 05 Jun 2017 00:33:07 +0000
+Subject: Re: [stan-users] Help with divergent transitions + noncentered paramterization
+Message-ID: <ANMnLEX447c.npj6BN4-BgAJ@stan-users.groups.google.com>
+In-Reply-To: <ANMnLEX447c.fNzix5FsCAAJ@stan-users.groups.google.com>
+References: <ANMnLEX447c.sxM-bDm2BQAJ@stan-users.groups.google.com> <ANMnLEX447c.fNzix5FsCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/ANMnLEX447c/m/npj6BN4-BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Theres a discussion of just this issue in the problematic posteriors
+chapter of the manual.  It can be partially tamed with priors, but
+it's usually much better to just identify the model if you know there's
+a problem.
+
+- Bob
+
+> On Jun 2, 2017, at 5:26 AM, stijn masschelein <stijnmas...@gmail.com> wrote:
+>
+> I think a lot of your troubles come from the fact that your predictors have a perfect linear relationship with y. y = 3 - .5 * pred or y = 2 + pred2. If you would have an intercept in your model and you would be modeling y ~ normal(a0 + a1 pred + a2 pred2, sigma) than the nuts sampler would have to switch between the equally probably modes (a0 = 3, a1 = -.5, a2 = 0) and (a0 = 2, a1 = 0, a2 = 1). This is likely to lead to divergences and weird curvature.
+>
+> If I read your model correctly, there is no intercept a0 in your model but I still think that the linear relations in your data (see also pred = 2 - 2*pred2) are causing havoc.
+>
+> Stijn
+>
+> On Tuesday, May 30, 2017 at 11:10:12 PM UTC+8, Jökull Snæbjarnarson wrote:
+> Can anyone of you help me out diagnosing the problem with this simple example model and maybe give some on advice on how to fix it ?
+> It gives me a bunch of  divergent transitions. Funnel like correlations and a highly curved posterior are apparent but I don't really get where those correlations come from.
+> Maybe I can implement the noncentered paramterization in a different way?
+>
+> Thanks in advance,
+> Jökull
+>
+> nonCentered <- "
+> data {
+>   int<lower=1> Ntotal;
+>   vector[Ntotal] pred;
+>   vector[Ntotal] pred2;
+>   vector[Ntotal] y;
+> }
+> parameters {
+>   real<lower=0.0> sigma;
+>   real<lower=0.0> sigma_w;
+>   real<lower=0.0> sigma_w2;
+>   real mu;
+>   real w_raw;
+>   real w_raw2;
+> }
+> transformed parameters {
+>   real w;
+>   real w2;
+>   vector[Ntotal] y_mu;
+>   for (n in 1:Ntotal) y_mu[n] = 0.0;
+>   w = sigma_w * w_raw + mu;
+>   w2 = sigma_w2 * w_raw2 + mu;
+>   y_mu = w * pred + w2 * pred2;
+> }
+> model {
+>   sigma_w ~ normal(1,1);
+>   sigma_w2 ~ normal(1,1);
+>   sigma ~ normal(1,1);
+>   mu ~ normal(1,0.2);
+>   w_raw ~ normal(0, 1);
+>   w_raw2 ~ normal(0, 1);
+>   y ~ normal(y_mu,sigma);
+> }
+> "
+>
+> fit <-
+>   stan(
+>     model_code = nonCentered,
+>     data = list(pred = c(0,2,0,0,2,0,0,2,0),
+>                 pred2 = c(1,0,1,1,0,1,1,0,1),
+>                 Ntotal =9, y = c(3,2,3,3,2,3,3,2,3)),
+>     model_name =  'example',
+>     iter = 1200,
+>     chains = 2
+>   )
+>
+>
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uecbc125f147fa3ee at groups.google.com  Mon Jun  5 13:54:33 2017
+From: uecbc125f147fa3ee at groups.google.com (Pasky Pascual)
+Date: Mon, 05 Jun 2017 13:54:33 +0000
+Subject: Cross-Classified Models in Stan (Part Deux)
+Message-ID: <uQX2awjiI60.kPLhKotNCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/uQX2awjiI60/m/kPLhKotNCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Following up on this earlier discussion (https://groups.google.com/forum/#!topic/stan-users/kpV7R6f9x1M), providing the syntax for cross-classified model for an intercept, if one wanted to extend the model to include slopes, would it be a simple matter of extending the use of the index, as follows:
+
+y[n] ~ inv_logit(alpha1[state[n]] + alpha2[sex[n]] + alpha +
+beta*income[n] + beta1[state[n]]*income[n] + beta2[sex[n]]);
+
+alpha1 ~ normal(0,sigma_alpha1);
+ alpha2 ~ normal(0,sigma_alpha2);
+ sigma_alpha1 ~ ...
+  sigma_alpha2 ~ ...
+  alpha ~ ...
+
+beta1 ~ normal(0,sigma_beta1);
+beta2 ~ normal(0,sigma_beta2);
+ sigma_beta1 ~ ...
+  sigma_beta2 ~ ...
+beta ~ ...
+
+From u7069744c97b29f52 at groups.google.com  Mon Jun  5 17:50:35 2017
+From: u7069744c97b29f52 at groups.google.com (Dalton Hance)
+Date: Mon, 05 Jun 2017 17:50:35 +0000
+Subject: AR(1) Logistic Regression Funnel: Reparameterization ideas?
+Message-ID: <Qyd7rCUr8XM.32t2lmxaCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/Qyd7rCUr8XM/m/32t2lmxaCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm working on a model to estimate a time series of binomial probabilities that I suspect have some level of temporal autocorrelation. The real world application of this model is to estimate "transport probabilities" for juvenile salmon passing a hydroelectric project on the Columbia river. As fish migrate down the river the pass through the hydroelectric project. Some proportion of the population is collected and of those fish collected, a proportion are diverted to holding facility where they are loaded onto barges and trucks and transported down river; the remaining fish are returned to the river to migrate downstream 'naturally'.
+
+We're interested in estimating these daily transport probabilities based on a subset of fish that are marked with electronic tags that allow the fate of individually tagged fish to be determined. A feature of the dataset is that the N's - the number of fish available to be either transported or returned to the river displays a pattern where few tagged fish are available at the beginning and end of the season with sizeable numbers in the middle of the season.
+
+I've used the code snippet Ben Goodrich provided here <https://groups.google.com/d/msg/stan-users/QnttkCYsqm4/OpoAF5z-CwAJ> for the AR(1) model for parameters as a basis for the following Stan code:
+
+  data {
+  int<lower = 1> T;    //number of days
+  int<lower = 0> N[T];
+  int<lower = 0> y[T];
+}
+
+parameters {
+  real mu;
+  real eps_0;
+  vector[T - 1] eps_raw;
+  real<lower = -1, upper = 1> phi;
+  real<lower=0> sigma;
+}
+
+transformed parameters{
+  vector[T] eps;
+  real<lower = 0, upper = 1>  p[T];
+
+  eps[1] = eps_0;
+  for (t in 2:T)
+    eps[t] = phi * eps[t - 1] + sigma * eps_raw[t - 1];
+
+  for (t in 1:T)
+    p[t] = inv_logit(mu + eps[t]);
+}
+
+model {
+  eps_0 ~ normal(0, sigma * sqrt(1 - square(phi)));
+  eps_raw ~ normal(0, 1);
+
+  for (t in 1:T)
+    y[t] ~ binomial(N[t], p[t]);
+}
+
+The issue I'm seeing is that I get a large number of divergent transitions. In my applied data example, I can't eliminate all these divergent transitions even with increasing adapt_delta to 0.9999. I've been able to duplicate the behavior I'm seeing in a simulated data example. What I've noticed in both my simulated and observed data is a very distinctive funnel shape in the pairs plot of the regression intercept and the autoregressive term.
+
+Simulated data:
+
+Times = 100
+
+N_1 = rpois(Times * 0.3, lambda = exp(rnorm(Times * 0.3, 3, 2)))
+N_2 = rpois(Times * 0.7, lambda = exp(rnorm(Times * 0.7, 3, 2)))
+
+N = c(N_1[order(N_1)], N_2[order(N_2, decreasing = T)])
+
+mu = qlogis(2/3)
+sd = 1/10
+eps = sd * arima.sim(model = list(ar = 0.9), n = Times)
+p = plogis(mu + eps)
+
+y = rbinom(Times, N, p)
+
+ar1_check = stan(data = list(T = Times,
+                 N = N,
+                 y = y),
+     model_code = ar1_logit,
+     control = list(adapt_delta = 0.99)
+     )
+
+pairs(ar1_check, pars = c("mu", "sigma", "phi", "eps_0"))
+
+And pairs plot:
+
+ <https://lh3.googleusercontent.com/-TGs0s6jVwwI/WTWYXF80FWI/AAAAAAAAKYs/KTK7xqOo79ARL0blDYNuWG_Aj9_fCz3fgCLcB/s1600/funnel_plot_1.jpeg>
+
+The funnel is even more dramatic in my applied example data:
+
+N = c(0, 0, 24, 62, 104, 145, 124, 109, 111, 123, 235, 477, 578,
+      853, 903, 888, 734, 989, 1010, 1262, 1438, 1431, 952, 1914, 3470,
+      2014, 1197, 912, 744, 476, 412, 200, 219, 205, 277, 263, 97,
+      95, 110, 73, 25, 77, 87, 64, 35, 20, 6, 16, 19, 15, 15, 20, 26,
+      10, 9, 5, 3, 2, 3, 0, 3, 0, 1, 2, 2, 2, 5, 3, 13, 9, 5, 2, 1,
+      2, 1, 3, 3, 3, 1, 1, 1, 2, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0)
+
+y = c(0, 0, 18, 49, 81, 114, 97, 83, 82, 96, 183, 352, 441, 646,
+      662, 686, 563, 765, 780, 986, 1122, 1129, 750, 1517, 2699, 1570,
+      945, 722, 571, 372, 319, 160, 175, 160, 231, 206, 78, 77, 91,
+      60, 19, 63, 69, 51, 27, 16, 5, 13, 17, 13, 11, 15, 20, 9, 7,
+      4, 2, 2, 3, 0, 1, 0, 1, 2, 2, 1, 4, 3, 11, 7, 4, 2, 0, 2, 0,
+      2, 3, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0)
+
+ar1_check = stan(data = list(T = length(y),
+                             N = N,
+                             y = y),
+                 model_code = ar1_logit,
+                 control = list(adapt_delta = 0.9999)
+)
+
+pairs(ar1_check, pars = c("mu", "sigma", "phi", "eps_0"))
+
+ <https://lh3.googleusercontent.com/-cxGYyOJQc_I/WTWZq2dyLLI/AAAAAAAAKYw/fpuFICrE-nMX_hyauG-JXi_oXS6UoztigCLcB/s1600/funnel_plot_2.jpeg>
+
+I suspect the issue becomes more apparent with smaller sigmas (in my applied example sigma is estimated as 0.05). One obvious answer here is to abandon the autoregressive term for this applied example, but this is not the first time I've seen this when trying to do an AR(1) logistic regression and so I'm curious as to how general this behavior is and whether there is a reparameterization of the AR(1) logistic regression that might avoid this. Suggestions?
+
+From u743bbacc59f4b25f at groups.google.com  Mon Jun  5 18:50:47 2017
+From: u743bbacc59f4b25f at groups.google.com (Ben Goodrich)
+Date: Mon, 05 Jun 2017 18:50:47 +0000
+Subject: Re: AR(1) Logistic Regression Funnel: Reparameterization ideas?
+Message-ID: <Qyd7rCUr8XM.4P6MlrVdCAAJ@stan-users.groups.google.com>
+In-Reply-To: <Qyd7rCUr8XM.32t2lmxaCAAJ@stan-users.groups.google.com>
+References: <Qyd7rCUr8XM.32t2lmxaCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/Qyd7rCUr8XM/m/4P6MlrVdCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Monday, June 5, 2017 at 1:50:35 PM UTC-4, Dalton Hance wrote:
+> What I've noticed in both my simulated and observed data is a very distinctive funnel shape in the pairs plot of the regression intercept and the autoregressive term.
+
+Make the intercept (alpha) be equal to the unconditional mean of the log-odds (mu) times 1 minus phi.
+
+From ufbff4100433066b4 at groups.google.com  Mon Jun  5 19:25:27 2017
+From: ufbff4100433066b4 at groups.google.com (Vishv Jeet)
+Date: Mon, 05 Jun 2017 19:25:27 +0000
+Subject: Hierarchical AR(K) Models
+Message-ID: <kxIVZm0QqZ4.V7it7JlfCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/kxIVZm0QqZ4/m/V7it7JlfCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I have various time-series of different lengths (usually called panel data). I want to run AR(K=3) regression on each of them but some of them are too short for a meaningful regression so I decided to use a Bayesian Hierarchical model in which the 3 multipliers for each series are sampled from a common multivariate normal distribution, so far so good, the model fits just fine and there are no divergent transitions and all Rhat values are extremely close to 1.
+
+My question is: my Stan code effectively doesn't model data (and parameters) for any time-series that has less than 4 observations, is that the right thing to do? I think I have no choice but to skip the series with just 1 observation but what about series with 2 or 3 observations?
+
+Below is my Stan code:
+
+data {
+  int<lower=1> N; // total number of observations
+  int<lower=1> K; // number of lagged factor
+  int<lower=1> numG; // number of groups
+  vector[N] y; // data for Hierarchical AR(K)
+  int sizes[numG]; // sizes of observations across groups
+}
+parameters {
+  real<lower = 0> local_sigma;
+  vector<lower = 0>[K] global_sigma;
+  vector[K] z[numG];
+  vector<lower = -2, upper = 2>[K] global_beta; // global AR(K) multipliers
+}
+transformed parameters {
+  vector[K] group_betas[numG]; // group level AR(K) multipliers
+  for(i in 1:numG) {
+    group_betas[i] = global_beta + global_sigma .* z[i]; // NCP formulation, no correlations
+  }
+}
+model {
+  int pos;
+  pos = 1;
+  for(i in 1:numG) {  // loop over groups
+    int local_N;
+    vector[sizes[i]] local_y;
+    local_N = sizes[i];
+    local_y = segment(y, pos, local_N);
+    for (n in (K + 1):local_N) { // loop over observations
+      real mu;
+      mu = 0;
+      for (k in 1:K) { // loop over lags
+        mu = mu + group_betas[i][k] * local_y[n - k];
+      }
+      y[n] ~ normal(mu, local_sigma);
+    }
+    z[i] ~ normal(0, 1);
+    pos = pos + local_N;
+  }
+
+  // hyperpriors
+  local_sigma ~ cauchy(0, 2);
+  global_sigma ~ cauchy(0, 2);
+  global_beta ~ cauchy(0, 2);
+}
+
+From u7069744c97b29f52 at groups.google.com  Mon Jun  5 20:59:33 2017
+From: u7069744c97b29f52 at groups.google.com (Dalton Hance)
+Date: Mon, 05 Jun 2017 20:59:33 +0000
+Subject: Re: AR(1) Logistic Regression Funnel: Reparameterization ideas?
+Message-ID: <Qyd7rCUr8XM.YXmxbrxkCAAJ@stan-users.groups.google.com>
+In-Reply-To: <Qyd7rCUr8XM.32t2lmxaCAAJ@stan-users.groups.google.com>
+References: <Qyd7rCUr8XM.32t2lmxaCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/Qyd7rCUr8XM/m/YXmxbrxkCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Ben, I'll try that and report back. Is this written up anywhere? If we publish I'd like to be able to cite you (or the original source )for the parameterization.
+
+From u7069744c97b29f52 at groups.google.com  Mon Jun  5 22:54:49 2017
+From: u7069744c97b29f52 at groups.google.com (Dalton Hance)
+Date: Mon, 05 Jun 2017 22:54:49 +0000
+Subject: Re: AR(1) Logistic Regression Funnel: Reparameterization ideas?
+Message-ID: <Qyd7rCUr8XM.oK9TuQZrCAAJ@stan-users.groups.google.com>
+In-Reply-To: <Qyd7rCUr8XM.4P6MlrVdCAAJ@stan-users.groups.google.com>
+References: <Qyd7rCUr8XM.32t2lmxaCAAJ@stan-users.groups.google.com> <Qyd7rCUr8XM.4P6MlrVdCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/Qyd7rCUr8XM/m/oK9TuQZrCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ben,
+
+That seems to have made the problem worse. The unconditional mean of the log-odds (mu) blows up when phi approaches the upper level boundary. Maybe I misinterpreted your advice?
+
+Code below:
+library(rstan)
+options(mc.cores = parallel::detectCores())
+
+Times = 150
+
+N_1 = rpois(Times * 0.3, lambda = exp(rnorm(Times * 0.3, 4, 2)))
+N_2 = rpois(Times * 0.7, lambda = exp(rnorm(Times * 0.7, 4, 2)))
+
+N = c(N_1[order(N_1)], N_2[order(N_2, decreasing = T)])
+
+mu = qlogis(2/3)
+
+sigma = 1/4
+eps = arima.sim(model = list(ar = 0.9),
+                n = Times,
+                sd = sigma)
+
+p = plogis(mu  + eps)
+
+y = rbinom(Times, N, p)
+
+ar1_logit = "
+
+  data {
+  int<lower = 1> T;    //number of days
+  int<lower = 0> N[T];
+  int<lower = 0> y[T];
+}
+
+parameters {
+  real mu;
+  real eps_0;
+  vector[T - 1] eps_raw;
+  real<lower = -1, upper = 1> phi;
+  real<lower=0> sigma;
+}
+
+transformed parameters{
+
+  real alpha;
+
+  vector[T] eps;
+  real<lower = 0, upper = 1>  p[T];
+
+  alpha  = mu * (1 - phi);
+
+  eps[1] = eps_0;
+  for (t in 2:T)
+    eps[t] = phi * eps[t - 1] + sigma * eps_raw[t - 1];
+
+  for (t in 1:T)
+
+    p[t] = inv_logit(alpha + eps[t]);
+
+}
+
+model {
+  eps_0 ~ normal(0, sigma * sqrt(1 - square(phi)));
+  eps_raw ~ normal(0, 1);
+
+  for (t in 1:T)
+    y[t] ~ binomial(N[t], p[t]);
+}
+"
+
+ar1_check = stan(data = list(T = Times,
+                 N = N,
+                 y = y),
+     model_code = ar1_logit,
+
+     control= list(adapt_delta = 0.99,
+             stepsize    = 0.01,
+             max_treedepth = 25))
+
+pairs(ar1_check, pars = c("mu", "alpha","sigma", "phi", "eps_0"))
+
+ <https://lh3.googleusercontent.com/-fzBIfugqjh0/WTXhI34-6FI/AAAAAAAAKY4/MHjG-g_6_eo97pKSTsd-zZ5SKzW9qo_NQCLcB/s1600/Rplot.jpeg>
+
+On Monday, June 5, 2017 at 11:50:47 AM UTC-7, Ben Goodrich wrote:
+> On Monday, June 5, 2017 at 1:50:35 PM UTC-4, Dalton Hance wrote:
+> > What I've noticed in both my simulated and observed data is a very distinctive funnel shape in the pairs plot of the regression intercept and the autoregressive term.
+>
+> Make the intercept (alpha) be equal to the unconditional mean of the log-odds (mu) times 1 minus phi.
+>
+
+From u7069744c97b29f52 at groups.google.com  Mon Jun  5 23:13:32 2017
+From: u7069744c97b29f52 at groups.google.com (Dalton Hance)
+Date: Mon, 05 Jun 2017 23:13:32 +0000
+Subject: Re: AR(1) Logistic Regression Funnel: Reparameterization ideas?
+Message-ID: <Qyd7rCUr8XM._kCyRgxsCAAJ@stan-users.groups.google.com>
+In-Reply-To: <Qyd7rCUr8XM.oK9TuQZrCAAJ@stan-users.groups.google.com>
+References: <Qyd7rCUr8XM.32t2lmxaCAAJ@stan-users.groups.google.com> <Qyd7rCUr8XM.oK9TuQZrCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/Qyd7rCUr8XM/m/_kCyRgxsCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Migrating to discourse.mc-stan.org <http://discourse.mc-stan.org>
+
+On Monday, June 5, 2017 at 3:54:49 PM UTC-7, Dalton Hance wrote:
+> Hi Ben,
+>
+> That seems to have made the problem worse. The unconditional mean of the log-odds (mu) blows up when phi approaches the upper level boundary. Maybe I misinterpreted your advice?
+>
+> Code below:
+> library(rstan)
+> options(mc.cores = parallel::detectCores())
+>
+> Times = 150
+>
+> N_1 = rpois(Times * 0.3, lambda = exp(rnorm(Times * 0.3, 4, 2)))
+> N_2 = rpois(Times * 0.7, lambda = exp(rnorm(Times * 0.7, 4, 2)))
+>
+> N = c(N_1[order(N_1)], N_2[order(N_2, decreasing = T)])
+>
+> mu = qlogis(2/3)
+> sigma = 1/4
+> eps = arima.sim(model = list(ar = 0.9),
+>                 n = Times,
+>                 sd = sigma)
+> p = plogis(mu  + eps)
+>
+> y = rbinom(Times, N, p)
+>
+> ar1_logit = "
+>   data {
+>   int<lower = 1> T;    //number of days
+>   int<lower = 0> N[T];
+>   int<lower = 0> y[T];
+> }
+>
+> parameters {
+>   real mu;
+>   real eps_0;
+>   vector[T - 1] eps_raw;
+>   real<lower = -1, upper = 1> phi;
+>   real<lower=0> sigma;
+> }
+>
+> transformed parameters{
+>   real alpha;
+>   vector[T] eps;
+>   real<lower = 0, upper = 1>  p[T];
+>
+>   alpha  = mu * (1 - phi);
+>   eps[1] = eps_0;
+>   for (t in 2:T)
+>     eps[t] = phi * eps[t - 1] + sigma * eps_raw[t - 1];
+>
+>   for (t in 1:T)
+>     p[t] = inv_logit(alpha + eps[t]);
+> }
+>
+> model {
+>   eps_0 ~ normal(0, sigma * sqrt(1 - square(phi)));
+>   eps_raw ~ normal(0, 1);
+>
+>   for (t in 1:T)
+>     y[t] ~ binomial(N[t], p[t]);
+> }
+> "
+>
+> ar1_check = stan(data = list(T = Times,
+>                  N = N,
+>                  y = y),
+>      model_code = ar1_logit,
+>      control= list(adapt_delta = 0.99,
+>              stepsize    = 0.01,
+>              max_treedepth = 25))
+>
+> pairs(ar1_check, pars = c("mu", "alpha","sigma", "phi", "eps_0"))
+>
+>  <https://lh3.googleusercontent.com/-fzBIfugqjh0/WTXhI34-6FI/AAAAAAAAKY4/MHjG-g_6_eo97pKSTsd-zZ5SKzW9qo_NQCLcB/s1600/Rplot.jpeg>
+>
+>
+>
+>
+> On Monday, June 5, 2017 at 11:50:47 AM UTC-7, Ben Goodrich wrote:
+> > On Monday, June 5, 2017 at 1:50:35 PM UTC-4, Dalton Hance wrote:
+> > > What I've noticed in both my simulated and observed data is a very distinctive funnel shape in the pairs plot of the regression intercept and the autoregressive term.
+> >
+> > Make the intercept (alpha) be equal to the unconditional mean of the log-odds (mu) times 1 minus phi.
+> >
+
+From ua8b6459b77c849fe at groups.google.com  Mon Jun  5 23:36:06 2017
+From: ua8b6459b77c849fe at groups.google.com (Kevin Van Horn)
+Date: Mon, 05 Jun 2017 23:36:06 +0000
+Subject: Re: [stan-users] Re: Problems with reproducibility/setting seed for random number generator
+Message-ID: <8ayvLs229Ow.VqrmX0dtCAAJ@stan-users.groups.google.com>
+In-Reply-To: <8ayvLs229Ow.4UwUW3yLCAAJ@stan-users.groups.google.com>
+References: <8ayvLs229Ow.1c88-1l_CAAJ@stan-users.groups.google.com> <8ayvLs229Ow.4UwUW3yLCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/8ayvLs229Ow/m/VqrmX0dtCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I agree with the OP -- I also want to be able to reset the PRNG. The reason is for testing. I cannot get reproducibility with the current behavior, because the state of the PRNG at the beginning of a test depends on what tests ran before it, if they also use the PRNG. I need to be able to reset the PRNG at the beginning of every test.
+
+Furthermore, even within a single test I may want to reset the PRNG. Sometimes I want to verify that two different ways of computing the same result actually yield the same result. That requires starting with the same PRNG state if there is any random-number generation involved.
+
+On Wednesday, August 3, 2016 at 1:41:29 PM UTC-6, Ben Goodrich wrote:
+> On Wednesday, August 3, 2016 at 3:25:53 PM UTC-4, Bob Carpenter wrote:
+> > Should we use the R random number generator to generate a new seed
+> > each time it's called?  The constructors for the Boost RNGs are
+> > pretty cheap.
+>
+> IIRC, the reason it is currently this way is so that we didn't construct an unlimited number of Boost PRNGs that can only be destroyed by quitting the R session. That and you would have to update the state of the PRNG in R in order to get different numbers between consecutive calls to the user-defined _rng function. I am not seeing why someone would want to change the seed after setting it once since setting it once ensures reproducibility.
+>
+> Ben
+>
+
+From u8aa9b8cc06fdc99c at groups.google.com  Tue Jun  6 18:35:07 2017
+From: u8aa9b8cc06fdc99c at groups.google.com (Bob Carpenter)
+Date: Tue, 06 Jun 2017 18:35:07 +0000
+Subject: Re: [stan-users] Hierarchical AR(K) Models
+Message-ID: <kxIVZm0QqZ4.E3sPB37IBgAJ@stan-users.groups.google.com>
+In-Reply-To: <kxIVZm0QqZ4.V7it7JlfCAAJ@stan-users.groups.google.com>
+References: <kxIVZm0QqZ4.V7it7JlfCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/kxIVZm0QqZ4/m/E3sPB37IBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It is not unusual to employ separate models for the first few observations
+in a time series, e.g.
+
+  p(y) = p(y[1])
+         * p(y[2] | y[1])
+         * p(y[3] | y[1:2])
+         * PROD_{n > 3} p(y[n] | y[n-3:n-1]) ...
+
+You just need to formulate models for the first three terms.
+
+- Bob
+
+> On Jun 5, 2017, at 3:25 PM, Vishv Jeet <vishv...@gmail.com> wrote:
+>
+> I have a various time-series of different lengths (usually called panel data). I want to run AR(K=3) regression on each of them but some of them are too short for a meaningful regression so I decided to use a Bayesian Hierarchical model in which the 3 multipliers for each series are sampled from a common multivariate normal distribution, so far so good, the model fits just fine and there are no divergent transitions and all Rhat values are extremely close to 1.
+
+>
+> My question is: my Stan code effectively doesn't model data (and parameters) for any time-series that has less than 4 observations, is that the right thing to do? I think I have no choice but to skip the series with just 1 observation but what about series with 2 or 3 observations?
+>
+> Below is my Stan code:
+>
+> data {
+>   int<lower=1> N; // total number of observations
+>   int<lower=1> K; // number of lagged factor
+>   int<lower=1> numG; // number of groups
+>   vector[N] y; // data for Hierarchical AR(K)
+>   int sizes[numG]; // sizes of observations across groups
+> }
+> parameters {
+>   real<lower = 0> local_sigma;
+>   vector<lower = 0>[K] global_sigma;
+>   vector[K] z[numG];
+>   vector<lower = -2, upper = 2>[K] global_beta; // global AR(K) multipliers
+> }
+> transformed parameters {
+>   vector[K] group_betas[numG]; // group level AR(K) multipliers
+>   for(i in 1:numG) {
+>     group_betas[i] = global_beta + global_sigma .* z[i]; // NCP formulation, no correlations
+>   }
+> }
+> model {
+>   int pos;
+>   pos = 1;
+>   for(i in 1:numG) {  // loop over groups
+>     int local_N;
+>     vector[sizes[i]] local_y;
+>     local_N = sizes[i];
+>     local_y = segment(y, pos, local_N);
+>     for (n in (K + 1):local_N) { // loop over observations
+>       real mu;
+>       mu = 0;
+>       for (k in 1:K) { // loop over lags
+>         mu = mu + group_betas[i][k] * local_y[n - k];
+>       }
+>       y[n] ~ normal(mu, local_sigma);
+>     }
+>     z[i] ~ normal(0, 1);
+>     pos = pos + local_N;
+>   }
+>
+>   // hyperpriors
+>   local_sigma ~ cauchy(0, 2);
+>   global_sigma ~ cauchy(0, 2);
+>   global_beta ~ cauchy(0, 2);
+> }
+>
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u8aa9b8cc06fdc99c at groups.google.com  Tue Jun  6 19:15:10 2017
+From: u8aa9b8cc06fdc99c at groups.google.com (Bob Carpenter)
+Date: Tue, 06 Jun 2017 19:15:10 +0000
+Subject: Re: [stan-users] Problems with reproducibility/setting seed for random number generator
+Message-ID: <8ayvLs229Ow.yXflga3KBgAJ@stan-users.groups.google.com>
+In-Reply-To: <8ayvLs229Ow.VqrmX0dtCAAJ@stan-users.groups.google.com>
+References: <8ayvLs229Ow.1c88-1l_CAAJ@stan-users.groups.google.com> <8ayvLs229Ow.VqrmX0dtCAAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/8ayvLs229Ow/m/yXflga3KBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think this is strictly an RStan issue and as such should probably
+be raised on their issue tracker.   The core interfaces on the C++
+side are RNG neutral---they just take one as an argument and use
+it throughout.  Mitzi just fixed the init of transformed data so it's
+always the same across chains (specifically, it uses the seed for
+the transformed data and then skips ahead trillions of draws for each chain).
+
+- Bob
+
+> On Jun 5, 2017, at 7:36 PM, Kevin Van Horn <ke...@ksvanhorn.com> wrote:
+>
+> I agree with the OP -- I also want to be able to reset the PRNG. The reason is for testing. I cannot get reproducibility with the current behavior, because the state of the PRNG at the beginning of a test depends on what tests ran before it, if they also use the PRNG. I need to be able to reset the PRNG at the beginning of every test.
+>
+> Furthermore, even within a single test I may want to reset the PRNG. Sometimes I want to verify that two different ways of computing the same result actually yield the same result. That requires starting with the same PRNG state if there is any random-number generation involved.
+>
+> On Wednesday, August 3, 2016 at 1:41:29 PM UTC-6, Ben Goodrich wrote:
+> On Wednesday, August 3, 2016 at 3:25:53 PM UTC-4, Bob Carpenter wrote:
+> Should we use the R random number generator to generate a new seed
+> each time it's called?  The constructors for the Boost RNGs are
+> pretty cheap.
+>
+> IIRC, the reason it is currently this way is so that we didn't construct an unlimited number of Boost PRNGs that can  only be destroyed by quitting the R session. That and you would have to update the state of the PRNG in R in order to get different numbers between consecutive calls to the user-defined _rng function. I am not seeing why someone would want to change the seed after setting it once since setting it once ensures reproducibility.
+>
+> Ben
+>
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "Stan users mailing list" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to stan-users+...@googlegroups.com.
+> To post to this group, send email to stan-...@googlegroups.com.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ua236d3d356ca53fd at groups.google.com  Wed Jun  7 07:33:24 2017
+From: ua236d3d356ca53fd at groups.google.com (Aki Vehtari)
+Date: Wed, 07 Jun 2017 07:33:24 +0000
+Subject: Re: We're Moving to Discourse!
+Message-ID: <HmcJdob1itk.5hs_03LPBQAJ@stan-users.groups.google.com>
+In-Reply-To: <HmcJdob1itk.ABLzpzkmBgAJ@stan-users.groups.google.com>
+References: <HmcJdob1itk.ABLzpzkmBgAJ@stan-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/stan-users/c/HmcJdob1itk/m/5hs_03LPBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Bump
+
+On Thursday, May 4, 2017 at 10:06:34 PM UTC+3, Michael Betancourt wrote:
+> In order to improve our ability to the support the Stan community, we will be deprecating the Stan Users Google group and migrating to the Stan Forums at http://discourse.mc-stan.org.  We will support the Google group until June 4th, 2017 after which it will be closed to new submissions.
+>
+> After using your Google or GitHub credentials to create an account you’ll be able to post new topics and interact with existing topics.  Make sure you take a look at the Community Guidelines/FAQ, http://discourse.mc-stan.org/faq, and if you’re interested you can find detailed information about our terms of service and privacy policy at http://discourse.mc-stan.org/tos and http://discourse.mc-stan.org/privacy, respectively.
+>
+> You will now be able to categorize your questions so make sure to choose an appropriate category when creating a new question, http://discourse.mc-stan.org/categories.  Once a response satisfactorily answers your question please click on the checkmark on that response to mark the question as “solved”.
+

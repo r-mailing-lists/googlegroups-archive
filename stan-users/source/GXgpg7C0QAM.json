@@ -1,0 +1,218 @@
+{
+ "thread": "GXgpg7C0QAM",
+ "subject": "GP with repeated x",
+ "messages_listed": 2,
+ "last_activity": "2016-01-22T20:15:18Z",
+ "messages": [
+  {
+   "id": "YSSr7Y16AwAJ",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2015-12-15T16:20:19Z",
+   "subject": "GP with repeated x",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Hi folks,<div><br></div><div>I&#39;ve been trying to extend the manual&#39;s example for fitting a Gaussian Process to the scenario where you have repeated observations at each point on the x-axis. The first approach is to leave the code (<a href=\"https://github.com/stan-dev/example-models/blob/master/misc/gaussian-process/gp-fit.stan\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/stan-dev/example-models/blob/master/misc/gaussian-process/gp-fit.stan&amp;source=gmail&amp;ust=1792462717364000&amp;usg=AOvVaw0KQZu774k4muLu1rIQR21s\">https://github.com/stan-dev/example-models/blob/master/misc/gaussian-process/gp-fit.stan</a>) as is and simply provide x data with the repeated values. This however unnecessarily increases the size of the matrix Sigma, catastrophically in cases with many repetitions per x-value (i.e. very slow sampling on my low-memory notebook). So I coded the alternative below, which seems to get a great speedup without sacrificing effective sample size. </div><div><br></div><div>However, I&#39;m also looking to get posterior predictions, and I&#39;m uncertain how to apply the examples from the manual amidst data of this structure. Specifically, all the examples where one is generating samples from the posterior involve the data y, and I&#39;m not sure how to handle the fact that y is a matrix (i.e. multiple y values per unique x value). Any suggestions?</div><div><br></div><div>Mike</div><div><br></div><div><br></div><div>#File: gp-fit2.stan\r\n</div><div><div>  data {</div><div>    int&lt;lower=1&gt; NX; #num unique X values</div><div>    vector[NX] X; #X values</div><div>    int&lt;lower=1&gt; NZ; #num repetitions per X</div><div>    matrix[NZ,NX] Y; #Y values</div><div>  }</div><div>  transformed data {</div><div>    #convert data Y from matrix to array of row </div><div>    #  vectors (manual says latter is faster)<br></div><div>    row_vector[NX] Y_rv[NZ]; </div><div>    vector[NX] mu; #to be set to zero</div><div>    for (nx in 1:NX){</div><div>      mu[nx] &lt;- 0;</div><div>    }</div><div>    for(nz in 1:NZ){</div><div>      Y_rv[nz] &lt;- Y[nz];</div><div>    }</div><div>  }</div><div>  parameters {</div><div>    real&lt;lower=0&gt; eta_sq;</div><div>    real&lt;lower=0&gt; inv_rho_sq;</div><div>    real&lt;lower=0&gt; sigma_sq;</div><div>  }</div><div>  model {</div><div>    matrix[NX,NX] Sigma;</div><div>    # Sigma off-diagonal</div><div>    for (i in 1:(NX-1)) {</div><div>      for (j in (i+1):NX) {</div><div>        Sigma[i,j] &lt;- eta_sq * exp(- pow(X[i] - X[j],2)/inv_rho_sq);</div><div>        Sigma[j,i] &lt;- Sigma[i,j];</div><div>      }</div><div>    }</div><div>    # Sigma diagonal </div><div>    for (k in 1:NX){</div><div>      Sigma[k,k] &lt;- eta_sq + sigma_sq; # + jitter </div><div>    }</div><div>    #priors on kernel parameters</div><div>    eta_sq ~ cauchy(0,5);</div><div>    inv_rho_sq ~ cauchy(0,5);</div><div>    sigma_sq ~ cauchy(0,5);</div><div>    #assert sampling on each row of Y data</div><div>    for(nz in 1:NZ){</div><div>      Y_rv[nz] ~ multi_normal(mu,Sigma);</div><div>    }</div><div>  }</div><div># end of file &quot;gp-fit2.stan&quot;</div></div><div><br></div><div>And here&#39;s some R code for demo&#39;ing the performance of the standard gp-fit.stan vs gp-fit2.stan amidst x repetitions:</div><div><br></div><div><div><div>  library(rstan)</div><div>  library(ggplot2)</div><div><br></div><div>  #load data</div><div>  source(&#39;gp-fit.data.R&#39;)</div><div><br></div><div>  #plot the data</div><div>  dat = data.frame(x,y)</div><div>  ggplot(</div><div>    data = dat</div><div>    , mapping = aes(</div><div>      x = x</div><div>      , y = y</div><div>    )</div><div>  )+</div><div>  geom_point()</div><div><br></div><div>  #load the standard model</div><div>  gp_model = stan_model(file=&quot;gp-fit.stan&quot;)</div><div><br></div><div>  #sample the standard model (no reps in data)</div><div>  gp_fit &lt;- sampling(</div><div>    gp_model</div><div>    , data=list(x=x,N=N,y=y)</div><div>    , iter = 2000 #samples very quickly</div><div>    , chains = 1</div><div>    , cores = 1</div><div>    , seed = 1</div><div>  )</div><div>  print(gp_fit)</div><div><br></div><div>  #add x-repetition to the data</div><div>  set.seed(1)</div><div>  obs_per_x = 10</div><div>  #repeat x</div><div>  x2 = rep(x,times=obs_per_x)</div><div>  #repeat and add some noise to y</div><div>  y2 = rep(y,times=obs_per_x)+rnorm(N*obs_per_x,0,sd(y)/4)</div><div><br></div><div>  #plot the data</div><div>  dat = data.frame(x2,y2,set=rep(c(&#39;1&#39;,&#39;2&#39;),each=length(x),times=obs_per_x))</div><div>  ggplot(</div><div>    data = dat</div><div>    , mapping = aes(</div><div>      x = x2</div><div>      , y = y2</div><div>      , colour = set</div><div>    )</div><div>  )+</div><div>  geom_point()</div><div><br></div><div>  #compile the attempted improved model </div><div>  gp_model2 = stan_model(file=&quot;gp-fit2.stan&quot;)</div><div><br></div><div>  #sample the attempted improved model</div><div>  gp_fit_with_reps2 &lt;- sampling(</div><div>    gp_model2</div><div>    , data = list(</div><div>      NX = length(x)</div><div>      , X = x</div><div>      , NZ = obs_per_x</div><div>      , Y = matrix(y2, ncol=length(x), byrow=T)</div><div>    )</div><div>    , iter = 200 #</div><div>    , chains = 1</div><div>    , cores = 1</div><div>    , seed = 1</div><div>  )</div><div>  print(gp_fit_with_reps2)</div><div>  </div><div>  #for comparison, sample with the original model</div><div>  gp_fit_with_reps &lt;- sampling(</div><div>    gp_model</div><div>    , data=list(</div><div>        x = x2</div><div>      , N = length(x2)</div><div>      , y = y2</div><div>    )</div><div>    , iter = 200</div><div>    , chains = 1</div><div>    , cores = 1</div><div>    , seed = 1</div><div>  )</div><div>  print(gp_fit_with_reps)</div></div></div><div><br></div></div>\r\n"
+    ]
+   ]
+  },
+  {
+   "id": "l13I-GzrAwAJ",
+   "from": "Mike Lawrence",
+   "author": "dae01c57a3c54a3a",
+   "date": "2016-01-22T20:15:18Z",
+   "subject": "Re: GP with repeated x",
+   "parts": [
+    [
+     1,
+     "<div dir=\"ltr\">Figured it out! <div><br></div><div>Well, somewhat. I can get predictions now, but I came up with different approaches and I&#39;m not quite certain on the inferential meaning of each :Op </div><div><br></div><div>Below is the stan code followed by R-based demonstrations (set your working dir to <a href=\"https://github.com/stan-dev/example-models/blob/master/misc/gaussian-process\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=https://github.com/stan-dev/example-models/blob/master/misc/gaussian-process&amp;source=gmail&amp;ust=1792462717368000&amp;usg=AOvVaw275f5RzzXKH4DwSh7YVdH_\">https://github.com/stan-dev/example-models/blob/master/misc/gaussian-process</a>). Could any of you GP-savvy folks take a look and let me know what interpretation you&#39;d put on the different prediction intervals the demo generates?</div><div class=\"gmail_extra\"><br clear=\"all\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">#file: gp-fit2.stan</div><div class=\"gmail_signature\">  data {</div><div class=\"gmail_signature\">    #NX: num unique X values</div><div class=\"gmail_signature\">    int&lt;lower=1&gt; NX ; </div><div class=\"gmail_signature\">    #X: x values</div><div class=\"gmail_signature\">    vector[NX] X ; </div><div class=\"gmail_signature\">    #NZ: num repetitions per X</div><div class=\"gmail_signature\">    int&lt;lower=1&gt; NZ ;</div><div class=\"gmail_signature\">    #Y: matrix of y values</div><div class=\"gmail_signature\">    matrix[NZ,NX] Y ;</div><div class=\"gmail_signature\">    # y_means: across-repetitions by-x means for Y</div><div class=\"gmail_signature\">    vector[NX] Y_means ; </div><div class=\"gmail_signature\">  }</div><div class=\"gmail_signature\">  transformed data {</div><div class=\"gmail_signature\">    #Y_transpose: for later prediction generation</div><div class=\"gmail_signature\">    matrix[NX,NZ] Y_transpose ;</div><div class=\"gmail_signature\">    #Y_rv: manual says row vectors are faster to loop over</div><div class=\"gmail_signature\">    row_vector[NX] Y_rv[NZ] ; </div><div class=\"gmail_signature\">    #mu: to be set to zero</div><div class=\"gmail_signature\">    vector[NX] mu ; </div><div class=\"gmail_signature\">    Y_transpose &lt;- Y&#39; ;</div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">    for(nz in 1:NZ){</div><div class=\"gmail_signature\">      Y_rv[nz] &lt;- Y[nz] ;</div><div class=\"gmail_signature\">    }</div><div class=\"gmail_signature\">    for (nx in 1:NX){</div><div class=\"gmail_signature\">      mu[nx] &lt;- 0 ;</div><div class=\"gmail_signature\">    }</div><div class=\"gmail_signature\">  }</div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">  parameters {</div><div class=\"gmail_signature\">    #eta_sq: scale of output (Y)</div><div class=\"gmail_signature\">    real&lt;lower=0&gt; eta_sq ;</div><div class=\"gmail_signature\">    #inv_rho_sq: x-axis scale of influence between points (wiggliness?)</div><div class=\"gmail_signature\">    real&lt;lower=0&gt; inv_rho_sq ;</div><div class=\"gmail_signature\">    #sigma_sq: noise scale</div><div class=\"gmail_signature\">    real&lt;lower=0&gt; sigma_sq ;</div><div class=\"gmail_signature\">  }</div><div class=\"gmail_signature\">  transformed parameters{</div><div class=\"gmail_signature\">    #Sigma: covariance matrix</div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">    matrix[NX,NX] Sigma ;</div><div class=\"gmail_signature\">    # Sigma off-diagonal</div><div class=\"gmail_signature\">    for (i in 1:(NX-1)) {</div><div class=\"gmail_signature\">      for (j in (i+1):NX) {</div><div class=\"gmail_signature\">        Sigma[i,j] &lt;- eta_sq * exp(- pow(X[i] - X[j],2)/inv_rho_sq) ;</div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">        Sigma[j,i] &lt;- Sigma[i,j] ; #lower mirrors upper</div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">      }</div><div class=\"gmail_signature\">    }</div><div class=\"gmail_signature\">    # Sigma diagonal </div><div class=\"gmail_signature\">    for (k in 1:NX){</div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">      Sigma[k,k] &lt;- eta_sq + sigma_sq ; # add jitter</div><div class=\"gmail_signature\">    }  </div><div class=\"gmail_signature\">  }</div><div class=\"gmail_signature\">  model {</div><div class=\"gmail_signature\">    #priors on kernel parameters</div><div class=\"gmail_signature\">    eta_sq ~ cauchy(0,1) ;</div><div class=\"gmail_signature\">    inv_rho_sq ~ cauchy(0,1) ;</div><div class=\"gmail_signature\">    sigma_sq ~ cauchy(0,1) ;</div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">    #assert sampling on each row of Y data</div><div class=\"gmail_signature\">    for(nz in 1:NZ){</div><div class=\"gmail_signature\">      Y_rv[nz] ~ multi_normal(mu,Sigma) ;</div><div class=\"gmail_signature\">    }</div><div class=\"gmail_signature\">  }</div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\">  generated quantities {</div><div class=\"gmail_signature\">    #y_preds1: predictions using the Y means</div><div class=\"gmail_signature\">    vector[NX] y_preds1 ;</div><div class=\"gmail_signature\">    #y_preds2: predictionss using each Y</div><div class=\"gmail_signature\">    matrix[NX,NZ] y_preds2 ; </div><div class=\"gmail_signature\">    { #create sub-enrironment because we don&#39;t want to bother saving K</div><div class=\"gmail_signature\">      matrix[NX,NX] K ;</div><div class=\"gmail_signature\">      matrix[NX,NX] K_transpose_div_Sigma ;</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">      # K all elements</div><div class=\"gmail_signature\">      for (i in 1:NX)</div><div class=\"gmail_signature\">        for (j in 1:NX)</div><div class=\"gmail_signature\">          K[i,j] &lt;- eta_sq * exp(-pow(X[i] - X[j], 2)/inv_rho_sq) ;</div><div class=\"gmail_signature\">   </div><div class=\"gmail_signature\">      K_transpose_div_Sigma &lt;- K&#39; / Sigma ;</div><div class=\"gmail_signature\">      y_preds1 &lt;- K_transpose_div_Sigma * Y_means ;</div><div class=\"gmail_signature\">      y_preds2 &lt;- K_transpose_div_Sigma * Y_transpose ;</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">    }</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  }</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">#R demo</div><div class=\"gmail_signature\"></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">library(rstan)</div><div class=\"gmail_signature\">  library(ggplot2)</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #load data</div><div class=\"gmail_signature\">  source(&#39;gp-fit.data.R&#39;)</div><div class=\"gmail_signature\"><br></div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  #rescale x &amp; y for easy prior specification</div><div class=\"gmail_signature\">  x=scale(x)[,1]</div><div class=\"gmail_signature\">  y=scale(y)[,1]</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #plot the data</div><div class=\"gmail_signature\">  dat = data.frame(x,y)</div><div class=\"gmail_signature\">  ggplot(</div><div class=\"gmail_signature\">    data = dat</div><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x</div><div class=\"gmail_signature\">      , y = y</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">  )+</div><div class=\"gmail_signature\">  geom_point()</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #load the standard model</div><div class=\"gmail_signature\">  gp_model = stan_model(file=&quot;gp-fit.stan&quot;)</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #sample the standard model (no reps in data)</div><div class=\"gmail_signature\">  gp_fit &lt;- sampling(</div><div class=\"gmail_signature\">    gp_model</div><div class=\"gmail_signature\">    , data=list(x=x,N=N,y=y)</div><div class=\"gmail_signature\">    , iter = 2000 #samples very quickly</div><div class=\"gmail_signature\">    , chains = 1</div><div class=\"gmail_signature\">    , cores = 1</div><div class=\"gmail_signature\">    , seed = 1</div><div class=\"gmail_signature\">  )</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  alarm()</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  print(gp_fit)</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #add x-repetition to the data</div><div class=\"gmail_signature\">  set.seed(1)</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  reps_per_x = 2</div><div class=\"gmail_signature\">  #repeat x</div><div class=\"gmail_signature\">  x2 = rep(x,times=reps_per_x)</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  #repeat and add some noise to y</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  y2 = scale(rep(y,times=reps_per_x)+rnorm(N*reps_per_x,0,1))[,1]</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #plot the data</div><div class=\"gmail_signature\">  dat = data.frame(x2,y2,rep_num=factor(rep(1:reps_per_x,each=N)))</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  ggplot(</div><div class=\"gmail_signature\">    data = dat</div><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x2</div><div class=\"gmail_signature\">      , y = y2</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , group = rep_num</div><div class=\"gmail_signature\">      , colour = rep_num</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , alpha = .5</div><div class=\"gmail_signature\">  )+</div><div class=\"gmail_signature\">  geom_point()+</div><div class=\"gmail_signature\">  geom_line()</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #compile the attempted improved model </div><div class=\"gmail_signature\">  gp_model2 = stan_model(file=&quot;gp-fit2.stan&quot;)</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #sample the attempted improved model</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  gp_fit_with_reps &lt;- sampling(</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    gp_model2</div><div class=\"gmail_signature\">    , data = list(</div><div class=\"gmail_signature\">      NX = length(x)</div><div class=\"gmail_signature\">      , X = x</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , NZ = reps_per_x</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , Y = matrix(y2, ncol=length(x), byrow=T)</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , Y_means = colMeans(matrix(y2, ncol=length(x), byrow=T))</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , iter = 2000</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    , chains = 1</div><div class=\"gmail_signature\">    , cores = 1</div><div class=\"gmail_signature\">    , seed = 1</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    , pars = &#39;Sigma&#39; #don&#39;t bother including Sigma in saved samples</div><div class=\"gmail_signature\">    , include = FALSE #</div><div class=\"gmail_signature\">  )</div><div class=\"gmail_signature\">  alarm()</div><div class=\"gmail_signature\">  print(gp_fit_with_reps)</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #look at the mean function</div><div class=\"gmail_signature\">  y_preds1 = extract(</div><div class=\"gmail_signature\">    gp_fit_with_reps</div><div class=\"gmail_signature\">    , pars = &#39;y_preds1&#39;</div><div class=\"gmail_signature\">  )[[1]]</div><div class=\"gmail_signature\">  loci = apply(y_preds1,2,quantile,prob=.025)</div><div class=\"gmail_signature\">  hici = apply(y_preds1,2,quantile,prob=.975)</div><div class=\"gmail_signature\">  p = ggplot()</div><div class=\"gmail_signature\">  p = p + geom_point(</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    data = dat</div><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x2</div><div class=\"gmail_signature\">      , y = y2</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , colour = rep_num</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , alpha = .5</div><div class=\"gmail_signature\">  )</div><div class=\"gmail_signature\">  p = p + geom_ribbon(</div><div class=\"gmail_signature\">    data = data.frame(</div><div class=\"gmail_signature\">      x = x</div><div class=\"gmail_signature\">      , ymin = loci</div><div class=\"gmail_signature\">      , ymax = hici</div><div class=\"gmail_signature\">    )</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , ymin = ymin</div><div class=\"gmail_signature\">      , ymax = ymax</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , alpha = .5</div><div class=\"gmail_signature\">  )</div><div class=\"gmail_signature\">  print(p)</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #get predictions for each set</div><div class=\"gmail_signature\">  y_preds2 = extract(</div><div class=\"gmail_signature\">    gp_fit_with_reps</div><div class=\"gmail_signature\">    , pars = &#39;y_preds2&#39;</div><div class=\"gmail_signature\">  )[[1]]</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #average by x across repetition</div><div class=\"gmail_signature\">  y_preds2a = apply(y_preds2,c(1,2),mean)</div><div class=\"gmail_signature\">  loci = apply(y_preds2a,2,quantile,prob=.025)</div><div class=\"gmail_signature\">  hici = apply(y_preds2a,2,quantile,prob=.975)</div><div class=\"gmail_signature\">  p = ggplot()</div><div class=\"gmail_signature\">  p = p + geom_point(</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    data = dat</div><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x2</div><div class=\"gmail_signature\">      , y = y2</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , colour = rep_num</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , alpha = .5</div><div class=\"gmail_signature\">  )</div><div class=\"gmail_signature\">  p = p + geom_ribbon(</div><div class=\"gmail_signature\">    data = data.frame(</div><div class=\"gmail_signature\">      x = x</div><div class=\"gmail_signature\">      , ymin = loci</div><div class=\"gmail_signature\">      , ymax = hici</div><div class=\"gmail_signature\">    )</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , ymin = ymin</div><div class=\"gmail_signature\">      , ymax = ymax</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , alpha = .5</div><div class=\"gmail_signature\">  )</div><div class=\"gmail_signature\">  print(p) #seemingly identical to y_preds1</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #plot each repetition&#39;s CI</div><div class=\"gmail_signature\">  p = ggplot()</div><div class=\"gmail_signature\">  p = p + geom_point(</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    data = dat</div><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x2</div><div class=\"gmail_signature\">      , y = y2</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , colour = rep_num</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , alpha = .5</div><div class=\"gmail_signature\">  )</div><div class=\"gmail_signature\">  for(i in 1:dim(y_preds2)[3]){</div><div class=\"gmail_signature\">    loci = apply(y_preds2[,,i],2,quantile,prob=.025)</div><div class=\"gmail_signature\">    hici = apply(y_preds2[,,i],2,quantile,prob=.975)</div><div class=\"gmail_signature\">    p = p + geom_ribbon(</div><div class=\"gmail_signature\">      data = data.frame(</div><div class=\"gmail_signature\">        x = x</div><div class=\"gmail_signature\">        , ymin = loci</div><div class=\"gmail_signature\">        , ymax = hici</div><div class=\"gmail_signature\">      )</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , mapping = aes(</div><div class=\"gmail_signature\">        x = x</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">        , ymin = ymin</div><div class=\"gmail_signature\">        , ymax = ymax</div><div class=\"gmail_signature\">      )</div><div class=\"gmail_signature\">      , alpha = .5</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">  }</div><div class=\"gmail_signature\">  print(p)</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #gather all replicates and treat as iterations</div><div class=\"gmail_signature\">  y_preds2b = aperm(y_preds2,c(1,3,2))</div><div class=\"gmail_signature\">  dim(y_preds2b) = c(dim(y_preds2)[1]*dim(y_preds2)[3],dim(y_preds2)[2])</div><div class=\"gmail_signature\">  loci = apply(y_preds2b,2,quantile,prob=.025)</div><div class=\"gmail_signature\">  hici = apply(y_preds2b,2,quantile,prob=.975)</div><div class=\"gmail_signature\">  p = ggplot()</div><div class=\"gmail_signature\">  p = p + geom_point(</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    data = dat</div><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x2</div><div class=\"gmail_signature\">      , y = y2</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , colour = rep_num</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , alpha = .5</div><div class=\"gmail_signature\">  )</div><div class=\"gmail_signature\">  p = p + geom_ribbon(</div><div class=\"gmail_signature\">    data = data.frame(</div><div class=\"gmail_signature\">      x = x</div><div class=\"gmail_signature\">      , ymin = loci</div><div class=\"gmail_signature\">      , ymax = hici</div><div class=\"gmail_signature\">    )</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    , mapping = aes(</div><div class=\"gmail_signature\">      x = x</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">      , ymin = ymin</div><div class=\"gmail_signature\">      , ymax = ymax</div><div class=\"gmail_signature\">    )</div><div class=\"gmail_signature\">    , alpha = .5</div><div class=\"gmail_signature\">  )</div><div class=\"gmail_signature\">  print(p)</div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\"><br></div><div class=\"gmail_signature\">  #for comparison, sample with the original model (takes a lot longer!)</div><div class=\"gmail_signature\">  gp_fit_with_reps2 &lt;- sampling(</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    gp_model</div><div class=\"gmail_signature\">    , data=list(</div><div class=\"gmail_signature\">        x = x2</div><div class=\"gmail_signature\">      , N = length(x2)</div><div class=\"gmail_signature\">      , y = y2</div><div class=\"gmail_signature\">    )</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    , iter = 2000</div></div></div></div></div></div>"
+    ],
+    [
+     2,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">    , chains = 1</div><div class=\"gmail_signature\">    , cores = 1</div><div class=\"gmail_signature\">    , seed = 1</div><div class=\"gmail_signature\">  )</div></div></div></div></div></div>"
+    ],
+    [
+     1,
+     "<div dir=\"ltr\"><div class=\"gmail_extra\"><div><div class=\"gmail_signature\"><div class=\"gmail_signature\"><div class=\"gmail_signature\">  alarm()</div><div class=\"gmail_signature\">  print(gp_fit_with_reps2)</div><div><br></div></div></div></div></div></div>\r\n"
+    ]
+   ]
+  }
+ ]
+}
