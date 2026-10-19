@@ -1,0 +1,2108 @@
+From u6cf4f730b8d1254e at groups.google.com  Wed Apr  8 18:56:37 2020
+From: u6cf4f730b8d1254e at groups.google.com (Bert van der Veen)
+Date: Wed, 08 Apr 2020 18:56:37 +0000
+Subject: Gauss-Kronrod quadrature use and accuracy
+Message-ID: <qt9Z6oSQvc4.fhveRhhsBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/qt9Z6oSQvc4/m/fhveRhhsBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello all,
+
+I've been attempting to fit a latent variable model for which the marginal likelihood cannot be approximated using Laplace's method. The code included below I have scraped together from the existing examples, to give an impression of what I'm trying to accomplish, in the hope that clarifies things.
+As part of a log-likelihood derived using Variational Approximations, I would like to evaluate an expectation that lacks a closed form expression (as far as I can tell): E(1/exp(eta)), eta = z*theta + z^2*theta2, is the linear predictor and z~ MVRN(a_i, A_i). This is evaluated, i = 1...n times as part of the log-likelihood.
+
+I've been trying to do this using TMB's adaptive Gauss-Kronrod implementation, but seem to be falling short. As I have nothing to compare the results of the numerical integration to for the above example, I've instead compared the results of the numerical integration with E(exp(eta)) for which I do have a closed form expression. Though the integration results are accurate (similar) at the start of the optimization (3 or so decimals at least), for some i the result of the numerical integration is quite poor, i.e. it deviates from the closed-form answer quite rapidly into the optimization, eventually resulting in a negative, negative log-likelihood (i.e. a positive log-likelihood, where the closed-form expression performs just fine) I've gone over my code a dozen times, and can't seem to find mistakes.
+
+Four issues I would greatly appreciate help with/input on:
+1) Though the original TMB example using multivariate Romberg integration shows how to pass a vector of a dynamic size to the function, the example with adaptive Gauss-Kronrod quadrature does not. Is it possible to do this, rather than with wrt()?
+2) I couldn't get the script to compile when passing TMB-type vectors to the integrand (so this is different from above as that relates to a question for passing a vector to mvIntegrate, rather than having to wrt() for each of the latent variables). So, instead, I used single column matrices. Is this supposed to work with  TMB-type vectors?
+3) I don't seem to be able to use REGISTER_ATOMIC() due to not being able to pass vectors to the integrand (I think), which I had hoped to reduce the RAM usage of MakeADFun(), though please correct me if I'm wrong as I have no clue as to the effect of tape size on RAM usage. Are there alternative ways to reduce memory usage (spikes) during AD (note that my code is not parallelized at this time).
+4) Is there any other possibility for me to improve the accuracy of the results of the numerical integration? I've attempted to increase the relative and absolute tolerances, but that only resulted in a higher RAM usage.
+
+Bert
+
+//eval below is evaluated for every i = 1...n.
+template<class Float>
+struct integrand {
+ typedef Float Scalar; // Required by integrate
+ matrix<Float> theta1;
+ matrix<Float> theta2;
+ matrix<Float> a;
+ matrix<Float> A;
+
+ //z(z1,z2) ~ NMVRN(a,A)
+ Float z1; //Latent variable 1
+ Float z2; //Latent variable 2
+
+ Float operator() () {
+
+ matrix <Float> z(1,A.cols());
+ z(0,0) = z1;
+ z(0,1) = z2;
+
+ Float ans = 0;
+ ans += (z.array()*theta1.array()).sum() - (z.array()*z.array()*theta2.array()).sum();
+ //Subtract negative log-likelihood for the Multivariate Normal as I want the log-likelihood to be added (i.e. int exp(eta(z))h(z)d(z), where h(z) is the Multivariate normal
+ ans -= density::MVNORM(A)(z.row(0)-a.row(0));
+ ans = exp(ans);
+
+ return ans;
+ }
+
+ // Integrate wrt (z1,z2)
+ Float integrate() {
+ using namespace gauss_kronrod;
+ Float ans = mvIntegrate(*this, control(100,1e-5,1e-5)).//Subdivisions, reltol, abstol
+ wrt(z1, -INFINITY, INFINITY).
+ wrt(z2, -INFINITY, INFINITY) ();
+ return ans;
+ }
+};
+
+template<class Float>
+Float eval(matrix<Float> theta1, matrix<Float> theta2, matrix<Float> a, matrix<Float> A){
+ integrand<Float> f = {theta1, theta2, a, A};
+ return f.integrate();
+}
+
+From ue7a8779ef7a944e5 at groups.google.com  Sat Apr 11 21:51:32 2020
+From: ue7a8779ef7a944e5 at groups.google.com (James Thorson)
+Date: Sat, 11 Apr 2020 21:51:32 +0000
+Subject: Set random-number seed for calls to obj$simulate()
+Message-ID: <6oWQsFkB8Ao.wzqistY7AgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6oWQsFkB8Ao/m/wzqistY7AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I'm using the SIMULATE feature in TMB as accessed in R via obj$simulate() to implement a simulator in R package VAST.  In some cases, its helpful to exactly replicate a simulation experiment by passing the same random-number seed; however, I don't see how to do this using the obj$simulate() feature.
+
+Is there any way to pass a random-number seed, either in TMB code when calling SIMULATE or (ideally) by passing a seed to obj$simulate() on the R side?
+
+Thanks
+Jim
+
+From ue5c7e56038437512 at groups.google.com  Sat Apr 11 23:09:34 2020
+From: ue5c7e56038437512 at groups.google.com (CavieresJJ)
+Date: Sat, 11 Apr 2020 23:09:34 +0000
+Subject: Re: Set random-number seed for calls to obj$simulate()
+Message-ID: <6oWQsFkB8Ao.MFgnzBhAAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <6oWQsFkB8Ao.wzqistY7AgAJ@tmb-users.groups.google.com>
+References: <6oWQsFkB8Ao.wzqistY7AgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6oWQsFkB8Ao/m/MFgnzBhAAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+I don't know if this can be respond your question but works for me.
+
+in TMB:
+
+// Simule data from the mu ('mu' is the mean from any linear regression)
+   SIMULATE {
+   y = rnorm(mu, sigma);
+   REPORT(y);
+}
+
+// In R
+obj =  MakeADFun(data = data, parameters=pars,..........)
+obj$simulate()$y
+
+El sábado, 11 de abril de 2020, 17:51:32 (UTC-4), James Thorson escribió:
+> Hi all,
+>
+> I'm using the SIMULATE feature in TMB as accessed in R via obj$simulate() to implement a simulator in R package VAST.  In some cases, its helpful to exactly replicate a simulation experiment by passing the same random-number seed; however, I don't see how to do this using the obj$simulate() feature.
+>
+> Is there any way to pass a random-number seed, either in TMB code when calling SIMULATE or (ideally) by passing a seed to obj$simulate() on the R side?
+>
+> Thanks
+> Jim
+
+From u55d0e2f87b0f795e at groups.google.com  Sat Apr 11 23:11:05 2020
+From: u55d0e2f87b0f795e at groups.google.com (Mollie Brooks)
+Date: Sat, 11 Apr 2020 23:11:05 +0000
+Subject: Re: [TMB users] Set random-number seed for calls to obj$simulate()
+Message-ID: <6oWQsFkB8Ao.1YWKPMUPAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <6oWQsFkB8Ao.wzqistY7AgAJ@tmb-users.groups.google.com>
+References: <6oWQsFkB8Ao.wzqistY7AgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6oWQsFkB8Ao/m/1YWKPMUPAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jim,
+
+You could look at simulate.glmmTMB() for an example (sorry if it’s more complicated than necessary).
+https://github.com/glmmTMB/glmmTMB/blob/master/glmmTMB/R/methods.R#L1057
+
+object$obj$simulate() is just taking it from set.seed() but simulate.glmmTMB() is written so that it can take the seed from either the function call (and later restore the RNG state (R.seed in the example code) that was in the environment before calling simulate.glmmTMB()), or take the seed from the environment. E.g. s2 and s3 give the same numbers in the example below, but the call to s3 maintains the RNG state that was already in the environment.
+
+data(cbpp, package="lme4")
+(bovine <- glmmTMB(cbind(incidence, size-incidence) ~ period + (1|herd),
+   family=binomial, data=cbpp))
+
+set.seed(111); s2 <- simulate(bovine)
+s3 <- simulate(bovine, seed=111)
+
+Cheers,
+Mollie
+
+> On 11Apr 2020, at 23:51, James Thorson <james...@gmail.com> wrote:
+>
+
+> Hi all,
+>
+> I'm using the SIMULATE feature in TMB as accessed in R via obj$simulate() to implement a simulator in R package VAST.  In some cases, its helpful to exactly replicate a simulation experiment by passing the same random-number seed; however, I don't see how to do this using the obj$simulate() feature.
+>
+> Is there any way to pass a random-number seed, either in TMB code when calling SIMULATE or (ideally) by passing a seed to obj$simulate() on the R side?
+>
+> Thanks
+> Jim
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/c832a9a6-30bc-4c01-8e4b-8fd76f807da2%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/c832a9a6-30bc-4c01-8e4b-8fd76f807da2%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ue7a8779ef7a944e5 at groups.google.com  Sun Apr 12 02:59:08 2020
+From: ue7a8779ef7a944e5 at groups.google.com (James Thorson)
+Date: Sun, 12 Apr 2020 02:59:08 +0000
+Subject: Re: [TMB users] Set random-number seed for calls to obj$simulate()
+Message-ID: <6oWQsFkB8Ao.ZLqYDTccAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <6oWQsFkB8Ao.wzqistY7AgAJ@tmb-users.groups.google.com>
+References: <6oWQsFkB8Ao.wzqistY7AgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6oWQsFkB8Ao/m/ZLqYDTccAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for these responses!
+
+I confirm that calling set.seed(.) prior to obj$simulate() succeeds in defining the random-numbers generated by the TMB simulator.  I thought I had tried this previously; it is clearly the intuitive behavior for the feature ;)
+
+Jim
+
+From u6667ef04b386b9ec at groups.google.com  Mon Apr 13 12:23:54 2020
+From: u6667ef04b386b9ec at groups.google.com (Guilherme Parreira)
+Date: Mon, 13 Apr 2020 12:23:54 +0000
+Subject: How to include a different probability distribution in TMB in R?
+Message-ID: <3_ElYPKPoJ4.8lmiEQa6AgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3_ElYPKPoJ4/m/8lmiEQa6AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am using the TMB package in R, and I want to use a density distribution which is not available in the R style distribution <https://kaskr.github.io/adcomp/group__R__style__distribution.html>.
+
+How should I include it? I found something at Code--snippets <https://github.com/kaskr/adcomp/wiki/Code--snippets>, but as I am new to it, I am not quite sure.
+
+For example, I want to use Simplex distribution, which I have already written in R:
+dsimplex <- function(y, mu, sigma, log=TRUE){
+ dis <- (y-mu)^2 / (y*(1-y)*mu^2 *(1-mu)^2)
+ dsim <- -0.5*log(2*pi) -0.5*log(sigma) -
+ (3/2)*log(y*(1-y)) - (1/(2*sigma))*dis
+ if(log == FALSE){dsim <- exp(dsim)}
+ return(dsim)
+}
+
+and it is available in simplexreg and Stan packages.
+
+What is the best approach to deal with it? (I would like to have an external file which contains this density, and call it from the file that I am writing my log likelihood).
+Thanks in advance!!
+
+From u55d0e2f87b0f795e at groups.google.com  Wed Apr 15 13:23:34 2020
+From: u55d0e2f87b0f795e at groups.google.com (Mollie Brooks)
+Date: Wed, 15 Apr 2020 13:23:34 +0000
+Subject: Re: [TMB users] How to include a different probability distribution in TMB in R?
+Message-ID: <3_ElYPKPoJ4.5FMhCZOBAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <3_ElYPKPoJ4.8lmiEQa6AgAJ@tmb-users.groups.google.com>
+References: <3_ElYPKPoJ4.8lmiEQa6AgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3_ElYPKPoJ4/m/5FMhCZOBAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+There are a couple of examples of this (e.g. dgenpois, dbetabinom) in the glmmTMB code here
+https://github.com/glmmTMB/glmmTMB/blob/master/glmmTMB/src/glmmTMB.cpp
+
+I think you would skip line 7 referring to the namespace of glmmTMB and simply structure the definition the same as in the posfun example at the Code-snippets link.
+
+In the example, the definition is after the include statement
+#include <TMB.hpp>
+
+, but before the objective function definition
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+
+Maybe someone else can comment on your request for doing this in an external file. That’s beyond my working memory of C++.
+
+cheers,
+Mollie
+
+> On 13Apr 2020, at 14:23, Guilherme Parreira <guilhermepa...@gmail.com> wrote:
+>
+
+> I am using the TMB package in R, and I want to use a density distribution which is not available in the R style distribution <https://kaskr.github.io/adcomp/group__R__style__distribution.html>.
+>
+> How should I include it? I found something at Code--snippets <https://github.com/kaskr/adcomp/wiki/Code--snippets>, but as I am new to it, I am not quite sure.
+>
+> For example, I want to use Simplex distribution, which I have already written in R:
+> dsimplex <- function(y, mu, sigma, log=TRUE){
+>  dis <- (y-mu)^2 / (y*(1-y)*mu^2 *(1-mu)^2)
+>  dsim <- -0.5*log(2*pi) -0.5*log(sigma) -
+>  (3/2)*log(y*(1-y)) - (1/(2*sigma))*dis
+>  if(log == FALSE){dsim <- exp(dsim)}
+>  return(dsim)
+> }
+>
+> and it is available in simplexreg and Stan packages.
+>
+> What is the best approach to deal with it? (I would like to have an external file which contains this density, and call it from the file that I am writing my log likelihood).
+> Thanks in advance!!
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/580b1c70-1ebd-41a9-8dc3-76b1beb30142%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/580b1c70-1ebd-41a9-8dc3-76b1beb30142%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u5f37247f794698ef at groups.google.com  Wed Apr 15 13:40:31 2020
+From: u5f37247f794698ef at groups.google.com (Brian Stock - NOAA Affiliate)
+Date: Wed, 15 Apr 2020 13:40:31 +0000
+Subject: Re: [TMB users] How to include a different probability distribution in TMB in R?
+Message-ID: <3_ElYPKPoJ4.R0oW4n-CAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <3_ElYPKPoJ4.5FMhCZOBAgAJ@tmb-users.groups.google.com>
+References: <3_ElYPKPoJ4.8lmiEQa6AgAJ@tmb-users.groups.google.com> <3_ElYPKPoJ4.5FMhCZOBAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3_ElYPKPoJ4/m/R0oW4n-CAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Guilherme and Mollie,
+
+If you want to include helper functions, like a new probability distribution, in an external file (e.g. "helper_functions.hpp"), you just need to #include it at the top of your .cpp between the call to TMB.hpp and your objective function. Our WHAM package <https://github.com/timjmiller/wham/tree/master/src> has a few examples where we store several probability distributions and other functions in "helper_functions.hpp".
+
+#include <TMB.hpp>
+#include "helper_functions.hpp"
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+
+Best,
+Brian
+
+On Wed, Apr 15, 2020 at 9:23 AM Mollie Brooks <mollie...@gmail.com> wrote:
+
+> There are a couple of examples of this (e.g. dgenpois, dbetabinom) in the glmmTMB code here
+> https://github.com/glmmTMB/glmmTMB/blob/master/glmmTMB/src/glmmTMB.cpp
+>
+> I think you would skip line 7 referring to the namespace of glmmTMB and simply structure the definition the same as in the posfun example at the Code-snippets link.
+>
+> In the example, the definition is after the include statement
+> #include <TMB.hpp>
+>
+> , but before the objective function definition
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>
+> Maybe someone else can comment on your request for doing this in an external file. That’s beyond my working memory of C++.
+>
+> cheers,
+> Mollie
+>
+> > On 13Apr 2020, at 14:23, Guilherme Parreira <guilhermepa...@gmail.com> wrote:
+> >
+> > I am using the TMB package in R, and I want to use a density distribution which is not available in the R style distribution <https://kaskr.github.io/adcomp/group__R__style__distribution.html>.
+> >
+> > How should I include it? I found something at Code--snippets <https://github.com/kaskr/adcomp/wiki/Code--snippets>, but as I am new to it, I am not quite sure.
+> >
+> > For example, I want to use Simplex distribution, which I have already written in R:
+> > dsimplex <- function(y, mu, sigma, log=TRUE){
+> >  dis <- (y-mu)^2 / (y*(1-y)*mu^2 *(1-mu)^2)
+> >  dsim <- -0.5*log(2*pi) -0.5*log(sigma) -
+> >  (3/2)*log(y*(1-y)) - (1/(2*sigma))*dis
+> >  if(log == FALSE){dsim <- exp(dsim)}
+> >  return(dsim)
+> > }
+> >
+> > and it is available in simplexreg and Stan packages.
+> >
+> > What is the best approach to deal with it? (I would like to have an external file which contains this density, and call it from the file that I am writing my log likelihood).
+> > Thanks in advance!!
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/580b1c70-1ebd-41a9-8dc3-76b1beb30142%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/580b1c70-1ebd-41a9-8dc3-76b1beb30142%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/63DE6927-901F-4C67-8956-BC243BD63811%40gmail.com <https://groups.google.com/d/msgid/tmb-users/63DE6927-901F-4C67-8956-BC243BD63811%40gmail.com?utm_medium=email&utm_source=footer>.
+
+--
+Brian Stock, PhD
+NRC Postdoc Research Associate
+Northeast Fisheries Science Center
+Woods Hole, MA
+https://brianstock.github.io/
+
+From u3126d00d0b94540e at groups.google.com  Thu Apr 16 22:47:59 2020
+From: u3126d00d0b94540e at groups.google.com (John Sibert)
+Date: Thu, 16 Apr 2020 22:47:59 +0000
+Subject: Installation issue
+Message-ID: <cm-q82k7xEY.9to-gVbBAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cm-q82k7xEY/m/9to-gVbBAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm not sure this is a TMB issue, but it is sure stopping me from installing TMB.
+
+I recently updated my OS to linux mint cinnamon.
+$ uname -a
+Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31 04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linu
+
+New compiler
+$ gcc --version
+gcc (GCC) 10.0.1 20200212 (experimental)
+
+Newish R
+R version 3.4.4 (2018-03-15)
+
+When I try to install TMB with install.packages('TMB'), it fails with the following message:
+** building package indices
+Error : requireNamespace("Matrix", quietly = TRUE) is not TRUE
+ERROR: installing package indices failed
+* removing ‘/usr/local/lib/R/site-library/Matrix’
+ERROR: dependencies ‘Matrix’, ‘Rcpp’ are not available for package ‘RcppEigen’
+* removing ‘/usr/local/lib/R/site-library/RcppEigen’
+ERROR: dependencies ‘Matrix’, ‘RcppEigen’ are not available for package ‘TMB’
+* removing ‘/usr/local/lib/R/site-library/TMB’
+
+The downloaded source packages are in
+    ‘/tmp/RtmpSf45vn/downloaded_packages’
+Warning messages:
+1: In install.packages("TMB") :
+  installation of package ‘Rcpp’ had non-zero exit status
+2: In install.packages("TMB") :
+  installation of package ‘Matrix’ had non-zero exit status
+3: In install.packages("TMB") :
+  installation of package ‘RcppEigen’ had non-zero exit status
+4: In install.packages("TMB") :
+  installation of package ‘TMB’ had non-zero exit status
+> library(TMB)
+
+Searching the innertube reveals that there may be unaddressed issues with installing the Matrix package. I've tried several different approaches but I'm not getting any satisfaction.
+
+Does anyone have any experience with this issue? Or a workaround?
+
+Thanks.
+
+From ufd4f3538f907404b at groups.google.com  Fri Apr 17 00:47:11 2020
+From: ufd4f3538f907404b at groups.google.com (Ben Bolker)
+Date: Fri, 17 Apr 2020 00:47:11 +0000
+Subject: Re: [TMB users] Installation issue
+Message-ID: <cm-q82k7xEY.AHfg0dfHAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <cm-q82k7xEY.9to-gVbBAQAJ@tmb-users.groups.google.com>
+References: <cm-q82k7xEY.9to-gVbBAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cm-q82k7xEY/m/AHfg0dfHAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+  3.4.4 is pretty old now, but that's very weird.  What does
+install.packages("Matrix") do ?
+  These may help
+
+https://cran.r-project.org/bin/linux/ubuntu/README.html
+https://launchpad.net/~marutter/+archive/ubuntu/c2d4u3.5
+
+On Thu, Apr 16, 2020 at 6:48 PM John Sibert <johnr...@gmail.com> wrote:
+>
+> I'm not sure this is a TMB issue, but it is sure stopping me from installing TMB.
+>
+> I recently updated my OS to linux mint cinnamon.
+> $ uname -a
+> Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31 04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linu
+>
+> New compiler
+> $ gcc --version
+> gcc (GCC) 10.0.1 20200212 (experimental)
+>
+> Newish R
+> R version 3.4.4 (2018-03-15)
+>
+> When I try to install TMB with install.packages('TMB'), it fails with the following message:
+> ** building package indices
+> Error : requireNamespace("Matrix", quietly = TRUE) is not TRUE
+> ERROR: installing package indices failed
+> * removing ‘/usr/local/lib/R/site-library/Matrix’
+> ERROR: dependencies ‘Matrix’, ‘Rcpp’ are not available for package ‘RcppEigen’
+> * removing ‘/usr/local/lib/R/site-library/RcppEigen’
+> ERROR: dependencies ‘Matrix’, ‘RcppEigen’ are not available for package ‘TMB’
+> * removing ‘/usr/local/lib/R/site-library/TMB’
+>
+> The downloaded source packages are in
+>     ‘/tmp/RtmpSf45vn/downloaded_packages’
+> Warning messages:
+> 1: In install.packages("TMB") :
+>   installation of package ‘Rcpp’ had non-zero exit status
+> 2: In install.packages("TMB") :
+>   installation of package ‘Matrix’ had non-zero exit status
+> 3: In install.packages("TMB") :
+>   installation of package ‘RcppEigen’ had non-zero exit status
+> 4: In install.packages("TMB") :
+>   installation of package ‘TMB’ had non-zero exit status
+> > library(TMB)
+>
+> Searching the innertube reveals that there may be unaddressed issues with installing the Matrix package. I've tried several different approaches but I'm not getting any satisfaction.
+>
+> Does anyone have any experience with this issue? Or a workaround?
+>
+> Thanks.
+>
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/f922b28f-60de-4bc5-9318-aea35ae55c96%40googlegroups.com.
+
+From u5f950c9713997d19 at groups.google.com  Fri Apr 17 01:51:01 2020
+From: u5f950c9713997d19 at groups.google.com (Robert OBoyle)
+Date: Fri, 17 Apr 2020 01:51:01 +0000
+Subject: Re: [TMB users] Installation issue
+Message-ID: <cm-q82k7xEY.4wCXj1PLAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <cm-q82k7xEY.9to-gVbBAQAJ@tmb-users.groups.google.com>
+References: <cm-q82k7xEY.9to-gVbBAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cm-q82k7xEY/m/4wCXj1PLAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi John
+
+This winter, I switched over to first Linux Mint and then LMDE4 from Win10 (now using the latter). I spent a fair bit of time figuring out the R and TMB installation process for these OSs. I installed R from source, ensuring that all the dependencies were met. For the Ubuntu installation (Linus Mint), here are the steps that I followed (similar for LMDE4 except for the repository):
+
+Add following line to end of .bashrc file in the home directory
+            export PATH=~/:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:/usr/local/ sbin:/usr/sbin:/sbin   # need to make sure that the binaries can be found
+
+Download Source tarfile (https://cran.r-project.org/) and put into R-3.6.3 (version I installed) subdirectory under home directory (~) and extract all files. Installation of many files will ultimately be in this directory; Instructions in README and INSTALL files
+
+Check that following tools are installed (LM Software Manager)
+G++
+Build-Essential
+G Fortran
+Default-Jdk
+
+In Software Sources utility, add repositories
+Turn on Source Code repository toggle
+To Additional Repositories, add
+deb https://cloud.r-project.org/bin/linux/ubuntu bionic-cran35/
+In Software Sources utility, enter fingerprint to public key in Download tab
+E298A3A825C0D65DFD57CBB651716619E084DAB9
+sudo apt update                                                                                                    # make sure that all packages are up to date; might need to execute sudo apt upgrade
+sudo apt build-dep r-base > output_builddeprbase                                               # installs all dependencies for r-base (requires URI in Sources.list.d directory) & if desired stores output in output_builddeprbase
+./configure –enable-R-shlib &> output_configure to create a Makefile    # will install binaries in usr/local/bin
+make &> output_make
+make check &> output_makecheck                                                                       # does some checks of the installation; not essential but good to do
+sudo make install &> output_makeinstall                                                              # installs software; by default, binaries are installed in the usr/local/bin/<program name> directory unless ./configure option specifies otherwise
+sudo R                                                                                                                    # RcppEigen was installed in the usr/local/lib/R/library, so sudo was needed
+install.packages(“TMB”, keep_outputs = TRUE)                                                    # saves log of installation in TMB.out file
+The Matrix package was installed along with all the others when R was installed with no problem. The details of the above may be different in your case but the overall steps should be the same.
+
+Hope this helps
+
+Bob
+
+On Thu, Apr 16, 2020 at 3:48 PM John Sibert <johnr...@gmail.com> wrote:
+
+> I'm not sure this is a TMB issue, but it is sure stopping me from installing TMB.
+>
+> I recently updated my OS to linux mint cinnamon.
+> $ uname -a
+> Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31 04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linu
+>
+> New compiler
+> $ gcc --version
+> gcc (GCC) 10.0.1 20200212 (experimental)
+>
+> Newish R
+> R version 3.4.4 (2018-03-15)
+>
+> When I try to install TMB with install.packages('TMB'), it fails with the following message:
+> ** building package indices
+> Error : requireNamespace("Matrix", quietly = TRUE) is not TRUE
+> ERROR: installing package indices failed
+> * removing ‘/usr/local/lib/R/site-library/Matrix’
+> ERROR: dependencies ‘Matrix’, ‘Rcpp’ are not available for package ‘RcppEigen’
+> * removing ‘/usr/local/lib/R/site-library/RcppEigen’
+> ERROR: dependencies ‘Matrix’, ‘RcppEigen’ are not available for package ‘TMB’
+> * removing ‘/usr/local/lib/R/site-library/TMB’
+>
+> The downloaded source packages are in
+>     ‘/tmp/RtmpSf45vn/downloaded_packages’
+> Warning messages:
+> 1: In install.packages("TMB") :
+>   installation of package ‘Rcpp’ had non-zero exit status
+> 2: In install.packages("TMB") :
+>   installation of package ‘Matrix’ had non-zero exit status
+> 3: In install.packages("TMB") :
+>   installation of package ‘RcppEigen’ had non-zero exit status
+> 4: In install.packages("TMB") :
+>   installation of package ‘TMB’ had non-zero exit status
+> > library(TMB)
+>
+> Searching the innertube reveals that there may be unaddressed issues with installing the Matrix package. I've tried several different approaches but I'm not getting any satisfaction.
+>
+> Does anyone have any experience with this issue? Or a workaround?
+>
+> Thanks.
+>
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/f922b28f-60de-4bc5-9318-aea35ae55c96%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/f922b28f-60de-4bc5-9318-aea35ae55c96%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u3126d00d0b94540e at groups.google.com  Fri Apr 17 14:57:24 2020
+From: u3126d00d0b94540e at groups.google.com (John Sibert)
+Date: Fri, 17 Apr 2020 14:57:24 +0000
+Subject: Re: [TMB users] Installation issue
+Message-ID: <cm-q82k7xEY.h9BEPj32AQAJ@tmb-users.groups.google.com>
+In-Reply-To: <cm-q82k7xEY.AHfg0dfHAQAJ@tmb-users.groups.google.com>
+References: <cm-q82k7xEY.9to-gVbBAQAJ@tmb-users.groups.google.com> <cm-q82k7xEY.AHfg0dfHAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cm-q82k7xEY/m/h9BEPj32AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+install.packages("Matrix") finishes with:
+
+>
+> *** installing help indices
+
+> ** building package indices
+> Error : requireNamespace("Matrix", quietly = TRUE) is not TRUE
+> ERROR: installing package indices failed
+> * removing ‘/usr/local/lib/R/site-library/Matrix’
+>
+
+> The downloaded source packages are in
+
+>     ‘/tmp/Rtmp8yYG3Y/downloaded_packages’
+> Warning message:
+> In install.packages("Matrix") :
+
+>   installation of package ‘Matrix’ had non-zero exit status
+> >
+
+And indeed the Matrix package is not installed.
+
+I guess I need to move to R 3.6. Not what I want to be doing even during
+the current lockdown.
+
+Thanks for the hints.
+
+John
+
+On 4/16/20 5:46 PM, Ben Bolker wrote:
+>    3.4.4 is pretty old now, but that's very weird.  What does
+> install.packages("Matrix") do ?
+>    These may help
+>
+> https://cran.r-project.org/bin/linux/ubuntu/README.html
+> https://launchpad.net/~marutter/+archive/ubuntu/c2d4u3.5
+>
+>
+> On Thu, Apr 16, 2020 at 6:48 PM John Sibert <johnr...@gmail.com> wrote:
+>> I'm not sure this is a TMB issue, but it is sure stopping me from installing TMB.
+>>
+>> I recently updated my OS to linux mint cinnamon.
+>> $ uname -a
+>> Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31 04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linu
+>>
+>> New compiler
+>> $ gcc --version
+>> gcc (GCC) 10.0.1 20200212 (experimental)
+>>
+>> Newish R
+>> R version 3.4.4 (2018-03-15)
+>>
+>> When I try to install TMB with install.packages('TMB'), it fails with the following message:
+>> ** building package indices
+>> Error : requireNamespace("Matrix", quietly = TRUE) is not TRUE
+>> ERROR: installing package indices failed
+>> * removing ‘/usr/local/lib/R/site-library/Matrix’
+>> ERROR: dependencies ‘Matrix’, ‘Rcpp’ are not available for package ‘RcppEigen’
+>> * removing ‘/usr/local/lib/R/site-library/RcppEigen’
+>> ERROR: dependencies ‘Matrix’, ‘RcppEigen’ are not available for package ‘TMB’
+>> * removing ‘/usr/local/lib/R/site-library/TMB’
+>>
+>> The downloaded source packages are in
+>>      ‘/tmp/RtmpSf45vn/downloaded_packages’
+>> Warning messages:
+>> 1: In install.packages("TMB") :
+>>    installation of package ‘Rcpp’ had non-zero exit status
+>> 2: In install.packages("TMB") :
+>>    installation of package ‘Matrix’ had non-zero exit status
+>> 3: In install.packages("TMB") :
+>>    installation of package ‘RcppEigen’ had non-zero exit status
+>> 4: In install.packages("TMB") :
+>>    installation of package ‘TMB’ had non-zero exit status
+>>> library(TMB)
+>> Searching the innertube reveals that there may be unaddressed issues with installing the Matrix package. I've tried several different approaches but I'm not getting any satisfaction.
+>>
+>> Does anyone have any experience with this issue? Or a workaround?
+>>
+>> Thanks.
+>>
+>>
+>> --
+>> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+>> ---
+>> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+>> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+>> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/f922b28f-60de-4bc5-9318-aea35ae55c96%40googlegroups.com.
+
+From u3126d00d0b94540e at groups.google.com  Fri Apr 17 17:36:38 2020
+From: u3126d00d0b94540e at groups.google.com (John Sibert)
+Date: Fri, 17 Apr 2020 17:36:38 +0000
+Subject: Re: [TMB users] Installation issue
+Message-ID: <cm-q82k7xEY.YNvUee3-AQAJ@tmb-users.groups.google.com>
+In-Reply-To: <cm-q82k7xEY.AHfg0dfHAQAJ@tmb-users.groups.google.com>
+References: <cm-q82k7xEY.9to-gVbBAQAJ@tmb-users.groups.google.com> <cm-q82k7xEY.AHfg0dfHAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cm-q82k7xEY/m/YNvUee3-AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes. 3.4.4 is a bit old, and it reminds me that I built and tested 3.6.2
+in Frebruary. But I couldn't install it because it couldn't find  shared
+libraries for libgfortran5. Apparently libgfortran5-dbg is also
+required. So I installed that and it installed properly, but in /opt
+rather than the usual /usr/local. So all seems apparently OK.
+
+But install.packages('TMB') failed again, but with different errors. The
+so-called "Warnings" (actually errors) indicate that Rcpp and RcppEigen
+packages failed to install.
+
+Frustrated!
+
+> Error: package or namespace load failed for ‘Rcpp’ in dyn.load(file,
+> DLLpath = DLLpath, ...):
+>  unable to load shared object
+> '/opt/R/3.6.2/lib/R/library/00LOCK-Rcpp/00new/Rcpp/libs/Rcpp.so':
+>   /usr/lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.26'
+> not found (required by
+> /opt/R/3.6.2/lib/R/library/00LOCK-Rcpp/00new/Rcpp/libs/Rcpp.so)
+> Error: loading failed
+> Execution halted
+> ERROR: loading failed
+> * removing ‘/opt/R/3.6.2/lib/R/library/Rcpp’
+> ERROR: dependency ‘Rcpp’ is not available for package ‘RcppEigen’
+> * removing ‘/opt/R/3.6.2/lib/R/library/RcppEigen’
+> ERROR: dependency ‘RcppEigen’ is not available for package ‘TMB’
+> * removing ‘/opt/R/3.6.2/lib/R/library/TMB’
+
+>
+> The downloaded source packages are in
+
+>     ‘/tmp/RtmpVwCiFw/downloaded_packages’
+> Updating HTML index of packages in '.Library'
+> Making 'packages.html' ... done
+
+> Warning messages:
+> 1: In install.packages("TMB") :
+>   installation of package ‘Rcpp’ had non-zero exit status
+> 2: In install.packages("TMB") :
+
+>   installation of package ‘RcppEigen’ had non-zero exit status
+> 3: In install.packages("TMB") :
+
+>   installation of package ‘TMB’ had non-zero exit status
+
+On 4/16/20 5:46 PM, Ben Bolker wrote:
+
+>    3.4.4 is pretty old now, but that's very weird.  What does
+> install.packages("Matrix") do ?
+>    These may help
+>
+> https://cran.r-project.org/bin/linux/ubuntu/README.html
+> https://launchpad.net/~marutter/+archive/ubuntu/c2d4u3.5
+>
+>
+> On Thu, Apr 16, 2020 at 6:48 PM John Sibert <johnr...@gmail.com> wrote:
+>> I'm not sure this is a TMB issue, but it is sure stopping me from installing TMB.
+>>
+>> I recently updated my OS to linux mint cinnamon.
+>> $ uname -a
+>> Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31 04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linu
+>>
+>> New compiler
+>> $ gcc --version
+>> gcc (GCC) 10.0.1 20200212 (experimental)
+>>
+>> Newish R
+>> R version 3.4.4 (2018-03-15)
+>>
+>> When I try to install TMB with install.packages('TMB'), it fails with the following message:
+>> ** building package indices
+>> Error : requireNamespace("Matrix", quietly = TRUE) is not TRUE
+>> ERROR: installing package indices failed
+>> * removing ‘/usr/local/lib/R/site-library/Matrix’
+>> ERROR: dependencies ‘Matrix’, ‘Rcpp’ are not available for package ‘RcppEigen’
+>> * removing ‘/usr/local/lib/R/site-library/RcppEigen’
+>> ERROR: dependencies ‘Matrix’, ‘RcppEigen’ are not available for package ‘TMB’
+>> * removing ‘/usr/local/lib/R/site-library/TMB’
+>>
+>> The downloaded source packages are in
+>>      ‘/tmp/RtmpSf45vn/downloaded_packages’
+>> Warning messages:
+>> 1: In install.packages("TMB") :
+>>    installation of package ‘Rcpp’ had non-zero exit status
+>> 2: In install.packages("TMB") :
+>>    installation of package ‘Matrix’ had non-zero exit status
+>> 3: In install.packages("TMB") :
+>>    installation of package ‘RcppEigen’ had non-zero exit status
+>> 4: In install.packages("TMB") :
+>>    installation of package ‘TMB’ had non-zero exit status
+>>> library(TMB)
+>> Searching the innertube reveals that there may be unaddressed issues with installing the Matrix package. I've tried several different approaches but I'm not getting any satisfaction.
+>>
+>> Does anyone have any experience with this issue? Or a workaround?
+>>
+>> Thanks.
+>>
+>>
+>> --
+>> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+>> ---
+>> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+>> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+>> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/f922b28f-60de-4bc5-9318-aea35ae55c96%40googlegroups.com.
+
+From ub69730f995ffc676 at groups.google.com  Fri Apr 17 18:34:32 2020
+From: ub69730f995ffc676 at groups.google.com (Niall Millar)
+Date: Fri, 17 Apr 2020 18:34:32 +0000
+Subject: Emmeans & effects packages: Post-hoc tests for Tweedie glmmTMB model
+Message-ID: <x7TwGmfhw9s.6JovW4v4CAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/x7TwGmfhw9s/m/6JovW4v4CAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Are there any problems with using the effects and emmeans packages to interpret glmmTMB models with Tweedie distributions?
+
+I have glmmTMB models using the Tweedie distribution, and I want to draw inference about the direction and magnitude of the predicted effects. In the model given below:
+
+glmmTMB(Shoot.weight ~ Species + N.Level + Rhiz + Species:N.Level + Species:Rhiz + N.Level:Rhiz + N.Level:Rhiz:Species + (1|Block) + (1|Acc), family=tweedie, data=DcleanSOY)
+
+I have a significant effect of the N.Level:Rhiz:Species interaction term (based on a likelihood ratio test). N level is a continuous predictor, and Rhiz and Species are both two-level factors.I have used the effects package to make a plot with 95% confidence intervals to interpret this 3-way interaction. I have also made separate models for each level of the N level predictor, and used emmeans to get pairwise Tukey contrasts of the Rhiz and Species predictors at each N level.
+
+Can I base my inference on these 95% confidence intervals and/or emmeans contrasts, or are these methods not supported for Tweedie glmmTMB models?
+
+Thanks! -Niall
+
+From ufd4f3538f907404b at groups.google.com  Fri Apr 17 20:24:33 2020
+From: ufd4f3538f907404b at groups.google.com (Ben Bolker)
+Date: Fri, 17 Apr 2020 20:24:33 +0000
+Subject: Re: [TMB users] Emmeans & effects packages: Post-hoc tests for Tweedie glmmTMB model
+Message-ID: <x7TwGmfhw9s.jabvMxcIAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <x7TwGmfhw9s.6JovW4v4CAAJ@tmb-users.groups.google.com>
+References: <x7TwGmfhw9s.6JovW4v4CAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/x7TwGmfhw9s/m/jabvMxcIAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+   This is more appropriate for the r-sig-mix...@r-project.org mailing list, or as a fallback the glmmTMB issues list: see https://github.com/glmmTMB/glmmTMB#where-to-ask-questions
+
+  (answer: probably, these methods usually only depend on the mean and Wald covariance matrix of the fixed-effect predictors)
+
+  cheers
+
+   Ben Bolker
+
+On 4/17/20 2:34 PM, Niall Millar wrote:
+
+> Are there any problems with using the effects and emmeans packages to interpret glmmTMB models with Tweedie distributions?
+>
+>
+> I have glmmTMB models using the Tweedie distribution, and I want to draw inference about the direction and magnitude of the predicted effects. In the model given below:
+>
+>
+> glmmTMB(Shoot.weight ~ Species + N.Level + Rhiz + Species:N.Level + Species:Rhiz + N.Level:Rhiz + N.Level:Rhiz:Species + (1|Block) + (1|Acc), family=tweedie, data=DcleanSOY)
+>
+> I have a significant effect of the N.Level:Rhiz:Species interaction term (based on a likelihood ratio test). N level is a continuous predictor, and Rhiz and Species are both two-level factors.I have used the effects package to make a plot with 95% confidence intervals to interpret this 3-way interaction. I have also made separate models for each level of the N level predictor, and used emmeans to get pairwise Tukey contrasts of the Rhiz and Species predictors at each N level.
+>
+>
+> Can I base my inference on these 95% confidence intervals and/or emmeans contrasts, or are these methods not supported for Tweedie glmmTMB models?
+>
+>
+> Thanks! -Niall
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/73adadea-b257-41c8-b05a-b4ad10033bd1%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/73adadea-b257-41c8-b05a-b4ad10033bd1%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ub69730f995ffc676 at groups.google.com  Fri Apr 17 20:45:21 2020
+From: ub69730f995ffc676 at groups.google.com (Niall Millar)
+Date: Fri, 17 Apr 2020 20:45:21 +0000
+Subject: Re: [TMB users] Emmeans & effects packages: Post-hoc tests for Tweedie glmmTMB model
+Message-ID: <x7TwGmfhw9s.QkE7-K7_CAAJ@tmb-users.groups.google.com>
+In-Reply-To: <x7TwGmfhw9s.jabvMxcIAgAJ@tmb-users.groups.google.com>
+References: <x7TwGmfhw9s.6JovW4v4CAAJ@tmb-users.groups.google.com> <x7TwGmfhw9s.jabvMxcIAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/x7TwGmfhw9s/m/QkE7-K7_CAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for the reply! I'll crosspost over to the mailing list.
+
+On Friday, April 17, 2020 at 1:24:33 PM UTC-7, Ben Bolker wrote:
+
+>    This is more appropriate for the r-sig-mix...@r-project.org mailing list, or as a fallback the glmmTMB issues list: see https://github.com/glmmTMB/glmmTMB#where-to-ask-questions <https://www.google.com/url?q=https%3A%2F%2Fgithub.com%2FglmmTMB%2FglmmTMB%23where-to-ask-questions&sa=D&sntz=1&usg=AFQjCNFNy-ZUGQeVoBu0ZWm92FG65xnC7A>
+>
+>   (answer: probably, these methods usually only depend on the mean and Wald covariance matrix of the fixed-effect predictors)
+>
+>   cheers
+>
+>    Ben Bolker
+> On 4/17/20 2:34 PM, Niall Millar wrote:
+
+> > Are there any problems with using the effects and emmeans packages to interpret glmmTMB models with Tweedie distributions?
+> >
+> >
+> > I have glmmTMB models using the Tweedie distribution, and I want to draw inference about the direction and magnitude of the predicted effects. In the model given below:
+> >
+> >
+> > glmmTMB(Shoot.weight ~ Species + N.Level + Rhiz + Species:N.Level + Species:Rhiz + N.Level:Rhiz + N.Level:Rhiz:Species + (1|Block) + (1|Acc), family=tweedie, data=DcleanSOY)
+> >
+> > I have a significant effect of the N.Level:Rhiz:Species interaction term (based on a likelihood ratio test). N level is a continuous predictor, and Rhiz and Species are both two-level factors.I have used the effects package to make a plot with 95% confidence intervals to interpret this 3-way interaction. I have also made separate models for each level of the N level predictor, and used emmeans to get pairwise Tukey contrasts of the Rhiz and Species predictors at each N level.
+> >
+> >
+> > Can I base my inference on these 95% confidence intervals and/or emmeans contrasts, or are these methods not supported for Tweedie glmmTMB models?
+> >
+> >
+> > Thanks! -Niall
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-...@googlegroups.com.
+
+> >
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/73adadea-b257-41c8-b05a-b4ad10033bd1%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/73adadea-b257-41c8-b05a-b4ad10033bd1%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u3126d00d0b94540e at groups.google.com  Sun Apr 19 23:46:29 2020
+From: u3126d00d0b94540e at groups.google.com (John Sibert)
+Date: Sun, 19 Apr 2020 23:46:29 +0000
+Subject: Re: [TMB users] Installation issue
+Message-ID: <cm-q82k7xEY.jMzclkWwAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <cm-q82k7xEY.YNvUee3-AQAJ@tmb-users.groups.google.com>
+References: <cm-q82k7xEY.9to-gVbBAQAJ@tmb-users.groups.google.com> <cm-q82k7xEY.YNvUee3-AQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cm-q82k7xEY/m/jMzclkWwAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Just to close this thread:
+The problem installing TMB was Rcpp could not load libstdc++.so.6. Fixed
+by installing libstdc++.so.6-dev.
+
+Not strictly a TMB issue after all.
+
+Thanks to Ben and Robert for their help.
+
+John
+
+On 4/16/20 3:47 PM, John Sibert wrote:
+> I'm not sure this is a TMB issue, but it is sure stopping me from
+> installing TMB.
+>
+> I recently updated my OS to linux mint cinnamon.
+> $ uname -a
+> Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31
+> 04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linu
+>
+> New compiler
+> $ gcc --version
+> gcc (GCC) 10.0.1 20200212 (experimental)
+>
+> Newish R
+> R version 3.4.4 (2018-03-15)
+>
+> When I try to install TMB with install.packages('TMB'), it fails with
+> the following message:
+> ** building package indices
+> Error : requireNamespace("Matrix", quietly = TRUE) is not TRUE
+> ERROR: installing package indices failed
+> * removing ‘/usr/local/lib/R/site-library/Matrix’
+> ERROR: dependencies ‘Matrix’, ‘Rcpp’ are not available for package
+> ‘RcppEigen’
+> * removing ‘/usr/local/lib/R/site-library/RcppEigen’
+> ERROR: dependencies ‘Matrix’, ‘RcppEigen’ are not available for
+> package ‘TMB’
+> * removing ‘/usr/local/lib/R/site-library/TMB’
+>
+> The downloaded source packages are in
+>     ‘/tmp/RtmpSf45vn/downloaded_packages’
+> Warning messages:
+> 1: In install.packages("TMB") :
+>   installation of package ‘Rcpp’ had non-zero exit status
+> 2: In install.packages("TMB") :
+>   installation of package ‘Matrix’ had non-zero exit status
+> 3: In install.packages("TMB") :
+>   installation of package ‘RcppEigen’ had non-zero exit status
+> 4: In install.packages("TMB") :
+>   installation of package ‘TMB’ had non-zero exit status
+> > library(TMB)
+>
+> Searching the innertube reveals that there may be unaddressed issues
+> with installing the Matrix package. I've tried several different
+> approaches but I'm not getting any satisfaction.
+>
+> Does anyone have any experience with this issue? Or a workaround?
+>
+> Thanks.
+>
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before
+> posting, please check the wiki and issuetracker at
+> https://github.com/kaskr/adcomp/. Please try to create a simple
+> repeatable example to go with your question (e.g issues 154, 134, 51).
+> Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google
+> Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send
+> an email to tmb-users+...@googlegroups.com
+
+> <mailto:tmb-users+...@googlegroups.com>.
+
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/tmb-users/f922b28f-60de-4bc5-9318-aea35ae55c96%40googlegroups.com
+
+> <https://groups.google.com/d/msgid/tmb-users/f922b28f-60de-4bc5-9318-aea35ae55c96%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u3126d00d0b94540e at groups.google.com  Thu Apr 23 15:45:07 2020
+From: u3126d00d0b94540e at groups.google.com (John Sibert)
+Date: Thu, 23 Apr 2020 15:45:07 +0000
+Subject: getParameterOrder" not available for .Call() for package
+Message-ID: <ugjFoINza7A.UHNkCbquAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ugjFoINza7A/m/UHNkCbquAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The getParameterOrder error occurs when I attempt to run a TMB example (eg source('sam.R'))
+
+linux mint 19.3
+
+$ uname -a
+Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31 04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux
+
+$ cpp --version
+cpp (GCC) 10.0.1 20200212 (experimental)
+
+R version 3.6.2 (2019-12-12) -- "Dark and Stormy Night"
+
+I "upgraded" to a new OS, new compiler and new R version, and just can't seem to get TMB working.
+
+Getting desperate and frustrated. Any help gratefully received.
+
+Thanks,
+John
+
+From u258b98968d0ad8b9 at groups.google.com  Thu Apr 23 16:29:11 2020
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Thu, 23 Apr 2020 16:29:11 +0000
+Subject: Re: getParameterOrder" not available for .Call() for package
+Message-ID: <ugjFoINza7A.tepnxyGxAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <ugjFoINza7A.UHNkCbquAgAJ@tmb-users.groups.google.com>
+References: <ugjFoINza7A.UHNkCbquAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ugjFoINza7A/m/tepnxyGxAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Probably due to old compiled models. Try
+
+rm *.o
+rm *.so
+
+On Thursday, April 23, 2020 at 5:45:07 PM UTC+2, John Sibert wrote:
+> The getParameterOrder error occurs when I attempt to run a TMB example (eg source('sam.R'))
+>
+> linux mint 19.3
+>
+> $ uname -a
+> Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31 04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux
+>
+> $ cpp --version
+> cpp (GCC) 10.0.1 20200212 (experimental)
+>
+> R version 3.6.2 (2019-12-12) -- "Dark and Stormy Night"
+>
+>
+> I "upgraded" to a new OS, new compiler and new R version, and just can't seem to get TMB working.
+>
+> Getting desperate and frustrated. Any help gratefully received.
+>
+> Thanks,
+> John
+>
+
+From u3126d00d0b94540e at groups.google.com  Thu Apr 23 16:40:59 2020
+From: u3126d00d0b94540e at groups.google.com (John Sibert)
+Date: Thu, 23 Apr 2020 16:40:59 +0000
+Subject: Re: [TMB users] Re: getParameterOrder" not available for .Call() for package
+Message-ID: <ugjFoINza7A.cnThYN10AAAJ@tmb-users.groups.google.com>
+In-Reply-To: <ugjFoINza7A.tepnxyGxAgAJ@tmb-users.groups.google.com>
+References: <ugjFoINza7A.UHNkCbquAgAJ@tmb-users.groups.google.com> <ugjFoINza7A.tepnxyGxAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ugjFoINza7A/m/cnThYN10AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, Kasper, but the error persists.
+
+Could there be a PATH problem. I'm not happy with either the R or the
+TMB installation. Perhaps I should reinstall both?
+
+$ rm -v *o
+rm: remove regular file 'sam.o'? y
+removed 'sam.o'
+rm: remove regular file 'sam.so'? y
+removed 'sam.so'
+
+ > source("sam.R")
+g++ -std=gnu++11 -I"/opt/R/3.6.2/lib/R/include" -DNDEBUG
+-I/opt/R/3.6.2/lib/R/library/TMB/include   -DTMB_SAFEBOUNDS
+-DLIB_UNLOAD=R_unload_sam  -DTMB_LIB_INIT=R_init_sam
+-I/usr/local/include  -fpic  -g -O2  -c sam.cpp -o sam.o
+g++ -std=gnu++11 -shared -L/opt/R/3.6.2/lib/R/lib -L/usr/local/lib -o
+sam.so sam.o -L/opt/R/3.6.2/lib/R/lib -lR
+Error in .Call("getParameterOrder", data, parameters, new.env(), PACKAGE
+= DLL) :
+   "getParameterOrder" not available for .Call() for package "sam"
+
+ >
+
+On 4/23/20 9:29 AM, Kasper Kristensen wrote:
+> Probably due to old compiled models. Try
+>
+> rm *.o
+> rm *.so
+>
+>
+> On Thursday, April 23, 2020 at 5:45:07 PM UTC+2, John Sibert wrote:
+>
+>     The getParameterOrder error occurs when I attempt to run a TMB
+>     example (eg source('sam.R'))
+>
+>     linux mint 19.3
+>
+>     $ uname -a
+>     Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31
+>     04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux
+>
+>     $ cpp --version
+>     cpp (GCC) 10.0.1 20200212 (experimental)
+>
+>     R version 3.6.2 (2019-12-12) -- "Dark and Stormy Night"
+>
+>
+>     I "upgraded" to a new OS, new compiler and new R version, and just
+>     can't seem to get TMB working.
+>
+>     Getting desperate and frustrated. Any help gratefully received.
+>
+>     Thanks,
+>     John
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before
+> posting, please check the wiki and issuetracker at
+> https://github.com/kaskr/adcomp/. Please try to create a simple
+> repeatable example to go with your question (e.g issues 154, 134, 51).
+> Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google
+> Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send
+> an email to tmb-users+...@googlegroups.com
+> <mailto:tmb-users+...@googlegroups.com>.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/tmb-users/80dae170-a5fe-4462-9599-e0ab8cb19191%40googlegroups.com
+> <https://groups.google.com/d/msgid/tmb-users/80dae170-a5fe-4462-9599-e0ab8cb19191%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u258b98968d0ad8b9 at groups.google.com  Thu Apr 23 17:55:41 2020
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Thu, 23 Apr 2020 17:55:41 +0000
+Subject: Re: [TMB users] Re: getParameterOrder" not available for .Call() for package
+Message-ID: <ugjFoINza7A.A46M7_B4AAAJ@tmb-users.groups.google.com>
+In-Reply-To: <ugjFoINza7A.cnThYN10AAAJ@tmb-users.groups.google.com>
+References: <ugjFoINza7A.UHNkCbquAgAJ@tmb-users.groups.google.com> <ugjFoINza7A.cnThYN10AAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ugjFoINza7A/m/A46M7_B4AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I don't think the R-installation is the problem. To debug a bit more:
+
+Does 'sam' appear in this list?:
+
+getLoadedDLLs()
+
+Do you see 'getParameterOrder' in this list?:
+
+getDLLRegisteredRoutines("sam")
+
+Can you run built in models?:
+
+runExample("simple")
+
+On Thursday, April 23, 2020 at 6:40:59 PM UTC+2, John Sibert wrote:
+
+> Thanks, Kasper, but the error persists.
+>
+> Could there be a PATH problem. I'm not happy with either the R or the
+> TMB installation. Perhaps I should reinstall both?
+>
+> $ rm -v *o
+> rm: remove regular file 'sam.o'? y
+> removed 'sam.o'
+> rm: remove regular file 'sam.so'? y
+> removed 'sam.so'
+>
+>  > source("sam.R")
+> g++ -std=gnu++11 -I"/opt/R/3.6.2/lib/R/include" -DNDEBUG
+> -I/opt/R/3.6.2/lib/R/library/TMB/include   -DTMB_SAFEBOUNDS
+> -DLIB_UNLOAD=R_unload_sam  -DTMB_LIB_INIT=R_init_sam
+> -I/usr/local/include  -fpic  -g -O2  -c sam.cpp -o sam.o
+> g++ -std=gnu++11 -shared -L/opt/R/3.6.2/lib/R/lib -L/usr/local/lib -o
+> sam.so sam.o -L/opt/R/3.6.2/lib/R/lib -lR
+> Error in .Call("getParameterOrder", data, parameters, new.env(), PACKAGE
+> = DLL) :
+>    "getParameterOrder" not available for .Call() for package "sam"
+>  >
+>
+> On 4/23/20 9:29 AM, Kasper Kristensen wrote:
+> > Probably due to old compiled models. Try
+> >
+> > rm *.o
+> > rm *.so
+> >
+> >
+> > On Thursday, April 23, 2020 at 5:45:07 PM UTC+2, John Sibert wrote:
+> >
+> >     The getParameterOrder error occurs when I attempt to run a TMB
+> >     example (eg source('sam.R'))
+> >
+> >     linux mint 19.3
+> >
+> >     $ uname -a
+> >     Linux kihikihi 5.3.0-46-generic #38~18.04.1-Ubuntu SMP Tue Mar 31
+> >     04:17:56 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux
+> >
+> >     $ cpp --version
+> >     cpp (GCC) 10.0.1 20200212 (experimental)
+> >
+> >     R version 3.6.2 (2019-12-12) -- "Dark and Stormy Night"
+> >
+> >
+> >     I "upgraded" to a new OS, new compiler and new R version, and just
+> >     can't seem to get TMB working.
+> >
+> >     Getting desperate and frustrated. Any help gratefully received.
+> >
+> >     Thanks,
+> >     John
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before
+> > posting, please check the wiki and issuetracker at
+> > https://github.com/kaskr/adcomp/. Please try to create a simple
+> > repeatable example to go with your question (e.g issues 154, 134, 51).
+> > Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google
+> > Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send
+
+> > an email to tmb-users+unsubscribe@googlegroups.com
+> > <mailto:tmb-users+unsubscribe@googlegroups.com>.
+
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msgid/tmb-users/80dae170-a5fe-4462-9599-e0ab8cb19191%40googlegroups.com
+> > <https://groups.google.com/d/msgid/tmb-users/80dae170-a5fe-4462-9599-e0ab8cb19191%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+
+From u3126d00d0b94540e at groups.google.com  Fri Apr 24 21:15:23 2020
+From: u3126d00d0b94540e at groups.google.com (John Sibert)
+Date: Fri, 24 Apr 2020 21:15:23 +0000
+Subject: Why do I need to restart R to get a clean compile?
+Message-ID: <QTOgE9ahNoQ.XyfTg1QPAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/QTOgE9ahNoQ/m/XyfTg1QPAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+When I make changes to my C++ code, I need to exit R, rm *o, and restart R in order to see the changes in my C++ code, even if I have
+rm(list=ls())
+gc(verb=TRUE)
+at the top of my .R file.
+John
+
+From u6667ef04b386b9ec at groups.google.com  Mon Apr 27 20:37:11 2020
+From: u6667ef04b386b9ec at groups.google.com (Guilherme Parreira)
+Date: Mon, 27 Apr 2020 20:37:11 +0000
+Subject: R Session Aborted after calling MakeADFun
+Message-ID: <hciabCj_2MM.CK9Jgvz4AwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/hciabCj_2MM/m/CK9Jgvz4AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi there.
+I compile my .cpp file and it gives to me no error.
+However when I try to call the MakeADFun(), it throws me back "R Session Aborted. R encountered a fatal error. The session was terminated.", and therefore, I need to close my editor (Rstudio). (the photo is attached).
+
+It happened to me before when I had labelled wrongly a data/parameter. However, it doesn't seem to be the case.
+
+In this case, I am trying to do a GLMM Poisson (only fixed and random intercept). If anyone cal help:
+
+// Poisson Regression with Random Effect
+#include <TMB.hpp>
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // Data provided from user
+  DATA_VECTOR(Y);
+  DATA_MATRIX(X);
+  DATA_IVECTOR(ID);
+  // Parameters of the model
+  PARAMETER_VECTOR(b0); // I Had to use vector to make multiplication correct
+  PARAMETER_VECTOR(bimean);
+  PARAMETER(tau);
+  Type nll = 0;
+  tau = exp(tau);
+  // Probability of bi (size of ni)
+  nll = -sum(dnorm(bimean, 0, 1/tau, true));
+  int n = Y.size();
+  vector<Type> eta(n);
+  eta = X*b0;
+  // Probability of yi
+  for (int i=0; i<n; i++){
+    nll -= dpois(Y(i), exp(bimean(ID(i)) + eta(i)), true); //exp() is the inverse of the link function)
+  }
+  return nll;
+}
+
+My R call:
+
+setwd("~/Google Drive/Mestrado/dissertacao/TMB/Random_Effect")
+library(TMB)
+simula.poisson <- function(X,Z,beta.fixo,prec.pars){
+  n.bloco <- dim(Z)[2]
+  n.rep <- dim(Z)[1]/n.bloco
+  bi <- rnorm(n.bloco,0,sd=1/prec.pars)
+  XZ <- cbind(X,Z)
+  beta <- c(beta.fixo,bi)
+  preditor <- XZ%*%beta
+  lambda <- exp(preditor)
+  y <- rpois(length(lambda),lambda=lambda)
+  return(data.frame(y=y,X=X,ID=rep(1:n.bloco,each=n.rep)))
+}
+
+ID <- as.factor(rep(1:10,each=10))
+X <- rep(1,100)
+Z <- model.matrix(~-1 + ID)
+set.seed(123)
+dados <- simula.poisson(X=X,Z=Z,beta.fixo = 2, prec.pars=4)
+model <- "poisson_reg_m"
+compile(paste0(model, ".cpp"))
+dyn.load(dynlib(model))
+
+data <- list(Y = dados$y,
+             X = matrix(dados$X),
+             ID = dados$ID)
+n.id <-  length(unique(dados$ID))
+params <- list(b0 = 0, tau = log(1/4), bimean = rep(0,n.id))
+obj <- MakeADFun(data = data,
+                 parameters = params,
+                 DLL = model,
+                 method = "BFGS",
+                 hessian = T,
+                 silent = F,
+                 random = "bimean")
+
+I am trying to adapt this link <https://cperretti.com/post/2018/08/02/fitting-a-simple-hierarchical-model-in-r-using-template-model-builder/> to my code.
+
+Thanks in advance
+
+From u6667ef04b386b9ec at groups.google.com  Mon Apr 27 21:01:23 2020
+From: u6667ef04b386b9ec at groups.google.com (Guilherme Parreira)
+Date: Mon, 27 Apr 2020 21:01:23 +0000
+Subject: Re: R Session Aborted after calling MakeADFun
+Message-ID: <hciabCj_2MM.V7pxqU76AwAJ@tmb-users.groups.google.com>
+In-Reply-To: <hciabCj_2MM.CK9Jgvz4AwAJ@tmb-users.groups.google.com>
+References: <hciabCj_2MM.CK9Jgvz4AwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/hciabCj_2MM/m/V7pxqU76AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I just found my error:
+
+dados$ID should start in 0 and not in 1.
+
+I will still leave the question here if anyone wants to contribute on this topic.
+
+On Monday, 27 April 2020 17:37:11 UTC-3, Guilherme Parreira wrote:
+> Hi there.
+> I compile my .cpp file and it gives to me no error.
+> However when I try to call the MakeADFun(), it throws me back "R Session Aborted. R encountered a fatal error. The session was terminated.", and therefore, I need to close my editor (Rstudio). (the photo is attached).
+>
+> It happened to me before when I had labelled wrongly a data/parameter. However, it doesn't seem to be the case.
+>
+> In this case, I am trying to do a GLMM Poisson (only fixed and random intercept). If anyone cal help:
+>
+> // Poisson Regression with Random Effect
+> #include <TMB.hpp>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   // Data provided from user
+>   DATA_VECTOR(Y);
+>   DATA_MATRIX(X);
+>   DATA_IVECTOR(ID);
+>   // Parameters of the model
+>   PARAMETER_VECTOR(b0); // I Had to use vector to make multiplication correct
+>   PARAMETER_VECTOR(bimean);
+>   PARAMETER(tau);
+>   Type nll = 0;
+>   tau = exp(tau);
+>   // Probability of bi (size of ni)
+>   nll = -sum(dnorm(bimean, 0, 1/tau, true));
+>   int n = Y.size();
+>   vector<Type> eta(n);
+>   eta = X*b0;
+>   // Probability of yi
+>   for (int i=0; i<n; i++){
+>     nll -= dpois(Y(i), exp(bimean(ID(i)) + eta(i)), true); //exp() is the inverse of the link function)
+>   }
+>   return nll;
+> }
+>
+> My R call:
+>
+> setwd("~/Google Drive/Mestrado/dissertacao/TMB/Random_Effect")
+> library(TMB)
+> simula.poisson <- function(X,Z,beta.fixo,prec.pars){
+>   n.bloco <- dim(Z)[2]
+>   n.rep <- dim(Z)[1]/n.bloco
+>   bi <- rnorm(n.bloco,0,sd=1/prec.pars)
+>   XZ <- cbind(X,Z)
+>   beta <- c(beta.fixo,bi)
+>   preditor <- XZ%*%beta
+>   lambda <- exp(preditor)
+>   y <- rpois(length(lambda),lambda=lambda)
+>   return(data.frame(y=y,X=X,ID=rep(1:n.bloco,each=n.rep)))
+> }
+>
+> ID <- as.factor(rep(1:10,each=10))
+> X <- rep(1,100)
+> Z <- model.matrix(~-1 + ID)
+> set.seed(123)
+> dados <- simula.poisson(X=X,Z=Z,beta.fixo = 2, prec.pars=4)
+> model <- "poisson_reg_m"
+> compile(paste0(model, ".cpp"))
+> dyn.load(dynlib(model))
+>
+> data <- list(Y = dados$y,
+>              X = matrix(dados$X),
+>              ID = dados$ID)
+> n.id <-  length(unique(dados$ID))
+> params <- list(b0 = 0, tau = log(1/4), bimean = rep(0,n.id))
+> obj <- MakeADFun(data = data,
+>                  parameters = params,
+>                  DLL = model,
+>                  method = "BFGS",
+>                  hessian = T,
+>                  silent = F,
+>                  random = "bimean")
+>
+> I am trying to adapt this link <https://cperretti.com/post/2018/08/02/fitting-a-simple-hierarchical-model-in-r-using-template-model-builder/> to my code.
+>
+> Thanks in advance
+>
+
+From u6667ef04b386b9ec at groups.google.com  Thu Apr 30 01:05:58 2020
+From: u6667ef04b386b9ec at groups.google.com (Guilherme Parreira)
+Date: Thu, 30 Apr 2020 01:05:58 +0000
+Subject: How is the general structure to fit a nested random effect?
+Message-ID: <4qn5VohdY-E.Bm70rvhQBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4qn5VohdY-E/m/Bm70rvhQBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am trying to fit a Poisson with nested random effect for study purposes. I already managed to fit a model with random intercept only based on this code <https://cperretti.com/post/2018/08/02/fitting-a-simple-hierarchical-model-in-r-using-template-model-builder/>. So I tried to adapt it for a nested structure, but I haven't figured out how to do it. If anyone could provide a general example I would be glad to.
+
+Anyway, I will post what I have got so far:
+// Poisson Regression with Nested Random Effects
+#include <TMB.hpp>
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // Data provided from user
+  DATA_VECTOR(Y);
+  DATA_MATRIX(X);
+  DATA_IVECTOR(ID);
+  DATA_IVECTOR(IDB);
+  // Parameters of the model
+  PARAMETER_VECTOR(b0);    // overall mean
+  PARAMETER_VECTOR(bi);    // sample units i = 0,1,2,3
+  PARAMETER_VECTOR(bij);   // block inside sample units ij = 0,1,2,3, ... , 20
+  PARAMETER(tau);
+  PARAMETER(sigma);
+  Type nll = 0;
+  tau = exp(tau);
+  sigma = exp(sigma);
+
+  // Probability of bi (sample units)
+  nll = -sum(dnorm(bi,  0, 1/sigma, true));   // ua = 4
+  // Probability of bij (block in sample units)
+  nll = -sum(dnorm(bij, 0,   1/tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+
+  int n = Y.size();
+  vector<Type> eta(n);
+  eta = X*b0;
+
+  // Probability of yi
+  for (int i=0; i<n; i++){
+    // nll -= dpois(Y(i), exp(eta(i)+ bij(IDB(i)))  , true); // b0 + bi + bij
+    nll -= dpois(Y(i), exp(eta(i) + bi(ID(i)) + bij(IDB(i))), true); // b0 + bi + bij
+  }
+  return nll;
+}
+
+I also tried to change the middle part of the code (two dnorm) by the following:
+  DATA_VECTOR(mubi);
+  DATA_VECTOR(mubij);
+  int count = -1;
+  int nbi = bi.size();
+  int nbij = bij.size()/nbi;
+  for (int i=0; i<nbi; i++){
+    // Probability of bi (sample units)
+    nll = -dnorm(bi(i), mubi(i), 1/sigma, true);   // ua = 4
+    for (int j=0; j<nbij; j++){
+      // Probability of bij (block in sample units)
+      count += 1;
+      nll = -dnorm(bij(count), mubij(count),   1/tau, true);   // bij size 20 (ua = 4 * bloco = 5)
+    }
+  }
+
+but it didn't work either. In the first case, the code compiles, but sigma doesn't change along the compilation. In the second, it also compiles, however my objective function acts even more weird. (I also attached my R code). I know that the  main problem is with the block in sample units, but I don't know how to fix it.
+
+This is how the model is written:
+
+Y_ijk ∼ P (λ_ijk)
+g(λ_ijk) = ( β_0 + b_i ) + b_i:j
+b_i ∼ N( 0, σ^2 ); b_i:j ∼ N (0,τ^2 )
+
+Thanks in advance if anyone can help.
+
+From u02e03030784aa6a7 at groups.google.com  Thu Apr 30 07:58:12 2020
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Thu, 30 Apr 2020 07:58:12 +0000
+Subject: Re: How is the general structure to fit a nested random effect?
+Message-ID: <4qn5VohdY-E.PaqDh3dnBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <4qn5VohdY-E.Bm70rvhQBAAJ@tmb-users.groups.google.com>
+References: <4qn5VohdY-E.Bm70rvhQBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4qn5VohdY-E/m/PaqDh3dnBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You can use model.matrix(y~x+x*z,...) in R to create a design matrix X.
+Then you send X to the .cpp file and evaluate the linear predictor X*beta there.
+This a completely general approach, and switches the problem from C++ to R (which is good for this task)
+
+If you have factors with many levels it may be necessary to let X be of sparse matrix type.
+
+Hans
+
+On Thursday, April 30, 2020 at 3:05:58 AM UTC+2, Guilherme Parreira wrote:
+> I am trying to fit a Poisson with nested random effect for study purposes. I already managed to fit a model with random intercept only based on this code <https://cperretti.com/post/2018/08/02/fitting-a-simple-hierarchical-model-in-r-using-template-model-builder/>. So I tried to adapt it for a nested structure, but I haven't figured out how to do it. If anyone could provide a general example I would be glad to.
+>
+> Anyway, I will post what I have got so far:
+> // Poisson Regression with Nested Random Effects
+> #include <TMB.hpp>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   // Data provided from user
+>   DATA_VECTOR(Y);
+>   DATA_MATRIX(X);
+>   DATA_IVECTOR(ID);
+>   DATA_IVECTOR(IDB);
+>   // Parameters of the model
+>   PARAMETER_VECTOR(b0);    // overall mean
+>   PARAMETER_VECTOR(bi);    // sample units i = 0,1,2,3
+>   PARAMETER_VECTOR(bij);   // block inside sample units ij = 0,1,2,3, ... , 20
+>   PARAMETER(tau);
+>   PARAMETER(sigma);
+>   Type nll = 0;
+>   tau = exp(tau);
+>   sigma = exp(sigma);
+>
+>   // Probability of bi (sample units)
+>   nll = -sum(dnorm(bi,  0, 1/sigma, true));   // ua = 4
+>   // Probability of bij (block in sample units)
+>   nll = -sum(dnorm(bij, 0,   1/tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+>
+>   int n = Y.size();
+>   vector<Type> eta(n);
+>   eta = X*b0;
+>
+>   // Probability of yi
+>   for (int i=0; i<n; i++){
+>     // nll -= dpois(Y(i), exp(eta(i)+ bij(IDB(i)))  , true); // b0 + bi + bij
+>     nll -= dpois(Y(i), exp(eta(i) + bi(ID(i)) + bij(IDB(i))), true); // b0 + bi + bij
+>   }
+>   return nll;
+> }
+>
+>
+> I also tried to change the middle part of the code (two dnorm) by the following:
+>   DATA_VECTOR(mubi);
+>   DATA_VECTOR(mubij);
+>   int count = -1;
+>   int nbi = bi.size();
+>   int nbij = bij.size()/nbi;
+>   for (int i=0; i<nbi; i++){
+>     // Probability of bi (sample units)
+>     nll = -dnorm(bi(i), mubi(i), 1/sigma, true);   // ua = 4
+>     for (int j=0; j<nbij; j++){
+>       // Probability of bij (block in sample units)
+>       count += 1;
+>       nll = -dnorm(bij(count), mubij(count),   1/tau, true);   // bij size 20 (ua = 4 * bloco = 5)
+>     }
+>   }
+>
+> but it didn't work either. In the first case, the code compiles, but sigma doesn't change along the compilation. In the second, it also compiles, however my objective function acts even more weird. (I also attached my R code). I know that the  main problem is with the block in sample units, but I don't know how to fix it.
+>
+> This is how the model is written:
+>
+> Y_ijk ∼ P (λ_ijk)
+> g(λ_ijk) = ( β_0 + b_i ) + b_i:j
+> b_i ∼ N( 0, σ^2 ); b_i:j ∼ N (0,τ^2 )
+>
+> Thanks in advance if anyone can help.
+
+From u55d0e2f87b0f795e at groups.google.com  Thu Apr 30 08:47:11 2020
+From: u55d0e2f87b0f795e at groups.google.com (Mollie Brooks)
+Date: Thu, 30 Apr 2020 08:47:11 +0000
+Subject: Re: [TMB users] How is the general structure to fit a nested random effect?
+Message-ID: <4qn5VohdY-E.H2KTCFXuBQAJ@tmb-users.groups.google.com>
+In-Reply-To: <4qn5VohdY-E.PaqDh3dnBAAJ@tmb-users.groups.google.com>
+References: <4qn5VohdY-E.Bm70rvhQBAAJ@tmb-users.groups.google.com> <4qn5VohdY-E.PaqDh3dnBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4qn5VohdY-E/m/H2KTCFXuBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Nested random effects aren’t really special in this context. You seem to be adding them in Ok here
+
+    nll -= dpois(Y(i), exp(eta(i) + bi(ID(i)) + bij(IDB(i))), true); // b0 + bi + bij
+
+, but you’re using the variance parameters incorrectly.
+
+Instead of
+
+> >   PARAMETER(tau);
+> >   PARAMETER(sigma);
+> >   Type nll = 0;
+> >   tau = exp(tau);
+> >   sigma = exp(sigma);
+> >
+> >   // Probability of bi (sample units)
+> >   nll = -sum(dnorm(bi,  0, 1/sigma, true));   // ua = 4
+> >   // Probability of bij (block in sample units)
+> >   nll = -sum(dnorm(bij, 0,   1/tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+
+You should have something like
+
+> >   PARAMETER(logtau);
+> >   PARAMETER(logsigma);
+> >   Type nll = 0;
+> >   Type tau = exp(logtau);
+> >   Type sigma = exp(logsigma);
+
+> >
+> >   // Probability of bi (sample units)
+
+> >   nll = -sum(dnorm(bi,  Type(0), sigma, true));   // ua = 4
+
+> >
+> >   // Probability of bij (block in sample units)
+
+> >   nll = -sum(dnorm(bij, Type(0),   tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+
+Does that fix it?
+
+cheers,
+Mollie
+
+> On 30Apr 2020, at 9:58, Hans Skaug <hsk...@gmail.com> wrote:
+>
+
+> You can use model.matrix(y~x+x*z,...) in R to create a design matrix X.
+> Then you send X to the .cpp file and evaluate the linear predictor X*beta there.
+> This a completely general approach, and switches the problem from C++ to R (which is good for this task)
+>
+> If you have factors with many levels it may be necessary to let X be of sparse matrix type.
+>
+> Hans
+>
+>
+> On Thursday, April 30, 2020 at 3:05:58 AM UTC+2, Guilherme Parreira wrote:
+> > I am trying to fit a Poisson with nested random effect for study purposes. I already managed to fit a model with random intercept only based on this code <https://cperretti.com/post/2018/08/02/fitting-a-simple-hierarchical-model-in-r-using-template-model-builder/>. So I tried to adapt it for a nested structure, but I haven't figured out how to do it. If anyone could provide a general example I would be glad to.
+> >
+> > Anyway, I will post what I have got so far:
+> > // Poisson Regression with Nested Random Effects
+> > #include <TMB.hpp>
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> >   // Data provided from user
+> >   DATA_VECTOR(Y);
+> >   DATA_MATRIX(X);
+> >   DATA_IVECTOR(ID);
+> >   DATA_IVECTOR(IDB);
+> >   // Parameters of the model
+> >   PARAMETER_VECTOR(b0);    // overall mean
+> >   PARAMETER_VECTOR(bi);    // sample units i = 0,1,2,3
+> >   PARAMETER_VECTOR(bij);   // block inside sample units ij = 0,1,2,3, ... , 20
+> >   PARAMETER(tau);
+> >   PARAMETER(sigma);
+> >   Type nll = 0;
+> >   tau = exp(tau);
+> >   sigma = exp(sigma);
+> >
+> >   // Probability of bi (sample units)
+> >   nll = -sum(dnorm(bi,  0, 1/sigma, true));   // ua = 4
+> >   // Probability of bij (block in sample units)
+> >   nll = -sum(dnorm(bij, 0,   1/tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+> >
+> >   int n = Y.size();
+> >   vector<Type> eta(n);
+> >   eta = X*b0;
+> >
+> >   // Probability of yi
+> >   for (int i=0; i<n; i++){
+> >     // nll -= dpois(Y(i), exp(eta(i)+ bij(IDB(i)))  , true); // b0 + bi + bij
+> >     nll -= dpois(Y(i), exp(eta(i) + bi(ID(i)) + bij(IDB(i))), true); // b0 + bi + bij
+> >   }
+> >   return nll;
+> > }
+> >
+> >
+> > I also tried to change the middle part of the code (two dnorm) by the following:
+> >   DATA_VECTOR(mubi);
+> >   DATA_VECTOR(mubij);
+> >   int count = -1;
+> >   int nbi = bi.size();
+> >   int nbij = bij.size()/nbi;
+> >   for (int i=0; i<nbi; i++){
+> >     // Probability of bi (sample units)
+> >     nll = -dnorm(bi(i), mubi(i), 1/sigma, true);   // ua = 4
+> >     for (int j=0; j<nbij; j++){
+> >       // Probability of bij (block in sample units)
+> >       count += 1;
+> >       nll = -dnorm(bij(count), mubij(count),   1/tau, true);   // bij size 20 (ua = 4 * bloco = 5)
+> >     }
+> >   }
+> >
+> > but it didn't work either. In the first case, the code compiles, but sigma doesn't change along the compilation. In the second, it also compiles, however my objective function acts even more weird. (I also attached my R code). I know that the  main problem is with the block in sample units, but I don't know how to fix it.
+> >
+> > This is how the model is written:
+> >
+> > Y_ijk ∼ P (λ_ijk)
+> > g(λ_ijk) = ( β_0 + b_i ) + b_i:j
+> > b_i ∼ N( 0, σ^2 ); b_i:j ∼ N (0,τ^2 )
+> >
+> > Thanks in advance if anyone can help.
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/ff760d90-a38c-4cb0-bfc2-1d338f319c38%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/ff760d90-a38c-4cb0-bfc2-1d338f319c38%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u6667ef04b386b9ec at groups.google.com  Thu Apr 30 13:14:46 2020
+From: u6667ef04b386b9ec at groups.google.com (Guilherme Parreira)
+Date: Thu, 30 Apr 2020 13:14:46 +0000
+Subject: Re: [TMB users] How is the general structure to fit a nested random effect?
+Message-ID: <4qn5VohdY-E.mJPA7b14BAAJ@tmb-users.groups.google.com>
+In-Reply-To: <4qn5VohdY-E.H2KTCFXuBQAJ@tmb-users.groups.google.com>
+References: <4qn5VohdY-E.Bm70rvhQBAAJ@tmb-users.groups.google.com> <4qn5VohdY-E.H2KTCFXuBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4qn5VohdY-E/m/mJPA7b14BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Skaug,
+I already use it for fixed effects (X matrix), however, I don't know how to make the calculations if I pass Z matrix, for random effects.
+
+Hi Moolie!
+I tried, but I am still getting the undesired results (sigma doesn't change through the iteration).
+
+Thanks.
+
+On Thursday, 30 April 2020 05:47:11 UTC-3, Mollie Brooks wrote:
+
+> Nested random effects aren’t really special in this context. You seem to be adding them in Ok here
+>     nll -= dpois(Y(i), exp(eta(i) + bi(ID(i)) + bij(IDB(i))), true); // b0 + bi + bij
+>
+
+> , but you’re using the variance parameters incorrectly.
+>
+> Instead of
+
+> > >   PARAMETER(tau);
+> > >   PARAMETER(sigma);
+> > >   Type nll = 0;
+> > >   tau = exp(tau);
+> > >   sigma = exp(sigma);
+> > >
+> > >   // Probability of bi (sample units)
+> > >   nll = -sum(dnorm(bi,  0, 1/sigma, true));   // ua = 4
+> > >   // Probability of bij (block in sample units)
+> > >   nll = -sum(dnorm(bij, 0,   1/tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+>
+> You should have something like
+>
+
+> > >   PARAMETER(logtau);
+> > >   PARAMETER(logsigma);
+> > >   Type nll = 0;
+> > >   Type tau = exp(logtau);
+> > >   Type sigma = exp(logsigma);
+> > >
+> > >   // Probability of bi (sample units)
+> > >   nll = -sum(dnorm(bi,  Type(0), sigma, true));   // ua = 4
+> > >   // Probability of bij (block in sample units)
+> > >   nll = -sum(dnorm(bij, Type(0),   tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+>
+> Does that fix it?
+>
+> cheers,
+> Mollie
+>
+
+> > On 30Apr 2020, at 9:58, Hans Skaug <hsk...@gmail.com> wrote:
+> >
+
+> > You can use model.matrix(y~x+x*z,...) in R to create a design matrix X.
+> > Then you send X to the .cpp file and evaluate the linear predictor X*beta there.
+> > This a completely general approach, and switches the problem from C++ to R (which is good for this task)
+> >
+> > If you have factors with many levels it may be necessary to let X be of sparse matrix type.
+> >
+> > Hans
+> >
+> >
+> > On Thursday, April 30, 2020 at 3:05:58 AM UTC+2, Guilherme Parreira wrote:
+> > > I am trying to fit a Poisson with nested random effect for study purposes. I already managed to fit a model with random intercept only based on this code <https://cperretti.com/post/2018/08/02/fitting-a-simple-hierarchical-model-in-r-using-template-model-builder/>. So I tried to adapt it for a nested structure, but I haven't figured out how to do it. If anyone could provide a general example I would be glad to.
+> > >
+> > > Anyway, I will post what I have got so far:
+> > > // Poisson Regression with Nested Random Effects
+> > > #include <TMB.hpp>
+> > > template<class Type>
+> > > Type objective_function<Type>::operator() ()
+> > > {
+> > >   // Data provided from user
+> > >   DATA_VECTOR(Y);
+> > >   DATA_MATRIX(X);
+> > >   DATA_IVECTOR(ID);
+> > >   DATA_IVECTOR(IDB);
+> > >   // Parameters of the model
+> > >   PARAMETER_VECTOR(b0);    // overall mean
+> > >   PARAMETER_VECTOR(bi);    // sample units i = 0,1,2,3
+> > >   PARAMETER_VECTOR(bij);   // block inside sample units ij = 0,1,2,3, ... , 20
+> > >   PARAMETER(tau);
+> > >   PARAMETER(sigma);
+> > >   Type nll = 0;
+> > >   tau = exp(tau);
+> > >   sigma = exp(sigma);
+> > >
+> > >   // Probability of bi (sample units)
+> > >   nll = -sum(dnorm(bi,  0, 1/sigma, true));   // ua = 4
+> > >   // Probability of bij (block in sample units)
+> > >   nll = -sum(dnorm(bij, 0,   1/tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+> > >
+> > >   int n = Y.size();
+> > >   vector<Type> eta(n);
+> > >   eta = X*b0;
+> > >
+> > >   // Probability of yi
+> > >   for (int i=0; i<n; i++){
+> > >     // nll -= dpois(Y(i), exp(eta(i)+ bij(IDB(i)))  , true); // b0 + bi + bij
+> > >     nll -= dpois(Y(i), exp(eta(i) + bi(ID(i)) + bij(IDB(i))), true); // b0 + bi + bij
+> > >   }
+> > >   return nll;
+> > > }
+> > >
+> > >
+> > > I also tried to change the middle part of the code (two dnorm) by the following:
+> > >   DATA_VECTOR(mubi);
+> > >   DATA_VECTOR(mubij);
+> > >   int count = -1;
+> > >   int nbi = bi.size();
+> > >   int nbij = bij.size()/nbi;
+> > >   for (int i=0; i<nbi; i++){
+> > >     // Probability of bi (sample units)
+> > >     nll = -dnorm(bi(i), mubi(i), 1/sigma, true);   // ua = 4
+> > >     for (int j=0; j<nbij; j++){
+> > >       // Probability of bij (block in sample units)
+> > >       count += 1;
+> > >       nll = -dnorm(bij(count), mubij(count),   1/tau, true);   // bij size 20 (ua = 4 * bloco = 5)
+> > >     }
+> > >   }
+> > >
+> > > but it didn't work either. In the first case, the code compiles, but sigma doesn't change along the compilation. In the second, it also compiles, however my objective function acts even more weird. (I also attached my R code). I know that the  main problem is with the block in sample units, but I don't know how to fix it.
+> > >
+> > > This is how the model is written:
+> > >
+> > > Y_ijk ∼ P (λ_ijk)
+> > > g(λ_ijk) = ( β_0 + b_i ) + b_i:j
+> > > b_i ∼ N( 0, σ^2 ); b_i:j ∼ N (0,τ^2 )
+> > >
+> > > Thanks in advance if anyone can help.
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-...@googlegroups.com.
+
+> >
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/ff760d90-a38c-4cb0-bfc2-1d338f319c38%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/ff760d90-a38c-4cb0-bfc2-1d338f319c38%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ud0d6d503f5acae62 at groups.google.com  Thu Apr 30 20:33:18 2020
+From: ud0d6d503f5acae62 at groups.google.com (unknown)
+Date: Thu, 30 Apr 2020 20:33:18 +0000
+Subject: 
+Message-ID: <4qn5VohdY-E.czhiUd0UBgAJ@tmb-users.groups.google.com>
+In-Reply-To: <4qn5VohdY-E.Bm70rvhQBAAJ@tmb-users.groups.google.com>
+References: <4qn5VohdY-E.Bm70rvhQBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4qn5VohdY-E/m/czhiUd0UBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u6667ef04b386b9ec at groups.google.com  Thu Apr 30 20:41:35 2020
+From: u6667ef04b386b9ec at groups.google.com (Guilherme Parreira)
+Date: Thu, 30 Apr 2020 20:41:35 +0000
+Subject: Re: [TMB users] How is the general structure to fit a nested random effect?
+Message-ID: <4qn5VohdY-E.2RoW6lAVBgAJ@tmb-users.groups.google.com>
+In-Reply-To: <4qn5VohdY-E.mJPA7b14BAAJ@tmb-users.groups.google.com>
+References: <4qn5VohdY-E.Bm70rvhQBAAJ@tmb-users.groups.google.com> <4qn5VohdY-E.mJPA7b14BAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4qn5VohdY-E/m/2RoW6lAVBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Moolie!
+
+I attached the output from the model that you suggested. It is important to note that sigma value doesn't change through iterations. (I also included the updated .cpp and .R)
+
+I also tried another model based on Jags <https://stackoverflow.com/questions/40841554/nested-random-effect-in-jags-winbugs>, but id didn't work:
+
+  for (int i=0; i<n; i++){
+
+    // Probability of bi (sample units)
+
+    nll = -dnorm(bi(ID(i))  , Type(0), 1/sigma, true);   // ua = 4
+
+    // Probability of bij (block in sample units)
+
+    nll = -dnorm(bij(IDB(i)), bi(ID(i)),   1/tau, true);   // bij size 20 (ua = 4 * bloco = 5)
+  }
+
+Thanks in advance.
+
+On Thursday, 30 April 2020 10:14:46 UTC-3, Guilherme Parreira wrote:
+> Hi Skaug,
+> I already use it for fixed effects (X matrix), however, I don't know how to make the calculations if I pass Z matrix, for random effects.
+>
+> Hi Moolie!
+> I tried, but I am still getting the undesired results (sigma doesn't change through the iteration).
+>
+> Thanks.
+>
+> On Thursday, 30 April 2020 05:47:11 UTC-3, Mollie Brooks wrote:
+> > Nested random effects aren’t really special in this context. You seem to be adding them in Ok here
+> >     nll -= dpois(Y(i), exp(eta(i) + bi(ID(i)) + bij(IDB(i))), true); // b0 + bi + bij
+> >
+> > , but you’re using the variance parameters incorrectly.
+> >
+> > Instead of
+> > > >   PARAMETER(tau);
+> > > >   PARAMETER(sigma);
+> > > >   Type nll = 0;
+> > > >   tau = exp(tau);
+> > > >   sigma = exp(sigma);
+> > > >
+> > > >   // Probability of bi (sample units)
+> > > >   nll = -sum(dnorm(bi,  0, 1/sigma, true));   // ua = 4
+> > > >   // Probability of bij (block in sample units)
+> > > >   nll = -sum(dnorm(bij, 0,   1/tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+> >
+> > You should have something like
+> >
+> > > >   PARAMETER(logtau);
+> > > >   PARAMETER(logsigma);
+> > > >   Type nll = 0;
+> > > >   Type tau = exp(logtau);
+> > > >   Type sigma = exp(logsigma);
+> > > >
+> > > >   // Probability of bi (sample units)
+> > > >   nll = -sum(dnorm(bi,  Type(0), sigma, true));   // ua = 4
+> > > >   // Probability of bij (block in sample units)
+> > > >   nll = -sum(dnorm(bij, Type(0),   tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+> >
+> > Does that fix it?
+> >
+> > cheers,
+> > Mollie
+> >
+> > > On 30Apr 2020, at 9:58, Hans Skaug <hsk...@gmail.com> wrote:
+> > >
+> > > You can use model.matrix(y~x+x*z,...) in R to create a design matrix X.
+> > > Then you send X to the .cpp file and evaluate the linear predictor X*beta there.
+> > > This a completely general approach, and switches the problem from C++ to R (which is good for this task)
+> > >
+> > > If you have factors with many levels it may be necessary to let X be of sparse matrix type.
+> > >
+> > > Hans
+> > >
+> > >
+> > > On Thursday, April 30, 2020 at 3:05:58 AM UTC+2, Guilherme Parreira wrote:
+> > > > I am trying to fit a Poisson with nested random effect for study purposes. I already managed to fit a model with random intercept only based on this code <https://cperretti.com/post/2018/08/02/fitting-a-simple-hierarchical-model-in-r-using-template-model-builder/>. So I tried to adapt it for a nested structure, but I haven't figured out how to do it. If anyone could provide a general example I would be glad to.
+> > > >
+> > > > Anyway, I will post what I have got so far:
+> > > > // Poisson Regression with Nested Random Effects
+> > > > #include <TMB.hpp>
+> > > > template<class Type>
+> > > > Type objective_function<Type>::operator() ()
+> > > > {
+> > > >   // Data provided from user
+> > > >   DATA_VECTOR(Y);
+> > > >   DATA_MATRIX(X);
+> > > >   DATA_IVECTOR(ID);
+> > > >   DATA_IVECTOR(IDB);
+> > > >   // Parameters of the model
+> > > >   PARAMETER_VECTOR(b0);    // overall mean
+> > > >   PARAMETER_VECTOR(bi);    // sample units i = 0,1,2,3
+> > > >   PARAMETER_VECTOR(bij);   // block inside sample units ij = 0,1,2,3, ... , 20
+> > > >   PARAMETER(tau);
+> > > >   PARAMETER(sigma);
+> > > >   Type nll = 0;
+> > > >   tau = exp(tau);
+> > > >   sigma = exp(sigma);
+> > > >
+> > > >   // Probability of bi (sample units)
+> > > >   nll = -sum(dnorm(bi,  0, 1/sigma, true));   // ua = 4
+> > > >   // Probability of bij (block in sample units)
+> > > >   nll = -sum(dnorm(bij, 0,   1/tau, true));   // bij size 20 (ua = 4 * bloco = 5)
+> > > >
+> > > >   int n = Y.size();
+> > > >   vector<Type> eta(n);
+> > > >   eta = X*b0;
+> > > >
+> > > >   // Probability of yi
+> > > >   for (int i=0; i<n; i++){
+> > > >     // nll -= dpois(Y(i), exp(eta(i)+ bij(IDB(i)))  , true); // b0 + bi + bij
+> > > >     nll -= dpois(Y(i), exp(eta(i) + bi(ID(i)) + bij(IDB(i))), true); // b0 + bi + bij
+> > > >   }
+> > > >   return nll;
+> > > > }
+> > > >
+> > > >
+> > > > I also tried to change the middle part of the code (two dnorm) by the following:
+> > > >   DATA_VECTOR(mubi);
+> > > >   DATA_VECTOR(mubij);
+> > > >   int count = -1;
+> > > >   int nbi = bi.size();
+> > > >   int nbij = bij.size()/nbi;
+> > > >   for (int i=0; i<nbi; i++){
+> > > >     // Probability of bi (sample units)
+> > > >     nll = -dnorm(bi(i), mubi(i), 1/sigma, true);   // ua = 4
+> > > >     for (int j=0; j<nbij; j++){
+> > > >       // Probability of bij (block in sample units)
+> > > >       count += 1;
+> > > >       nll = -dnorm(bij(count), mubij(count),   1/tau, true);   // bij size 20 (ua = 4 * bloco = 5)
+> > > >     }
+> > > >   }
+> > > >
+> > > > but it didn't work either. In the first case, the code compiles, but sigma doesn't change along the compilation. In the second, it also compiles, however my objective function acts even more weird. (I also attached my R code). I know that the  main problem is with the block in sample units, but I don't know how to fix it.
+> > > >
+> > > > This is how the model is written:
+> > > >
+> > > > Y_ijk ∼ P (λ_ijk)
+> > > > g(λ_ijk) = ( β_0 + b_i ) + b_i:j
+> > > > b_i ∼ N( 0, σ^2 ); b_i:j ∼ N (0,τ^2 )
+> > > >
+> > > > Thanks in advance if anyone can help.
+> > >
+> > > --
+> > > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-...@googlegroups.com.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/ff760d90-a38c-4cb0-bfc2-1d338f319c38%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/ff760d90-a38c-4cb0-bfc2-1d338f319c38%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+

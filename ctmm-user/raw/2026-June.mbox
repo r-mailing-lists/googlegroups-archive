@@ -1,0 +1,1081 @@
+From u24f62035407f8448 at groups.google.com  Tue Jun  2 10:00:12 2026
+From: u24f62035407f8448 at groups.google.com (Michael Roast)
+Date: Tue, 02 Jun 2026 10:00:12 +0000
+Subject: Home range estimate 0, units is "area (square microns)", in error?
+Message-ID: <u4EfeaU3AfE.8hu8L1miAwAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/u4EfeaU3AfE/m/8hu8L1miAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I have a many individual animal tracks over different months of the year and I have estimated their home ranges on an individual by month basis. All individuals are more or less range resident but have slight seasonal or individual differences in home range size and location.
+
+There are too many to individually check variograms, and I have automated this, filtering individuals with months of little or poor data, and low estimated DOF.
+
+The weighted AKDE output appears meaningful in almost all cases except 39/1462 home ranges where the estimated area and confidence intervals are all 0 and the units is given as "area (square microns)". I *think* this is coming from processing the dataset collectively as a list, and needing to specify a collective extent and a lower grid resolution for computer processing reasons, when some individuals seem to have small homerange sizes that are less than the grid resolution?
+
+# Input data and generate variograms
+plovers <- as.telemetry(df_move, timezone="Atlantic/Cape_verde")
+SVF <- lapply(plovers, FUN = function(x) variogram(x))
+
+# Next steps are in loops producing lists of objects along the ctmm workflow e.g.:
+GUESS <- list()
+for(i in 1:length(plovers)){
+  GUESS[[i]] <- ctmm.guess(plovers[[i]], variogram = SVF[[i]], interactive = FALSE)
+}
+
+# Key lines in next loops
+FITS[[i]] <- ctmm.select(plovers[[i]], GUESS[[i]], trace = 3, cores = -1)
+wAKDEs[[i]] <- akde(plovers[[i]],FITS[[i]],weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+
+# wAKDE estimates
+SUMMARIES <- lapply(wAKDEs, FUN = function(x) summary(x))
+
+# Element number 85 shows issue.
+> SUMMARIES[[85]]
+$DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area"
+
+When I run animal track #85 separately and then generate the wAKDE independently with default grid, there is no problem. With low resolution the problem seems to be repeatable. With hi resolution (not default), the area estimate changes.
+
+vg <- variogram(plovers[[85]])
+guess <- ctmm.guess(plovers[[85]], variogram = vg, interactive = FALSE)
+fit <- ctmm.select(plovers[[85]], guess, trace = 3, cores = -1)
+defAKDE <- akde(plovers[[85]], fit, weights=TRUE)
+lowAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+hiAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=50, align.to.origin=TRUE))
+
+> summary(defAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.208742 1.327008 1.450715 attr(,"class") [1] "area" > summary(lowAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area" > summary(hiAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.805207 1.981833 2.166585 attr(,"class") [1] "area"
+
+Ultimately, I am trying to compare homerange sizes of different individuals in different months, and generate a mean home range of all individuals in different months, so I need the homeranges to be comparable and computed collectively, but the grid size is a major limitation when computing the homeranges collectively. When using the mean(AKDE), are these individuals (like track #85) not contributing because they have estimate size 0? Can the home range sizes still be calculated at a variable resolution when calculated in  the akde() function collectively? I feel like I must be missing something that I can't compare many home ranges of different sizes because of computing and resolution issues?
+
+Thanks for any help you can offer on this and any suggestions to solve.
+
+From u40fd627580dd34f5 at groups.google.com  Tue Jun  2 16:37:06 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Tue, 02 Jun 2026 16:37:06 +0000
+Subject: Re: Taking into account error elipse info in outlier detection
+Message-ID: <VcIeaYzVw18.RH34gdYkAAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <VcIeaYzVw18.yJiRUo7QBQAJ@ctmm-user.groups.google.com>
+References: <VcIeaYzVw18.Y06TkFZiBAAJ@ctmm-user.groups.google.com> <VcIeaYzVw18.yJiRUo7QBQAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/VcIeaYzVw18/m/RH34gdYkAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Stijn,
+
+Those speed and distance estimates should decrease with increasing location error. This was due to a bad integral approximation being made for the error-ellipse calculations in that function - the exact integrals cannot be computed in closed form. I redid the integral approximation in a way that makes sense and should always behave correctly. The update is on GitHub.
+
+To answer your first question, you could use the lower-limit of the CI instead of the point estimate to threshold for outliers.
+
+Best,
+Chris
+
+On Sunday, April 26, 2026 at 5:48:42 AM UTC-4 Stijn wrote:
+> Dear Chris and team,
+>
+> I puzzled a little further and got a bit more confused about how outlie() uses error information.
+> When I use Argos error elipses in outlie, I found out that the minimum speed estimates become much larger and unrealistic compared to when I do not use any error info
+>
+> It seems to me very strange that speed increases with error information? should it not decrease instead?
+>
+> I attach an example of a subset of data on one of my foxes which illustrates it. it would be much appreciated if you could help me understand a good way to use a speed filter on this Argos data.
+>
+> I attach also a screenshot comparison of OUT, with and without error info included.
+>
+> Thanks aalot!
+>
+> Stijn
+>
+>
+>
+> Op dinsdag 21 april 2026 om 19:57:41 UTC+2 schreef Stijn:
+> > Dear Chris,
+> >
+> > I am working with Argos data with rather large error elipses. I want to remove outliers with the outlie function.
+> > From attached figure 4 in your 2020 manuscript i understand that the error bars help differentiate uncertain positions from outliers.
+> >
+> > From what I understand the following removes positions of higher than threshold speed :
+> >
+> > for (i in 1:length(telemetry_object)) {
+> >   OUT <- outlie( telemetry_object  [[i]], plot = FALSE)
+> >   BAD <- OUT$speed  > speed_threshold
+> >   while (any(BAD)) {
+> >      telemetry_object  [[i]] <-  telemetry_object  [[i]][!BAD, ]
+> >     OUT <- outlie( telemetry_object  [[i]], plot = FALSE)
+> >     BAD <- OUT$speed > speed_threshold
+> >   }
+> > }
+> >
+> > When I do this, I notice that in my plot positions similar to the example position in figure 4F in your manuscript would also be removed. Is this the right way to do it? Would it not be better to somehow take into account the error bars and so when these error bars cross the speed threshold the position should be kept?
+> >
+> > I notice that the OUT object also has a column called VAR.speed. Should this be taken into account somehow?
+> >
+> > Thanks a lot for your time and help!
+> >
+> > Best, Stijn
+> >
+> >
+
+From uf78ec7c5c9c20b4d at groups.google.com  Sat Jun  6 17:23:43 2026
+From: uf78ec7c5c9c20b4d at groups.google.com (zeng jinyuan)
+Date: Sat, 06 Jun 2026 17:23:43 +0000
+Subject: the bootstrap example from ctmm using question
+Message-ID: <f7YyMRQog8E.swgqEUGcAAAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/f7YyMRQog8E/m/swgqEUGcAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I am trying to estimate home-range confidence intervals using ctmm.boot() and have encountered a parallelization issue that I have been unable to diagnose.
+
+The workflow is:
+GUESS <- ctmm.guess(DATA, interactive = FALSE) FIT <- ctmm.select(DATA, GUESS, trace = 3) BOOT <- ctmm.boot(DATA, FIT, cores = -1)
+
+The model fitting step completes successfully, and ctmm.boot() also runs successfully when:
+ctmm.boot(DATA, FIT, cores = 1)
+
+However, whenever I use internal parallelization (cores > 1) on Windows, the bootstrap fails immediately with:
+Error in checkForRemoteErrors(val) : object 'Green' not found
+
+I investigated whether the issue was related to the data or fitted model, but both appear to be valid:
+
+ctmm.select() completes successfully.
+
+ctmm.boot(..., cores = 1) runs normally.
+
+The same dataset and fitted model can be used successfully in other workflows.
+
+To further investigate, I implemented an alternative strategy using future.apply, where the outer bootstrap iterations are parallelized while each worker runs:
+ctmm.boot(DATA, FIT, n = 1, cores = 1)
+
+This approach runs successfully on both Windows and Linux systems, suggesting that the bootstrap procedure itself is valid and that the problem may be specific to the internal parallel implementation used by ctmm.boot().
+
+In addition, I tested the original code on Linux using:
+ctmm.boot(DATA, FIT, cores = -1)
+
+and the bootstrap was able to start and progress beyond 50%, whereas the Windows version failed immediately.
+
+My questions are:
+
+Is object 'Green' not found a known issue related to the Windows parallel backend used by ctmm.boot()?
+
+Does ctmm.boot() use different parallel mechanisms on Windows and Linux?
+
+Given that external parallelization via future_lapply() works correctly, does this indicate that the issue is specifically within the internal parallelization layer of ctmm.boot()?
+
+For the gazelle example dataset and an OUF model, is a runtime of approximately 36–40 hours for the external-parallel bootstrap workflow within the expected range?
+
+Thanks for your help.
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun  7 02:23:00 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 07 Jun 2026 02:23:00 +0000
+Subject: Re: calculating speed in simulations
+Message-ID: <fVfni4ewZhM.P9ZPl665AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <fVfni4ewZhM.HHu7tEBOBgAJ@ctmm-user.groups.google.com>
+References: <fVfni4ewZhM.HHu7tEBOBgAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/fVfni4ewZhM/m/P9ZPl665AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ismael,
+
+The true mean speed of the model is speed(mov.mod1) .
+
+Method 1 is the true Gaussian RMS speed, which is proportional to the mean speed, but not exactly the same.
+Method 2 is Method 1 + statistical noise and bias from estimation.
+Method 3 should give you the truth on average.
+Method 4 is the best estimate of the mean speed if you didn't have velocity information, but will still have some statistical noise and bias with finite sampling.
+
+https://link.springer.com/article/10.1186/s40462-019-0177-1
+
+Best,
+Chris
+
+On Monday, April 27, 2026 at 8:12:07 PM UTC-4 ismae...@gmail.com wrote:
+> Hello!
+>
+> I have been playing around some movement simulations in ctmm with an ultimate goal of exploring some unmarked abundance methods for camera trap data.
+> I am interested in average speed to calculate daily ranges but also realized speeds at each simulated step. For this, I was thinking in using the velocities that are provided in the object containing the simulated locations (columns vx and vy) because it would be faster to run.
+> However, when I compare the average speed calculated in different ways, I obtain slightly different values (see code below). The average speed calculated using the fitted model in the simulated data (result 2) approximates the expected speed calculated  in the original model used to simulate the data  (result 1) . But when I take the mean average speed calculated from the simulated velocities (result 3), it gives me slightly lower values (I ran this a couple of times and it seems consistent throughout iterations).
+>
+> Am I seeing this correctly or am I missing something here?
+> Is it ok to use the simulated velocities (vx and vy) to calculate speeds?
+>
+> Appreciate any insights on this!
+> Thanks!!!
+> Ismael V. Brack
+>
+> # Code example --------------------------------------
+>
+> #Define model parameters
+> mov.mod <- ctmm(tau=c(5 %#% 'day', 5 %#% 'min'),
+>                  sigma=1 %#% 'kilometers^2',
+>                  isotropic=T,
+>                  range=T
+> )
+> #Define the sampling duration/schedule
+> mov.samp <- seq(0,3 %#% 'months', 5 %#% 'min')
+>
+> # Simulate individual
+> simul.ind1 <- ctmm::simulate(mov.mod,
+>                              t = mov.samp)
+>
+> # Fit model to simulated telemetry data
+> ind1 <- ctmm.fit(simul.ind1, mov.mod)
+>
+> # RESULTS:
+> #1. Based on the original model
+> summary(mov.mod1,units=F)$CI[4,]
+>      low      est         high
+> 0.000000    0.124226      Inf
+>
+> #2. Based on the fitted model
+> summary(ind1,units=F)$CI[4,]
+>
+>       low         est         high
+> 0.1116575     0.1298146       0.1479416
+>
+> #3. Mean instantaneous speed based on simulated velocities
+> summary((sqrt(simul.mod1$vx^2 + simul.mod1$vy^2)))
+>
+> Min.       1st Qu.    Median    Mean       3rd Qu.      Max.
+> 0.002473   0.066014   0.105608  0.110562   0.150104     0.314782
+>
+> #4. Mean instantaneous speed based on estimated? velocities
+> colMeans(speeds(simul.ind1,ind1)[,1:3])
+>
+> low          est            high
+> 0.02141799   0.11474753     0.24657951
+>
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun  7 02:39:14 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 07 Jun 2026 02:39:14 +0000
+Subject: Re: [ctmm-user] Re: Speed function - time scale
+Message-ID: <AQhK1BLP-_Y.2-REfJG6AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <AQhK1BLP-_Y.zdoWyG4dBgAJ@ctmm-user.groups.google.com>
+References: <AQhK1BLP-_Y.zdoWyG4dBgAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/AQhK1BLP-_Y/m/2-REfJG6AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Alex,
+
+Option 1 has units=TRUE which will yield automated units (likely km/day), but this won't necessarily be consistent across individuals.
+Option 2 will only work if you started with units=FALSE.
+If they are active only during the day/night, then the result will be the mean speed during that period and not the entire 24-hour cycle. "km/day" is just the units of the estimate and not a daily estimate. E.g., if they are only active during that 6-hour period, then their daily movement is 20 km. If they are only active for 12 hours, then their daily movement is 40 km. The function doesn't know the biology beyond the data provided.
+Have you tried running outlie() to see how big the errors are? If there is finely sampled data, you likely need an error model to use that, or you will get large speed estimates.
+
+Best,
+Chris
+
+On Tuesday, April 28, 2026 at 12:13:07 AM UTC-4 alexbrun...@gmail.com wrote:
+> Hi Ismael
+>
+> Thank you very much for your help.
+>
+> However, I tried the ctmm unit conversion as you mentioned, and it provided an impossible answer. I'll provide more code below.
+>
+> Option 1: I don't set units
+>
+> When I don't set any units, the results explicate that they are in km/day, although the values are higher than expected they are possible. I am surprised that the object says it is in km/day, because reading has suggested that the generic speed function will provide average speed over the whole sample period.
+>
+> speed <- Map(ctmm::speed,
+>              gttnov24_telemetry_cov_001,
+>              GTTnov24_ctmm_best_nocyc_002, units = TRUE)
+>
+> > print(speed$PNL$CI)
+>
+>
+>                                        Low              est                 high
+>
+> speed (kilometers/day)     80.6263     81.16967     81.71393
+>
+> Option 2: I set units
+>
+> Setting units seems to provide impossible values (the birds have home range sizes of ~- but perhaps I did it wrong?
+>
+> > pna.km.day <- "km / day" %#% speed$PNA$CI
+> > print(pna.km.day)
+>
+>
+>                          Low                 est                    high
+>
+> speed (kilometers/day)    5902.356         5946.69             5991.106
+> [all impossible]
+>
+> Perhaps did the units=TRUE turn the calculation into km/day?
+>
+> Any help would be amazing!
+>
+> Cheers
+> From: ctmm...@googlegroups.com <ctmm...@googlegroups.com> on behalf of Ismael V. Brack <ismae...@gmail.com>
+> Sent: Tuesday, April 28, 2026 8:23 AM
+> To: ctmm R user group <ctmm...@googlegroups.com>
+> Subject: [ctmm-user] Re: Speed function - time scale
+>
+> You can set:
+> myspeed <- speed(..., units=F)
+> It will return in meters per second. Then you can transform for whatever you want, for example:
+> "kilometers / day" %#% myspeed
+> On Monday, April 27, 2026 at 2:21:21 AM UTC-7 Alex Brunswick wrote:
+> > Also. The trackers were continuously recording on a 6-hourly duty cycle, but BOOST mode is also activated. Thus there are relocations every few minutes, with a general gap between 0444-0530 when the solar batteries ran out.
+> >
+> > The attached figure shows the sampling frequency and time scale of data for each bird.
+> >
+> > On Monday, April 27, 2026 at 5:17:29 PM UTC+8 Alex Brunswick wrote:
+> > > Hi ctmm community, likely a quick question here. I am hoping to calculate the average daily speed for some birds I have been tracking.
+> > >
+> > > I have run the speed function on GPS relocations for 5 birds, using their respective ctmm models and telemetry data. Code below.
+> > >
+> > > The birds had relocation data for variable lengths of time (~1-3 months).
+> > >
+> > > However, the CI outputs were quite high for daily speed, so I am wondering what the timescale of the 'average' speed (CI) is (or can I manually set it?).
+> > >
+> > > Is the CI output the average daily speed? Or is it the average speed over the whole time of sampling?
+> > >
+> > > > speed <- Map(ctmm::speed,
+> > >              gttnov24_telemetry_cov_001,
+> > >              GTTnov24_ctmm_best_nocyc_002)
+> > >
+> > > After reading the function's documentation I am just a bit confused, so I would greatly appreciate any guidance!
+> --
+> You received this message because you are subscribed to the Google Groups "ctmm R user group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  ctmm-user+...@googlegroups.com.
+> To view this discussion visit  https://groups.google.com/d/msgid/ctmm-user/7edf760e-12bb-4f92-bf3e-c03528d635fan%40googlegroups.com <https://groups.google.com/d/msgid/ctmm-user/7edf760e-12bb-4f92-bf3e-c03528d635fan%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun  7 02:53:02 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 07 Jun 2026 02:53:02 +0000
+Subject: Re: variogram with error = TRUE returns empty plot
+Message-ID: <0kgljWZNOlA.Fqd3MVK7AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <0kgljWZNOlA.Wgi3FjEKBQAJ@ctmm-user.groups.google.com>
+References: <0kgljWZNOlA.Wgi3FjEKBQAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/0kgljWZNOlA/m/Fqd3MVK7AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Allie,
+
+The error option currently implemented doesn't work well with large errors. I would not use it and just keep in mind that the good looking variogram is a combination of location error and movement, which the theoretical variogram should also include when included in the plot.
+
+Best,
+Chris
+
+On Thursday, April 23, 2026 at 5:13:38 PM UTC-4 aand...@gmail.com wrote:
+> Hi Chris and team,
+>
+> I'm wondering if you could help me sort out an issue I've been having creating variograms while accounting for spatial error. The main issue is when I try to add error = TRUE into the variogram() function I receive a largely empty plot, whereas when I run without error (default), the variogram plots as normal and makes sense.
+>
+> The data I'm running through are Argos data (and some individuals where tags collected both Argos and GPS data). Data are points that occur during a stopover period for individual birds. I notice normal variograms with the default but for most stopover events, I receive empty plots.
+>
+> Here's an example for a single bird. It has 336 points that occur over a period of 8 days. The data are newer Argos with the semi major and semi minor ellipse info (I do also have birds that only have LC class codes)
+>
+> The tlm summary looks like this:
+> $identity
+> [1] "STOP_1" $timezone [1] "UTC" $projection [1] "+proj=tpeqd +lat_1=69.4293123249529 +lon_1=-98.2208819681596 +lat_2=53.1062998104261 +lon_2=-82.0369529047841 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs" $`sampling interval (minutes)` [1] 33.48333 $`sampling period (days)` [1] 8.94625 $`longitude range` [1] -108.1709 -106.5596 $`latitude range` [1] 71.47301 72.04295
+>
+> I can see the ellipses when I plot the data using:
+> plot(example_tlm, col = "blue", trans = 0)
+> It looks like this. Some of the points have very large ellipses on the low quality classes:
+>
+> When I create the variogram without error
+> vario_noerror <- variogram(example_tlm)
+> plot(vario_noerror)
+>
+> When I plot with error = TRUE using:
+> vario_error <- variogram(example_tlm, error = TRUE)
+> plot(vario_error)
+>
+> Here's the output. Any ideas about what's happening in this case? It looks like there are a couple of fast speed points that could maybe be removed as outliers.
+>
+> Any tips greatly appreciated!
+> Allie
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun  7 03:00:01 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 07 Jun 2026 03:00:01 +0000
+Subject: Re: Some models not appearing after running model selection function
+Message-ID: <o7sJo5QXkGI.6-pm6bO7AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <o7sJo5QXkGI.ycd_2UmuBAAJ@ctmm-user.groups.google.com>
+References: <o7sJo5QXkGI.ycd_2UmuBAAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/o7sJo5QXkGI/m/6-pm6bO7AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Anna,
+
+ctmm.select() tries to be efficient in what models are included in the candidate pool. 325 selects OU anisotropic over OUF anisotropic and OUF isotropic and OUf anisotropic in the second round, so it tries IID anisotropic and OU isotropic in the third round, and failing to select either, it never proceeds to IID isotropic a the fourth round.
+If there's ever a case where the IC-best model is not included, then feel free to let me know.
+
+Best,
+Chris
+
+On Wednesday, April 22, 2026 at 1:09:29 PM UTC-4 Anna V wrote:
+
+> Hello,
+>
+> I am a graduate student studying veiled chameleon ecology in southwest Florida and I am attempting to use ctmm’s to calculate home range sizes. I apologize if this question has been answered before in previous conversations, but I am quite new to ctmms and this has been a large obstacle in allowing me to continue my project forward.
+>
+> I have noticed for some (most) of the lizards in my study (n = 10, tracked for 100 days as frequently as twice a day and as infrequently as once every four days, but usually once every other day), a few of the models do not appear when running the “summary(fitted.mods.[lizardID])” function. In the majority of cases, all of the anisotropic models would show up, but some of the other models, like OUf, OU or IID, would not. Then in a few lizards, some of the anisotropic models would not appear as well, only the OUF anisotropic, OU anisotropic, OUF, and OUf anisotropic models. I attached screenshots of what this looks like when run and a table of which models appear and which do not for each lizard. It seems like it might be related to differences in the manual fit of the variogram; at first I wasn’t saving my fitted GUESS objects for each individual, and models seemed to appear and disappear each time I refit.
+>
+> Does anyone have any insight on why this may be and how to make it more consistent from animal to animal?
+>
+>
+> Thank you,
+>
+>
+> Anna Velten
+>
+>
+>
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun  7 03:03:26 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 07 Jun 2026 03:03:26 +0000
+Subject: Re: Calculating UDs with hard boundaries
+Message-ID: <kC45UD8iXFE.S6a_e-O7AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <kC45UD8iXFE.Hl5yWFrqDQAJ@ctmm-user.groups.google.com>
+References: <kC45UD8iXFE.UDyhcWucDQAJ@ctmm-user.groups.google.com> <kC45UD8iXFE.Hl5yWFrqDQAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/kC45UD8iXFE/m/S6a_e-O7AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Amelia,
+
+Can you send me a minimal working example (data + shapefile + script) so that I can diagnose the issue. I'm not sure what's happening, but the results don't make any sense.
+
+Best,
+Chris
+
+On Sunday, May 17, 2026 at 10:21:56 PM UTC-4 Amelia J wrote:
+> Hi there,
+>
+> I have calculated UDs for an individual for each month/year combination, using this code:
+>
+> UDs_all <- akde(telemetry_myall, fit_list)
+> UDs_all_restricted <- akde(telemetry_myall, fit_list, SP=water_sp,SP.in =FALSE)
+>
+> The latter incorporates a waterbody shapefile because I want to remove the large waterbodies (e.g. lake, ocean) from this individual's home range – they are a terrestrial animal.
+>
+> Comparing the two UDs, I see something unexpected – for one, the restricted UD is larger than the unrestricted, and it in fact extends across even more of the non-habitat (i.e. waterbody, hatched) areas. Any idea why this hasn't worked? I have made an effort to ensure the same coordinate system is used for the telemetry and fit_list and water sp. You can see the datapoints on the unrestricted map, for reference.
+>
+>
+>
+>
+> I appreciate any help on this matter!
+> Cheers,
+> Amelia
+>
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun  7 03:13:56 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 07 Jun 2026 03:13:56 +0000
+Subject: Re: Comparing # of points in different landcovers for raw data vs effective sample size points
+Message-ID: <y3OOu8jJDeE.v4swRna8AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <y3OOu8jJDeE.lE2tUiiUAQAJ@ctmm-user.groups.google.com>
+References: <y3OOu8jJDeE.lE2tUiiUAQAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/y3OOu8jJDeE/m/v4swRna8AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Phillipp,
+
+I'm not exactly sure what you mean in the last case. The equivalent number of IID samples in that habitat? That's a good question. Both temporal autocorrelation in movement + spatial correlation in the landcover type would together cause pseudoreplication in the number of locations sampled in that landcover type. With simulations from a null model, you could get p-values. If you really needed N_effective, you could probably then backsolve from those p-values.
+
+Best,
+Chris
+
+On Tuesday, May 26, 2026 at 1:17:39 PM UTC-4 male...@gmail.com wrote:
+> Hello dear CTMMers,
+>
+> Would appreciate your advice!
+>
+> I am working on a simple descriptive table showing the varying number of a birds' location fixes across different landcover types. I am hoping to compare this quantity for raw location fixes, manually filtered fixes, and supposed effective sample size "fixes" once movement models are fit.
+>
+> While the first two are straightforward to attain, I am curious if there is a direct way to quantify how many location points would fall into different landcover classes for the fitted effective sample size dataset.  Would a proportion instead of discrete # be better for this comparison?
+>
+> Thanks very much in advance for your help!
+>
+> Philipp
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun  7 03:20:34 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 07 Jun 2026 03:20:34 +0000
+Subject: Re: Home range estimate 0, units is "area (square microns)", in error?
+Message-ID: <u4EfeaU3AfE._W4z89K8AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <u4EfeaU3AfE.8hu8L1miAwAJ@ctmm-user.groups.google.com>
+References: <u4EfeaU3AfE.8hu8L1miAwAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/u4EfeaU3AfE/m/_W4z89K8AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Michael,
+
+You have a 1.3 hectare home range calculated on a grid with 25 hectare pixels. That's why its zero.
+
+If you just want to compare home-range sizes in different months, they don't need to be in the same grid.
+
+If you are averaging the months together, then it should be the case that the tiny month places all of its probability density in the one pixel, which is correct at the broader scale.
+
+Best,
+Chris
+
+On Tuesday, June 2, 2026 at 6:00:12 AM UTC-4 michae...@gmail.com wrote:
+> I have a many individual animal tracks over different months of the year and I have estimated their home ranges on an individual by month basis. All individuals are more or less range resident but have slight seasonal or individual differences in home range size and location.
+>
+> There are too many to individually check variograms, and I have automated this, filtering individuals with months of little or poor data, and low estimated DOF.
+>
+> The weighted AKDE output appears meaningful in almost all cases except 39/1462 home ranges where the estimated area and confidence intervals are all 0 and the units is given as "area (square microns)". I *think* this is coming from processing the dataset collectively as a list, and needing to specify a collective extent and a lower grid resolution for computer processing reasons, when some individuals seem to have small homerange sizes that are less than the grid resolution?
+>
+> # Input data and generate variograms
+> plovers <- as.telemetry(df_move, timezone="Atlantic/Cape_verde")
+> SVF <- lapply(plovers, FUN = function(x) variogram(x))
+>
+> # Next steps are in loops producing lists of objects along the ctmm workflow e.g.:
+> GUESS <- list()
+> for(i in 1:length(plovers)){
+>   GUESS[[i]] <- ctmm.guess(plovers[[i]], variogram = SVF[[i]], interactive = FALSE)
+> }
+>
+> # Key lines in next loops
+> FITS[[i]] <- ctmm.select(plovers[[i]], GUESS[[i]], trace = 3, cores = -1)
+> wAKDEs[[i]] <- akde(plovers[[i]],FITS[[i]],weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+>
+> # wAKDE estimates
+> SUMMARIES <- lapply(wAKDEs, FUN = function(x) summary(x))
+>
+> # Element number 85 shows issue.
+> > SUMMARIES[[85]]
+> $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area"
+>
+>
+> When I run animal track #85 separately and then generate the wAKDE independently with default grid, there is no problem. With low resolution the problem seems to be repeatable. With hi resolution (not default), the area estimate changes.
+>
+>
+> vg <- variogram(plovers[[85]])
+> guess <- ctmm.guess(plovers[[85]], variogram = vg, interactive = FALSE)
+> fit <- ctmm.select(plovers[[85]], guess, trace = 3, cores = -1)
+> defAKDE <- akde(plovers[[85]], fit, weights=TRUE)
+> lowAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+> hiAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=50, align.to.origin=TRUE))
+>
+>
+> > summary(defAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.208742 1.327008 1.450715 attr(,"class") [1] "area" > summary(lowAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area" > summary(hiAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.805207 1.981833 2.166585 attr(,"class") [1] "area"
+>
+> Ultimately, I am trying to compare homerange sizes of different individuals in different months, and generate a mean home range of all individuals in different months, so I need the homeranges to be comparable and computed collectively, but the grid size is a major limitation when computing the homeranges collectively. When using the mean(AKDE), are these individuals (like track #85) not contributing because they have estimate size 0? Can the home range sizes still be calculated at a variable resolution when calculated in  the akde() function collectively? I feel like I must be missing something that I can't compare many home ranges of different sizes because of computing and resolution issues?
+>
+> Thanks for any help you can offer on this and any suggestions to solve.
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun  7 03:48:11 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 07 Jun 2026 03:48:11 +0000
+Subject: Re: the bootstrap example from ctmm using question
+Message-ID: <f7YyMRQog8E.wNqjulS-AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <f7YyMRQog8E.swgqEUGcAAAJ@ctmm-user.groups.google.com>
+References: <f7YyMRQog8E.swgqEUGcAAAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/f7YyMRQog8E/m/wNqjulS-AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jin,
+
+Parallelization is different in UNIX and Windows because Windows lacks the capability to fork processes and has to use sockets instead. The Windows sockets don't seem to copy over the global environment like UNIX fork does, and so they complain that objects in the global environment are missing. If you really need to run this in Windows, then I can take a second look at how the parallelization is implemented and pass some arguments so that frequently used objects are not stored in the global environment.
+
+The expected run time is approximately 1/error^2 times the computation time of ctmm.fit() - very slow!
+
+Best,
+Chris
+
+On Saturday, June 6, 2026 at 1:23:43 PM UTC-4 jinyua...@gmail.com wrote:
+>
+> Hello,
+>
+> I am trying to estimate home-range confidence intervals using ctmm.boot() and have encountered a parallelization issue that I have been unable to diagnose.
+>
+> The workflow is:
+> GUESS <- ctmm.guess(DATA, interactive = FALSE) FIT <- ctmm.select(DATA, GUESS, trace = 3) BOOT <- ctmm.boot(DATA, FIT, cores = -1)
+>
+> The model fitting step completes successfully, and ctmm.boot() also runs successfully when:
+> ctmm.boot(DATA, FIT, cores = 1)
+>
+> However, whenever I use internal parallelization (cores > 1) on Windows, the bootstrap fails immediately with:
+> Error in checkForRemoteErrors(val) : object 'Green' not found
+>
+> I investigated whether the issue was related to the data or fitted model, but both appear to be valid:
+>
+> ctmm.select() completes successfully.
+>
+> ctmm.boot(..., cores = 1) runs normally.
+>
+> The same dataset and fitted model can be used successfully in other workflows.
+>
+> To further investigate, I implemented an alternative strategy using future.apply, where the outer bootstrap iterations are parallelized while each worker runs:
+> ctmm.boot(DATA, FIT, n = 1, cores = 1)
+>
+> This approach runs successfully on both Windows and Linux systems, suggesting that the bootstrap procedure itself is valid and that the problem may be specific to the internal parallel implementation used by ctmm.boot().
+>
+> In addition, I tested the original code on Linux using:
+> ctmm.boot(DATA, FIT, cores = -1)
+>
+> and the bootstrap was able to start and progress beyond 50%, whereas the Windows version failed immediately.
+>
+> My questions are:
+>
+> Is object 'Green' not found a known issue related to the Windows parallel backend used by ctmm.boot()?
+>
+> Does ctmm.boot() use different parallel mechanisms on Windows and Linux?
+>
+> Given that external parallelization via future_lapply() works correctly, does this indicate that the issue is specifically within the internal parallelization layer of ctmm.boot()?
+>
+> For the gazelle example dataset and an OUF model, is a runtime of approximately 36–40 hours for the external-parallel bootstrap workflow within the expected range?
+>
+> Thanks for your help.
+
+From u24f62035407f8448 at groups.google.com  Tue Jun  9 19:59:45 2026
+From: u24f62035407f8448 at groups.google.com (Michael Roast)
+Date: Tue, 09 Jun 2026 19:59:45 +0000
+Subject: Re: Home range estimate 0, units is "area (square microns)", in error?
+Message-ID: <u4EfeaU3AfE.c4GOR7BNAgAJ@ctmm-user.groups.google.com>
+In-Reply-To: <u4EfeaU3AfE.8hu8L1miAwAJ@ctmm-user.groups.google.com>
+References: <u4EfeaU3AfE.8hu8L1miAwAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/u4EfeaU3AfE/m/c4GOR7BNAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Chris,
+
+Thank you for your reply! That makes sense and at least the mean() function is still correctly considering the small home ranges at the broad scale on a low resolution grid. I think I just have to re-run the akde() for each home range with the default grid size to get more precise home range size estimates and accept that I can't use things like overlap() for all/any home range comparisons in the set.
+
+Thank you,
+
+Best,
+
+Michael
+
+On Sunday, 7 June 2026 at 05:20:34 UTC+2 chris.h...@gmail.com wrote:
+> Hi Michael,
+>
+> You have a 1.3 hectare home range calculated on a grid with 25 hectare pixels. That's why its zero.
+>
+> If you just want to compare home-range sizes in different months, they don't need to be in the same grid.
+>
+> If you are averaging the months together, then it should be the case that the tiny month places all of its probability density in the one pixel, which is correct at the broader scale.
+>
+> Best,
+> Chris
+>
+> On Tuesday, June 2, 2026 at 6:00:12 AM UTC-4 michae...@gmail.com wrote:
+> > I have a many individual animal tracks over different months of the year and I have estimated their home ranges on an individual by month basis. All individuals are more or less range resident but have slight seasonal or individual differences in home range size and location.
+> >
+> > There are too many to individually check variograms, and I have automated this, filtering individuals with months of little or poor data, and low estimated DOF.
+> >
+> > The weighted AKDE output appears meaningful in almost all cases except 39/1462 home ranges where the estimated area and confidence intervals are all 0 and the units is given as "area (square microns)". I *think* this is coming from processing the dataset collectively as a list, and needing to specify a collective extent and a lower grid resolution for computer processing reasons, when some individuals seem to have small homerange sizes that are less than the grid resolution?
+> >
+> > # Input data and generate variograms
+> > plovers <- as.telemetry(df_move, timezone="Atlantic/Cape_verde")
+> > SVF <- lapply(plovers, FUN = function(x) variogram(x))
+> >
+> > # Next steps are in loops producing lists of objects along the ctmm workflow e.g.:
+> > GUESS <- list()
+> > for(i in 1:length(plovers)){
+> >   GUESS[[i]] <- ctmm.guess(plovers[[i]], variogram = SVF[[i]], interactive = FALSE)
+> > }
+> >
+> > # Key lines in next loops
+> > FITS[[i]] <- ctmm.select(plovers[[i]], GUESS[[i]], trace = 3, cores = -1)
+> > wAKDEs[[i]] <- akde(plovers[[i]],FITS[[i]],weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+> >
+> > # wAKDE estimates
+> > SUMMARIES <- lapply(wAKDEs, FUN = function(x) summary(x))
+> >
+> > # Element number 85 shows issue.
+> > > SUMMARIES[[85]]
+> > $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area"
+> >
+> >
+> > When I run animal track #85 separately and then generate the wAKDE independently with default grid, there is no problem. With low resolution the problem seems to be repeatable. With hi resolution (not default), the area estimate changes.
+> >
+> >
+> > vg <- variogram(plovers[[85]])
+> > guess <- ctmm.guess(plovers[[85]], variogram = vg, interactive = FALSE)
+> > fit <- ctmm.select(plovers[[85]], guess, trace = 3, cores = -1)
+> > defAKDE <- akde(plovers[[85]], fit, weights=TRUE)
+> > lowAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+> > hiAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=50, align.to.origin=TRUE))
+> >
+> >
+> > > summary(defAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.208742 1.327008 1.450715 attr(,"class") [1] "area" > summary(lowAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area" > summary(hiAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.805207 1.981833 2.166585 attr(,"class") [1] "area"
+> >
+> > Ultimately, I am trying to compare homerange sizes of different individuals in different months, and generate a mean home range of all individuals in different months, so I need the homeranges to be comparable and computed collectively, but the grid size is a major limitation when computing the homeranges collectively. When using the mean(AKDE), are these individuals (like track #85) not contributing because they have estimate size 0? Can the home range sizes still be calculated at a variable resolution when calculated in  the akde() function collectively? I feel like I must be missing something that I can't compare many home ranges of different sizes because of computing and resolution issues?
+> >
+> > Thanks for any help you can offer on this and any suggestions to solve.
+
+From u40fd627580dd34f5 at groups.google.com  Tue Jun  9 22:39:19 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Tue, 09 Jun 2026 22:39:19 +0000
+Subject: Re: Home range estimate 0, units is "area (square microns)", in error?
+Message-ID: <u4EfeaU3AfE.IEd-bWVWAgAJ@ctmm-user.groups.google.com>
+In-Reply-To: <u4EfeaU3AfE.8hu8L1miAwAJ@ctmm-user.groups.google.com>
+References: <u4EfeaU3AfE.8hu8L1miAwAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/u4EfeaU3AfE/m/IEd-bWVWAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Michael,
+
+You can use overlap at the coarser scale and the results should come out accurately. The larger range's density is essentially constant throughout the smaller range, so the smaller range's density being in a single pixel shouldn't cause issues.
+
+Best,
+Chris
+
+On Tuesday, June 9, 2026 at 3:59:45 PM UTC-4 michae...@gmail.com wrote:
+> Hi Chris,
+>
+> Thank you for your reply! That makes sense and at least the mean() function is still correctly considering the small home ranges at the broad scale on a low resolution grid. I think I just have to re-run the akde() for each home range with the default grid size to get more precise home range size estimates and accept that I can't use things like overlap() for all/any home range comparisons in the set.
+>
+> Thank you,
+>
+> Best,
+>
+> Michael
+>
+> On Sunday, 7 June 2026 at 05:20:34 UTC+2 chris.h...@gmail.com wrote:
+> > Hi Michael,
+> >
+> > You have a 1.3 hectare home range calculated on a grid with 25 hectare pixels. That's why its zero.
+> >
+> > If you just want to compare home-range sizes in different months, they don't need to be in the same grid.
+> >
+> > If you are averaging the months together, then it should be the case that the tiny month places all of its probability density in the one pixel, which is correct at the broader scale.
+> >
+> > Best,
+> > Chris
+> >
+> > On Tuesday, June 2, 2026 at 6:00:12 AM UTC-4 michae...@gmail.com wrote:
+> > > I have a many individual animal tracks over different months of the year and I have estimated their home ranges on an individual by month basis. All individuals are more or less range resident but have slight seasonal or individual differences in home range size and location.
+> > >
+> > > There are too many to individually check variograms, and I have automated this, filtering individuals with months of little or poor data, and low estimated DOF.
+> > >
+> > > The weighted AKDE output appears meaningful in almost all cases except 39/1462 home ranges where the estimated area and confidence intervals are all 0 and the units is given as "area (square microns)". I *think* this is coming from processing the dataset collectively as a list, and needing to specify a collective extent and a lower grid resolution for computer processing reasons, when some individuals seem to have small homerange sizes that are less than the grid resolution?
+> > >
+> > > # Input data and generate variograms
+> > > plovers <- as.telemetry(df_move, timezone="Atlantic/Cape_verde")
+> > > SVF <- lapply(plovers, FUN = function(x) variogram(x))
+> > >
+> > > # Next steps are in loops producing lists of objects along the ctmm workflow e.g.:
+> > > GUESS <- list()
+> > > for(i in 1:length(plovers)){
+> > >   GUESS[[i]] <- ctmm.guess(plovers[[i]], variogram = SVF[[i]], interactive = FALSE)
+> > > }
+> > >
+> > > # Key lines in next loops
+> > > FITS[[i]] <- ctmm.select(plovers[[i]], GUESS[[i]], trace = 3, cores = -1)
+> > > wAKDEs[[i]] <- akde(plovers[[i]],FITS[[i]],weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+> > >
+> > > # wAKDE estimates
+> > > SUMMARIES <- lapply(wAKDEs, FUN = function(x) summary(x))
+> > >
+> > > # Element number 85 shows issue.
+> > > > SUMMARIES[[85]]
+> > > $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area"
+> > >
+> > >
+> > > When I run animal track #85 separately and then generate the wAKDE independently with default grid, there is no problem. With low resolution the problem seems to be repeatable. With hi resolution (not default), the area estimate changes.
+> > >
+> > >
+> > > vg <- variogram(plovers[[85]])
+> > > guess <- ctmm.guess(plovers[[85]], variogram = vg, interactive = FALSE)
+> > > fit <- ctmm.select(plovers[[85]], guess, trace = 3, cores = -1)
+> > > defAKDE <- akde(plovers[[85]], fit, weights=TRUE)
+> > > lowAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+> > > hiAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=50, align.to.origin=TRUE))
+> > >
+> > >
+> > > > summary(defAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.208742 1.327008 1.450715 attr(,"class") [1] "area" > summary(lowAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area" > summary(hiAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.805207 1.981833 2.166585 attr(,"class") [1] "area"
+> > >
+> > > Ultimately, I am trying to compare homerange sizes of different individuals in different months, and generate a mean home range of all individuals in different months, so I need the homeranges to be comparable and computed collectively, but the grid size is a major limitation when computing the homeranges collectively. When using the mean(AKDE), are these individuals (like track #85) not contributing because they have estimate size 0? Can the home range sizes still be calculated at a variable resolution when calculated in  the akde() function collectively? I feel like I must be missing something that I can't compare many home ranges of different sizes because of computing and resolution issues?
+> > >
+> > > Thanks for any help you can offer on this and any suggestions to solve.
+
+From u40fd627580dd34f5 at groups.google.com  Wed Jun 10 00:57:42 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Wed, 10 Jun 2026 00:57:42 +0000
+Subject: Re: Home range estimate 0, units is "area (square microns)", in error?
+Message-ID: <u4EfeaU3AfE.7QRDafJdAgAJ@ctmm-user.groups.google.com>
+In-Reply-To: <u4EfeaU3AfE.IEd-bWVWAgAJ@ctmm-user.groups.google.com>
+References: <u4EfeaU3AfE.8hu8L1miAwAJ@ctmm-user.groups.google.com> <u4EfeaU3AfE.IEd-bWVWAgAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/u4EfeaU3AfE/m/7QRDafJdAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I should add that the overlap between two small ranges will get a lot of numerical error, though, unless they are so far away that the Gaussian approximation is being invoked.
+
+Best,
+Chris
+
+On Tuesday, June 9, 2026 at 6:39:19 PM UTC-4 Christen Fleming wrote:
+> Hi Michael,
+>
+> You can use overlap at the coarser scale and the results should come out accurately. The larger range's density is essentially constant throughout the smaller range, so the smaller range's density being in a single pixel shouldn't cause issues.
+>
+> Best,
+> Chris
+>
+> On Tuesday, June 9, 2026 at 3:59:45 PM UTC-4 michae...@gmail.com wrote:
+> > Hi Chris,
+> >
+> > Thank you for your reply! That makes sense and at least the mean() function is still correctly considering the small home ranges at the broad scale on a low resolution grid. I think I just have to re-run the akde() for each home range with the default grid size to get more precise home range size estimates and accept that I can't use things like overlap() for all/any home range comparisons in the set.
+> >
+> > Thank you,
+> >
+> > Best,
+> >
+> > Michael
+> >
+> > On Sunday, 7 June 2026 at 05:20:34 UTC+2 chris.h...@gmail.com wrote:
+> > > Hi Michael,
+> > >
+> > > You have a 1.3 hectare home range calculated on a grid with 25 hectare pixels. That's why its zero.
+> > >
+> > > If you just want to compare home-range sizes in different months, they don't need to be in the same grid.
+> > >
+> > > If you are averaging the months together, then it should be the case that the tiny month places all of its probability density in the one pixel, which is correct at the broader scale.
+> > >
+> > > Best,
+> > > Chris
+> > >
+> > > On Tuesday, June 2, 2026 at 6:00:12 AM UTC-4 michae...@gmail.com wrote:
+> > > > I have a many individual animal tracks over different months of the year and I have estimated their home ranges on an individual by month basis. All individuals are more or less range resident but have slight seasonal or individual differences in home range size and location.
+> > > >
+> > > > There are too many to individually check variograms, and I have automated this, filtering individuals with months of little or poor data, and low estimated DOF.
+> > > >
+> > > > The weighted AKDE output appears meaningful in almost all cases except 39/1462 home ranges where the estimated area and confidence intervals are all 0 and the units is given as "area (square microns)". I *think* this is coming from processing the dataset collectively as a list, and needing to specify a collective extent and a lower grid resolution for computer processing reasons, when some individuals seem to have small homerange sizes that are less than the grid resolution?
+> > > >
+> > > > # Input data and generate variograms
+> > > > plovers <- as.telemetry(df_move, timezone="Atlantic/Cape_verde")
+> > > > SVF <- lapply(plovers, FUN = function(x) variogram(x))
+> > > >
+> > > > # Next steps are in loops producing lists of objects along the ctmm workflow e.g.:
+> > > > GUESS <- list()
+> > > > for(i in 1:length(plovers)){
+> > > >   GUESS[[i]] <- ctmm.guess(plovers[[i]], variogram = SVF[[i]], interactive = FALSE)
+> > > > }
+> > > >
+> > > > # Key lines in next loops
+> > > > FITS[[i]] <- ctmm.select(plovers[[i]], GUESS[[i]], trace = 3, cores = -1)
+> > > > wAKDEs[[i]] <- akde(plovers[[i]],FITS[[i]],weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+> > > >
+> > > > # wAKDE estimates
+> > > > SUMMARIES <- lapply(wAKDEs, FUN = function(x) summary(x))
+> > > >
+> > > > # Element number 85 shows issue.
+> > > > > SUMMARIES[[85]]
+> > > > $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area"
+> > > >
+> > > >
+> > > > When I run animal track #85 separately and then generate the wAKDE independently with default grid, there is no problem. With low resolution the problem seems to be repeatable. With hi resolution (not default), the area estimate changes.
+> > > >
+> > > >
+> > > > vg <- variogram(plovers[[85]])
+> > > > guess <- ctmm.guess(plovers[[85]], variogram = vg, interactive = FALSE)
+> > > > fit <- ctmm.select(plovers[[85]], guess, trace = 3, cores = -1)
+> > > > defAKDE <- akde(plovers[[85]], fit, weights=TRUE)
+> > > > lowAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=500, align.to.origin=TRUE))
+> > > > hiAKDE <- akde(plovers[[85]], fit, weights=TRUE, grid=list(extent=EXT, dr=50, align.to.origin=TRUE))
+> > > >
+> > > >
+> > > > > summary(defAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.208742 1.327008 1.450715 attr(,"class") [1] "area" > summary(lowAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (square microns) 0 0 0 attr(,"class") [1] "area" > summary(hiAKDE) $DOF area bandwidth 461.9586 463.9999 $CI low est high area (hectares) 1.805207 1.981833 2.166585 attr(,"class") [1] "area"
+> > > >
+> > > > Ultimately, I am trying to compare homerange sizes of different individuals in different months, and generate a mean home range of all individuals in different months, so I need the homeranges to be comparable and computed collectively, but the grid size is a major limitation when computing the homeranges collectively. When using the mean(AKDE), are these individuals (like track #85) not contributing because they have estimate size 0? Can the home range sizes still be calculated at a variable resolution when calculated in  the akde() function collectively? I feel like I must be missing something that I can't compare many home ranges of different sizes because of computing and resolution issues?
+> > > >
+> > > > Thanks for any help you can offer on this and any suggestions to solve.
+
+From ucfdcee728e4317d5 at groups.google.com  Mon Jun 22 13:41:19 2026
+From: ucfdcee728e4317d5 at groups.google.com (Stijn)
+Date: Mon, 22 Jun 2026 13:41:19 +0000
+Subject: Re: Taking into account error elipse info in outlier detection
+Message-ID: <VcIeaYzVw18.sRTYV54IAQAJ@ctmm-user.groups.google.com>
+In-Reply-To: <VcIeaYzVw18.yJiRUo7QBQAJ@ctmm-user.groups.google.com>
+References: <VcIeaYzVw18.Y06TkFZiBAAJ@ctmm-user.groups.google.com> <VcIeaYzVw18.yJiRUo7QBQAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/VcIeaYzVw18/m/sRTYV54IAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks alot Chris!
+
+It seems to work well for me now :)
+Small question left: if speed and distance estimates already decrease with increasing error, I assume the CI's are already taken into account somehow? In what situations would you recommend to use the lower end of the CI instead of the point estimate then?
+(and perhaps a silly question but how do i get the lower end ci from the output / VAR column?)
+
+Thanks again
+Op dinsdag 2 juni 2026 om 18:37:06 UTC+2 schreef chris.h...@gmail.com:
+
+> Hi Stijn,
+>
+> Those speed and distance estimates should decrease with increasing location error. This was due to a bad integral approximation being made for the error-ellipse calculations in that function - the exact integrals cannot be computed in closed form. I redid the integral approximation in a way that makes sense and should always behave correctly. The update is on GitHub.
+>
+> To answer your first question, you could use the lower-limit of the CI instead of the point estimate to threshold for outliers.
+>
+> Best,
+> Chris
+>
+> On Sunday, April 26, 2026 at 5:48:42 AM UTC-4 Stijn wrote:
+> > Dear Chris and team,
+> >
+> > I puzzled a little further and got a bit more confused about how outlie() uses error information.
+> > When I use Argos error elipses in outlie, I found out that the minimum speed estimates become much larger and unrealistic compared to when I do not use any error info
+> >
+> > It seems to me very strange that speed increases with error information? should it not decrease instead?
+> >
+> > I attach an example of a subset of data on one of my foxes which illustrates it. it would be much appreciated if you could help me understand a good way to use a speed filter on this Argos data.
+> >
+> > I attach also a screenshot comparison of OUT, with and without error info included.
+> >
+> > Thanks aalot!
+> >
+> > Stijn
+> >
+> >
+> >
+> > Op dinsdag 21 april 2026 om 19:57:41 UTC+2 schreef Stijn:
+> > > Dear Chris,
+> > >
+> > > I am working with Argos data with rather large error elipses. I want to remove outliers with the outlie function.
+> > > From attached figure 4 in your 2020 manuscript i understand that the error bars help differentiate uncertain positions from outliers.
+> > >
+> > > From what I understand the following removes positions of higher than threshold speed :
+> > >
+> > > for (i in 1:length(telemetry_object)) {
+> > >   OUT <- outlie( telemetry_object  [[i]], plot = FALSE)
+> > >   BAD <- OUT$speed  > speed_threshold
+> > >   while (any(BAD)) {
+> > >      telemetry_object  [[i]] <-  telemetry_object  [[i]][!BAD, ]
+> > >     OUT <- outlie( telemetry_object  [[i]], plot = FALSE)
+> > >     BAD <- OUT$speed > speed_threshold
+> > >   }
+> > > }
+> > >
+> > > When I do this, I notice that in my plot positions similar to the example position in figure 4F in your manuscript would also be removed. Is this the right way to do it? Would it not be better to somehow take into account the error bars and so when these error bars cross the speed threshold the position should be kept?
+> > >
+> > > I notice that the OUT object also has a column called VAR.speed. Should this be taken into account somehow?
+> > >
+> > > Thanks a lot for your time and help!
+> > >
+> > > Best, Stijn
+> > >
+> > >
+
+From u58b4419008558024 at groups.google.com  Wed Jun 24 15:58:41 2026
+From: u58b4419008558024 at groups.google.com (Sharon Poessel)
+Date: Wed, 24 Jun 2026 15:58:41 +0000
+Subject: Range Residency
+Message-ID: <EykyJmuGAU4.DIWX49nVAQAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/EykyJmuGAU4/m/DIWX49nVAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, I have a question about occurrence distributions. In Table 1 of your recent article in Ecology, "Clarifying space use concepts in ecology: Range vs. occurrence distributions", the BM and IOU models do not assume range residency. However, your variogram vignette in the ctmm package, dated 7/25/2025, states "In the future, we will have migration models to select, but for now all of our models are range resident". So I'm confused on whether I can use the occurrence function to estimate an occurrence distribution for an animal's migration data, which of course is not range resident. Or can you only estimate an occurrence distribution using data for which you could also estimate a range distribution (i.e., range resident data)? Thanks.
+
+From u40fd627580dd34f5 at groups.google.com  Sun Jun 28 02:51:06 2026
+From: u40fd627580dd34f5 at groups.google.com (Christen Fleming)
+Date: Sun, 28 Jun 2026 02:51:06 +0000
+Subject: Re: Taking into account error elipse info in outlier detection
+Message-ID: <VcIeaYzVw18.r1r-F0s4AAAJ@ctmm-user.groups.google.com>
+In-Reply-To: <VcIeaYzVw18.sRTYV54IAQAJ@ctmm-user.groups.google.com>
+References: <VcIeaYzVw18.Y06TkFZiBAAJ@ctmm-user.groups.google.com> <VcIeaYzVw18.sRTYV54IAQAJ@ctmm-user.groups.google.com>
+Archived-At: <https://groups.google.com/g/ctmm-user/c/VcIeaYzVw18/m/r1r-F0s4AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Stijn,
+
+The CIs also include the error dependence, if that is what you are asking. You could probably always use the lower limit of the CI, but that involves deciding on the coverage probability.
+
+Asymptotically, CIs are normal, so it would be the usual mean - 1.96*SE for the lower limit of the 95% CI. I need to export the fancier CI functions that assume different sampling distributions, which can be more suitable with boundary conditions, but, asymptotically, they are all the same. I've put that on my to-do list.
+
+Best,
+Chris
+
+On Monday, June 22, 2026 at 9:41:19 AM UTC-4 Stijn wrote:
+> Thanks alot Chris!
+>
+> It seems to work well for me now :)
+> Small question left: if speed and distance estimates already decrease with increasing error, I assume the CI's are already taken into account somehow? In what situations would you recommend to use the lower end of the CI instead of the point estimate then?
+> (and perhaps a silly question but how do i get the lower end ci from the output / VAR column?)
+>
+> Thanks again
+> Op dinsdag 2 juni 2026 om 18:37:06 UTC+2 schreef chris.h...@gmail.com:
+> > Hi Stijn,
+> >
+> > Those speed and distance estimates should decrease with increasing location error. This was due to a bad integral approximation being made for the error-ellipse calculations in that function - the exact integrals cannot be computed in closed form. I redid the integral approximation in a way that makes sense and should always behave correctly. The update is on GitHub.
+> >
+> > To answer your first question, you could use the lower-limit of the CI instead of the point estimate to threshold for outliers.
+> >
+> > Best,
+> > Chris
+> >
+> > On Sunday, April 26, 2026 at 5:48:42 AM UTC-4 Stijn wrote:
+> > > Dear Chris and team,
+> > >
+> > > I puzzled a little further and got a bit more confused about how outlie() uses error information.
+> > > When I use Argos error elipses in outlie, I found out that the minimum speed estimates become much larger and unrealistic compared to when I do not use any error info
+> > >
+> > > It seems to me very strange that speed increases with error information? should it not decrease instead?
+> > >
+> > > I attach an example of a subset of data on one of my foxes which illustrates it. it would be much appreciated if you could help me understand a good way to use a speed filter on this Argos data.
+> > >
+> > > I attach also a screenshot comparison of OUT, with and without error info included.
+> > >
+> > > Thanks aalot!
+> > >
+> > > Stijn
+> > >
+> > >
+> > >
+> > > Op dinsdag 21 april 2026 om 19:57:41 UTC+2 schreef Stijn:
+> > > > Dear Chris,
+> > > >
+> > > > I am working with Argos data with rather large error elipses. I want to remove outliers with the outlie function.
+> > > > From attached figure 4 in your 2020 manuscript i understand that the error bars help differentiate uncertain positions from outliers.
+> > > >
+> > > > From what I understand the following removes positions of higher than threshold speed :
+> > > >
+> > > > for (i in 1:length(telemetry_object)) {
+> > > >   OUT <- outlie( telemetry_object  [[i]], plot = FALSE)
+> > > >   BAD <- OUT$speed  > speed_threshold
+> > > >   while (any(BAD)) {
+> > > >      telemetry_object  [[i]] <-  telemetry_object  [[i]][!BAD, ]
+> > > >     OUT <- outlie( telemetry_object  [[i]], plot = FALSE)
+> > > >     BAD <- OUT$speed > speed_threshold
+> > > >   }
+> > > > }
+> > > >
+> > > > When I do this, I notice that in my plot positions similar to the example position in figure 4F in your manuscript would also be removed. Is this the right way to do it? Would it not be better to somehow take into account the error bars and so when these error bars cross the speed threshold the position should be kept?
+> > > >
+> > > > I notice that the OUT object also has a column called VAR.speed. Should this be taken into account somehow?
+> > > >
+> > > > Thanks a lot for your time and help!
+> > > >
+> > > > Best, Stijn
+> > > >
+> > > >
+

@@ -1,0 +1,1759 @@
+From u92ed2771fcb8eea0 at groups.google.com  Tue Jan  7 19:41:48 2025
+From: u92ed2771fcb8eea0 at groups.google.com (ada...@uw.edu)
+Date: Tue, 07 Jan 2025 19:41:48 +0000
+Subject: Benchmarking RTMB and TMB: ways to improve RTMB::MakeADFun speed?
+Message-ID: <rm2N5mH8U-8.UEcrQodrCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rm2N5mH8U-8/m/UEcrQodrCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi All,
+
+I am considering moving a multi-species stock assessment modelling package from TMB to RTMB. However, I am finding the MakeADFun in RTMB is prohibitively slower than in TMB (> 1 hour in RTMB vs 2 seconds). I am guessing it is due to my use of multi-dimensional arrays. TMB is great, but for future development, the benefits of developing using in RTMB are enticing and future of TMB seems to be an open ended question? However, I am interested in doing various simulation experiments, so reducing run time in MakeADFun is a big drive.
+
+Apart from vectorizing the R code, are there any suggestions for speeding up MakeADFun in RTMB?
+
+For simulation experiments, I can't use "DataEval" because the parameter/data dimensions change. Hacking it by doing MakeADFun on a full dimension model with an indicator of whether to include data in the likelihood and penalizing parameters to 0 by setting "nll += param^2" breaks the AD when building (see RTMB DataEval Test.R). Would there be any other DataEval workarounds?
+
+Benchmarking the vectorized "linreg" examples in TMB and RTMB also suggests that RTMB is just slower no matter what:
+
+From u258b98968d0ad8b9 at groups.google.com  Wed Jan  8 12:18:22 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Wed, 08 Jan 2025 12:18:22 +0000
+Subject: Re: Benchmarking RTMB and TMB: ways to improve RTMB::MakeADFun speed?
+Message-ID: <rm2N5mH8U-8.ZlsY6-ihCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <rm2N5mH8U-8.UEcrQodrCAAJ@tmb-users.groups.google.com>
+References: <rm2N5mH8U-8.UEcrQodrCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rm2N5mH8U-8/m/ZlsY6-ihCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The big performance penalty you observe is likely due to elementwise array sub-assignment, which is very slow in RTMB. To demonstrate, here are two versions of the same function. The first is more than 1000 times slower to tape than the second:
+
+n <- 1e5
+f1 <- function(x) {
+    a <- AD(array(0, n))
+    for (i in 1:n) {
+        a[i] <- x
+    }
+    sum(a)
+}
+f2 <- function(x) {
+    a <- AD(array(0, n))
+    a[1:n] <- x
+    sum(a)
+}
+> system.time(RTMB::MakeADFun(f1, 1))
+   user  system elapsed
+ 44.741   3.976  48.722
+> system.time(RTMB::MakeADFun(f2, 1))
+   user  system elapsed
+  0.024   0.004   0.028
+
+Why the big difference? Because R re-allocates the entire array on each sub-assignment (which can be verified by .Internal(inspect(a)) inside the loop). As far as I know, this is the only serious performance concern with RTMB. If you avoid it, the performance difference vs normal TMB should be insignificant.
+
+Regarding the 'linreg' benchmark it is a bit misleading when comparing RTMB vs TMB. First, it is probably the only example in the TMB test suite for which the conclusion wouldn't be the opposite! (try instead 'spde', 'hmm', 'spatial' etc). Second, contrary to what one might think, this benchmark demonstrates differences between two AD frameworks (TMBad used by RTMB vs CppAD used by TMB) and not 'R vs C++'.
+FWIW, the 'linreg' benchmark can become much faster in RTMB by enabling vectorized operations on the tape rather than using the tape optimizer (which is then redundant):
+
+RTMB::TapeConfig(vectorize="enable") ## Use vectorized operations on the tape
+TMB::config(optimize.instantly=0,DLL="RTMB") ## Disable the tape optimizer
+
+However, these setting are not generally recommended!
+
+On Tuesday, January 7, 2025 at 8:41:48 PM UTC+1 ada...@uw.edu wrote:
+> Hi All,
+>
+> I am considering moving a multi-species stock assessment modelling package from TMB to RTMB. However, I am finding the MakeADFun in RTMB is prohibitively slower than in TMB (> 1 hour in RTMB vs 2 seconds). I am guessing it is due to my use of multi-dimensional arrays. TMB is great, but for future development, the benefits of developing using in RTMB are enticing and future of TMB seems to be an open ended question? However, I am interested in doing various simulation experiments, so reducing run time in MakeADFun is a big drive.
+>
+> Apart from vectorizing the R code, are there any suggestions for speeding up MakeADFun in RTMB?
+>
+> For simulation experiments, I can't use "DataEval" because the parameter/data dimensions change. Hacking it by doing MakeADFun on a full dimension model with an indicator of whether to include data in the likelihood and penalizing parameters to 0 by setting "nll += param^2" breaks the AD when building (see RTMB DataEval Test.R). Would there be any other DataEval workarounds?
+>
+> Benchmarking the vectorized "linreg" examples in TMB and RTMB also suggests that RTMB is just slower no matter what:
+>
+>
+
+From ufd4f3538f907404b at groups.google.com  Wed Jan  8 14:29:24 2025
+From: ufd4f3538f907404b at groups.google.com (Ben Bolker)
+Date: Wed, 08 Jan 2025 14:29:24 +0000
+Subject: Re: [TMB users] Re: Benchmarking RTMB and TMB: ways to improve RTMB::MakeADFun speed?
+Message-ID: <rm2N5mH8U-8.zWdlqg-pCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <rm2N5mH8U-8.ZlsY6-ihCAAJ@tmb-users.groups.google.com>
+References: <rm2N5mH8U-8.UEcrQodrCAAJ@tmb-users.groups.google.com> <rm2N5mH8U-8.ZlsY6-ihCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rm2N5mH8U-8/m/zWdlqg-pCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+   Would it be possible/does it make sense to define an RTMB-specific
+function setval(x, indices, value) that does in-place setting? (It would
+violate R copy-on-modify semantics, but users would be responsible for
+knowing that ...)
+
+Related project: https://github.com/coolbutuseless/insitu
+
+On 2025-01-08 7:18 a.m., Kasper Kristensen wrote:
+> The big performance penalty you observe is likely due to elementwise
+> array sub-assignment, which is very slow in RTMB. To demonstrate, here
+> are two versions of the same function. The first is more than 1000 times
+> slower to tape than the second:
+>
+> n <- 1e5
+> f1 <- function(x) {
+>      a <- AD(array(0, n))
+>      for (i in 1:n) {
+>          a[i] <- x
+>      }
+>      sum(a)
+> }
+> f2 <- function(x) {
+>      a <- AD(array(0, n))
+>      a[1:n] <- x
+>      sum(a)
+> }
+>  > system.time(RTMB::MakeADFun(f1, 1))
+>     user  system elapsed
+>   44.741   3.976  48.722
+>  > system.time(RTMB::MakeADFun(f2, 1))
+>     user  system elapsed
+>    0.024   0.004   0.028
+>
+> Why the big difference? Because R re-allocates the entire array on each
+> sub-assignment (which can be verified by .Internal(inspect(a)) inside
+> the loop). As far as I know, this is the only serious performance
+> concern with RTMB. If you avoid it, the performance difference vs normal
+> TMB should be insignificant.
+>
+> Regarding the 'linreg' benchmark it is a bit misleading when comparing
+> RTMB vs TMB. First, it is probably the only example in the TMB test
+> suite for which the conclusion wouldn't be the opposite! (try instead
+> 'spde', 'hmm', 'spatial' etc). Second, contrary to what one might think,
+> this benchmark demonstrates differences between two AD frameworks (TMBad
+> used by RTMB vs CppAD used by TMB) and not 'R vs C++'.
+> FWIW, the 'linreg' benchmark can become much faster in RTMB by enabling
+> vectorized operations on the tape rather than using the tape optimizer
+> (which is then redundant):
+>
+> RTMB::TapeConfig(vectorize="enable") ## Use vectorized operations on the
+> tape
+> TMB::config(optimize.instantly=0,DLL="RTMB") ## Disable the tape optimizer
+>
+> However, these setting are not generally recommended!
+>
+>
+> On Tuesday, January 7, 2025 at 8:41:48 PM UTC+1 ada...@uw.edu wrote:
+>
+>     Hi All,
+>
+>     I am considering moving a multi-species stock assessment modelling
+>     package from TMB to RTMB. However, I am finding the MakeADFun in
+>     RTMB is prohibitively slower than in TMB (> 1 hour in RTMB vs 2
+>     seconds). I am guessing it is due to my use of multi-dimensional
+>     arrays. TMB is great, but for future development, the benefits of
+>     developing using in RTMB are enticing and future of TMB seems to be
+>     an open ended question? However, I am interested in doing various
+>     simulation experiments, so reducing run time in MakeADFun is a big
+>     drive.
+>
+>     Apart from vectorizing the R code, are there any suggestions for
+>     speeding up MakeADFun in RTMB?
+>
+>     For simulation experiments, I can't use "DataEval" because the
+>     parameter/data dimensions change. Hacking it by doing MakeADFun on a
+>     full dimension model with an indicator of whether to include data in
+>     the likelihood and penalizing parameters to 0 by setting "nll +=
+>     param^2" breaks the AD when building (see RTMB DataEval Test.R).
+>     Would there be any other DataEval workarounds?
+>
+>     Benchmarking the vectorized "linreg" examples in TMB and RTMB also
+>     suggests that RTMB is just slower no matter what:
+
+>     TMB vs RTMB benchmark.png
+>
+> --
+> To post to this group, send email to us...@tmb-project.org. Before
+> posting, please check the wiki and issuetracker at https://github.com/
+> kaskr/adcomp/ <https://github.com/kaskr/adcomp/>. Please try to create a
+> simple repeatable example to go with your question (e.g issues 154, 134,
+> 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google
+> Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send
+> an email to tmb-users+...@googlegroups.com <mailto:tmb-
+> users+un...@googlegroups.com>.
+> To view this discussion visit https://groups.google.com/d/msgid/tmb-
+> users/dfca8115-5209-4110-abb7-365134d33686n%40googlegroups.com <http://40googlegroups.com> <https://
+> groups.google.com/d/msgid/tmb-users/dfca8115-5209-4110- <http://groups.google.com/d/msgid/tmb-users/dfca8115-5209-4110->
+> abb7-365134d33686n%40googlegroups.com?utm_medium=email&utm_source=footer <http://40googlegroups.com?utm_medium=email&utm_source=footer>>.
+
+--
+Dr. Benjamin Bolker
+Professor, Mathematics & Statistics and Biology, McMaster University
+Director, School of Computational Science and Engineering
+ > E-mail is sent at my convenience; I don't expect replies outside of
+working hours.
+
+From u92ed2771fcb8eea0 at groups.google.com  Thu Jan  9 01:16:29 2025
+From: u92ed2771fcb8eea0 at groups.google.com (ada...@uw.edu)
+Date: Thu, 09 Jan 2025 01:16:29 +0000
+Subject: Re: [TMB users] Re: Benchmarking RTMB and TMB: ways to improve RTMB::MakeADFun speed?
+Message-ID: <rm2N5mH8U-8.VX1IMDXqCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <rm2N5mH8U-8.zWdlqg-pCAAJ@tmb-users.groups.google.com>
+References: <rm2N5mH8U-8.UEcrQodrCAAJ@tmb-users.groups.google.com> <rm2N5mH8U-8.zWdlqg-pCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rm2N5mH8U-8/m/VX1IMDXqCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+  Thanks Kasper! Benchmarking the SAM example using TMBad framework shows the same differences for me:
+
+Model Function TMB RTMB 1 SAM MakeADFun 0.0128 0.0941 2 SAM Fit 0.6694 0.6694 3 SAM Sdreport 0.1222 0.2138 4 SAM fn 0.0026 0.0023 5 SAM gr 0.0034 0.0033
+
+Same thing with the arrays I am guessing? I think population dynamics models (particularly multi-species like the predation loop below) will be very difficult or impossible to vectorize sub-assignment, so base TMB is probably the move for speed.
+
+> for(ksp in 1:nspp) { # Prey lop
+>   for(k_sex in 1:nsex[ksp]) { # Prey sex loop
+>     for(k_age in 1:nages[ksp]) { # Prey age loop
+>       for(yr in 1:nyrs) {
+>       # Type 2 MSVPA predation mortality
+>       # - Sum average N * ration * suitability / available food across all predators for each prey
+>       M2[ksp, k_sex, k_age, yr] <-
+>         sum(avgN_at_age[, , , yr] *
+>               ration[, , , yr] *
+>               suit_main[, , , ksp, k_sex, k_age, yr] /
+>               avail_food[, , , yr])
+>     }
+>   }
+> }
+
+Unless Ben's suggestion would avoid the errors from using DataEval to update indices that turn on/off data/parameters?
+
+On Wednesday, January 8, 2025 at 6:29:24 AM UTC-8 Ben Bolker wrote:
+> Would it be possible/does it make sense to define an RTMB-specific
+> function setval(x, indices, value) that does in-place setting? (It would
+> violate R copy-on-modify semantics, but users would be responsible for
+> knowing that ...)
+>
+> Related project: https://github.com/coolbutuseless/insitu
+>
+> On 2025-01-08 7:18 a.m., Kasper Kristensen wrote:
+> > The big performance penalty you observe is likely due to elementwise
+> > array sub-assignment, which is very slow in RTMB. To demonstrate, here
+> > are two versions of the same function. The first is more than 1000 times
+> > slower to tape than the second:
+> >
+> > n <- 1e5
+> > f1 <- function(x) {
+> >     a <- AD(array(0, n))
+> >     for (i in 1:n) {
+> >         a[i] <- x
+> >     }
+> >     sum(a)
+> > }
+> > f2 <- function(x) {
+> >     a <- AD(array(0, n))
+> >     a[1:n] <- x
+> >     sum(a)
+> > }
+> > > system.time(RTMB::MakeADFun(f1, 1))
+> >    user  system elapsed
+> >  44.741   3.976  48.722
+> > > system.time(RTMB::MakeADFun(f2, 1))
+> >    user  system elapsed
+> >   0.024   0.004   0.028
+> >
+> > Why the big difference? Because R re-allocates the entire array on each
+> > sub-assignment (which can be verified by .Internal(inspect(a)) inside
+> > the loop). As far as I know, this is the only serious performance
+> > concern with RTMB. If you avoid it, the performance difference vs normal
+> > TMB should be insignificant.
+> >
+> > Regarding the 'linreg' benchmark it is a bit misleading when comparing
+> > RTMB vs TMB. First, it is probably the only example in the TMB test
+> > suite for which the conclusion wouldn't be the opposite! (try instead
+> > 'spde', 'hmm', 'spatial' etc). Second, contrary to what one might think,
+> > this benchmark demonstrates differences between two AD frameworks (TMBad
+> > used by RTMB vs CppAD used by TMB) and not 'R vs C++'.
+> > FWIW, the 'linreg' benchmark can become much faster in RTMB by enabling
+> > vectorized operations on the tape rather than using the tape optimizer
+> > (which is then redundant):
+> >
+> > RTMB::TapeConfig(vectorize="enable") ## Use vectorized operations on the
+> > tape
+> > TMB::config(optimize.instantly=0,DLL="RTMB") ## Disable the tape optimizer
+> >
+> > However, these setting are not generally recommended!
+> >
+> >
+> > On Tuesday, January 7, 2025 at 8:41:48 PM UTC+1 ada...@uw.edu wrote:
+> >
+> > Hi All,
+> >
+> > I am considering moving a multi-species stock assessment modelling
+> > package from TMB to RTMB. However, I am finding the MakeADFun in
+> > RTMB is prohibitively slower than in TMB (> 1 hour in RTMB vs 2
+> > seconds). I am guessing it is due to my use of multi-dimensional
+> > arrays. TMB is great, but for future development, the benefits of
+> > developing using in RTMB are enticing and future of TMB seems to be
+> > an open ended question? However, I am interested in doing various
+> > simulation experiments, so reducing run time in MakeADFun is a big
+> > drive.
+> >
+> > Apart from vectorizing the R code, are there any suggestions for
+> > speeding up MakeADFun in RTMB?
+> >
+> > For simulation experiments, I can't use "DataEval" because the
+> > parameter/data dimensions change. Hacking it by doing MakeADFun on a
+> > full dimension model with an indicator of whether to include data in
+> > the likelihood and penalizing parameters to 0 by setting "nll +=
+> > param^2" breaks the AD when building (see RTMB DataEval Test.R).
+> > Would there be any other DataEval workarounds?
+> >
+> > Benchmarking the vectorized "linreg" examples in TMB and RTMB also
+> > suggests that RTMB is just slower no matter what:
+> > TMB vs RTMB benchmark.png
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before
+> > posting, please check the wiki and issuetracker at https://github.com/
+> > kaskr/adcomp/ <https://github.com/kaskr/adcomp/>. Please try to create a
+> > simple repeatable example to go with your question (e.g issues 154, 134,
+> > 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google
+> > Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send
+> > an email to tmb-users+...@googlegroups.com <mailto:tmb-
+> > users+un...@googlegroups.com>.
+> > To view this discussion visit https://groups.google.com/d/msgid/tmb-
+> > users/dfca8115-5209-4110-abb7-365134d33686n%40googlegroups.com <http://40googlegroups.com> <https://
+> > groups.google.com/d/msgid/tmb-users/dfca8115-5209-4110- <http://groups.google.com/d/msgid/tmb-users/dfca8115-5209-4110->
+> > abb7-365134d33686n%40googlegroups.com?utm_medium=email&utm_source=footer <http://40googlegroups.com?utm_medium=email&utm_source=footer>>.
+>
+> --
+> Dr. Benjamin Bolker
+> Professor, Mathematics & Statistics and Biology, McMaster University
+> Director, School of Computational Science and Engineering
+> > E-mail is sent at my convenience; I don't expect replies outside of
+> working hours.
+>
+
+From u92ed2771fcb8eea0 at groups.google.com  Thu Jan  9 01:18:26 2025
+From: u92ed2771fcb8eea0 at groups.google.com (ada...@uw.edu)
+Date: Thu, 09 Jan 2025 01:18:26 +0000
+Subject: Re: [TMB users] Re: Benchmarking RTMB and TMB: ways to improve RTMB::MakeADFun speed?
+Message-ID: <rm2N5mH8U-8.0roTh1DqCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <rm2N5mH8U-8.VX1IMDXqCAAJ@tmb-users.groups.google.com>
+References: <rm2N5mH8U-8.UEcrQodrCAAJ@tmb-users.groups.google.com> <rm2N5mH8U-8.VX1IMDXqCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rm2N5mH8U-8/m/0roTh1DqCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Sorry, that SAM benchmark table did not format well after send...
+
+On Wednesday, January 8, 2025 at 5:16:29 PM UTC-8 ada...@uw.edu wrote:
+>   Thanks Kasper! Benchmarking the SAM example using TMBad framework shows the same differences for me:
+>
+> Model Function TMB RTMB 1 SAM MakeADFun 0.0128 0.0941 2 SAM Fit 0.6694 0.6694 3 SAM Sdreport 0.1222 0.2138 4 SAM fn 0.0026 0.0023 5 SAM gr 0.0034 0.0033
+>
+> Same thing with the arrays I am guessing? I think population dynamics models (particularly multi-species like the predation loop below) will be very difficult or impossible to vectorize sub-assignment, so base TMB is probably the move for speed.
+>
+> > for(ksp in 1:nspp) { # Prey lop
+> >   for(k_sex in 1:nsex[ksp]) { # Prey sex loop
+> >     for(k_age in 1:nages[ksp]) { # Prey age loop
+> >       for(yr in 1:nyrs) {
+> >       # Type 2 MSVPA predation mortality
+> >       # - Sum average N * ration * suitability / available food across all predators for each prey
+> >       M2[ksp, k_sex, k_age, yr] <-
+> >         sum(avgN_at_age[, , , yr] *
+> >               ration[, , , yr] *
+> >               suit_main[, , , ksp, k_sex, k_age, yr] /
+> >               avail_food[, , , yr])
+> >     }
+> >   }
+> > }
+>
+> Unless Ben's suggestion would avoid the errors from using DataEval to update indices that turn on/off data/parameters?
+>
+> On Wednesday, January 8, 2025 at 6:29:24 AM UTC-8 Ben Bolker wrote:
+> > Would it be possible/does it make sense to define an RTMB-specific
+> > function setval(x, indices, value) that does in-place setting? (It would
+> > violate R copy-on-modify semantics, but users would be responsible for
+> > knowing that ...)
+> >
+> > Related project: https://github.com/coolbutuseless/insitu
+> >
+> > On 2025-01-08 7:18 a.m., Kasper Kristensen wrote:
+> > > The big performance penalty you observe is likely due to elementwise
+> > > array sub-assignment, which is very slow in RTMB. To demonstrate, here
+> > > are two versions of the same function. The first is more than 1000 times
+> > > slower to tape than the second:
+> > >
+> > > n <- 1e5
+> > > f1 <- function(x) {
+> > >     a <- AD(array(0, n))
+> > >     for (i in 1:n) {
+> > >         a[i] <- x
+> > >     }
+> > >     sum(a)
+> > > }
+> > > f2 <- function(x) {
+> > >     a <- AD(array(0, n))
+> > >     a[1:n] <- x
+> > >     sum(a)
+> > > }
+> > > > system.time(RTMB::MakeADFun(f1, 1))
+> > >    user  system elapsed
+> > >  44.741   3.976  48.722
+> > > > system.time(RTMB::MakeADFun(f2, 1))
+> > >    user  system elapsed
+> > >   0.024   0.004   0.028
+> > >
+> > > Why the big difference? Because R re-allocates the entire array on each
+> > > sub-assignment (which can be verified by .Internal(inspect(a)) inside
+> > > the loop). As far as I know, this is the only serious performance
+> > > concern with RTMB. If you avoid it, the performance difference vs normal
+> > > TMB should be insignificant.
+> > >
+> > > Regarding the 'linreg' benchmark it is a bit misleading when comparing
+> > > RTMB vs TMB. First, it is probably the only example in the TMB test
+> > > suite for which the conclusion wouldn't be the opposite! (try instead
+> > > 'spde', 'hmm', 'spatial' etc). Second, contrary to what one might think,
+> > > this benchmark demonstrates differences between two AD frameworks (TMBad
+> > > used by RTMB vs CppAD used by TMB) and not 'R vs C++'.
+> > > FWIW, the 'linreg' benchmark can become much faster in RTMB by enabling
+> > > vectorized operations on the tape rather than using the tape optimizer
+> > > (which is then redundant):
+> > >
+> > > RTMB::TapeConfig(vectorize="enable") ## Use vectorized operations on the
+> > > tape
+> > > TMB::config(optimize.instantly=0,DLL="RTMB") ## Disable the tape optimizer
+> > >
+> > > However, these setting are not generally recommended!
+> > >
+> > >
+> > > On Tuesday, January 7, 2025 at 8:41:48 PM UTC+1 ada...@uw.edu wrote:
+> > >
+> > > Hi All,
+> > >
+> > > I am considering moving a multi-species stock assessment modelling
+> > > package from TMB to RTMB. However, I am finding the MakeADFun in
+> > > RTMB is prohibitively slower than in TMB (> 1 hour in RTMB vs 2
+> > > seconds). I am guessing it is due to my use of multi-dimensional
+> > > arrays. TMB is great, but for future development, the benefits of
+> > > developing using in RTMB are enticing and future of TMB seems to be
+> > > an open ended question? However, I am interested in doing various
+> > > simulation experiments, so reducing run time in MakeADFun is a big
+> > > drive.
+> > >
+> > > Apart from vectorizing the R code, are there any suggestions for
+> > > speeding up MakeADFun in RTMB?
+> > >
+> > > For simulation experiments, I can't use "DataEval" because the
+> > > parameter/data dimensions change. Hacking it by doing MakeADFun on a
+> > > full dimension model with an indicator of whether to include data in
+> > > the likelihood and penalizing parameters to 0 by setting "nll +=
+> > > param^2" breaks the AD when building (see RTMB DataEval Test.R).
+> > > Would there be any other DataEval workarounds?
+> > >
+> > > Benchmarking the vectorized "linreg" examples in TMB and RTMB also
+> > > suggests that RTMB is just slower no matter what:
+> > > TMB vs RTMB benchmark.png
+> > >
+> > > --
+> > > To post to this group, send email to us...@tmb-project.org. Before
+> > > posting, please check the wiki and issuetracker at https://github.com/
+> > > kaskr/adcomp/ <https://github.com/kaskr/adcomp/>. Please try to create a
+> > > simple repeatable example to go with your question (e.g issues 154, 134,
+> > > 51). Use the issuetracker to report bugs.
+> > > ---
+> > > You received this message because you are subscribed to the Google
+> > > Groups "TMB Users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send
+> > > an email to tmb-users+...@googlegroups.com <mailto:tmb-
+> > > users+un...@googlegroups.com>.
+> > > To view this discussion visit https://groups.google.com/d/msgid/tmb-
+> > > users/dfca8115-5209-4110-abb7-365134d33686n%40googlegroups.com <http://40googlegroups.com> <https://
+> > > groups.google.com/d/msgid/tmb-users/dfca8115-5209-4110- <http://groups.google.com/d/msgid/tmb-users/dfca8115-5209-4110->
+> > > abb7-365134d33686n%40googlegroups.com?utm_medium=email&utm_source=footer <http://40googlegroups.com?utm_medium=email&utm_source=footer>>.
+> >
+> > --
+> > Dr. Benjamin Bolker
+> > Professor, Mathematics & Statistics and Biology, McMaster University
+> > Director, School of Computational Science and Engineering
+> > > E-mail is sent at my convenience; I don't expect replies outside of
+> > working hours.
+> >
+
+From u258b98968d0ad8b9 at groups.google.com  Thu Jan  9 14:18:07 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Thu, 09 Jan 2025 14:18:07 +0000
+Subject: Re: [TMB users] Re: Benchmarking RTMB and TMB: ways to improve RTMB::MakeADFun speed?
+Message-ID: <rm2N5mH8U-8.s8gpbtwUCQAJ@tmb-users.groups.google.com>
+In-Reply-To: <rm2N5mH8U-8.0roTh1DqCAAJ@tmb-users.groups.google.com>
+References: <rm2N5mH8U-8.UEcrQodrCAAJ@tmb-users.groups.google.com> <rm2N5mH8U-8.0roTh1DqCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rm2N5mH8U-8/m/s8gpbtwUCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+My conclusion for this example is very different: The RTMB SAM implementation was made without any effort to vectorize at all, and yet you get a total performance penalty of only 10-20%. That's not bad! A more R-like implementation would vectorize the data loop and probably get you closer to ca 1% performance penalty.
+
+Ben's suggestion to add a 'setvar' is definitely possible. I'm open to adding it if someone posts a github issue.
+
+Another option could be to construct arrays from a function, something like:
+
+fun2array <- function(FUN, ...) {
+    stopifnot(identical(names(list(...)),
+                        names(formals(FUN))))
+    d <- lengths(list(...))
+    grid <- as.list(expand.grid(...))
+    ans <- .mapply(FUN, grid, NULL)
+    cl <- class(ans[[1]])
+    ans <- unlist(ans)
+    class(ans) <- cl
+    dim(ans) <- d
+    ans
+}
+
+and then transform the loop into:
+
+M2 <- fun2array(
+    function(ksp, k_sex, k_age, yr)
+
+        sum(avgN_at_age[, , , yr] *
+            ration[, , , yr] *
+            suit_main[, , , ksp, k_sex, k_age, yr] /
+
+            avail_food[, , , yr]),
+    ksp = 1:nspp,
+    k_sex = 1:nsex,
+    k_age = 1:nages,
+    yr = 1:nyrs)
+
+On Thursday, January 9, 2025 at 2:18:26 AM UTC+1 ada...@uw.edu wrote:
+> Sorry, that SAM benchmark table did not format well after send...
+>
+>
+>
+> On Wednesday, January 8, 2025 at 5:16:29 PM UTC-8 ada...@uw.edu wrote:
+> >   Thanks Kasper! Benchmarking the SAM example using TMBad framework shows the same differences for me:
+> >
+> > Model Function TMB RTMB 1 SAM MakeADFun 0.0128 0.0941 2 SAM Fit 0.6694 0.6694 3 SAM Sdreport 0.1222 0.2138 4 SAM fn 0.0026 0.0023 5 SAM gr 0.0034 0.0033
+> >
+> > Same thing with the arrays I am guessing? I think population dynamics models (particularly multi-species like the predation loop below) will be very difficult or impossible to vectorize sub-assignment, so base TMB is probably the move for speed.
+> >
+> > > for(ksp in 1:nspp) { # Prey lop
+> > >   for(k_sex in 1:nsex[ksp]) { # Prey sex loop
+> > >     for(k_age in 1:nages[ksp]) { # Prey age loop
+> > >       for(yr in 1:nyrs) {
+> > >       # Type 2 MSVPA predation mortality
+> > >       # - Sum average N * ration * suitability / available food across all predators for each prey
+> > >       M2[ksp, k_sex, k_age, yr] <-
+> > >         sum(avgN_at_age[, , , yr] *
+> > >               ration[, , , yr] *
+> > >               suit_main[, , , ksp, k_sex, k_age, yr] /
+> > >               avail_food[, , , yr])
+> > >     }
+> > >   }
+> > > }
+> >
+> > Unless Ben's suggestion would avoid the errors from using DataEval to update indices that turn on/off data/parameters?
+> >
+> > On Wednesday, January 8, 2025 at 6:29:24 AM UTC-8 Ben Bolker wrote:
+> > > Would it be possible/does it make sense to define an RTMB-specific
+> > > function setval(x, indices, value) that does in-place setting? (It would
+> > > violate R copy-on-modify semantics, but users would be responsible for
+> > > knowing that ...)
+> > >
+> > > Related project: https://github.com/coolbutuseless/insitu
+> > >
+> > > On 2025-01-08 7:18 a.m., Kasper Kristensen wrote:
+> > > > The big performance penalty you observe is likely due to elementwise
+> > > > array sub-assignment, which is very slow in RTMB. To demonstrate, here
+> > > > are two versions of the same function. The first is more than 1000 times
+> > > > slower to tape than the second:
+> > > >
+> > > > n <- 1e5
+> > > > f1 <- function(x) {
+> > > >     a <- AD(array(0, n))
+> > > >     for (i in 1:n) {
+> > > >         a[i] <- x
+> > > >     }
+> > > >     sum(a)
+> > > > }
+> > > > f2 <- function(x) {
+> > > >     a <- AD(array(0, n))
+> > > >     a[1:n] <- x
+> > > >     sum(a)
+> > > > }
+> > > > > system.time(RTMB::MakeADFun(f1, 1))
+> > > >    user  system elapsed
+> > > >  44.741   3.976  48.722
+> > > > > system.time(RTMB::MakeADFun(f2, 1))
+> > > >    user  system elapsed
+> > > >   0.024   0.004   0.028
+> > > >
+> > > > Why the big difference? Because R re-allocates the entire array on each
+> > > > sub-assignment (which can be verified by .Internal(inspect(a)) inside
+> > > > the loop). As far as I know, this is the only serious performance
+> > > > concern with RTMB. If you avoid it, the performance difference vs normal
+> > > > TMB should be insignificant.
+> > > >
+> > > > Regarding the 'linreg' benchmark it is a bit misleading when comparing
+> > > > RTMB vs TMB. First, it is probably the only example in the TMB test
+> > > > suite for which the conclusion wouldn't be the opposite! (try instead
+> > > > 'spde', 'hmm', 'spatial' etc). Second, contrary to what one might think,
+> > > > this benchmark demonstrates differences between two AD frameworks (TMBad
+> > > > used by RTMB vs CppAD used by TMB) and not 'R vs C++'.
+> > > > FWIW, the 'linreg' benchmark can become much faster in RTMB by enabling
+> > > > vectorized operations on the tape rather than using the tape optimizer
+> > > > (which is then redundant):
+> > > >
+> > > > RTMB::TapeConfig(vectorize="enable") ## Use vectorized operations on the
+> > > > tape
+> > > > TMB::config(optimize.instantly=0,DLL="RTMB") ## Disable the tape optimizer
+> > > >
+> > > > However, these setting are not generally recommended!
+> > > >
+> > > >
+> > > > On Tuesday, January 7, 2025 at 8:41:48 PM UTC+1 ada...@uw.edu wrote:
+> > > >
+> > > > Hi All,
+> > > >
+> > > > I am considering moving a multi-species stock assessment modelling
+> > > > package from TMB to RTMB. However, I am finding the MakeADFun in
+> > > > RTMB is prohibitively slower than in TMB (> 1 hour in RTMB vs 2
+> > > > seconds). I am guessing it is due to my use of multi-dimensional
+> > > > arrays. TMB is great, but for future development, the benefits of
+> > > > developing using in RTMB are enticing and future of TMB seems to be
+> > > > an open ended question? However, I am interested in doing various
+> > > > simulation experiments, so reducing run time in MakeADFun is a big
+> > > > drive.
+> > > >
+> > > > Apart from vectorizing the R code, are there any suggestions for
+> > > > speeding up MakeADFun in RTMB?
+> > > >
+> > > > For simulation experiments, I can't use "DataEval" because the
+> > > > parameter/data dimensions change. Hacking it by doing MakeADFun on a
+> > > > full dimension model with an indicator of whether to include data in
+> > > > the likelihood and penalizing parameters to 0 by setting "nll +=
+> > > > param^2" breaks the AD when building (see RTMB DataEval Test.R).
+> > > > Would there be any other DataEval workarounds?
+> > > >
+> > > > Benchmarking the vectorized "linreg" examples in TMB and RTMB also
+> > > > suggests that RTMB is just slower no matter what:
+> > > > TMB vs RTMB benchmark.png
+> > > >
+> > > > --
+> > > > To post to this group, send email to us...@tmb-project.org. Before
+> > > > posting, please check the wiki and issuetracker at https://github.com/
+> > > > kaskr/adcomp/ <https://github.com/kaskr/adcomp/>. Please try to create a
+> > > > simple repeatable example to go with your question (e.g issues 154, 134,
+> > > > 51). Use the issuetracker to report bugs.
+> > > > ---
+> > > > You received this message because you are subscribed to the Google
+> > > > Groups "TMB Users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send
+> > > > an email to tmb-users+...@googlegroups.com <mailto:tmb-
+> > > > users+un...@googlegroups.com>.
+> > > > To view this discussion visit https://groups.google.com/d/msgid/tmb-
+> > > > users/dfca8115-5209-4110-abb7-365134d33686n%40googlegroups.com <http://40googlegroups.com> <https://
+> > > > groups.google.com/d/msgid/tmb-users/dfca8115-5209-4110- <http://groups.google.com/d/msgid/tmb-users/dfca8115-5209-4110->
+> > > > abb7-365134d33686n%40googlegroups.com?utm_medium=email&utm_source=footer <http://40googlegroups.com?utm_medium=email&utm_source=footer>>.
+> > >
+> > > --
+> > > Dr. Benjamin Bolker
+> > > Professor, Mathematics & Statistics and Biology, McMaster University
+> > > Director, School of Computational Science and Engineering
+> > > > E-mail is sent at my convenience; I don't expect replies outside of
+> > > working hours.
+> > >
+
+From u1240b60d4715a67c at groups.google.com  Thu Jan  9 22:37:16 2025
+From: u1240b60d4715a67c at groups.google.com (Jemay Salomon)
+Date: Thu, 09 Jan 2025 22:37:16 +0000
+Subject: Passing a Variance-Covariance Matrix for Random Effects in TMB
+Message-ID: <3BX0c6yzfXk.nXc0anyEBgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3BX0c6yzfXk/m/nXc0anyEBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I’m new to TMB and was wondering if there is a proper way to pass a variance-covariance matrix for random effects in a linear mixed model (y=Xb + Zu + e), with :
+
+u∼N(0,sigma2A)
+
+e∼N(0,sigma2Id)
+
+Where:
+
+u is the vector of random effects.
+
+e is the vector of residuals.
+
+A is the genetic relationship matrix (variance-covariance matrix for u).
+
+Id is the identity matrix for e.
+
+I am working on a model where I want to include a variance-covariance matrix (A) for random effects, specifically the genetic relationship matrix A, which represents relationships between individuals.
+
+I’ve been working with simulated data, and when A is an identity matrix, the code below works well. The correlation between the true and estimated u is consistently high (r≈0.91+).
+
+However, when I use a structured A (which was also used to simulate the data), the correlation between the true and estimated u becomes poor.
+
+Does anyone have insights into why this might be happening? I would appreciate any advice or suggestions for addressing this issue.
+
+Below is the TMB model code:
+
+Type objective_function<Type>::operator() (){
+
+/*-------------------------------Data--------------------------------------*/
+
+DATA_VECTOR(y); // vector of observations
+
+DATA_MATRIX(X); // Design matrix for fixed effects
+
+DATA_MATRIX(Z); // Design matrix for random effects
+
+DATA_MATRIX(Id); // Identity matrix for errors
+
+DATA_MATRIX(A); // Variance-covariance matrix (genetic relationship matrix)
+
+/*-----------------------------------Parameters-----------------------------*/
+
+PARAMETER_VECTOR(beta); // vector of fixed effects (b)
+
+PARAMETER_VECTOR(u); //vector of randoms effects
+
+PARAMETER(log_sd_u);
+
+PARAMETER(log_sd_e);
+
+/*----------------------------local variales -------------------*/
+
+// size
+
+int n = y.size(); //length of y
+
+int q = A.cols(); // number of random effects
+
+/*----------------------------nll-----------------------------*/
+
+Type nll = Type(0.0);
+
+/*----------------------------contribution to the nll-----------------------*/
+
+// Contribution of the observations
+
+vector<Type> m(n);
+
+m = X * beta + Z*u;
+
+MVNORM_t<Type> mvn_y_cor(Id);
+
+vector<Type> vec_sd(n);
+
+vec_sd.fill(exp(log_sd_e));
+
+nll += VECSCALE(mvn_y_cor, vec_sd)(y - m);
+
+// contribution of randoms effects
+
+MVNORM_t<Type> mvn_u_cor(A);
+
+vector<Type> sd_u(q);
+
+sd_u.fill(exp(log_sd_u));
+
+nll += VECSCALE(mvn_u_cor, sd_u)(u);
+
+return nll;
+
+}
+
+Thank you in advance for your help!
+
+--
+
+Jemay SALOMON
+
+Doctorant, INRAE équipe DEAP (Diversité, Evolution et Adaptation des Populations)
+
+Génétique Quantitative et Évolution - Le Moulon
+
+Université Paris-Saclay - INRAE - CNRS - AgroParisTech
+
+IDEEV, 12 route 128, 91190 Gif-sur-Yvette, France
+
+http://moulon.inra.fr/
+
+Tél. : +33 745519465
+
+Email : jemay....@inrae.fr
+
+From u1240b60d4715a67c at groups.google.com  Fri Jan 10 09:47:18 2025
+From: u1240b60d4715a67c at groups.google.com (Jemay Salomon)
+Date: Fri, 10 Jan 2025 09:47:18 +0000
+Subject: Passing a Variance-Covariance Matrix for Random Effects in TMB
+Message-ID: <3BX0c6yzfXk.SI0E1AypBgAJ@tmb-users.groups.google.com>
+In-Reply-To: <3BX0c6yzfXk.nXc0anyEBgAJ@tmb-users.groups.google.com>
+References: <3BX0c6yzfXk.nXc0anyEBgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3BX0c6yzfXk/m/SI0E1AypBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I’m new to TMB and was wondering if there is a proper way to pass a variance-covariance matrix for random effects in a linear mixed model (y=Xb + Zu + e), with :
+
+u∼N(0,sigma2A)
+
+e∼N(0,sigma2Id)
+
+Where:
+
+u is the vector of random effects.
+
+e is the vector of residuals.
+
+A is the genetic relationship matrix (variance-covariance matrix for u).
+
+Id is the identity matrix for e.
+
+I am working on a model where I want to include a variance-covariance matrix (A) for random effects, specifically the genetic relationship matrix A, which represents relationships between individuals.
+
+I’ve been working with simulated data, and when A is an identity matrix, the code below works well. The correlation between the true and estimated u is consistently high (r≈0.91+).
+
+However, when I use a structured A (which was also used to simulate the data), the correlation between the true and estimated u becomes poor.
+
+Does anyone have insights into why this might be happening? I would appreciate any advice or suggestions for addressing this issue.
+
+Below is the TMB model code:
+
+Type objective_function<Type>::operator() (){
+
+/*-------------------------------Data--------------------------------------*/
+
+DATA_VECTOR(y); // vector of observations
+
+DATA_MATRIX(X); // Design matrix for fixed effects
+
+DATA_MATRIX(Z); // Design matrix for random effects
+
+DATA_MATRIX(Id); // Identity matrix for errors
+
+DATA_MATRIX(A); // Variance-covariance matrix (genetic relationship matrix)
+
+/*-----------------------------------Parameters-----------------------------*/
+
+PARAMETER_VECTOR(beta); // vector of fixed effects (b)
+
+PARAMETER_VECTOR(u); //vector of randoms effects
+
+PARAMETER(log_sd_u);
+
+PARAMETER(log_sd_e);
+
+/*----------------------------local variales -------------------*/
+
+// size
+
+int n = y.size(); //length of y
+
+int q = A.cols(); // number of random effects
+
+/*----------------------------nll-----------------------------*/
+
+Type nll = Type(0.0);
+
+/*----------------------------contribution to the nll-----------------------*/
+
+// Contribution of the observations
+
+vector<Type> m(n);
+
+m = X * beta + Z*u;
+
+MVNORM_t<Type> mvn_y_cor(Id);
+
+vector<Type> vec_sd(n);
+
+vec_sd.fill(exp(log_sd_e));
+
+nll += VECSCALE(mvn_y_cor, vec_sd)(y - m);
+
+// contribution of randoms effects
+
+MVNORM_t<Type> mvn_u_cor(A);
+
+vector<Type> sd_u(q);
+
+sd_u.fill(exp(log_sd_u));
+
+nll += VECSCALE(mvn_u_cor, sd_u)(u);
+
+return nll;
+
+}
+
+Thank you in advance for your help!
+
+--
+
+Jemay SALOMON
+
+Doctorant, INRAE équipe DEAP (Diversité, Evolution et Adaptation des Populations)
+
+Génétique Quantitative et Évolution - Le Moulon
+
+Université Paris-Saclay - INRAE - CNRS - AgroParisTech
+
+IDEEV, 12 route 128, 91190 Gif-sur-Yvette, France
+
+http://moulon.inra.fr/
+
+Tél. : +33 745519465
+
+Email : jemay....@inrae.fr
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Jan 10 09:58:09 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 10 Jan 2025 09:58:09 +0000
+Subject: Re: Passing a Variance-Covariance Matrix for Random Effects in TMB
+Message-ID: <3BX0c6yzfXk.MkE2V6SpBgAJ@tmb-users.groups.google.com>
+In-Reply-To: <3BX0c6yzfXk.nXc0anyEBgAJ@tmb-users.groups.google.com>
+References: <3BX0c6yzfXk.nXc0anyEBgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3BX0c6yzfXk/m/MkE2V6SpBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You are passing A as a general matrix, however there has to be a positive definite constraint.
+It's probably easiest to use the UNSTRUCTURED_CORR class as described here:
+https://kaskr.github.io/adcomp/_book/Densities.html#multivariate-normal-distributions
+
+On Friday, January 10, 2025 at 10:47:18 AM UTC+1 jemays...@gmail.com wrote:
+> Hi all,
+>
+> I’m new to TMB and was wondering if there is a proper way to pass a variance-covariance matrix for random effects in a linear mixed model (y=Xb + Zu + e), with :
+>
+> u∼N(0,sigma2A)
+>
+> e∼N(0,sigma2Id)
+>
+> Where:
+>
+> u is the vector of random effects.
+>
+> e is the vector of residuals.
+>
+> A is the genetic relationship matrix (variance-covariance matrix for u).
+>
+> Id is the identity matrix for e.
+>
+> I am working on a model where I want to include a variance-covariance matrix (A) for random effects, specifically the genetic relationship matrix A, which represents relationships between individuals.
+>
+> I’ve been working with simulated data, and when A is an identity matrix, the code below works well. The correlation between the true and estimated u is consistently high (r≈0.91+).
+>
+> However, when I use a structured A (which was also used to simulate the data), the correlation between the true and estimated u becomes poor.
+>
+> Does anyone have insights into why this might be happening? I would appreciate any advice or suggestions for addressing this issue.
+>
+>
+> Below is the TMB model code:
+>
+>
+> Type objective_function<Type>::operator() (){
+>
+> /*-------------------------------Data--------------------------------------*/
+>
+> DATA_VECTOR(y); // vector of observations
+>
+> DATA_MATRIX(X); // Design matrix for fixed effects
+>
+> DATA_MATRIX(Z); // Design matrix for random effects
+>
+> DATA_MATRIX(Id); // Identity matrix for errors
+>
+> DATA_MATRIX(A); // Variance-covariance matrix (genetic relationship matrix)
+>
+>
+> /*-----------------------------------Parameters-----------------------------*/
+>
+> PARAMETER_VECTOR(beta); // vector of fixed effects (b)
+>
+> PARAMETER_VECTOR(u); //vector of randoms effects
+>
+> PARAMETER(log_sd_u);
+>
+> PARAMETER(log_sd_e);
+>
+>
+> /*----------------------------local variales -------------------*/
+>
+> // size
+>
+> int n = y.size(); //length of y
+>
+> int q = A.cols(); // number of random effects
+>
+>
+> /*----------------------------nll-----------------------------*/
+>
+> Type nll = Type(0.0);
+>
+>
+> /*----------------------------contribution to the nll-----------------------*/
+>
+> // Contribution of the observations
+>
+> vector<Type> m(n);
+>
+> m = X * beta + Z*u;
+>
+> MVNORM_t<Type> mvn_y_cor(Id);
+>
+> vector<Type> vec_sd(n);
+>
+> vec_sd.fill(exp(log_sd_e));
+>
+> nll += VECSCALE(mvn_y_cor, vec_sd)(y - m);
+>
+>
+> // contribution of randoms effects
+>
+> MVNORM_t<Type> mvn_u_cor(A);
+>
+> vector<Type> sd_u(q);
+>
+> sd_u.fill(exp(log_sd_u));
+>
+> nll += VECSCALE(mvn_u_cor, sd_u)(u);
+>
+>
+> return nll;
+>
+> }
+>
+> Thank you in advance for your help!
+>
+> --
+>
+> Jemay SALOMON
+>
+> Doctorant, INRAE équipe DEAP (Diversité, Evolution et Adaptation des Populations)
+>
+> Génétique Quantitative et Évolution - Le Moulon
+>
+> Université Paris-Saclay - INRAE - CNRS - AgroParisTech
+>
+> IDEEV, 12 route 128, 91190 Gif-sur-Yvette, France
+>
+> http://moulon.inra.fr/
+>
+> Tél. : +33 745519465
+>
+> Email : jemay....@inrae.fr
+
+From u1240b60d4715a67c at groups.google.com  Fri Jan 10 13:23:09 2025
+From: u1240b60d4715a67c at groups.google.com (Jemay Salomon)
+Date: Fri, 10 Jan 2025 13:23:09 +0000
+Subject: Re: [TMB users] Re: Passing a Variance-Covariance Matrix for Random Effects in TMB
+Message-ID: <3BX0c6yzfXk.FFNrKNS0BgAJ@tmb-users.groups.google.com>
+In-Reply-To: <3BX0c6yzfXk.nXc0anyEBgAJ@tmb-users.groups.google.com>
+References: <3BX0c6yzfXk.nXc0anyEBgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3BX0c6yzfXk/m/FFNrKNS0BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Kasper!
+
+Le ven. 10 janv. 2025 à 10:58, Kasper Kristensen <kasper.k...@gmail.com> a écrit :
+
+> You are passing A as a general matrix, however there has to be a positive definite constraint.
+> It's probably easiest to use the UNSTRUCTURED_CORR class as described here:
+> https://kaskr.github.io/adcomp/_book/Densities.html#multivariate-normal-distributions
+>
+>
+> On Friday, January 10, 2025 at 10:47:18 AM UTC+1 jemays...@gmail.com wrote:
+> > Hi all,
+> >
+> > I’m new to TMB and was wondering if there is a proper way to pass a variance-covariance matrix for random effects in a linear mixed model (y=Xb + Zu + e), with :
+> >
+> > u∼N(0,sigma2A)
+> >
+> > e∼N(0,sigma2Id)
+> >
+> > Where:
+> >
+> > u is the vector of random effects.
+> >
+> > e is the vector of residuals.
+> >
+> > A is the genetic relationship matrix (variance-covariance matrix for u).
+> >
+> > Id is the identity matrix for e.
+> >
+> > I am working on a model where I want to include a variance-covariance matrix (A) for random effects, specifically the genetic relationship matrix A, which represents relationships between individuals.
+> >
+> > I’ve been working with simulated data, and when A is an identity matrix, the code below works well. The correlation between the true and estimated u is consistently high (r≈0.91+).
+> >
+> > However, when I use a structured A (which was also used to simulate the data), the correlation between the true and estimated u becomes poor.
+> >
+> > Does anyone have insights into why this might be happening? I would appreciate any advice or suggestions for addressing this issue.
+> >
+> >
+> > Below is the TMB model code:
+> >
+> >
+> > Type objective_function<Type>::operator() (){
+> >
+> > /*-------------------------------Data--------------------------------------*/
+> >
+> > DATA_VECTOR(y); // vector of observations
+> >
+> > DATA_MATRIX(X); // Design matrix for fixed effects
+> >
+> > DATA_MATRIX(Z); // Design matrix for random effects
+> >
+> > DATA_MATRIX(Id); // Identity matrix for errors
+> >
+> > DATA_MATRIX(A); // Variance-covariance matrix (genetic relationship matrix)
+> >
+> >
+> > /*-----------------------------------Parameters-----------------------------*/
+> >
+> > PARAMETER_VECTOR(beta); // vector of fixed effects (b)
+> >
+> > PARAMETER_VECTOR(u); //vector of randoms effects
+> >
+> > PARAMETER(log_sd_u);
+> >
+> > PARAMETER(log_sd_e);
+> >
+> >
+> > /*----------------------------local variales -------------------*/
+> >
+> > // size
+> >
+> > int n = y.size(); //length of y
+> >
+> > int q = A.cols(); // number of random effects
+> >
+> >
+> > /*----------------------------nll-----------------------------*/
+> >
+> > Type nll = Type(0.0);
+> >
+> >
+> > /*----------------------------contribution to the nll-----------------------*/
+> >
+> > // Contribution of the observations
+> >
+> > vector<Type> m(n);
+> >
+> > m = X * beta + Z*u;
+> >
+> > MVNORM_t<Type> mvn_y_cor(Id);
+> >
+> > vector<Type> vec_sd(n);
+> >
+> > vec_sd.fill(exp(log_sd_e));
+> >
+> > nll += VECSCALE(mvn_y_cor, vec_sd)(y - m);
+> >
+> >
+> > // contribution of randoms effects
+> >
+> > MVNORM_t<Type> mvn_u_cor(A);
+> >
+> > vector<Type> sd_u(q);
+> >
+> > sd_u.fill(exp(log_sd_u));
+> >
+> > nll += VECSCALE(mvn_u_cor, sd_u)(u);
+> >
+> >
+> > return nll;
+> >
+> > }
+> >
+> > Thank you in advance for your help!
+> >
+> > --
+> >
+> > Jemay SALOMON
+> >
+> > Doctorant, INRAE équipe DEAP (Diversité, Evolution et Adaptation des Populations)
+> >
+> > Génétique Quantitative et Évolution - Le Moulon
+> >
+> > Université Paris-Saclay - INRAE - CNRS - AgroParisTech
+> >
+> > IDEEV, 12 route 128, 91190 Gif-sur-Yvette, France
+> >
+> > http://moulon.inra.fr/
+> >
+> > Tél. : +33 745519465
+> >
+> > Email : jemay....@inrae.fr
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/tmb-users/62891346-f2a4-4338-80e3-8709fcd9b92an%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/62891346-f2a4-4338-80e3-8709fcd9b92an%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+
+Jemay SALOMON
+
+Doctorant, INRAE équipe DEAP (Diversité, Evolution et Adaptation des Populations)
+
+Génétique Quantitative et Évolution - Le Moulon
+
+Université Paris-Saclay - INRAE - CNRS - AgroParisTech
+
+IDEEV, 12 route 128, 91190 Gif-sur-Yvette, France
+
+http://moulon.inra.fr/
+
+Tél. : +33 745519465
+
+Email : jemay....@inrae.fr
+
+From uf5b13b580eb160db at groups.google.com  Tue Jan 14 16:30:15 2025
+From: uf5b13b580eb160db at groups.google.com (pthomp...@gmail.com)
+Date: Tue, 14 Jan 2025 16:30:15 +0000
+Subject: Quick question about short circuiting in RTMB
+Message-ID: <QfuOQid5Ch8.1kqoBVz5BwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/QfuOQid5Ch8/m/1kqoBVz5BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi there,
+
+I want to ask a small question about how short-circuiting works for Boolean operators within RTMB-wrapped functions. My understanding is that in regular R, the "&" (and) and "|" (or) operators do not short circuit (probably because they are vectorized?) but if you use "&&" or "||", those are (although you lose the vectorization. When you are comparing objects of length 1 with each other it is technically optimal to use these because it short-circuits and doesn't always need to check the second condition, if I understand correctly. However, I also realize that in some other languages, there is only one set of and/or operators and they short-circuit automatically.
+
+I want to know if it makes a difference to use "&" versus "&&" within the R code of a function to be passed into RTMB::MakeADFun. Obviously this would only be relevant for cases when the two logicals being passed to "&" (or "&&") have length one and do not depend on any of the model parameters (but instead might depend on values of the data or the index of a loop or something). I realize it probably makes a minimal difference either way, but should I bother using "&&" or will RTMB convert it to something equivalent anyways?
+
+Thank you for any input you might have!
+
+From u2a9746b5a4262d98 at groups.google.com  Tue Jan 14 17:22:40 2025
+From: u2a9746b5a4262d98 at groups.google.com (Alexios Galanos)
+Date: Tue, 14 Jan 2025 17:22:40 +0000
+Subject: EigenSolver question
+Message-ID: <4HEEbKCCScs.86LBXjj8BwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4HEEbKCCScs/m/86LBXjj8BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am trying to compute the absolute eigenvalues of a square non-symmetric matrix using the Eigen::EigenSolver function:
+
+template<class Type>
+vector<Type> esolver(matrix<Type>A){
+ Eigen::EigenSolver<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic>> eigs(A);
+ Eigen::MatrixXcd lambda(eigs.eigenvalues());
+ vector<Type> tmp = lambda.cwiseAbs();
+ return tmp;
+};
+
+Matrix A is a is formed from a combination of PARAMETERS and DATA, and relates to a constraint I am trying to impose for system stability.
+
+I seem to have read a similar question on the GitHub issues page posted a long time ago, but haven’t seen any solutions to this (https://github.com/kaskr/adcomp/issues/144).
+
+The problem I think appears to be casting from CppAD::AD<double> to double. I’ve managed to make this work using RTMB, but would prefer to not use it as I am already importing TMB in my package. I also took a look at the tmbutils/matexp.hpp code which also makes use of EigenSolver, but couldn’t figure out exactly how to adjust this for my purpose.
+
+Would appreciate any suggestions.
+
+Thanks,
+
+Alexios
+
+From u8f1ef4d67aa2033e at groups.google.com  Wed Jan 15 05:44:43 2025
+From: u8f1ef4d67aa2033e at groups.google.com (brandon...@gmail.com)
+Date: Wed, 15 Jan 2025 05:44:43 +0000
+Subject: Very simple example of debugging issue with Probabilistic syntax
+Message-ID: <JZQtecVT1dA.tJxdirYkCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/JZQtecVT1dA/m/tJxdirYkCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+I'm new to using the syntax but familiar with TMB. I was having trouble debugging some code and located the issue. In the code below, any thoughts on why simply adding the probabilistic print statement seem to mess up the estimation but the other way doesn't.
+Thanks to anyone who knows,
+Brandon
+
+set.seed(10)
+data <- list(x = rbinom(100,1,prob=0.2))
+parameters <- list(mu = 0)
+f <- function(parms){
+  RTMB::getAll(data,
+               parms)
+  x <- OBS(x)
+  # print(x[1]%~%RTMB::dbinom(1,plogis(mu)))
+  # print(RTMB::dbinom(1,1,plogis(mu),log=TRUE))
+  nll <- -sum(dbinom(x,1,plogis(mu),log=TRUE))
+  return(nll)
+}
+obj <- RTMB::MakeADFun(f,
+                       parameters,
+                       silent = FALSE)
+opt <- nlminb(obj$par,
+              obj$fn,
+              obj$gr)
+print(opt$par)
+
+From u361e593259030741 at groups.google.com  Wed Jan 15 06:00:42 2025
+From: u361e593259030741 at groups.google.com (Saang-Yoon Hyun)
+Date: Wed, 15 Jan 2025 06:00:42 +0000
+Subject: Re: [TMB users] Very simple example of debugging issue with Probabilistic syntax
+Message-ID: <JZQtecVT1dA.al7bE5YlCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <JZQtecVT1dA.tJxdirYkCAAJ@tmb-users.groups.google.com>
+References: <JZQtecVT1dA.tJxdirYkCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/JZQtecVT1dA/m/al7bE5YlCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, Brandon.
+The line looks suspicious, which is "nll <- -sum(dbinom(x,1,plogis(mu),log=TRUE))."    Usually the folks do its calculation as follows:
+
+Type nll = 0.0;
+for(int i=0; i<n; i++)  {
+  ......
+  nll -= dbinom(x(i),1,plogis(mu),log=TRUE));
+};
+
+Hope this helps.  Cheers,
+Saang-Yoon
+
+On Wed, Jan 15, 2025 at 2:44 PM brandon...@gmail.com <brandon...@gmail.com> wrote:
+
+> Hello,
+> I'm new to using the syntax but familiar with TMB. I was having trouble debugging some code and located the issue. In the code below, any thoughts on why simply adding the probabilistic print statement seem to mess up the estimation but the other way doesn't.
+> Thanks to anyone who knows,
+> Brandon
+>
+> set.seed(10)
+> data <- list(x = rbinom(100,1,prob=0.2))
+> parameters <- list(mu = 0)
+> f <- function(parms){
+>   RTMB::getAll(data,
+>                parms)
+>   x <- OBS(x)
+>   # print(x[1]%~%RTMB::dbinom(1,plogis(mu)))
+>   # print(RTMB::dbinom(1,1,plogis(mu),log=TRUE))
+>   nll <- -sum(dbinom(x,1,plogis(mu),log=TRUE))
+>   return(nll)
+> }
+> obj <- RTMB::MakeADFun(f,
+>                        parameters,
+>                        silent = FALSE)
+> opt <- nlminb(obj$par,
+>               obj$fn,
+>               obj$gr)
+> print(opt$par)
+>
+>
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/tmb-users/cb2c6ebe-ff79-447f-9e82-1958cab12ddbn%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/cb2c6ebe-ff79-447f-9e82-1958cab12ddbn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u8f1ef4d67aa2033e at groups.google.com  Wed Jan 15 06:06:11 2025
+From: u8f1ef4d67aa2033e at groups.google.com (Brandon Chasco)
+Date: Wed, 15 Jan 2025 06:06:11 +0000
+Subject: Re: [TMB users] Very simple example of debugging issue with Probabilistic syntax
+Message-ID: <JZQtecVT1dA.gVjpoOIlCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <JZQtecVT1dA.al7bE5YlCAAJ@tmb-users.groups.google.com>
+References: <JZQtecVT1dA.tJxdirYkCAAJ@tmb-users.groups.google.com> <JZQtecVT1dA.al7bE5YlCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/JZQtecVT1dA/m/gVjpoOIlCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Saang-Yoon,
+Thanks for the quick response. The likelihood is fine: it's simply summing instead of doing the incrementing. The problem, I think, stems from the probabilistic syntax that was added to the RTMB package. For some reason, simply adding print(1%~%binom(1,par)) seems to blow up the estimation, even though it's not part of the likelihood. I'm sure it's just my unfamiliarity with the new syntax.
+Brandon
+
+On Tue, Jan 14, 2025 at 10:00 PM Saang-Yoon Hyun <shy...@gmail.com> wrote:
+> Hi, Brandon.
+> The line looks suspicious, which is "nll <- -sum(dbinom(x,1,plogis(mu),log=TRUE))."    Usually the folks do its calculation as follows:
+>
+> Type nll = 0.0;
+> for(int i=0; i<n; i++)  {
+>   ......
+>   nll -= dbinom(x(i),1,plogis(mu),log=TRUE));
+> };
+>
+> Hope this helps.  Cheers,
+> Saang-Yoon
+>
+> On Wed, Jan 15, 2025 at 2:44 PM brandon...@gmail.com <brandon...@gmail.com> wrote:
+> > Hello,
+> > I'm new to using the syntax but familiar with TMB. I was having trouble debugging some code and located the issue. In the code below, any thoughts on why simply adding the probabilistic print statement seem to mess up the estimation but the other way doesn't.
+> > Thanks to anyone who knows,
+> > Brandon
+> >
+> > set.seed(10)
+> > data <- list(x = rbinom(100,1,prob=0.2))
+> > parameters <- list(mu = 0)
+> > f <- function(parms){
+> >   RTMB::getAll(data,
+> >                parms)
+> >   x <- OBS(x)
+> >   # print(x[1]%~%RTMB::dbinom(1,plogis(mu)))
+> >   # print(RTMB::dbinom(1,1,plogis(mu),log=TRUE))
+> >   nll <- -sum(dbinom(x,1,plogis(mu),log=TRUE))
+> >   return(nll)
+> > }
+> > obj <- RTMB::MakeADFun(f,
+> >                        parameters,
+> >                        silent = FALSE)
+> > opt <- nlminb(obj$par,
+> >               obj$fn,
+> >               obj$gr)
+> > print(opt$par)
+> >
+> >
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > To view this discussion visit https://groups.google.com/d/msgid/tmb-users/cb2c6ebe-ff79-447f-9e82-1958cab12ddbn%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/cb2c6ebe-ff79-447f-9e82-1958cab12ddbn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+
+Brandon Chasco
+
+From u258b98968d0ad8b9 at groups.google.com  Wed Jan 15 11:30:18 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Wed, 15 Jan 2025 11:30:18 +0000
+Subject: Re: Quick question about short circuiting in RTMB
+Message-ID: <QfuOQid5Ch8.4li2dpI3CAAJ@tmb-users.groups.google.com>
+In-Reply-To: <QfuOQid5Ch8.1kqoBVz5BwAJ@tmb-users.groups.google.com>
+References: <QfuOQid5Ch8.1kqoBVz5BwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/QfuOQid5Ch8/m/4li2dpI3CAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+RTMB doesn't handle these operators, it's completely taken care of by base R. Whatever improves your code (performance/readability wise) with base R, I would stick with that pattern also in RTMB, even if the performance impact is smaller with RTMB.
+
+On Tuesday, January 14, 2025 at 5:30:15 PM UTC+1 pthomp...@gmail.com wrote:
+> Hi there,
+>
+> I want to ask a small question about how short-circuiting works for Boolean operators within RTMB-wrapped functions. My understanding is that in regular R, the "&" (and) and "|" (or) operators do not short circuit (probably because they are vectorized?) but if you use "&&" or "||", those are (although you lose the vectorization. When you are comparing objects of length 1 with each other it is technically optimal to use these because it short-circuits and doesn't always need to check the second condition, if I understand correctly. However, I also realize that in some other languages, there is only one set of and/or operators and they short-circuit automatically.
+>
+> I want to know if it makes a difference to use "&" versus "&&" within the R code of a function to be passed into RTMB::MakeADFun. Obviously this would only be relevant for cases when the two logicals being passed to "&" (or "&&") have length one and do not depend on any of the model parameters (but instead might depend on values of the data or the index of a loop or something). I realize it probably makes a minimal difference either way, but should I bother using "&&" or will RTMB convert it to something equivalent anyways?
+>
+> Thank you for any input you might have!
+
+From u258b98968d0ad8b9 at groups.google.com  Wed Jan 15 11:32:42 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Wed, 15 Jan 2025 11:32:42 +0000
+Subject: Re: EigenSolver question
+Message-ID: <4HEEbKCCScs.wCG297M3CAAJ@tmb-users.groups.google.com>
+In-Reply-To: <4HEEbKCCScs.86LBXjj8BwAJ@tmb-users.groups.google.com>
+References: <4HEEbKCCScs.86LBXjj8BwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4HEEbKCCScs/m/wCG297M3CAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It's possible to make your example compile (you just need to use the right types...) *but I do not recommend it* :
+
+Eigen::EigenSolver<Eigen::Matrix<Type, Eigen::Dynamic, Eigen::Dynamic>> eigs(A);
+Eigen::Matrix<std::complex<Type>, Eigen::Dynamic, 1> lambda(eigs.eigenvalues());
+
+vector<Type> tmp = lambda.cwiseAbs();
+
+While this appears to work, here's why it actually doesn't:
+
+1. Internally, the general eigen solver uses if/else statements. The AD tape is then valid for the A matrix used when the AD tape was generated. However, when you evaluate the same tape for a different matrix, you'll get wrong eigen values (unless the new matrix is sufficiently close to the initial matrix in some sense...).
+2. According to the C++ standard, std::complex<Type> is 'undefined behaviour'. So, while std::complex<Type> might work as expected for most compilers, I wouldn't feel confident that it works on all of the CRAN flavors.
+
+By contrast, in RTMB, the general eigen decompostion is an atomic function. It's therefore safe to use. In theory it would be straight forward to implement the same atomic in normal TMB if it wasn't for (2).
+
+On Tuesday, January 14, 2025 at 6:22:40 PM UTC+1 galanos...@gmail.com wrote:
+>
+> I am trying to compute the absolute eigenvalues of a square non-symmetric matrix using the Eigen::EigenSolver function:
+>
+> template<class Type>
+> vector<Type> esolver(matrix<Type>A){
+> Eigen::EigenSolver<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic>> eigs(A);
+> Eigen::MatrixXcd lambda(eigs.eigenvalues());
+> vector<Type> tmp = lambda.cwiseAbs();
+> return tmp;
+> };
+>
+> Matrix A is a is formed from a combination of PARAMETERS and DATA, and relates to a constraint I am trying to impose for system stability.
+>
+> I seem to have read a similar question on the GitHub issues page posted a long time ago, but haven’t seen any solutions to this (https://github.com/kaskr/adcomp/issues/144).
+>
+> The problem I think appears to be casting from CppAD::AD<double> to double. I’ve managed to make this work using RTMB, but would prefer to not use it as I am already importing TMB in my package. I also took a look at the tmbutils/matexp.hpp code which also makes use of EigenSolver, but couldn’t figure out exactly how to adjust this for my purpose.
+>
+> Would appreciate any suggestions.
+>
+> Thanks,
+>
+> Alexios
+
+From u258b98968d0ad8b9 at groups.google.com  Wed Jan 15 11:45:01 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Wed, 15 Jan 2025 11:45:01 +0000
+Subject: Re: [TMB users] Very simple example of debugging issue with Probabilistic syntax
+Message-ID: <JZQtecVT1dA.16TzCmA4CAAJ@tmb-users.groups.google.com>
+In-Reply-To: <JZQtecVT1dA.tJxdirYkCAAJ@tmb-users.groups.google.com>
+References: <JZQtecVT1dA.tJxdirYkCAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/JZQtecVT1dA/m/16TzCmA4CAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm not entirely sure I understand the problem, but it seems you expect this line (???):
+x[1] %~% RTMB::dbinom(1,plogis(mu))
+to be equivalent with
+nll <- -sum(dbinom(x,1,plogis(mu),log=TRUE))
+
+However, that looks like a typo. It should have been:
+x %~% RTMB::dbinom(1,plogis(mu))
+
+On Wednesday, January 15, 2025 at 7:06:11 AM UTC+1 brandon...@gmail.com wrote:
+> Hi Saang-Yoon,
+> Thanks for the quick response. The likelihood is fine: it's simply summing instead of doing the incrementing. The problem, I think, stems from the probabilistic syntax that was added to the RTMB package. For some reason, simply adding print(1%~%binom(1,par)) seems to blow up the estimation, even though it's not part of the likelihood. I'm sure it's just my unfamiliarity with the new syntax.
+> Brandon
+>
+> On Tue, Jan 14, 2025 at 10:00 PM Saang-Yoon Hyun <shy...@gmail.com> wrote:
+> > Hi, Brandon.
+> > The line looks suspicious, which is "nll <- -sum(dbinom(x,1,plogis(mu),log=TRUE))."    Usually the folks do its calculation as follows:
+> >
+> > Type nll = 0.0;
+> > for(int i=0; i<n; i++)  {
+> >   ......
+> >   nll -= dbinom(x(i),1,plogis(mu),log=TRUE));
+> > };
+> >
+> > Hope this helps.  Cheers,
+> > Saang-Yoon
+> >
+> > On Wed, Jan 15, 2025 at 2:44 PM brandon...@gmail.com <brandon...@gmail.com> wrote:
+> > > Hello,
+> > > I'm new to using the syntax but familiar with TMB. I was having trouble debugging some code and located the issue. In the code below, any thoughts on why simply adding the probabilistic print statement seem to mess up the estimation but the other way doesn't.
+> > > Thanks to anyone who knows,
+> > > Brandon
+> > >
+> > > set.seed(10)
+> > > data <- list(x = rbinom(100,1,prob=0.2))
+> > > parameters <- list(mu = 0)
+> > > f <- function(parms){
+> > >   RTMB::getAll(data,
+> > >                parms)
+> > >   x <- OBS(x)
+> > >   # print(x[1]%~%RTMB::dbinom(1,plogis(mu)))
+> > >   # print(RTMB::dbinom(1,1,plogis(mu),log=TRUE))
+> > >   nll <- -sum(dbinom(x,1,plogis(mu),log=TRUE))
+> > >   return(nll)
+> > > }
+> > > obj <- RTMB::MakeADFun(f,
+> > >                        parameters,
+> > >                        silent = FALSE)
+> > > opt <- nlminb(obj$par,
+> > >               obj$fn,
+> > >               obj$gr)
+> > > print(opt$par)
+> > >
+> > >
+> > >
+> > > --
+> > > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > To view this discussion visit https://groups.google.com/d/msgid/tmb-users/cb2c6ebe-ff79-447f-9e82-1958cab12ddbn%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/cb2c6ebe-ff79-447f-9e82-1958cab12ddbn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+>
+>
+> Brandon Chasco
+>
+
+From u2a9746b5a4262d98 at groups.google.com  Wed Jan 15 14:55:54 2025
+From: u2a9746b5a4262d98 at groups.google.com (Alexios Galanos)
+Date: Wed, 15 Jan 2025 14:55:54 +0000
+Subject: Re: EigenSolver question
+Message-ID: <4HEEbKCCScs.Bz2wicpCCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <4HEEbKCCScs.86LBXjj8BwAJ@tmb-users.groups.google.com>
+References: <4HEEbKCCScs.86LBXjj8BwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/4HEEbKCCScs/m/Bz2wicpCCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Kaspar,
+
+Appreciate the explanation. I'll use RTMB.
+
+Cheers,
+
+Alexios
+
+On Wednesday, January 15, 2025 at 3:32:42 AM UTC-8 kasper.k...@gmail.com wrote:
+> It's possible to make your example compile (you just need to use the right types...) *but I do not recommend it* :
+>
+> Eigen::EigenSolver<Eigen::Matrix<Type, Eigen::Dynamic, Eigen::Dynamic>> eigs(A);
+> Eigen::Matrix<std::complex<Type>, Eigen::Dynamic, 1> lambda(eigs.eigenvalues());
+> vector<Type> tmp = lambda.cwiseAbs();
+>
+> While this appears to work, here's why it actually doesn't:
+>
+> 1. Internally, the general eigen solver uses if/else statements. The AD tape is then valid for the A matrix used when the AD tape was generated. However, when you evaluate the same tape for a different matrix, you'll get wrong eigen values (unless the new matrix is sufficiently close to the initial matrix in some sense...).
+> 2. According to the C++ standard, std::complex<Type> is 'undefined behaviour'. So, while std::complex<Type> might work as expected for most compilers, I wouldn't feel confident that it works on all of the CRAN flavors.
+>
+> By contrast, in RTMB, the general eigen decompostion is an atomic function. It's therefore safe to use. In theory it would be straight forward to implement the same atomic in normal TMB if it wasn't for (2).
+>
+> On Tuesday, January 14, 2025 at 6:22:40 PM UTC+1 galanos...@gmail.com wrote:
+> >
+> > I am trying to compute the absolute eigenvalues of a square non-symmetric matrix using the Eigen::EigenSolver function:
+> >
+> > template<class Type>
+> > vector<Type> esolver(matrix<Type>A){
+> > Eigen::EigenSolver<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic>> eigs(A);
+> > Eigen::MatrixXcd lambda(eigs.eigenvalues());
+> > vector<Type> tmp = lambda.cwiseAbs();
+> > return tmp;
+> > };
+> >
+> > Matrix A is a is formed from a combination of PARAMETERS and DATA, and relates to a constraint I am trying to impose for system stability.
+> >
+> > I seem to have read a similar question on the GitHub issues page posted a long time ago, but haven’t seen any solutions to this (https://github.com/kaskr/adcomp/issues/144).
+> >
+> > The problem I think appears to be casting from CppAD::AD<double> to double. I’ve managed to make this work using RTMB, but would prefer to not use it as I am already importing TMB in my package. I also took a look at the tmbutils/matexp.hpp code which also makes use of EigenSolver, but couldn’t figure out exactly how to adjust this for my purpose.
+> >
+> > Would appreciate any suggestions.
+> >
+> > Thanks,
+> >
+> > Alexios
+
+From uf5b13b580eb160db at groups.google.com  Wed Jan 15 15:37:22 2025
+From: uf5b13b580eb160db at groups.google.com (pthomp...@gmail.com)
+Date: Wed, 15 Jan 2025 15:37:22 +0000
+Subject: Re: Quick question about short circuiting in RTMB
+Message-ID: <QfuOQid5Ch8.puBT4w1FCAAJ@tmb-users.groups.google.com>
+In-Reply-To: <QfuOQid5Ch8.1kqoBVz5BwAJ@tmb-users.groups.google.com>
+References: <QfuOQid5Ch8.1kqoBVz5BwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/QfuOQid5Ch8/m/puBT4w1FCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Makes sense. Thank you Kasper!
+
+Peter
+
+On Wednesday, January 15, 2025 at 3:30:18 AM UTC-8 kasper.k...@gmail.com wrote:
+> RTMB doesn't handle these operators, it's completely taken care of by base R. Whatever improves your code (performance/readability wise) with base R, I would stick with that pattern also in RTMB, even if the performance impact is smaller with RTMB.
+>
+> On Tuesday, January 14, 2025 at 5:30:15 PM UTC+1 pthomp...@gmail.com wrote:
+> > Hi there,
+> >
+> > I want to ask a small question about how short-circuiting works for Boolean operators within RTMB-wrapped functions. My understanding is that in regular R, the "&" (and) and "|" (or) operators do not short circuit (probably because they are vectorized?) but if you use "&&" or "||", those are (although you lose the vectorization. When you are comparing objects of length 1 with each other it is technically optimal to use these because it short-circuits and doesn't always need to check the second condition, if I understand correctly. However, I also realize that in some other languages, there is only one set of and/or operators and they short-circuit automatically.
+> >
+> > I want to know if it makes a difference to use "&" versus "&&" within the R code of a function to be passed into RTMB::MakeADFun. Obviously this would only be relevant for cases when the two logicals being passed to "&" (or "&&") have length one and do not depend on any of the model parameters (but instead might depend on values of the data or the index of a loop or something). I realize it probably makes a minimal difference either way, but should I bother using "&&" or will RTMB convert it to something equivalent anyways?
+> >
+> > Thank you for any input you might have!
+
+From uc3e53d7d5317214f at groups.google.com  Thu Jan 16 20:05:33 2025
+From: uc3e53d7d5317214f at groups.google.com (Jan-Ole Koslik)
+Date: Thu, 16 Jan 2025 20:05:33 +0000
+Subject: gamma function
+Message-ID: <3LeRzRNsYSU.m1Z4xCFFBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3LeRzRNsYSU/m/m1Z4xCFFBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I'm currently implementing some nonstandard distributions to be compatible with RTMB.
+
+I am really not sure if I'm just overlooking stuff, but it seems like there is no simple AD implementation of the gamma function, which I really need.
+
+I found this post <https://github.com/kaskr/RTMB/issues/33> by Ben, where you (Kasper) mention the rtmbXtras <https://github.com/kaskr/RTMB/tree/master/rtmbXtra> package that has logspace_gamma() <https://github.com/kaskr/RTMB/blob/master/rtmbXtra/src/RcppExports.cpp>.
+
+However, as I use the distributions within a package, I would like to avoid linking to rtmbXtras in addition to RTMB. Would it be possible to have an implementation in RTMB? Or is there one and I am just really stupid?
+
+For now I found the kind of silly workaround
+
+lgamma_ad <- function(x) {
+  - RTMB::dgamma(1, shape = x, scale = 1, log = TRUE) - 1
+}
+lgamma_ad(exp(-100))
+lgamma(exp(-100))
+
+but this seems very rough to me :D
+
+Thanks in advance :)
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Jan 17 07:16:13 2025
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 17 Jan 2025 07:16:13 +0000
+Subject: Re: gamma function
+Message-ID: <3LeRzRNsYSU.lTP64LppBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <3LeRzRNsYSU.m1Z4xCFFBAAJ@tmb-users.groups.google.com>
+References: <3LeRzRNsYSU.m1Z4xCFFBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/3LeRzRNsYSU/m/lTP64LppBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It's in the 'Math group', that's why its hidden:
+
+RTMB::MakeTape(lgamma,1)
+
+On Thursday, January 16, 2025 at 9:05:33 PM UTC+1 janole...@gmail.com wrote:
+> Hi,
+>
+> I'm currently implementing some nonstandard distributions to be compatible with RTMB.
+>
+> I am really not sure if I'm just overlooking stuff, but it seems like there is no simple AD implementation of the gamma function, which I really need.
+>
+> I found this post <https://github.com/kaskr/RTMB/issues/33> by Ben, where you (Kasper) mention the rtmbXtras <https://github.com/kaskr/RTMB/tree/master/rtmbXtra> package that has logspace_gamma() <https://github.com/kaskr/RTMB/blob/master/rtmbXtra/src/RcppExports.cpp>.
+>
+> However, as I use the distributions within a package, I would like to avoid linking to rtmbXtras in addition to RTMB. Would it be possible to have an implementation in RTMB? Or is there one and I am just really stupid?
+>
+> For now I found the kind of silly workaround
+>
+> lgamma_ad <- function(x) {
+>   - RTMB::dgamma(1, shape = x, scale = 1, log = TRUE) - 1
+> }
+> lgamma_ad(exp(-100))
+> lgamma(exp(-100))
+>
+> but this seems very rough to me :D
+>
+> Thanks in advance :)
+

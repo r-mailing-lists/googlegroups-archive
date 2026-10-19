@@ -1,0 +1,1880 @@
+From ucdce12e616ee2ce4 at groups.google.com  Tue Aug  1 16:51:33 2023
+From: ucdce12e616ee2ce4 at groups.google.com (Vishnu Menon)
+Date: Tue, 01 Aug 2023 16:51:33 +0000
+Subject: Projected occupancy and colonisation/extinction values in stan colext
+Message-ID: <Oo0uu1qCIDQ.OFnMrbx0CwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Oo0uu1qCIDQ/m/OFnMrbx0CwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+This might be a simple question but wanted to get some opinions on interpreting projected occupancy and col/ext values. So I'm running dynamic occupancy models with two seasons (prefire and postfire) across two different treatments (baited and unbaited) for brushtail possums. I'm using ubms so as to include a random effect 'region' on my multiseason model. The top model is:
+
+model <- stan_colext (~ baiting + (1|region), ~baiting, ~1, ~ time + baiting, umf)
+
+I use projected occupancy to estimate changes in occupancy values for time vs treatment and the resulting graph looks like this:
+
+I then use predict to estimate effects of baiting on colonisation probability using predict for the top model:
+newdat= data.frame(baiting=c("unbaited","baited"))
+col_value <-predict(model, submodel="col", newdata=newdat, appendData=TRUE)
+
+And my colonisation estimates are 0.21 (CI: 0.11 - 0.32) in baited compared to 0.13 (CI: 0.09 - 0.18) in unbaited.
+
+Why do I see a slight increase in my projected occupancy for brushtail possums in unbaited areas post-fire even though the colonisation probability is lower in unbaited? Is it because of using projected vs predict? Is there a way to try and explain this or am I doing this incorrectly? Any advice would be appreciated. Thank you so much.
+
+Regards,
+Vishnu
+
+From u4f80e1927b0757cb at groups.google.com  Tue Aug  1 18:28:54 2023
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Tue, 01 Aug 2023 18:28:54 +0000
+Subject: Re: Projected occupancy and colonisation/extinction values in stan colext
+Message-ID: <Oo0uu1qCIDQ.6JZVrwx6CwAJ@unmarked.groups.google.com>
+In-Reply-To: <Oo0uu1qCIDQ.OFnMrbx0CwAJ@unmarked.groups.google.com>
+References: <Oo0uu1qCIDQ.OFnMrbx0CwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Oo0uu1qCIDQ/m/6JZVrwx6CwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm not sure exactly how you calculated the projections here (is it for a single site or across-sites mean?).
+
+One possible explanation: projected occupancy as calculated by ubms and unmarked is a function of not just colonization but also initial occupancy and extinction :
+
+psi[t+1]  = psi[t]*(1 - eps) + (1-psi[t])*gamma [equation 7 in MacKenzie et al. 2003]
+
+So all three of these together are interacting and driving the projected values, meaning that it's not as simple as just comparing colonization by itself.
+
+If occupancy at psi[t] is relatively large, then many sites are occupied, and persistence (1-eps) will be more important driver of how many sites are occupied in time t+1 than colonization (because there are few sites that it's even possible to colonize). If  occupancy at time t is relatively small, then few sites are occupied, and colonization becomes the more important driver of sites occupied in time t+1 (because many sites could be colonized).
+
+As a result it turns out that the projected occupancy will trend towards a stable value, which is (if I remember correctly) calculated as gamma / (gamma + eps). This is assuming gamma and eps are constant over time. If your initial occupancy is close to this stable value, then the projected occupancy will shift a small amount towards that value in each time step. If the initial value is far away, it'll move more quickly towards the stable value. So in your example I am guessing that the initial occupancy for the baited sites is closer to the value gamma_baited / (gamma_baited + eps), relative to the equivalent for the non-baited sites. As a result projected occupancy for the non-baited sites is changing more quickly (towards the stable value) even though non-baited colonization probability is lower. It depends on your estimated extinction probability, though, which you didn't include.
+
+Here's a quick example in R:
+
+# initial occupancy
+psi0_bait <- 0.4
+psi0_nobait <- 0.2
+
+# extinction
+eps <- 0.28
+
+# colonization
+gam_bait <- 0.2
+gam_nobait <- 0.13 # lower
+
+T <- 100
+
+# Calculate projected
+psi_bait <- rep(NA, T)
+psi_bait[1] <- psi0_bait
+
+psi_nobait <- rep(NA, T)
+psi_nobait[1] <- psi0_nobait
+
+for (t in 2:T){
+  psi_bait[t] <-psi_bait[t-1] * (1-eps) + (1-psi_bait[t-1])*gam_bait
+  psi_nobait[t] <-psi_nobait[t-1] * (1-eps) + (1-psi_nobait[t-1])*gam_nobait
+}
+
+# differences from times 1 to 2 (greater for no bait despite lower colonization)
+psi_bait[2] - psi_bait[1] # 0.008
+psi_nobait[2] - psi_nobait[1] # 0.048
+
+# asymptotes: gam / (gam + eps)
+asym_bait <- gam_bait / (gam_bait + eps)
+asym_nobait <- gam_nobait / (gam_nobait + eps)
+
+# steeper slope for nobait
+plot(1:2, psi_bait[1:2], type='o', ylim=c(0.15, 0.45))
+lines(1:2, psi_nobait[1:2], type='o', col='red')
+legend("bottomright", col=c("black", "red"), lty=1, legend=c("bait", "nobait"))
+abline(h=asym_bait, col='black', lty=2)
+abline(h=asym_nobait, col='red', lty=2)
+
+# long term: stable value reached
+plot(1:T, psi_bait, type='o', ylim=c(0.15, 0.45), ylab="occupancy")
+lines(1:T, psi_nobait, type='o', col='red')
+legend("bottomright", col=c("black", "red"), lty=1, legend=c("bait", "nobait"))
+abline(h=asym_bait, col='black', lty=2)
+abline(h=asym_nobait, col='red', lty=2)
+
+On Tuesday, August 1, 2023 at 12:51:33 PM UTC-4 vishnur...@gmail.com wrote:
+> Hi all,
+>
+> This might be a simple question but wanted to get some opinions on interpreting projected occupancy and col/ext values. So I'm running dynamic occupancy models with two seasons (prefire and postfire) across two different treatments (baited and unbaited) for brushtail possums. I'm using ubms so as to include a random effect 'region' on my multiseason model. The top model is:
+>
+> model <- stan_colext (~ baiting + (1|region), ~baiting, ~1, ~ time + baiting, umf)
+>
+> I use projected occupancy to estimate changes in occupancy values for time vs treatment and the resulting graph looks like this:
+>
+>
+>
+> I then use predict to estimate effects of baiting on colonisation probability using predict for the top model:
+> newdat= data.frame(baiting=c("unbaited","baited"))
+> col_value <-predict(model, submodel="col", newdata=newdat, appendData=TRUE)
+>
+> And my colonisation estimates are 0.21 (CI: 0.11 - 0.32) in baited compared to 0.13 (CI: 0.09 - 0.18) in unbaited.
+>
+> Why do I see a slight increase in my projected occupancy for brushtail possums in unbaited areas post-fire even though the colonisation probability is lower in unbaited? Is it because of using projected vs predict? Is there a way to try and explain this or am I doing this incorrectly? Any advice would be appreciated. Thank you so much.
+>
+> Regards,
+> Vishnu
+
+From ucdce12e616ee2ce4 at groups.google.com  Tue Aug  1 18:57:13 2023
+From: ucdce12e616ee2ce4 at groups.google.com (Vishnu Menon)
+Date: Tue, 01 Aug 2023 18:57:13 +0000
+Subject: Re: Projected occupancy and colonisation/extinction values in stan colext
+Message-ID: <Oo0uu1qCIDQ.3xS9Sph7CwAJ@unmarked.groups.google.com>
+In-Reply-To: <Oo0uu1qCIDQ.6JZVrwx6CwAJ@unmarked.groups.google.com>
+References: <Oo0uu1qCIDQ.OFnMrbx0CwAJ@unmarked.groups.google.com> <Oo0uu1qCIDQ.6JZVrwx6CwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Oo0uu1qCIDQ/m/3xS9Sph7CwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ken,
+
+That makes perfect sense, thank you. And the projections I've used here is mean across sites.
+
+Thanks,
+Vishnu
+
+On Tuesday, August 1, 2023 at 8:28:54 PM UTC+2 Ken Kellner wrote:
+> I'm not sure exactly how you calculated the projections here (is it for a single site or across-sites mean?).
+>
+> One possible explanation: projected occupancy as calculated by ubms and unmarked is a function of not just colonization but also initial occupancy and extinction :
+>
+> psi[t+1]  = psi[t]*(1 - eps) + (1-psi[t])*gamma [equation 7 in MacKenzie et al. 2003]
+>
+> So all three of these together are interacting and driving the projected values, meaning that it's not as simple as just comparing colonization by itself.
+>
+> If occupancy at psi[t] is relatively large, then many sites are occupied, and persistence (1-eps) will be more important driver of how many sites are occupied in time t+1 than colonization (because there are few sites that it's even possible to colonize). If  occupancy at time t is relatively small, then few sites are occupied, and colonization becomes the more important driver of sites occupied in time t+1 (because many sites could be colonized).
+>
+> As a result it turns out that the projected occupancy will trend towards a stable value, which is (if I remember correctly) calculated as gamma / (gamma + eps). This is assuming gamma and eps are constant over time. If your initial occupancy is close to this stable value, then the projected occupancy will shift a small amount towards that value in each time step. If the initial value is far away, it'll move more quickly towards the stable value. So in your example I am guessing that the initial occupancy for the baited sites is closer to the value gamma_baited / (gamma_baited + eps), relative to the equivalent for the non-baited sites. As a result projected occupancy for the non-baited sites is changing more quickly (towards the stable value) even though non-baited colonization probability is lower. It depends on your estimated extinction probability, though, which you didn't include.
+>
+> Here's a quick example in R:
+>
+> # initial occupancy
+> psi0_bait <- 0.4
+> psi0_nobait <- 0.2
+>
+> # extinction
+> eps <- 0.28
+>
+> # colonization
+> gam_bait <- 0.2
+> gam_nobait <- 0.13 # lower
+>
+> T <- 100
+>
+> # Calculate projected
+> psi_bait <- rep(NA, T)
+> psi_bait[1] <- psi0_bait
+>
+> psi_nobait <- rep(NA, T)
+> psi_nobait[1] <- psi0_nobait
+>
+> for (t in 2:T){
+>   psi_bait[t] <-psi_bait[t-1] * (1-eps) + (1-psi_bait[t-1])*gam_bait
+>   psi_nobait[t] <-psi_nobait[t-1] * (1-eps) + (1-psi_nobait[t-1])*gam_nobait
+> }
+>
+> # differences from times 1 to 2 (greater for no bait despite lower colonization)
+> psi_bait[2] - psi_bait[1] # 0.008
+> psi_nobait[2] - psi_nobait[1] # 0.048
+>
+> # asymptotes: gam / (gam + eps)
+> asym_bait <- gam_bait / (gam_bait + eps)
+> asym_nobait <- gam_nobait / (gam_nobait + eps)
+>
+> # steeper slope for nobait
+> plot(1:2, psi_bait[1:2], type='o', ylim=c(0.15, 0.45))
+> lines(1:2, psi_nobait[1:2], type='o', col='red')
+> legend("bottomright", col=c("black", "red"), lty=1, legend=c("bait", "nobait"))
+> abline(h=asym_bait, col='black', lty=2)
+> abline(h=asym_nobait, col='red', lty=2)
+>
+>
+>
+>
+> # long term: stable value reached
+> plot(1:T, psi_bait, type='o', ylim=c(0.15, 0.45), ylab="occupancy")
+> lines(1:T, psi_nobait, type='o', col='red')
+> legend("bottomright", col=c("black", "red"), lty=1, legend=c("bait", "nobait"))
+> abline(h=asym_bait, col='black', lty=2)
+> abline(h=asym_nobait, col='red', lty=2)
+>
+>
+>
+> On Tuesday, August 1, 2023 at 12:51:33 PM UTC-4 vishnur...@gmail.com wrote:
+> > Hi all,
+> >
+> > This might be a simple question but wanted to get some opinions on interpreting projected occupancy and col/ext values. So I'm running dynamic occupancy models with two seasons (prefire and postfire) across two different treatments (baited and unbaited) for brushtail possums. I'm using ubms so as to include a random effect 'region' on my multiseason model. The top model is:
+> >
+> > model <- stan_colext (~ baiting + (1|region), ~baiting, ~1, ~ time + baiting, umf)
+> >
+> > I use projected occupancy to estimate changes in occupancy values for time vs treatment and the resulting graph looks like this:
+> >
+> >
+> >
+> > I then use predict to estimate effects of baiting on colonisation probability using predict for the top model:
+> > newdat= data.frame(baiting=c("unbaited","baited"))
+> > col_value <-predict(model, submodel="col", newdata=newdat, appendData=TRUE)
+> >
+> > And my colonisation estimates are 0.21 (CI: 0.11 - 0.32) in baited compared to 0.13 (CI: 0.09 - 0.18) in unbaited.
+> >
+> > Why do I see a slight increase in my projected occupancy for brushtail possums in unbaited areas post-fire even though the colonisation probability is lower in unbaited? Is it because of using projected vs predict? Is there a way to try and explain this or am I doing this incorrectly? Any advice would be appreciated. Thank you so much.
+> >
+> > Regards,
+> > Vishnu
+
+From ub2cda6fe8121cfed at groups.google.com  Wed Aug  2 09:49:32 2023
+From: ub2cda6fe8121cfed at groups.google.com (Ye Htet Lwin)
+Date: Wed, 02 Aug 2023 09:49:32 +0000
+Subject: Re: [unmarked] Re: N-mixture with ubms package
+Message-ID: <5oXHIoPJA4E.YiiJRLIYCwAJ@unmarked.groups.google.com>
+In-Reply-To: <5oXHIoPJA4E.cnWpUro3GQAJ@unmarked.groups.google.com>
+References: <5oXHIoPJA4E.cnWpUro3GQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/5oXHIoPJA4E/m/YiiJRLIYCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Marc,
+
+Sorry for my late reply and thank you very much for your clarification. Now I will use individual counts instead of IEs. Moreover, I have one question regarding the warning message. After running the model with stan_pcount, I got warning message "warning message: some pareto k diagnostic values are too high. see help('pareto-k-diagnostic') for details.". Could you please provide any suggestions for dealing with this warning because I have read your "Overview of ubms" and it states that this is something we need to pay close attention to. Thank you again for your support and have a great day ahead.
+
+Best regards,
+
+Lwin
+
+On Friday, July 28, 2023 at 11:58:21 PM UTC+2 Kery Marc wrote:
+> Dear Lwin,
+>
+> about your Q1: I may misunderstand you, but I am not sure that using these "IEs" (which I think are just a widespread convention made in camera-trappology) is advisable in an Nmix model. In this model you assume that you can only make one of the two possible measurement errors  -- you can overlook an individual that is there and thus obtain a count that is lower than the true N of the number of individuals in the detection radius of the camtrap during the time period that you call an occasion. But you must never count the same individual twice within the same occasion: that would be a false positive, and that is not allowed by the Nmix model.
+>
+> Perhaps if you filter/summarize/aggregate your camtrap very aggressively, you can obtain count data that have almost certainly no multiple counts of the same individual within the same occasion ?
+>
+> Best regards  --- Marc
+>
+>
+> From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Ye Htet Lwin <yehtet...@gmail.com>
+> Sent: Friday, July 28, 2023 17:39
+> To: unma...@googlegroups.com <unma...@googlegroups.com>
+> Subject: Re: [unmarked] Re: N-mixture with ubms package
+>
+>
+> Hello Ken,
+>
+> Thank you very much for your prompt answer.
+>
+> In my context, an independent event refers to a series of consecutive pictures capturing the same animal group, even if it includes multiple individuals, as long as these pictures are taken within a 30-minute interval.
+>
+> The individual count in my sentence represents the total number of animals present within that specific independent event. To clarify, if a single event shows a group of 5 animals, then the individual count would be recorded as 5.
+>
+> To recall my question, I would like to use IE instead of individual count and which approach is better to run N-mixture model?
+>
+> Thank you very much.
+>
+> Best regards,
+>
+> Lwin
+>
+> On Fri, Jul 28, 2023 at 4:56 PM Ken Kellner <con...@kenkellner.com> wrote:
+> > Hi Lwin,
+> >
+> > 1. Not sure I understand what you mean by this, can you clarify?
+> > 2. Yes, if you collected observations of humans at only those 35 cameras, you can fit a model to the data from just those 35 cameras and then use predict() or similar methods to get predictions at the other camera points. This will only work well if you have informative covariates in your model for the abundance process.
+> > 3. The binned residual plot for detection requires there to be a reasonable amount of variation in the fitted values for detection submodel. For various possible reasons this isn't always the case, so you get this error. It doesn't necessarily mean there is a problem with the model.
+> >
+> > Ken
+> >
+> > On Friday, July 28, 2023 at 10:14:22 AM UTC-4 yehtet...@gmail.com wrote:
+> > > Hello all,
+> > >
+> > > I hope you all are doing well. Currently I am dealing with the N-mixture model analysis to estimate the large mammal abundance by using the ubms package to account for spatial autocorrelation. In this regard, I have some questions related to the N-mixture model:
+> > > Would it be possible to use independent events instead of individual count in the N-mixture model?
+> > > Secondly, I have human abundance data from 35 camera traps out of 113 cameras. In this regard, would it be possible to run human abundance data in the N-mixture model in order to get predicted abundance in all camera points?
+> > > When I checked the residual plot for detection by using plot_residuals (model, submodel="det"), I got the following error message "Error: Couldn't find working breakpoints", so, I could not generate the detection residual plot. Why does it happen and is that error message a problem that needs to be fixed?
+> > > Any suggestions and comments would be highly appreciated and thank you very much for your help.
+> > >
+> > > Best regards,
+> > > Lwin
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/401bf6c9-9fd4-4a99-8a46-a4ba92f4ec32n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/401bf6c9-9fd4-4a99-8a46-a4ba92f4ec32n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> Mr. Ye Htet Lwin (PhD student)
+> Mobile - +491631197142
+> Email -  yehtet...@gmail.com
+>
+> University of Freiburg, Germany
+> www.wildlife.uni-freiburg.de/en <https://www.wildlife.uni-freiburg.de/en>
+>
+> Department of Visitor Management and National Park Monitoring
+> Bavarian Forest National Park
+> Freyunger Straße 2
+> 94481 Grafenau, Germany
+> www.nationalpark-bayerischer-wald.de <http://www.nationalpark-bayerischer-wald.de>
+>
+>
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/CAGQRBKz10SmdmrCLMWkJTaoeSGy_sVf%3DLD5z9ho3vX5bM6bQXQ%40mail.gmail.com <https://groups.google.com/d/msgid/unmarked/CAGQRBKz10SmdmrCLMWkJTaoeSGy_sVf%3DLD5z9ho3vX5bM6bQXQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From u4f80e1927b0757cb at groups.google.com  Wed Aug  2 12:01:57 2023
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Wed, 02 Aug 2023 12:01:57 +0000
+Subject: Re: [unmarked] Re: N-mixture with ubms package
+Message-ID: <5oXHIoPJA4E.UpeUJ-wfCwAJ@unmarked.groups.google.com>
+In-Reply-To: <5oXHIoPJA4E.cnWpUro3GQAJ@unmarked.groups.google.com>
+References: <5oXHIoPJA4E.cnWpUro3GQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/5oXHIoPJA4E/m/UpeUJ-wfCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This warning comes from the calculation of loo (leave-one-out cross validation) for the model. You can see more details with loo(model_object).
+
+If there are only a couple of "bad" pareto-K values in this output I perhaps would not worry about it too much as I have seen this happen even with simulated data. If there are a fairly large number of bad or very bad values, this most likely indicates that your model is too complicated or it does not fit well. In the case of N-mixture a likely reason would be that there is a problem with overdispersion. You can check this another way by checking goodness of fit with a posterior predictive check, e.g. with gof(model_object). If the gof test also indicates issues then model fit is probably the reason. A typical solution to overdispersion would be to try the negative binomial instead of the Poisson, unfortunately this is not supported in ubms yet. You could use unmarked instead.
+
+As the message indicates, you should read up on this with help('pareto-k-diagnostic') and also see the links below.
+
+https://discourse.mc-stan.org/t/a-quick-note-what-i-infer-from-p-loo-and-pareto-k-values/3446
+https://avehtari.github.io/modelselection/CV-FAQ.html (section 17)
+
+Ken
+
+On Wednesday, August 2, 2023 at 5:49:32 AM UTC-4 yehtet...@gmail.com wrote:
+>
+> Dear Marc,
+>
+>
+> Sorry for my late reply and thank you very much for your clarification. Now I will use individual counts instead of IEs. Moreover, I have one question regarding the warning message. After running the model with stan_pcount, I got warning message "warning message: some pareto k diagnostic values are too high. see help('pareto-k-diagnostic') for details.". Could you please provide any suggestions for dealing with this warning because I have read your "Overview of ubms" and it states that this is something we need to pay close attention to. Thank you again for your support and have a great day ahead.
+>
+>
+> Best regards,
+>
+> Lwin
+>
+> On Friday, July 28, 2023 at 11:58:21 PM UTC+2 Kery Marc wrote:
+> > Dear Lwin,
+> >
+> > about your Q1: I may misunderstand you, but I am not sure that using these "IEs" (which I think are just a widespread convention made in camera-trappology) is advisable in an Nmix model. In this model you assume that you can only make one of the two possible measurement errors  -- you can overlook an individual that is there and thus obtain a count that is lower than the true N of the number of individuals in the detection radius of the camtrap during the time period that you call an occasion. But you must never count the same individual twice within the same occasion: that would be a false positive, and that is not allowed by the Nmix model.
+> >
+> > Perhaps if you filter/summarize/aggregate your camtrap very aggressively, you can obtain count data that have almost certainly no multiple counts of the same individual within the same occasion ?
+> >
+> > Best regards  --- Marc
+> >
+> >
+> > From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Ye Htet Lwin <yehtet...@gmail.com>
+> > Sent: Friday, July 28, 2023 17:39
+> > To: unma...@googlegroups.com <unma...@googlegroups.com>
+> > Subject: Re: [unmarked] Re: N-mixture with ubms package
+> >
+> >
+> > Hello Ken,
+> >
+> > Thank you very much for your prompt answer.
+> >
+> > In my context, an independent event refers to a series of consecutive pictures capturing the same animal group, even if it includes multiple individuals, as long as these pictures are taken within a 30-minute interval.
+> >
+> > The individual count in my sentence represents the total number of animals present within that specific independent event. To clarify, if a single event shows a group of 5 animals, then the individual count would be recorded as 5.
+> >
+> > To recall my question, I would like to use IE instead of individual count and which approach is better to run N-mixture model?
+> >
+> > Thank you very much.
+> >
+> > Best regards,
+> >
+> > Lwin
+> >
+> > On Fri, Jul 28, 2023 at 4:56 PM Ken Kellner <con...@kenkellner.com> wrote:
+> > > Hi Lwin,
+> > >
+> > > 1. Not sure I understand what you mean by this, can you clarify?
+> > > 2. Yes, if you collected observations of humans at only those 35 cameras, you can fit a model to the data from just those 35 cameras and then use predict() or similar methods to get predictions at the other camera points. This will only work well if you have informative covariates in your model for the abundance process.
+> > > 3. The binned residual plot for detection requires there to be a reasonable amount of variation in the fitted values for detection submodel. For various possible reasons this isn't always the case, so you get this error. It doesn't necessarily mean there is a problem with the model.
+> > >
+> > > Ken
+> > >
+> > > On Friday, July 28, 2023 at 10:14:22 AM UTC-4 yehtet...@gmail.com wrote:
+> > > > Hello all,
+> > > >
+> > > > I hope you all are doing well. Currently I am dealing with the N-mixture model analysis to estimate the large mammal abundance by using the ubms package to account for spatial autocorrelation. In this regard, I have some questions related to the N-mixture model:
+> > > > Would it be possible to use independent events instead of individual count in the N-mixture model?
+> > > > Secondly, I have human abundance data from 35 camera traps out of 113 cameras. In this regard, would it be possible to run human abundance data in the N-mixture model in order to get predicted abundance in all camera points?
+> > > > When I checked the residual plot for detection by using plot_residuals (model, submodel="det"), I got the following error message "Error: Couldn't find working breakpoints", so, I could not generate the detection residual plot. Why does it happen and is that error message a problem that needs to be fixed?
+> > > > Any suggestions and comments would be highly appreciated and thank you very much for your help.
+> > > >
+> > > > Best regards,
+> > > > Lwin
+> > >
+> > > --
+> > > *** Three hierarchical modeling email lists ***
+> > > (1) unmarked (this list): for questions specific to the R package unmarked
+> > > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/401bf6c9-9fd4-4a99-8a46-a4ba92f4ec32n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/401bf6c9-9fd4-4a99-8a46-a4ba92f4ec32n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> >
+> > --
+> > Mr. Ye Htet Lwin (PhD student)
+> > Mobile - +491631197142
+> > Email -  yehtet...@gmail.com
+> >
+> > University of Freiburg, Germany
+> > www.wildlife.uni-freiburg.de/en <https://www.wildlife.uni-freiburg.de/en>
+> >
+> > Department of Visitor Management and National Park Monitoring
+> > Bavarian Forest National Park
+> > Freyunger Straße 2
+> > 94481 Grafenau, Germany
+> > www.nationalpark-bayerischer-wald.de <http://www.nationalpark-bayerischer-wald.de>
+> >
+> >
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/CAGQRBKz10SmdmrCLMWkJTaoeSGy_sVf%3DLD5z9ho3vX5bM6bQXQ%40mail.gmail.com <https://groups.google.com/d/msgid/unmarked/CAGQRBKz10SmdmrCLMWkJTaoeSGy_sVf%3DLD5z9ho3vX5bM6bQXQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+
+From ub2cda6fe8121cfed at groups.google.com  Wed Aug  2 20:45:01 2023
+From: ub2cda6fe8121cfed at groups.google.com (Ye Htet Lwin)
+Date: Wed, 02 Aug 2023 20:45:01 +0000
+Subject: Re: [unmarked] Re: N-mixture with ubms package
+Message-ID: <5oXHIoPJA4E.PgmtbXc8CwAJ@unmarked.groups.google.com>
+In-Reply-To: <5oXHIoPJA4E.UpeUJ-wfCwAJ@unmarked.groups.google.com>
+References: <5oXHIoPJA4E.cnWpUro3GQAJ@unmarked.groups.google.com> <5oXHIoPJA4E.UpeUJ-wfCwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/5oXHIoPJA4E/m/PgmtbXc8CwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Ken,
+
+Thank you very much for your explanation and the link you provided.
+I will look into it and get back to you if I have any questions.
+Thank you again for your support.
+
+Best regards,
+Lwin
+
+On Wed, Aug 2, 2023 at 2:02 PM Ken Kellner <con...@kenkellner.com> wrote:
+
+> This warning comes from the calculation of loo (leave-one-out cross validation) for the model. You can see more details with loo(model_object).
+>
+> If there are only a couple of "bad" pareto-K values in this output I perhaps would not worry about it too much as I have seen this happen even with simulated data. If there are a fairly large number of bad or very bad values, this most likely indicates that your model is too complicated or it does not fit well. In the case of N-mixture a likely reason would be that there is a problem with overdispersion. You can check this another way by checking goodness of fit with a posterior predictive check, e.g. with gof(model_object). If the gof test also indicates issues then model fit is probably the reason. A typical solution to overdispersion would be to try the negative binomial instead of the Poisson, unfortunately this is not supported in ubms yet. You could use unmarked instead.
+>
+> As the message indicates, you should read up on this with help('pareto-k-diagnostic') and also see the links below.
+>
+> https://discourse.mc-stan.org/t/a-quick-note-what-i-infer-from-p-loo-and-pareto-k-values/3446
+> https://avehtari.github.io/modelselection/CV-FAQ.html (section 17)
+>
+> Ken
+> On Wednesday, August 2, 2023 at 5:49:32 AM UTC-4 yehtet...@gmail.com wrote:
+> >
+> > Dear Marc,
+> >
+> >
+> > Sorry for my late reply and thank you very much for your clarification. Now I will use individual counts instead of IEs. Moreover, I have one question regarding the warning message. After running the model with stan_pcount, I got warning message "warning message: some pareto k diagnostic values are too high. see help('pareto-k-diagnostic') for details.". Could you please provide any suggestions for dealing with this warning because I have read your "Overview of ubms" and it states that this is something we need to pay close attention to. Thank you again for your support and have a great day ahead.
+> >
+> >
+> > Best regards,
+> >
+> > Lwin
+> >
+> > On Friday, July 28, 2023 at 11:58:21 PM UTC+2 Kery Marc wrote:
+> > > Dear Lwin,
+> > >
+> > > about your Q1: I may misunderstand you, but I am not sure that using these "IEs" (which I think are just a widespread convention made in camera-trappology) is advisable in an Nmix model. In this model you assume that you can only make one of the two possible measurement errors  -- you can overlook an individual that is there and thus obtain a count that is lower than the true N of the number of individuals in the detection radius of the camtrap during the time period that you call an occasion. But you must never count the same individual twice within the same occasion: that would be a false positive, and that is not allowed by the Nmix model.
+> > >
+> > > Perhaps if you filter/summarize/aggregate your camtrap very aggressively, you can obtain count data that have almost certainly no multiple counts of the same individual within the same occasion ?
+> > >
+> > > Best regards  --- Marc
+> > >
+> > >
+> > > From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Ye Htet Lwin <yehtet...@gmail.com>
+> > > Sent: Friday, July 28, 2023 17:39
+> > > To: unma...@googlegroups.com <unma...@googlegroups.com>
+> > > Subject: Re: [unmarked] Re: N-mixture with ubms package
+> > >
+> > >
+> > > Hello Ken,
+> > >
+> > > Thank you very much for your prompt answer.
+> > >
+> > > In my context, an independent event refers to a series of consecutive pictures capturing the same animal group, even if it includes multiple individuals, as long as these pictures are taken within a 30-minute interval.
+> > >
+> > > The individual count in my sentence represents the total number of animals present within that specific independent event. To clarify, if a single event shows a group of 5 animals, then the individual count would be recorded as 5.
+> > >
+> > > To recall my question, I would like to use IE instead of individual count and which approach is better to run N-mixture model?
+> > >
+> > > Thank you very much.
+> > >
+> > > Best regards,
+> > >
+> > > Lwin
+> > >
+> > > On Fri, Jul 28, 2023 at 4:56 PM Ken Kellner <con...@kenkellner.com> wrote:
+> > > > Hi Lwin,
+> > > >
+> > > > 1. Not sure I understand what you mean by this, can you clarify?
+> > > > 2. Yes, if you collected observations of humans at only those 35 cameras, you can fit a model to the data from just those 35 cameras and then use predict() or similar methods to get predictions at the other camera points. This will only work well if you have informative covariates in your model for the abundance process.
+> > > > 3. The binned residual plot for detection requires there to be a reasonable amount of variation in the fitted values for detection submodel. For various possible reasons this isn't always the case, so you get this error. It doesn't necessarily mean there is a problem with the model.
+> > > >
+> > > > Ken
+> > > >
+> > > > On Friday, July 28, 2023 at 10:14:22 AM UTC-4 yehtet...@gmail.com wrote:
+> > > > > Hello all,
+> > > > >
+> > > > > I hope you all are doing well. Currently I am dealing with the N-mixture model analysis to estimate the large mammal abundance by using the ubms package to account for spatial autocorrelation. In this regard, I have some questions related to the N-mixture model:
+> > > > > Would it be possible to use independent events instead of individual count in the N-mixture model?
+> > > > > Secondly, I have human abundance data from 35 camera traps out of 113 cameras. In this regard, would it be possible to run human abundance data in the N-mixture model in order to get predicted abundance in all camera points?
+> > > > > When I checked the residual plot for detection by using plot_residuals (model, submodel="det"), I got the following error message "Error: Couldn't find working breakpoints", so, I could not generate the detection residual plot. Why does it happen and is that error message a problem that needs to be fixed?
+> > > > > Any suggestions and comments would be highly appreciated and thank you very much for your help.
+> > > > >
+> > > > > Best regards,
+> > > > > Lwin
+> > > >
+> > > > --
+> > > > *** Three hierarchical modeling email lists ***
+> > > > (1) unmarked (this list): for questions specific to the R package unmarked
+> > > > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > > > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> > > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/401bf6c9-9fd4-4a99-8a46-a4ba92f4ec32n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/401bf6c9-9fd4-4a99-8a46-a4ba92f4ec32n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > >
+> > > --
+> > > Mr. Ye Htet Lwin (PhD student)
+> > > Mobile - +491631197142
+> > > Email -  yehtet...@gmail.com
+> > >
+> > > University of Freiburg, Germany
+> > > www.wildlife.uni-freiburg.de/en <https://www.wildlife.uni-freiburg.de/en>
+> > >
+> > > Department of Visitor Management and National Park Monitoring
+> > > Bavarian Forest National Park
+> > > Freyunger Straße 2
+> > > 94481 Grafenau, Germany
+> > > www.nationalpark-bayerischer-wald.de <http://www.nationalpark-bayerischer-wald.de>
+> > >
+> > >
+> > >
+> > > --
+> > > *** Three hierarchical modeling email lists ***
+> > > (1) unmarked (this list): for questions specific to the R package unmarked
+> > > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/CAGQRBKz10SmdmrCLMWkJTaoeSGy_sVf%3DLD5z9ho3vX5bM6bQXQ%40mail.gmail.com <https://groups.google.com/d/msgid/unmarked/CAGQRBKz10SmdmrCLMWkJTaoeSGy_sVf%3DLD5z9ho3vX5bM6bQXQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/f9d84569-62ac-4bad-a977-58ded830f771n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/f9d84569-62ac-4bad-a977-58ded830f771n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Mr. Ye Htet Lwin (PhD student)
+Mobile - +491631197142
+Email - yehtet...@gmail.com
+
+University of Freiburg, Germany
+www.wildlife.uni-freiburg.de/en <https://www.wildlife.uni-freiburg.de/en>
+
+Department of Visitor Management and National Park Monitoring
+Bavarian Forest National Park
+Freyunger Straße 2
+94481 Grafenau, Germany
+www.nationalpark-bayerischer-wald.de <http://www.nationalpark-bayerischer-wald.de>
+
+From u2544116f8e02f84b at groups.google.com  Fri Aug  4 00:30:38 2023
+From: u2544116f8e02f84b at groups.google.com (Leah White)
+Date: Fri, 04 Aug 2023 00:30:38 +0000
+Subject: parboot() error: 'lib.loc'
+Message-ID: <DzaMcPEtFdg.6Art_NEBBAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/DzaMcPEtFdg/m/6Art_NEBBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear unmarked experts,
+
+I am trying to use parametric bootstrapping to assess fit on my occuRN models.  My computer has 8 cores. When I run parboot() with nsim >100 and ncores >1, I get the following error:
+
+> parboot(BBRNV1S12T4, nsim = 100, ncores = 2) Running parametric bootstrap in parallel on 2 cores. Error in checkForRemoteErrors(lapply(cl, recvResult)) : 2 nodes produced errors; first error: no library trees found in 'lib.loc'
+
+I get the same error when I use the package clusterApply to create a backend, which I found in an 2012 thread in this group:
+
+> cl <- makeCluster(getOption("cl.cores", 2)) > clusterExport(cl, c("BBRNV1S12T6", "fitstats")) > clusterSetRNGStream(cl, 123) > sims <- clusterEvalQ(cl, { +  parboot(BBRNV1S12T6, fitstats, nsim=20) + }) Error in checkForRemoteErrors(lapply(cl, recvResult)) : 2 nodes produced errors; first error: no library trees found in 'lib.loc'
+
+The same error occurs when I use mb.gof.test(). I could only find two instances of this error on stack exchange, and neither solutions were relevant.
+
+Anyone know what's going on here? I have no problem installing or loading packages, so I'm not sure what it means by "no library trees found".
+
+Thanks in advance!
+
+From uca0b78ecd2f38eec at groups.google.com  Mon Aug  7 19:05:29 2023
+From: uca0b78ecd2f38eec at groups.google.com (Josh Barry)
+Date: Mon, 07 Aug 2023 19:05:29 +0000
+Subject: Re: Estimating psi with a 'year' and 'after-impact' effect in colext?
+Message-ID: <Ev7Rhy9XRjc.4r2sE2YqBQAJ@unmarked.groups.google.com>
+In-Reply-To: <Ev7Rhy9XRjc.Ho5AY63wAgAJ@unmarked.groups.google.com>
+References: <Ev7Rhy9XRjc.5RkpVMkVBQAJ@unmarked.groups.google.com> <Ev7Rhy9XRjc.Ho5AY63wAgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Ev7Rhy9XRjc/m/4r2sE2YqBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ryan. I took your recommendation and went with a single-season (static) occupancy model with a year effect, “stacking” detection histories to increase the effective sample. With the "stacked" models you assume site independence, but interestingly for my study design and target species this is probably a reasonable assumption because each sampling site could undergo complete turnover each year, even without changes in vegetation structure or other environmental conditions. For those interested, below is a few example papers using "stacked" occupancy models.
+
+Example papers with "stacked" model:
+
+* Fogg, A. M., Roberts, L. J., & Burnett, R. D. (2014). Occurrence patterns of Black-backed Woodpeckers in green forest of the Sierra Nevada Mountains, California, USA. Avian Conservation and Ecology
+* Burnett, R. D., & Roberts, L. J. (2015). A Quantitative Evaluation of the Conservation Umbrella of Spotted Owl Management Areas in the Sierra Nevada. PLOS ONE
+* Fuller, A. K., Linden, D. W., & Royle, J. A. (2016). Management decision making for fisher populations informed by occupancy modeling: Fisher Occupancy. The Journal of Wildlife Management
+*Linden, D. W., Fuller, A. K., Royle, J. A., & Hare, M. P. (2017). Examining the occupancy-density relationship for a low-density carnivore. Journal of Applied Ecology,
+
+On Friday, July 7, 2023 at 7:03:38 PM UTC-5 ryan.c...@gmail.com wrote:
+> Hi Josh,
+>
+> The psiformula is the initial occupancy parameter (what influences occupancy in Year 1)  so it takes SiteCovs instead of YearlySiteCovs. The gammaformula and epsilonformula is where you input the YearlySiteCovs.
+>
+> I could be wrong but my understanding of the multi-season model is that it is data hungry model and while you have adequate number of sites with only 2 seasons it may be difficult to model what you want to. My suggestion would be to "stack" your data and use a single season model for your analysis. In that framework you could construct a set of models to test if the fire had an impact on psi or if psi changed based on year regardless of fire status.
+>
+> -Ryan
+>
+> On Wednesday, July 5, 2023 at 11:16:31 AM UTC-7 joshua.mic...@gmail.com wrote:
+> >
+> > Hello,
+> >
+> > I'm working on a multi-season model focusing on a single species with two years of detection data. Two years before a major fire event, I collected data for one season, with nine sampling periods across 400+ sites. Some of the sites burned, and some sites were unburned. One year after the fire, I gathered data for a second season at the same sites, using nine sampling periods. I calculated the proportion of burned area around each sampled site, ranging from 0 to 1, based on a buffer size approximating the species home range. My goal is to estimate occupancy (psi) relative to the proportion of burned area using a Before-After Control-Impact design.
+> >
+> > In my mind, I need four covariates:
+> >
+> > * SiteTreat – binary variable indicating burned (1) or not burned (0).
+> >
+> > * Year effect – before or after the fire.
+> >
+> > * SeasonSiteTreat – binary interaction for post-fire impact sites.
+> >
+> > * 3-way interaction -- SeasonSiteTreat and 'PropBurned' (continuous value from 0 to 1).
+> >
+> > While I have successfully calculated the first covariate, I am currently facing a challenge in calculating the year effect and SeasonSiteTreat effect. I created a matrix for the year effect and inputted it into the unmarked dataframe as follows:
+> >
+> >  yearlySiteCovs <- list(
+> >
+> >     year = matrix(c(
+> >
+> >       'year1', 'year2',
+> >
+> >       'year1', 'year2',
+> >
+> >       'year1', 'year2',
+> >
+> >       'year1', 'year2'), nrow= R, ncol=T, byrow=TRUE)
+> >
+> >   )
+> >
+> >    umf <- unmarkedMultFrame(y = y,
+> >
+> >                             siteCovs = data.frame(SiteTreat = SiteTreat, PropBurned=PropBurned),
+> >
+> >                             yearlySiteCovs =  yearlySiteCovs,
+> >
+> >                             obsCovs = obs.covs,
+> >
+> >                             numPrimary = T)
+> >
+> >   year.psi <- colext(psiformula= ~ year, gammaformula = ~ 1, epsilonformula = ~ 1, pformula = ~ 1, data = umf)
+> >
+> > However, my attempts to run a model solely with the year effect on psi have encountered an error message indicating that the object is not recognized as a matrix, which I identify as 'year' in the model. Specifically, the error states: "Error in model.frame.default(psiformula, siteCovs, na.action = NULL) : object is not a matrix." I would greatly appreciate any suggestions on creating the year effect or the SeasonSiteTreat effect in the context of this study.
+> >
+> > Many thanks!
+> >
+> > Josh
+
+From ud0d6d503f5acae62 at groups.google.com  Thu Aug 10 21:16:20 2023
+From: ud0d6d503f5acae62 at groups.google.com (unknown)
+Date: Thu, 10 Aug 2023 21:16:20 +0000
+Subject: 
+Message-ID: <nnDJPWZqJ4c.eOvXjQR4HAAJ@unmarked.groups.google.com>
+In-Reply-To: <nnDJPWZqJ4c.5lx65G5IAQAJ@unmarked.groups.google.com>
+References: <nnDJPWZqJ4c.5lx65G5IAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/nnDJPWZqJ4c/m/eOvXjQR4HAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u4587e4ded58851df at groups.google.com  Fri Aug 11 13:44:05 2023
+From: u4587e4ded58851df at groups.google.com (Daniel Dornan)
+Date: Fri, 11 Aug 2023 13:44:05 +0000
+Subject: Residual diagnostic plots for gmultmix with removal sampling.
+Message-ID: <LJXV1dd8Oco.uvobXOutHAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/LJXV1dd8Oco/m/uvobXOutHAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hey all,
+
+Is it possible to which
+is diagnostic residual plots for gmultmix? If so what is the best way to do
+this or possible alternatives?
+
+All the best
+
+Daniel
+
+From u247b990d236a7af6 at groups.google.com  Mon Aug 14 03:21:52 2023
+From: u247b990d236a7af6 at groups.google.com (Jim Baldwin, USDA Forest Service)
+Date: Mon, 14 Aug 2023 03:21:52 +0000
+Subject: Counting moose
+Message-ID: <co5l3NucbVQ.Th-VoLR3HQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/co5l3NucbVQ/m/Th-VoLR3HQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+A question about developing models associated with counting moose was asked recently at https://stats.stackexchange.com/questions/623346/no-more-than-n-moose-but-how-many?noredirect=1#comment1162030_623346.
+
+Given the description in the question, I've suggested looking at pcount to get an idea of how some have approached such a counting objective (although the OP would prefer a Bayesian solution).
+
+I have also suggested the OP ask the question at this forum but possibly some of you might want to give more specific advice at the other forum.
+
+Jim
+
+From u931f5168d371d4cc at groups.google.com  Fri Aug 18 20:31:33 2023
+From: u931f5168d371d4cc at groups.google.com (=?utf-8?q?A=C3=AFssa_Morin?=)
+Date: Fri, 18 Aug 2023 20:31:33 +0000
+Subject: High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/_08mnOioEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear All,
+
+I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+
+I am trying to run multi-species occupancy models using unmarked.
+I have 128 sites and 4 species (R1, R2, R3 and R4).
+I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+
+Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+
+Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+
+I thank you in advance for your help,
+
+Best regards,
+
+Aïssa Morin
+
+Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> fm2_1  Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+
+Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+
+> fm3_f12_f23  Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789 [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+
+From u00ebeb6e0521112d at groups.google.com  Fri Aug 18 20:37:19 2023
+From: u00ebeb6e0521112d at groups.google.com (Marc Kery)
+Date: Fri, 18 Aug 2023 20:37:19 +0000
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8.o5Q_QTmpEAAJ@unmarked.groups.google.com>
+In-Reply-To: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+References: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/o5Q_QTmpEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Aw, man .... Aissa, you should format your output such that it doesn't get all garbled !
+
+I think that your hunches are correct: you are probably asking too much from the data. Though perhaps you could experiment with the use of solutions from a simpler model as initial values in the likelihood optimisation of a more complex model ? Perhaps these extreme values for the intercepts (essentially 0 or 1 on the probability scale) are just local optima ?
+
+Surely Ken knows better 🙂
+
+Best regards  ---- Marc
+
+From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+Sent: Friday, August 18, 2023 22:31
+To: unmarked <unma...@googlegroups.com>
+Subject: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+
+Dear All,
+
+I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+
+I am trying to run multi-species occupancy models using unmarked.
+I have 128 sites and 4 species (R1, R2, R3 and R4).
+I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+
+Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+
+Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+
+I thank you in advance for your help,
+
+Best regards,
+
+Aïssa Morin
+
+Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> fm2_1 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+
+Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+
+> fm3_f12_f23 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789  [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4f80e1927b0757cb at groups.google.com  Fri Aug 18 20:46:08 2023
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Fri, 18 Aug 2023 20:46:08 +0000
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8.StYoiLSpEAAJ@unmarked.groups.google.com>
+In-Reply-To: <xXQOzUWE1H8.o5Q_QTmpEAAJ@unmarked.groups.google.com>
+References: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com> <xXQOzUWE1H8.o5Q_QTmpEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/StYoiLSpEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I also can't really interpret the garbled output. If you are getting very high estimate and SE values, I would not trust those results. I'd agree with both you and Marc that the most likely explanation is that the model is just too complicated for the dataset.
+
+A few ideas:
+- Fewer covariates
+- Estimate only the pairwise interactions (i.e., set maxOrder to 2) and hold the higher-order interactions to 0.
+- Reduce the number of species in the model, if you can do so and still meet your research goals
+
+Sometimes you can use penalized likelihood to help with this situation. See the occuMulti vignette, sections 5 and 6 (and the cited paper) for an overview:
+
+https://cran.r-project.org/web/packages/unmarked/vignettes/occuMulti.html#model-fitting-challenges
+
+Ken
+
+On Fri, Aug 18, 2023 at 08:37:13PM +0000, Marc Kery wrote:
+> Aw, man .... Aissa, you should format your output such that it doesn't get all garbled !
+>
+> I think that your hunches are correct: you are probably asking too much from the data. Though perhaps you could experiment with the use of solutions from a simpler model as initial values in the likelihood optimisation of a more complex model ? Perhaps these extreme values for the intercepts (essentially 0 or 1 on the probability scale) are just local optima ?
+>
+> Surely Ken knows better 🙂
+>
+> Best regards  ---- Marc
+>
+> ________________________________
+> From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+> Sent: Friday, August 18, 2023 22:31
+> To: unmarked <unma...@googlegroups.com>
+> Subject: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+>
+> Dear All,
+>
+> I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+>
+> I am trying to run multi-species occupancy models using unmarked.
+> I have 128 sites and 4 species (R1, R2, R3 and R4).
+> I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+>
+> Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+>
+> Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+>
+> I thank you in advance for your help,
+>
+> Best regards,
+>
+> Aïssa Morin
+>
+> Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> > fm2_1 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+>
+> Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+>
+> > fm3_f12_f23 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789 [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+>
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com<mailto:unmarked+u...@googlegroups.com>.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com<https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/ZR0P278MB08690D5ED205C2EDBFDAE071EB1BA%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM.
+
+From u931f5168d371d4cc at groups.google.com  Fri Aug 18 20:47:24 2023
+From: u931f5168d371d4cc at groups.google.com (=?utf-8?q?A=C3=AFssa_Morin?=)
+Date: Fri, 18 Aug 2023 20:47:24 +0000
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8.Y1_QEMapEAAJ@unmarked.groups.google.com>
+In-Reply-To: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+References: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/Y1_QEMapEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Mark,
+
+Thank you very much for your quick reply !
+I am very sorry, if was not meant to be displayed that way, and I am not sure why it did, I tried to overcome the issues using screen pictures.
+
+I am not sure to entirely followed, do you mean that I should try playing with the "starts" and/or 'methods" argument of the occuMulti function ?
+
+Aïssa
+
+Le vendredi 18 août 2023 à 22:37:19 UTC+2, Kery Marc a écrit :
+> Aw, man .... Aissa, you should format your output such that it doesn't get all garbled !
+>
+> I think that your hunches are correct: you are probably asking too much from the data. Though perhaps you could experiment with the use of solutions from a simpler model as initial values in the likelihood optimisation of a more complex model ? Perhaps these extreme values for the intercepts (essentially 0 or 1 on the probability scale) are just local optima ?
+>
+> Surely Ken knows better 🙂
+>
+> Best regards  ---- Marc
+>
+> From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+> Sent: Friday, August 18, 2023 22:31
+> To: unmarked <unma...@googlegroups.com>
+> Subject: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+>
+> Dear All,
+>
+> I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+>
+> I am trying to run multi-species occupancy models using unmarked.
+> I have 128 sites and 4 species (R1, R2, R3 and R4).
+> I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+>
+> Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+>
+> Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+>
+> I thank you in advance for your help,
+>
+> Best regards,
+>
+> Aïssa Morin
+>
+> Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> > fm2_1 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+>
+> Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+>
+> > fm3_f12_f23 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789  [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u931f5168d371d4cc at groups.google.com  Fri Aug 18 20:54:04 2023
+From: u931f5168d371d4cc at groups.google.com (=?utf-8?q?A=C3=AFssa_Morin?=)
+Date: Fri, 18 Aug 2023 20:54:04 +0000
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8.lfzMMyOqEAAJ@unmarked.groups.google.com>
+In-Reply-To: <xXQOzUWE1H8.o5Q_QTmpEAAJ@unmarked.groups.google.com>
+References: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com> <xXQOzUWE1H8.o5Q_QTmpEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/lfzMMyOqEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ken,
+
+Thank you very much as well, and sorry for the formatting issue !
+
+I'll look into some of the solutions you offered, thanks !
+I am not sure I can decrease the number of covariate, since I only have one the occupancy modelling section. But I do have 3 in the detection model, should I try reduce here ?
+
+Thank you very much again,
+
+Aïssa
+
+Le vendredi 18 août 2023 à 22:46:08 UTC+2, Ken Kellner a écrit :
+> I also can't really interpret the garbled output. If you are getting very high estimate and SE values, I would not trust those results. I'd agree with both you and Marc that the most likely explanation is that the model is just too complicated for the dataset.
+>
+> A few ideas:
+> - Fewer covariates
+> - Estimate only the pairwise interactions (i.e., set maxOrder to 2) and hold the higher-order interactions to 0.
+> - Reduce the number of species in the model, if you can do so and still meet your research goals
+>
+> Sometimes you can use penalized likelihood to help with this situation. See the occuMulti vignette, sections 5 and 6 (and the cited paper) for an overview:
+>
+> https://cran.r-project.org/web/packages/unmarked/vignettes/occuMulti.html#model-fitting-challenges
+>
+> Ken
+>
+> On Fri, Aug 18, 2023 at 08:37:13PM +0000, Marc Kery wrote:
+> > Aw, man .... Aissa, you should format your output such that it doesn't get all garbled !
+> >
+> > I think that your hunches are correct: you are probably asking too much from the data. Though perhaps you could experiment with the use of solutions from a simpler model as initial values in the likelihood optimisation of a more complex model ? Perhaps these extreme values for the intercepts (essentially 0 or 1 on the probability scale) are just local optima ?
+> >
+> > Surely Ken knows better 🙂
+> >
+> > Best regards ---- Marc
+> >
+> > ________________________________
+> > From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+> > Sent: Friday, August 18, 2023 22:31
+> > To: unmarked <unma...@googlegroups.com>
+> > Subject: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+> >
+> > Dear All,
+> >
+> > I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+> >
+> > I am trying to run multi-species occupancy models using unmarked.
+> > I have 128 sites and 4 species (R1, R2, R3 and R4).
+> > I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+> >
+> > Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+> >
+> > Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+> >
+> > I thank you in advance for your help,
+> >
+> > Best regards,
+> >
+> > Aïssa Morin
+> >
+> > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> > > fm2_1 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+> >
+> > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+> >
+> > > fm3_f12_f23 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789 [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+> >
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com<mailto:unmarked+u...@googlegroups.com>.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com<https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/ZR0P278MB08690D5ED205C2EDBFDAE071EB1BA%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM.
+
+From u931f5168d371d4cc at groups.google.com  Fri Aug 18 20:58:07 2023
+From: u931f5168d371d4cc at groups.google.com (=?utf-8?q?A=C3=AFssa_Morin?=)
+Date: Fri, 18 Aug 2023 20:58:07 +0000
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8.zb5H7FuqEAAJ@unmarked.groups.google.com>
+In-Reply-To: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+References: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/zb5H7FuqEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+(Hi Marc, I just noticed that I made a typo in your name when I first replied (too quickly), I am really sorry !)
+
+Le vendredi 18 août 2023 à 22:47:24 UTC+2, Aïssa Morin a écrit :
+> Hi Mark,
+>
+> Thank you very much for your quick reply !
+> I am very sorry, if was not meant to be displayed that way, and I am not sure why it did, I tried to overcome the issues using screen pictures.
+>
+> I am not sure to entirely followed, do you mean that I should try playing with the "starts" and/or 'methods" argument of the occuMulti function ?
+>
+> Aïssa
+>
+>
+>
+> Le vendredi 18 août 2023 à 22:37:19 UTC+2, Kery Marc a écrit :
+> > Aw, man .... Aissa, you should format your output such that it doesn't get all garbled !
+> >
+> > I think that your hunches are correct: you are probably asking too much from the data. Though perhaps you could experiment with the use of solutions from a simpler model as initial values in the likelihood optimisation of a more complex model ? Perhaps these extreme values for the intercepts (essentially 0 or 1 on the probability scale) are just local optima ?
+> >
+> > Surely Ken knows better 🙂
+> >
+> > Best regards  ---- Marc
+> >
+> > From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+> > Sent: Friday, August 18, 2023 22:31
+> > To: unmarked <unma...@googlegroups.com>
+> > Subject: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+> >
+> > Dear All,
+> >
+> > I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+> >
+> > I am trying to run multi-species occupancy models using unmarked.
+> > I have 128 sites and 4 species (R1, R2, R3 and R4).
+> > I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+> >
+> > Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+> >
+> > Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+> >
+> > I thank you in advance for your help,
+> >
+> > Best regards,
+> >
+> > Aïssa Morin
+> >
+> > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> > > fm2_1 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+> >
+> > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+> >
+> > > fm3_f12_f23 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789  [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u247b990d236a7af6 at groups.google.com  Fri Aug 18 22:30:40 2023
+From: u247b990d236a7af6 at groups.google.com (Jim Baldwin)
+Date: Fri, 18 Aug 2023 22:30:40 +0000
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8.X6EqwWivEAAJ@unmarked.groups.google.com>
+In-Reply-To: <xXQOzUWE1H8.StYoiLSpEAAJ@unmarked.groups.google.com>
+References: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com> <xXQOzUWE1H8.StYoiLSpEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/X6EqwWivEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+For whatever it's worth, here is what I think the output should look like (at least Example 1):
+
+Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+
+Call:
+ occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L)
+
+ Occupancy:
+                                  Estimate        SE         z P(>|z|)
+ [R1] (Intercept)                  -2.2508     3.545  -0.63486   0.526
+ [R1] land_use_typeprotected_area  -0.0122     2.472  -0.00495   0.996
+ [R2] (Intercept)                  -2.1941     2.859  -0.76746   0.443
+ [R2] land_use_typeprotected_area   1.9363     2.844   0.68084   0.496
+ [R3] (Intercept)                 -12.1713   101.462  -0.11996   0.905
+ [R3] land_use_typeprotected_area   0.8532     0.849   1.00460   0.315
+ [R4] (Intercept)                   0.7407     1.260   0.58779   0.557
+ [R4] land_use_typeprotected_area   1.0800     0.686   1.57403   0.115
+ [R1:R2] (Intercept)                5.2774     4.110   1.28401   0.199
+ [R2:R3] (Intercept)               11.8443   101.463   0.11674   0.907
+ [R2:R4] (Intercept)               -1.4254     1.422  -1.00213   0.316
+ [R3:R4] (Intercept)                0.9372     0.693   1.35210   0.176
+
+ Detection:
+                           Estimate     SE       z P(>|z|)
+ [R1] (Intercept)            -0.243 0.0871  -2.789 5.29e-03
+ [R1] visibility_indexopen    0.162 0.2211   0.734 4.63e-01
+ [R1] RAI_human_log           0.226 0.0822   2.750 5.96e-03
+ [R1] effort                  0.199 0.0823   2.416 1.57e-02
+ [R2] (Intercept)            -1.942 0.1261 -15.400 1.63e-53
+ [R2] visibility_indexopen   -0.642 0.4112  -1.561 1.19e-01
+ [R2] RAI_human_log           0.377 0.1075   3.512 4.45e-04
+ [R2] effort                  0.219 0.1278   1.714 8.65e-02
+ [R3] (Intercept)            -1.034 0.1230  -8.403 4.36e-17
+ [R3] visibility_indexopen    1.203 0.2578   4.667 3.05e-06
+ [R3] RAI_human_log           0.122 0.1124   1.083 2.79e-01
+ [R3] effort                  0.321 0.1106   2.906 3.66e-03
+ [R4] (Intercept)            -1.059 0.1255  -8.438 3.22e-17
+ [R4] visibility_indexopen    0.893 0.2483   3.595 3.24e-04
+ [R4] RAI_human_log           0.150 0.1321   1.136 2.56e-01
+ [R4] effort                  0.266 0.1066   2.494 1.26e-02
+
+ AIC: 3316.419
+
+This simply confirms the comments of Ken Kellenr and Marc Kery.
+
+I would look at the parameter covariance matrix which most likely says that the estimators of the R3 and R2:R3 coefficients are nearly perfectly correlated.  If so, look at the data to see what linear dependencies might exist between R2 and R3 which might explain why you have an overparameterized model.
+
+Jim
+
+On Fri, Aug 18, 2023 at 1:46 PM Ken Kellner <con...@kenkellner.com> wrote:
+
+> I also can't really interpret the garbled output. If you are getting very high estimate and SE values, I would not trust those results. I'd agree with both you and Marc that the most likely explanation is that the model is just too complicated for the dataset.
+>
+> A few ideas:
+> - Fewer covariates
+> - Estimate only the pairwise interactions (i.e., set maxOrder to 2) and hold the higher-order interactions to 0.
+> - Reduce the number of species in the model, if you can do so and still meet your research goals
+>
+> Sometimes you can use penalized likelihood to help with this situation. See the occuMulti vignette, sections 5 and 6 (and the cited paper) for an overview:
+>
+> https://cran.r-project.org/web/packages/unmarked/vignettes/occuMulti.html#model-fitting-challenges
+>
+> Ken
+>
+> On Fri, Aug 18, 2023 at 08:37:13PM +0000, Marc Kery wrote:
+> > Aw, man .... Aissa, you should format your output such that it doesn't get all garbled !
+> >
+> > I think that your hunches are correct: you are probably asking too much from the data. Though perhaps you could experiment with the use of solutions from a simpler model as initial values in the likelihood optimisation of a more complex model ? Perhaps these extreme values for the intercepts (essentially 0 or 1 on the probability scale) are just local optima ?
+> >
+> > Surely Ken knows better 🙂
+> >
+> > Best regards  ---- Marc
+> >
+> > ________________________________
+> > From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+> > Sent: Friday, August 18, 2023 22:31
+> > To: unmarked <unma...@googlegroups.com>
+> > Subject: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+> >
+> > Dear All,
+> >
+> > I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+> >
+> > I am trying to run multi-species occupancy models using unmarked.
+> > I have 128 sites and 4 species (R1, R2, R3 and R4).
+> > I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+> >
+> > Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+> >
+> > Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+> >
+> > I thank you in advance for your help,
+> >
+> > Best regards,
+> >
+> > Aïssa Morin
+> >
+> > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> > > fm2_1 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+> >
+> > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+> >
+> > > fm3_f12_f23 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789 [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+> >
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com<mailto:unmarked+u...@googlegroups.com>.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com<https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/ZR0P278MB08690D5ED205C2EDBFDAE071EB1BA%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/ZN/YiDXvYMRtHdUB%40COYOTE.
+
+From u00ebeb6e0521112d at groups.google.com  Sat Aug 19 06:02:18 2023
+From: u00ebeb6e0521112d at groups.google.com (Marc Kery)
+Date: Sat, 19 Aug 2023 06:02:18 +0000
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8.4flcLg7IEAAJ@unmarked.groups.google.com>
+In-Reply-To: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+References: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/4flcLg7IEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Aissa,
+
+about your methods/inits question: I really meant to provide as inits solutions (i.e., estimates) from a neighbouring, smaller model. That is, one that may for instance have one covariate less.
+
+Changing the default (?) Nelder-Mead optimisation method to 'BFGS' may also help, perhaps.
+
+Overall, I think that simplification of the model or use of penalized likelihood (or Bayesian inference, which is conceptually similar in a sense) seem to me to be the most promising ways forward.
+
+Best regards  -- Marc
+
+PS: no pb about the 'k' for 'c'. I also mis-write your name, because I can't find the 'trema' on my keyboard ...
+
+From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+
+Sent: Friday, August 18, 2023 22:58
+To: unmarked <unma...@googlegroups.com>
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+
+(Hi Marc, I just noticed that I made a typo in your name when I first replied (too quickly), I am really sorry !)
+
+Le vendredi 18 août 2023 à 22:47:24 UTC+2, Aïssa Morin a écrit :
+> Hi Mark,
+>
+> Thank you very much for your quick reply !
+> I am very sorry, if was not meant to be displayed that way, and I am not sure why it did, I tried to overcome the issues using screen pictures.
+>
+> I am not sure to entirely followed, do you mean that I should try playing with the "starts" and/or 'methods" argument of the occuMulti function ?
+>
+> Aïssa
+>
+>
+>
+> Le vendredi 18 août 2023 à 22:37:19 UTC+2, Kery Marc a écrit :
+> > Aw, man .... Aissa, you should format your output such that it doesn't get all garbled !
+> >
+> > I think that your hunches are correct: you are probably asking too much from the data. Though perhaps you could experiment with the use of solutions from a simpler model as initial values in the likelihood optimisation of a more complex model ? Perhaps these extreme values for the intercepts (essentially 0 or 1 on the probability scale) are just local optima ?
+> >
+> > Surely Ken knows better 🙂
+> >
+> > Best regards  ---- Marc
+> >
+> > From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+> > Sent: Friday, August 18, 2023 22:31
+> > To: unmarked <unma...@googlegroups.com>
+> > Subject: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+> >
+> > Dear All,
+> >
+> > I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+> >
+> > I am trying to run multi-species occupancy models using unmarked.
+> > I have 128 sites and 4 species (R1, R2, R3 and R4).
+> > I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+> >
+> > Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+> >
+> > Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+> >
+> > I thank you in advance for your help,
+> >
+> > Best regards,
+> >
+> > Aïssa Morin
+> >
+> > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> > > fm2_1 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+> >
+> > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+> >
+> > > fm3_f12_f23 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789  [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/c3e31717-b7ac-4483-96bd-19168d150352n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/c3e31717-b7ac-4483-96bd-19168d150352n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u46ae78ea00946252 at groups.google.com  Sat Aug 19 14:39:26 2023
+From: u46ae78ea00946252 at groups.google.com (FERNANDO CESAR CASCELLI DE AZEVEDO)
+Date: Sat, 19 Aug 2023 14:39:26 +0000
+Subject: RPresence
+Message-ID: <Xa42WYBtf8E.xN0VPEbkEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Xa42WYBtf8E/m/xN0VPEbkEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone, can I ask about RPresence in this group?
+
+From u00ebeb6e0521112d at groups.google.com  Sat Aug 19 16:00:15 2023
+From: u00ebeb6e0521112d at groups.google.com (Marc Kery)
+Date: Sat, 19 Aug 2023 16:00:15 +0000
+Subject: Re: [unmarked] RPresence
+Message-ID: <Xa42WYBtf8E.FMXyP6_oEAAJ@unmarked.groups.google.com>
+In-Reply-To: <Xa42WYBtf8E.xN0VPEbkEAAJ@unmarked.groups.google.com>
+References: <Xa42WYBtf8E.xN0VPEbkEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Xa42WYBtf8E/m/FMXyP6_oEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Fernando,
+
+In principle no, but just go ahead 🙂
+
+Seriously: if you have questions relating specifically to program PRESENCE and its implementation in R, then you should ask on the user-group of that software (see www.phidot.org <http://www.phidot.org> for coordinates). If it's more general about occupancy or related models, then this list may be OK.
+
+Marc
+
+From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of FERNANDO CESAR CASCELLI DE AZEVEDO <faze...@ufsj.edu.br>
+Sent: Saturday, August 19, 2023 14:54
+To: unmarked <unma...@googlegroups.com>
+Subject: [unmarked] RPresence
+
+Hi everyone, can I ask about RPresence in this group?
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked (this list): for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+---
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/2eb27683-2182-434c-8c31-9d2382e482a0n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/2eb27683-2182-434c-8c31-9d2382e482a0n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u46ae78ea00946252 at groups.google.com  Sat Aug 19 19:22:29 2023
+From: u46ae78ea00946252 at groups.google.com (FERNANDO CESAR CASCELLI DE AZEVEDO)
+Date: Sat, 19 Aug 2023 19:22:29 +0000
+Subject: Re: [unmarked] RPresence
+Message-ID: <Xa42WYBtf8E.m9ziibjzEAAJ@unmarked.groups.google.com>
+In-Reply-To: <Xa42WYBtf8E.xN0VPEbkEAAJ@unmarked.groups.google.com>
+References: <Xa42WYBtf8E.xN0VPEbkEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Xa42WYBtf8E/m/m9ziibjzEAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Marc for your quick response and for your attention.
+Actually my question is specifically related to problems in using RPresence, its implementation in R.
+I will try to contact someone at the other user-group you have suggested.
+
+Cheers,
+
+Prof. Fernando Cesar Cascelli de Azevedo
+
+Laboratório de Ecologia de Vertebrados
+
+Programa de Pós-Graduação em Ecologia
+
+Departamento de Ciências Naturais
+
+Em sáb., 19 de ago. de 2023 às 13:00, Marc Kery <marc...@vogelwarte.ch> escreveu:
+
+> Dear Fernando,
+>
+> In principle no, but just go ahead 🙂
+>
+> Seriously: if you have questions relating specifically to program PRESENCE and its implementation in R, then you should ask on the user-group of that software (see www.phidot.org <http://www.phidot.org> for coordinates). If it's more general about occupancy or related models, then this list may be OK.
+>
+> Marc
+>
+> From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of FERNANDO CESAR CASCELLI DE AZEVEDO <faze...@ufsj.edu.br>
+> Sent: Saturday, August 19, 2023 14:54
+> To: unmarked <unma...@googlegroups.com>
+> Subject: [unmarked] RPresence
+>
+> Hi everyone, can I ask about RPresence in this group?
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/2eb27683-2182-434c-8c31-9d2382e482a0n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/2eb27683-2182-434c-8c31-9d2382e482a0n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/ZR0P278MB0869FA097424D9CF85124E65EB18A%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM <https://groups.google.com/d/msgid/unmarked/ZR0P278MB0869FA097424D9CF85124E65EB18A%40ZR0P278MB0869.CHEP278.PROD.OUTLOOK.COM?utm_medium=email&utm_source=footer>.
+
+From u931f5168d371d4cc at groups.google.com  Wed Aug 23 14:50:08 2023
+From: u931f5168d371d4cc at groups.google.com (=?utf-8?q?A=C3=AFssa_Morin?=)
+Date: Wed, 23 Aug 2023 14:50:08 +0000
+Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+Message-ID: <xXQOzUWE1H8.WJ0S_i0fEgAJ@unmarked.groups.google.com>
+In-Reply-To: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+References: <xXQOzUWE1H8._08mnOioEAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/xXQOzUWE1H8/m/WJ0S_i0fEgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+I am sorry for the late reply.
+Thank you very much for the solutions  that I will continue to explore !
+However, ultimately, I'm affraid I just don't have enough species co-occurences in one of the modalities, and that may be what is causing the errors I observe...
+
+Best regards,
+
+Aïssa
+
+Le samedi 19 août 2023 à 08:02:18 UTC+2, Kery Marc a écrit :
+> Dear Aissa,
+>
+> about your methods/inits question: I really meant to provide as inits solutions (i.e., estimates) from a neighbouring, smaller model. That is, one that may for instance have one covariate less.
+>
+> Changing the default (?) Nelder-Mead optimisation method to 'BFGS' may also help, perhaps.
+>
+> Overall, I think that simplification of the model or use of penalized likelihood (or Bayesian inference, which is conceptually similar in a sense) seem to me to be the most promising ways forward.
+>
+> Best regards  -- Marc
+>
+>
+>
+> PS: no pb about the 'k' for 'c'. I also mis-write your name, because I can't find the 'trema' on my keyboard ...
+>
+> From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+> Sent: Friday, August 18, 2023 22:58
+> To: unmarked <unma...@googlegroups.com>
+> Subject: Re: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+>
+> (Hi Marc, I just noticed that I made a typo in your name when I first replied (too quickly), I am really sorry !)
+>
+> Le vendredi 18 août 2023 à 22:47:24 UTC+2, Aïssa Morin a écrit :
+> > Hi Mark,
+> >
+> > Thank you very much for your quick reply !
+> > I am very sorry, if was not meant to be displayed that way, and I am not sure why it did, I tried to overcome the issues using screen pictures.
+> >
+> > I am not sure to entirely followed, do you mean that I should try playing with the "starts" and/or 'methods" argument of the occuMulti function ?
+> >
+> > Aïssa
+> >
+> >
+> >
+> > Le vendredi 18 août 2023 à 22:37:19 UTC+2, Kery Marc a écrit :
+> > > Aw, man .... Aissa, you should format your output such that it doesn't get all garbled !
+> > >
+> > > I think that your hunches are correct: you are probably asking too much from the data. Though perhaps you could experiment with the use of solutions from a simpler model as initial values in the likelihood optimisation of a more complex model ? Perhaps these extreme values for the intercepts (essentially 0 or 1 on the probability scale) are just local optima ?
+> > >
+> > > Surely Ken knows better 🙂
+> > >
+> > > Best regards  ---- Marc
+> > >
+> > > From: unma...@googlegroups.com <unma...@googlegroups.com> on behalf of Aïssa Morin <morin...@gmail.com>
+> > > Sent: Friday, August 18, 2023 22:31
+> > > To: unmarked <unma...@googlegroups.com>
+> > > Subject: [unmarked] High estimate and standard error values when running multispecies occupancy models with occuMulti
+> > >
+> > > Dear All,
+> > >
+> > > I sincerely appologise if a similar question has already been asked on the forum, so far I couldn't find any.
+> > >
+> > > I am trying to run multi-species occupancy models using unmarked.
+> > > I have 128 sites and 4 species (R1, R2, R3 and R4).
+> > > I am building my models step by step, with increasing complexity, with step 1 being the detection model ( p, during this step I have several covariates so I do a model selection of all combination), step 2 : marginal occupancy, step 3 adding constant pairwise associations, and finally step 4: adding effect of a covariate on species associations.
+> > >
+> > > Models are running ok, up untill step 3 and 4, for which results displays high estimate and standerd error values (please, see example below).
+> > >
+> > > Can these results be trusted ? Does it means I am asking to much to my data ? Should I attempt to simplify the model (i.e. the detection model, since the occupancy section only include one covariate...)
+> > >
+> > > I thank you in advance for your help,
+> > >
+> > > Best regards,
+> > >
+> > > Aïssa Morin
+> > >
+> > > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + constant pairwise interactions "
+> > > > fm2_1 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m2_1, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -2.2508 3.545 -0.63486 0.526 [R1] land_use_typeprotected_area -0.0122 2.472 -0.00495 0.996 [R2] (Intercept) -2.1941 2.859 -0.76746 0.443 [R2] land_use_typeprotected_area 1.9363 2.844 0.68084 0.496 [R3] (Intercept) -12.1713 101.462 -0.11996 0.905 [R3] land_use_typeprotected_area 0.8532 0.849 1.00460 0.315 [R4] (Intercept) 0.7407 1.260 0.58779 0.557 [R4] land_use_typeprotected_area 1.0800 0.686 1.57403 0.115 [R1:R2] (Intercept) 5.2774 4.110 1.28401 0.199 [R2:R3] (Intercept) 11.8443 101.463 0.11674 0.907 [R2:R4] (Intercept) -1.4254 1.422 -1.00213 0.316 [R3:R4] (Intercept) 0.9372 0.693 1.35210 0.176 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.243 0.0871 -2.789 5.29e-03 [R1] visibility_indexopen 0.162 0.2211 0.734 4.63e-01 [R1] RAI_human_log 0.226 0.0822 2.750 5.96e-03 [R1] effort 0.199 0.0823 2.416 1.57e-02 [R2] (Intercept) -1.942 0.1261 -15.400 1.63e-53 [R2] visibility_indexopen -0.642 0.4112 -1.561 1.19e-01 [R2] RAI_human_log 0.377 0.1075 3.512 4.45e-04 [R2] effort 0.219 0.1278 1.714 8.65e-02 [R3] (Intercept) -1.034 0.1230 -8.403 4.36e-17 [R3] visibility_indexopen 1.203 0.2578 4.667 3.05e-06 [R3] RAI_human_log 0.122 0.1124 1.083 2.79e-01 [R3] effort 0.321 0.1106 2.906 3.66e-03 [R4] (Intercept) -1.059 0.1255 -8.438 3.22e-17 [R4] visibility_indexopen 0.893 0.2483 3.595 3.24e-04 [R4] RAI_human_log 0.150 0.1321 1.136 2.56e-01 [R4] effort 0.266 0.1066 2.494 1.26e-02 AIC: 3316.419
+> > >
+> > > Example 1 model : "p(Visibility_index + Human_RAI_log + Effort)psi(Land_use_type) + land_use_type*f12 + land_use_type*f23 "
+> > >
+> > > > fm3_f12_f23 Call: occuMulti(detformulas = det_formula, stateformulas = occ_formula_m3_f12_f23, data = data_df, control = list(maxit = 5000, trace = 1), maxOrder = 4L) Occupancy: Estimate SE z P(>|z|) [R1] (Intercept) -5.7093 37.622 -0.1518 0.8794 [R1] land_use_typeprotected_area 5.4223 37.629 0.1441 0.8854 [R2] (Intercept) -3.0998 3.027 -1.0241 0.3058 [R2] land_use_typeprotected_area 1.7496 3.153 0.5550 0.5789  [R3] (Intercept) -9.1739 40.148 -0.2285 0.8193 [R3] land_use_typeprotected_area 3.4716 34.751 0.0999 0.9204 [R4] (Intercept) 0.0132 0.519 0.0254 0.9797 [R4] land_use_typeprotected_area 1.0886 0.581 1.8724 0.0612 [R1:R2] (Intercept) 8.9508 37.839 0.2365 0.8130 [R1:R2] land_use_typeprotected_area -5.7063 37.854 -0.1507 0.8802 [R2:R3] (Intercept) 9.1734 40.153 0.2285 0.8193 [R2:R3] land_use_typeprotected_area -2.1736 34.762 -0.0625 0.9501 Detection: Estimate SE z P(>|z|) [R1] (Intercept) -0.240 0.0868 -2.765 5.70e-03 [R1] visibility_indexopen 0.159 0.2210 0.721 4.71e-01 [R1] RAI_human_log 0.223 0.0822 2.709 6.75e-03 [R1] effort 0.196 0.0822 2.386 1.70e-02 [R2] (Intercept) -1.922 0.1282 -14.993 8.19e-51 [R2] visibility_indexopen -0.629 0.4145 -1.518 1.29e-01 [R2] RAI_human_log 0.370 0.1082 3.425 6.15e-04 [R2] effort 0.222 0.1276 1.736 8.26e-02 [R3] (Intercept) -1.032 0.1227 -8.409 4.14e-17 [R3] visibility_indexopen 1.202 0.2576 4.665 3.09e-06 [R3] RAI_human_log 0.123 0.1134 1.086 2.77e-01 [R3] effort 0.321 0.1104 2.911 3.60e-03 [R4] (Intercept) -1.053 0.1247 -8.439 3.20e-17 [R4] visibility_indexopen 0.885 0.2482 3.566 3.62e-04 [R4] RAI_human_log 0.140 0.1323 1.060 2.89e-01 [R4] effort 0.263 0.1063 2.479 1.32e-02 AIC: 3318.244
+> > >
+> > > --
+> > > *** Three hierarchical modeling email lists ***
+> > > (1) unmarked (this list): for questions specific to the R package unmarked
+> > > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/b4760541-3993-4d19-92e1-13858eaaacedn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/c3e31717-b7ac-4483-96bd-19168d150352n%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/c3e31717-b7ac-4483-96bd-19168d150352n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u9468cbd398875d8c at groups.google.com  Thu Aug 24 10:45:58 2023
+From: u9468cbd398875d8c at groups.google.com (=?utf-8?q?Th=C3=A9o_Michelot?=)
+Date: Thu, 24 Aug 2023 10:45:58 +0000
+Subject: Call for hosting the International Statistical Ecology Conference (ISEC) in 2026
+Message-ID: <RCEh72Fmxf4.h8gnu29gEgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/RCEh72Fmxf4/m/h8gnu29gEgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> Dear colleagues (apologies for cross-posting),
+>
+> We are inviting expressions of interest to host the International Statistical Ecology Conference (ISEC) in 2026. ISEC is organised every two years (typically in June or July), and it has been a very successful event to build connections across the statistical ecology community all over the world. For information about the last ISEC, held in Cape Town in 2022, please see https://www.isec2022.org/.
+>
+> ISEC 2026 will be the 10th iteration of the conference, and it has been customary for past organisers to provide some guidance to prospective hosts. Conference hosts can also apply for financial support from the ISEC Foundation.
+>
+> Please fill out this form to let us know that you are interested in hosting ISEC 2026: https://forms.office.com/r/8nrRGESPPL. We would like to receive applications by November 30, 2023. If you have any questions, or would like to discuss anything, you can contact the chair of the long-term planning committee (Brett McClintock, isec...@gmail.com).
+>
+> We hope to see many of you in Swansea for ISEC 2024.
+>
+> Best wishes,
+> ISEC long-term planning committee
+
+From uca0b78ecd2f38eec at groups.google.com  Wed Aug 30 17:50:10 2023
+From: uca0b78ecd2f38eec at groups.google.com (Josh Barry)
+Date: Wed, 30 Aug 2023 17:50:10 +0000
+Subject: 85% CRIs using ubms package?
+Message-ID: <GGBMSptXeLA.lT9f6tpzBAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/GGBMSptXeLA/m/lT9f6tpzBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+I want to extract the 85% CRIs from a single season occupancy model with package ubms (the Bayesian 'sister package' of unmarked). The model output provides the 95% CRIs. I attempted to use the confint() function which works with unmarked, but it doesn't seem to work with ubms. Does anyone know how I can easily extract the 85% CRIs with ubms?
+
+Unmarked  example:
+unmarked_mod_1 <-occu(~ date ~Year , data= data1)
+confint(unmarked_mod_1, type="state", level = 0.85)
+
+ubms example (same model but with site-level random effect):
+  ubms_mod_2  <-stan_occu(~date ~ Year + (1|Site), data=data1,
+                                     chains = 5, iter = 10000, cores = 2, seed = 123)
+
+Thanks for any insights.
+
+Kind regards -- Josh
+
+From u4f80e1927b0757cb at groups.google.com  Wed Aug 30 18:06:42 2023
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Wed, 30 Aug 2023 18:06:42 +0000
+Subject: Re: [unmarked] 85% CRIs using ubms package?
+Message-ID: <GGBMSptXeLA.SEKP_sF0BAAJ@unmarked.groups.google.com>
+In-Reply-To: <GGBMSptXeLA.lT9f6tpzBAAJ@unmarked.groups.google.com>
+References: <GGBMSptXeLA.lT9f6tpzBAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/GGBMSptXeLA/m/SEKP_sF0BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+ubms doesn't support the confint method, I should probably add something like that.
+
+Probably the easiest way to get what you want is to just get the full set of posterior samples for all the parameters and calculate the desired CI yourself. For example, to get the state submodel intercept, it would be something like
+
+post <- extract(unmarked_mod_1)
+names(post)
+beta_state <- post$beta_state
+dim(beta_state)
+int <- beta_state[,1] # columns in same order as output summary
+quantile(int, c(0.075, 0.925))
+
+Ken
+
+On Wed, Aug 30, 2023 at 10:50:10AM -0700, Josh Barry wrote:
+> Dear all,
+>
+> I want to extract the 85% CRIs from a single season occupancy model with
+> package ubms (the Bayesian 'sister package' of unmarked). The model output
+> provides the 95% CRIs. I attempted to use the confint() function which
+> works with unmarked, but it doesn't seem to work with ubms. Does anyone
+> know how I can easily extract the 85% CRIs with ubms?
+>
+
+> *Unmarked  example:*
+
+> unmarked_mod_1 <-occu(~ date ~Year , data= data1)
+> confint(unmarked_mod_1, type="state", level = 0.85)
+>
+
+> *ubms example (same model but with site-level random effect):*
+
+>   ubms_mod_2  <-stan_occu(~date ~ Year + (1|Site), data=data1,
+>                                      chains = 5, iter = 10000, cores = 2,
+> seed = 123)
+>
+> Thanks for any insights.
+>
+> Kind regards -- Josh
+>
+
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked (this list): for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/780058dd-2637-4a98-9b4f-cc6303a4fa4fn%40googlegroups.com.
+
+From ud0d6d503f5acae62 at groups.google.com  Wed Aug 30 20:59:18 2023
+From: ud0d6d503f5acae62 at groups.google.com (unknown)
+Date: Wed, 30 Aug 2023 20:59:18 +0000
+Subject: 
+Message-ID: <GGBMSptXeLA.zxJpCS1-BAAJ@unmarked.groups.google.com>
+In-Reply-To: <GGBMSptXeLA.lT9f6tpzBAAJ@unmarked.groups.google.com>
+References: <GGBMSptXeLA.lT9f6tpzBAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/GGBMSptXeLA/m/zxJpCS1-BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From uca0b78ecd2f38eec at groups.google.com  Wed Aug 30 21:20:51 2023
+From: uca0b78ecd2f38eec at groups.google.com (Josh Barry)
+Date: Wed, 30 Aug 2023 21:20:51 +0000
+Subject: Re: [unmarked] 85% CRIs using ubms package?
+Message-ID: <GGBMSptXeLA.MqXyGFp_BAAJ@unmarked.groups.google.com>
+In-Reply-To: <GGBMSptXeLA.SEKP_sF0BAAJ@unmarked.groups.google.com>
+References: <GGBMSptXeLA.lT9f6tpzBAAJ@unmarked.groups.google.com> <GGBMSptXeLA.SEKP_sF0BAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/GGBMSptXeLA/m/MqXyGFp_BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Ken, simple enough!
+
+Josh
+
+On Wednesday, August 30, 2023 at 1:06:42 PM UTC-5 Ken Kellner wrote:
+> ubms doesn't support the confint method, I should probably add something like that.
+>
+> Probably the easiest way to get what you want is to just get the full set of posterior samples for all the parameters and calculate the desired CI yourself. For example, to get the state submodel intercept, it would be something like
+>
+> post <- extract(unmarked_mod_1)
+> names(post)
+> beta_state <- post$beta_state
+> dim(beta_state)
+> int <- beta_state[,1] # columns in same order as output summary
+> quantile(int, c(0.075, 0.925))
+>
+> Ken
+>
+> On Wed, Aug 30, 2023 at 10:50:10AM -0700, Josh Barry wrote:
+> > Dear all,
+> >
+> > I want to extract the 85% CRIs from a single season occupancy model with
+> > package ubms (the Bayesian 'sister package' of unmarked). The model output
+> > provides the 95% CRIs. I attempted to use the confint() function which
+> > works with unmarked, but it doesn't seem to work with ubms. Does anyone
+> > know how I can easily extract the 85% CRIs with ubms?
+> >
+> > *Unmarked example:*
+> > unmarked_mod_1 <-occu(~ date ~Year , data= data1)
+> > confint(unmarked_mod_1, type="state", level = 0.85)
+> >
+> > *ubms example (same model but with site-level random effect):*
+> > ubms_mod_2 <-stan_occu(~date ~ Year + (1|Site), data=data1,
+> > chains = 5, iter = 10000, cores = 2,
+> > seed = 123)
+> >
+> > Thanks for any insights.
+> >
+> > Kind regards -- Josh
+> >
+> > --
+> > *** Three hierarchical modeling email lists ***
+> > (1) unmarked (this list): for questions specific to the R package unmarked
+> > (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> > (3) HMecology: for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> > ---
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/780058dd-2637-4a98-9b4f-cc6303a4fa4fn%40googlegroups.com.
+>
+

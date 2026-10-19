@@ -1,0 +1,1238 @@
+From uf0aff150ad7805be at groups.google.com  Tue Jul 12 21:08:49 2022
+From: uf0aff150ad7805be at groups.google.com (Geoffrey Phipps)
+Date: Tue, 12 Jul 2022 21:08:49 +0000
+Subject: Installing 1.8.1 and 1.9 with AD and R
+Message-ID: <X7chWaXur_s.diu33r6-AQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/X7chWaXur_s/m/diu33r6-AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+  We are having tremendous problems building a stable installation of TMB with R 4.2.*
+
+We build a linux container that includes R 4.2, Intel MKL, and TMB 1.7.16. We have been doing this successfully for many years with previous versions of R, although building a new image has always been troublesome. The hardest part is getting TMB to link.
+
+Currently we are unable to create a usable implementation. Our problems are:
+
+Building with TMB 1.8.1 failed because there were undefined symbols. We modified the Makefile to get around that, but then the model would not converge, even though it converged in  a build from several years ago using R 3.6.1
+
+If we use a non-optimized (standard without AD) build it converges, it fails on an optimized (TMB with AD) build. The non-optimized build is too slow.
+
+The libraries we used in the linking command we used in this case was:
+
+"-Wl,--no-as-needed -lmkl_gf_lp64 -Wl,--start-group -lmkl_gnu_thread  -lmkl_core  -Wl,--end-group -fopenmp  -ldl -lpthread -lm \"
+
+Builds with 1.9.0 crashed due to a double memory-free error:
+
+> obj <- MakeADFun(tmb_data, tmb_par, random = c("B", paste0("re", 1:4)), DLL = paste0("mod_", model), map = map)
+4 regions found.
+Using 1 threads
+double free or corruption (!prev)
+/ihme/singularity-images/rstudio/shells/interactiveR.sh: line 91: 1908998 Aborted singularity exec -B '/mnt,/tmp/singularity_limingxu/1908979:/tmp' /tmp/image_cache/ba98d68b123191aa326c93bac6bf1e3b.img /bin/bash -c "umask 002 && /usr/local/bin/R"
+
+A build with oipenblas is easy to make, but our code includes mkl.h from Intel, so that is of no use to us.
+
+We tried using gdb to find the memory error but could not.
+What does SuiteSparse do? We suspect that it and metis might be part of the problem
+
+So, we have three problems
+Why are models no longer converging using AD?
+What can we do about the memory error?
+In general, how can we create a useable installation?
+
+From u258b98968d0ad8b9 at groups.google.com  Wed Jul 13 09:39:05 2022
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Wed, 13 Jul 2022 09:39:05 +0000
+Subject: Re: Installing 1.8.1 and 1.9 with AD and R
+Message-ID: <X7chWaXur_s.TU-NAnBkAAAJ@tmb-users.groups.google.com>
+In-Reply-To: <X7chWaXur_s.diu33r6-AQAJ@tmb-users.groups.google.com>
+References: <X7chWaXur_s.diu33r6-AQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/X7chWaXur_s/m/TU-NAnBkAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+INSTALL
+
+To build a stable TMB for optimal performance with a recent R on a Linux system you should always do (and nothing else):
+
+git clone https://github.com/kaskr/adcomp
+cd adcomp
+make install-metis-full
+
+The applied BLAS is set by the R installation:
+
+R CMD config BLAS_LIBS
+
+If this is not what you want then re-install R appropriately from source.
+
+TEST
+
+cd adcomp/tmb_examples
+
+Check timings of a relevant model (using BLAS and METIS orderings):
+make ar1_4D
+(Should run in less than 4 seconds.)
+
+Also check a model using parallel templates:
+OMP_NUM_THREADS=8 make transform_parallel
+(Did it split the work in 8 parallel chunks?)
+
+Finally check for correctness:
+make report
+cat REPORT.md
+
+ADAPT OLD MODELS
+
+Some minor changes were made in TMB version 1.9.0 on how to control the number of OpenMP threads. I see from your model output '4 regions found using 1 thread', probably because you have omp_* in your cpp file? This is no longer supported (or needed). You have to set the number of threads from the R script explicitly using 'openmp(nthreads)' or allow the max to be used by setting 'openmp(max=TRUE)'. Otherwise only 1 thread will be used.
+
+Make sure that linker errors of your model are not due to old incompatible object files (rm *.o).
+
+On Tuesday, July 12, 2022 at 11:08:49 PM UTC+2 gph...@uw.edu wrote:
+>
+> Hi,
+>
+>   We are having tremendous problems building a stable installation of TMB with R 4.2.*
+>
+> We build a linux container that includes R 4.2, Intel MKL, and TMB 1.7.16. We have been doing this successfully for many years with previous versions of R, although building a new image has always been troublesome. The hardest part is getting TMB to link.
+>
+> Currently we are unable to create a usable implementation. Our problems are:
+>
+> Building with TMB 1.8.1 failed because there were undefined symbols. We modified the Makefile to get around that, but then the model would not converge, even though it converged in  a build from several years ago using R 3.6.1
+>
+> If we use a non-optimized (standard without AD) build it converges, it fails on an optimized (TMB with AD) build. The non-optimized build is too slow.
+>
+> The libraries we used in the linking command we used in this case was:
+>
+> "-Wl,--no-as-needed -lmkl_gf_lp64 -Wl,--start-group -lmkl_gnu_thread  -lmkl_core  -Wl,--end-group -fopenmp  -ldl -lpthread -lm \"
+>
+>
+>
+> Builds with 1.9.0 crashed due to a double memory-free error:
+>
+>
+>
+> > obj <- MakeADFun(tmb_data, tmb_par, random = c("B", paste0("re", 1:4)), DLL = paste0("mod_", model), map = map)
+> 4 regions found.
+> Using 1 threads
+> double free or corruption (!prev)
+> /ihme/singularity-images/rstudio/shells/interactiveR.sh: line 91: 1908998 Aborted singularity exec -B '/mnt,/tmp/singularity_limingxu/1908979:/tmp' /tmp/image_cache/ba98d68b123191aa326c93bac6bf1e3b.img /bin/bash -c "umask 002 && /usr/local/bin/R"
+>
+> A build with oipenblas is easy to make, but our code includes mkl.h from Intel, so that is of no use to us.
+>
+> We tried using gdb to find the memory error but could not.
+> What does SuiteSparse do? We suspect that it and metis might be part of the problem
+>
+> So, we have three problems
+> Why are models no longer converging using AD?
+> What can we do about the memory error?
+> In general, how can we create a useable installation?
+
+From uf0aff150ad7805be at groups.google.com  Wed Jul 13 16:57:44 2022
+From: uf0aff150ad7805be at groups.google.com (Geoffrey Phipps)
+Date: Wed, 13 Jul 2022 16:57:44 +0000
+Subject: Re: Installing 1.8.1 and 1.9 with AD and R
+Message-ID: <X7chWaXur_s.dZLv6l98AAAJ@tmb-users.groups.google.com>
+In-Reply-To: <X7chWaXur_s.diu33r6-AQAJ@tmb-users.groups.google.com>
+References: <X7chWaXur_s.diu33r6-AQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/X7chWaXur_s/m/dZLv6l98AAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks, we will try this today
+
+On Wednesday, July 13, 2022 at 2:39:05 AM UTC-7 kasper.k...@gmail.com wrote:
+>
+> INSTALL
+>
+> To build a stable TMB for optimal performance with a recent R on a Linux system you should always do (and nothing else):
+>
+> git clone https://github.com/kaskr/adcomp
+> cd adcomp
+> make install-metis-full
+>
+> The applied BLAS is set by the R installation:
+>
+> R CMD config BLAS_LIBS
+>
+> If this is not what you want then re-install R appropriately from source.
+>
+> TEST
+>
+> cd adcomp/tmb_examples
+>
+> Check timings of a relevant model (using BLAS and METIS orderings):
+> make ar1_4D
+> (Should run in less than 4 seconds.)
+>
+> Also check a model using parallel templates:
+> OMP_NUM_THREADS=8 make transform_parallel
+> (Did it split the work in 8 parallel chunks?)
+>
+> Finally check for correctness:
+> make report
+> cat REPORT.md
+>
+> ADAPT OLD MODELS
+>
+> Some minor changes were made in TMB version 1.9.0 on how to control the number of OpenMP threads. I see from your model output '4 regions found using 1 thread', probably because you have omp_* in your cpp file? This is no longer supported (or needed). You have to set the number of threads from the R script explicitly using 'openmp(nthreads)' or allow the max to be used by setting 'openmp(max=TRUE)'. Otherwise only 1 thread will be used.
+>
+> Make sure that linker errors of your model are not due to old incompatible object files (rm *.o).
+>
+> On Tuesday, July 12, 2022 at 11:08:49 PM UTC+2 gph...@uw.edu wrote:
+> >
+> > Hi,
+> >
+> >   We are having tremendous problems building a stable installation of TMB with R 4.2.*
+> >
+> > We build a linux container that includes R 4.2, Intel MKL, and TMB 1.7.16. We have been doing this successfully for many years with previous versions of R, although building a new image has always been troublesome. The hardest part is getting TMB to link.
+> >
+> > Currently we are unable to create a usable implementation. Our problems are:
+> >
+> > Building with TMB 1.8.1 failed because there were undefined symbols. We modified the Makefile to get around that, but then the model would not converge, even though it converged in  a build from several years ago using R 3.6.1
+> >
+> > If we use a non-optimized (standard without AD) build it converges, it fails on an optimized (TMB with AD) build. The non-optimized build is too slow.
+> >
+> > The libraries we used in the linking command we used in this case was:
+> >
+> > "-Wl,--no-as-needed -lmkl_gf_lp64 -Wl,--start-group -lmkl_gnu_thread  -lmkl_core  -Wl,--end-group -fopenmp  -ldl -lpthread -lm \"
+> >
+> >
+> >
+> > Builds with 1.9.0 crashed due to a double memory-free error:
+> >
+> >
+> >
+> > > obj <- MakeADFun(tmb_data, tmb_par, random = c("B", paste0("re", 1:4)), DLL = paste0("mod_", model), map = map)
+> > 4 regions found.
+> > Using 1 threads
+> > double free or corruption (!prev)
+> > /ihme/singularity-images/rstudio/shells/interactiveR.sh: line 91: 1908998 Aborted singularity exec -B '/mnt,/tmp/singularity_limingxu/1908979:/tmp' /tmp/image_cache/ba98d68b123191aa326c93bac6bf1e3b.img /bin/bash -c "umask 002 && /usr/local/bin/R"
+> >
+> > A build with oipenblas is easy to make, but our code includes mkl.h from Intel, so that is of no use to us.
+> >
+> > We tried using gdb to find the memory error but could not.
+> > What does SuiteSparse do? We suspect that it and metis might be part of the problem
+> >
+> > So, we have three problems
+> > Why are models no longer converging using AD?
+> > What can we do about the memory error?
+> > In general, how can we create a useable installation?
+
+From u442b578d148ed4d1 at groups.google.com  Thu Jul 14 14:28:58 2022
+From: u442b578d148ed4d1 at groups.google.com (Simon Bonner)
+Date: Thu, 14 Jul 2022 14:28:58 +0000
+Subject: Re: Saddlepoint Approximation
+Message-ID: <cJ2g-1lbsAM.99h7ZP3lAAAJ@tmb-users.groups.google.com>
+In-Reply-To: <cJ2g-1lbsAM.RMX-KHm0BAAJ@tmb-users.groups.google.com>
+References: <cJ2g-1lbsAM.RMX-KHm0BAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/cJ2g-1lbsAM/m/99h7ZP3lAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hey Kasper,
+
+Thanks for the quick reply and apologies for not getting back sooner. I subscribed to the thread, but never received a notification of your response.
+
+I tried adding the framework="TMBad" argument to the example and it works -- very quickly. I noticed this has now been added to spa_gauss.R in github as well.
+
+Much obliged!
+
+Simon
+
+On Saturday, June 18, 2022 at 3:27:55 AM UTC-4 kasper.k...@gmail.com wrote:
+> One has to use the new AD framework for this to work:
+>
+> compile("spa_gauss.cpp", framework="TMBad")
+>
+>
+> On Friday, June 17, 2022 at 6:19:21 PM UTC+2 simonj...@gmail.com wrote:
+> > Hey Kasper et al,
+> >
+> > I've been working for a while with Wei Zhang who has developed methods to fit latent multiomial mark-recapture models using the saddlepoint approximation. His implementation uses a modified version of some of the TMB functions.
+> >
+> > We know that there has been an issue about this on github <https://github.com/kaskr/adcomp/pull/294> and we saw the recent message saying that the changes had been moved to the main branch. We'd like to be able to modify our code to take advantage of this, so we don't have to modify the code outside of the package. Unfortunately, we're having trouble getting the spa_gauss example <https://github.com/kaskr/adcomp/blob/master/tmb_examples/TMBad/spa_gauss.R> to work. The compiler fails because it's unable to find the TMBad type.
+> >
+> > I've copied the start of the error message below and attached the completed log. Can you provide any suggestions for running this example and how to work with the new SPA features?
+> >
+> > Many thanks in advance!
+> >
+> > Simon
+> >
+> >
+> > > compile("spa_gauss.cpp")
+> > g++ -std=gnu++14 -I"/usr/share/R/include" -DNDEBUG -I"/home/sbonner/R/x86_64-pc-linux-gnu-library/4.2/TMB/include"   -DTMB_SAFEBOUNDS -DTMB_EIGEN_DISABLE_WARNINGS -DLIB_UNLOAD=R_unload_spa_gauss  -DTMB_LIB_INIT=R_init_spa_gauss  -DCPPAD_FRAMEWORK     -fpic  -g -O2 -fdebug-prefix-map=/build/r-base-apO4Ea/r-base-4.2.0=. -fstack-protector-strong -Wformat -Werror=format-security -Wdate-time -D_FORTIFY_SOURCE=2  -c spa_gauss.cpp -o spa_gauss.o
+> > spa_gauss.cpp:5:9: error: ‘TMBad’ does not name a type
+> >     5 | typedef TMBad::ad_aug ad;
+> >       |         ^~~~~
+> > spa_gauss.cpp:8:10: error: ‘ad’ was not declared in this scope; did you mean ‘atomic::tiny_ad::ad’?
+> >     8 |   vector<ad> y; // Data
+> >       |          ^~
+> >       |          atomic::tiny_ad::ad
+
+From u00f2debfd588b763 at groups.google.com  Thu Jul 14 21:57:09 2022
+From: u00f2debfd588b763 at groups.google.com (mark...@gmail.com)
+Date: Thu, 14 Jul 2022 21:57:09 +0000
+Subject: Re: [TMB users] Adding matrix rows with TMB vectors
+Message-ID: <M3a2g4FBxMc.6XxLR0e3AQAJ@tmb-users.groups.google.com>
+In-Reply-To: <M3a2g4FBxMc.6INnAJeCAAAJ@tmb-users.groups.google.com>
+References: <M3a2g4FBxMc.Tpz8rs1GAAAJ@tmb-users.groups.google.com> <M3a2g4FBxMc.6INnAJeCAAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/M3a2g4FBxMc/m/6XxLR0e3AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone,
+
+I am having similar problems. Here is simple code with errors. vector*vector is supposed to be an element wise multiplication producing a vector (see https://kaskr.github.io/adcomp/matrix_arrays_8cpp-example.html)
+
+  matrix<Type> Scum(Nyears,Nyears);
+  matrix<Type> Pcum(Nyears,Nyears);
+
+      std::cout<< sum(vector<Type>(Scum.row(i)))<<std::endl;   //Compiles
+      std::cout<< sum(vector<Type>(Scum.row(i))*vector<Type>(Pcum.row(i)))<<std::endl;   //no matching function for call to 'sum(const Eige::CwiseBinaryOp....
+
+Any suggestions would be appreciated.
+
+Thanks,
+
+Mark
+
+On Wednesday, March 2, 2022 at 8:14:55 AM UTC-8 pthomp...@gmail.com wrote:
+> Hi Anders, this worked perfectly! Thanks for the suggestion, I hadn't thought about casting.
+>
+> Peter
+>
+> On Wednesday, March 2, 2022 at 12:53:03 AM UTC-7 Anders Nielsen wrote:
+> >
+> > Hi Peter,
+> >
+> >
+> > Something like this should work:
+> >
+> >
+> >   vector<Type> value = vector<Type>(M.row(0)) + v;
+> >
+> > Cheers,
+> >
+> > Anders.
+> >
+> > From: tmb-...@googlegroups.com <tmb-...@googlegroups.com> on behalf of pthomp...@gmail.com <pthomp...@gmail.com>
+> > Sent: Tuesday, March 1, 2022 10:59 PM
+> > To: TMB Users
+> > Subject: [TMB users] Adding matrix rows with TMB vectors
+> >
+> > Hello,
+> >
+> > I'm trying to write up a model in TMB (I'm quite familiar with R, a little bit less familiar with TMB and C++) and having a bit of trouble. I think I'm missing something obvious, but I've looked a bit at previous questions as well as the docs and still can't figure it out. The problem I'm having can be simplified to the short example below:
+> >
+> > #include "TMB.hpp"
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> >   // Data
+> >   DATA_MATRIX( M );
+> >
+> >   // Parameters
+> >   PARAMETER_VECTOR( v );
+> >
+> >   vector<Type> value = M.row(0) + v;
+> >
+> >   return 0;
+> > }
+> >
+> > This piece of code doesn't compile because I can't add M.row(0) to v. I'm a bit confused as to why because M.row(0) should be stored as a vector<Type>, and I should theoretically be able to add two vector<Type>'s elementwise. Of course - I'm not suggesting that there is a bug - just wondering what I'm missing! I understand that obviously if these vectors are different lengths, this poses a problem, but figured that would show up as a runtime error - if I'm missing something let me know! What is the proper way to get "value" - is a for loop required?
+> >
+> > Any input is appreciated,
+> > Peter Thompson (he/him)
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at  https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/f764e612-5422-416d-a49d-1656cf8598fcn%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/f764e612-5422-416d-a49d-1656cf8598fcn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u258b98968d0ad8b9 at groups.google.com  Fri Jul 15 09:15:36 2022
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Fri, 15 Jul 2022 09:15:36 +0000
+Subject: Re: [TMB users] Adding matrix rows with TMB vectors
+Message-ID: <M3a2g4FBxMc.4H9fLk3cAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <M3a2g4FBxMc.6XxLR0e3AQAJ@tmb-users.groups.google.com>
+References: <M3a2g4FBxMc.Tpz8rs1GAAAJ@tmb-users.groups.google.com> <M3a2g4FBxMc.6XxLR0e3AQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/M3a2g4FBxMc/m/4H9fLk3cAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The confusion here is that a vector times vector becomes a new expression (not a vector). So, you have to explicitly cast to vector using something like
+
+sum(vector<Type>(vector<Type>(Scum.row(i))*vector<Type>(Pcum.row(i))))
+
+Alternatively you can choose to work with the expression templates and do
+
+Scum.array().row(i).square().sum()
+
+Note that 'array()' tells Eigen that you want to apply elementwise operations to your matrix rather than matrix operations.
+
+On Thursday, July 14, 2022 at 11:57:09 PM UTC+2 mark...@gmail.com wrote:
+> Hi everyone,
+>
+> I am having similar problems. Here is simple code with errors. vector*vector is supposed to be an element wise multiplication producing a vector (see https://kaskr.github.io/adcomp/matrix_arrays_8cpp-example.html)
+>
+>   matrix<Type> Scum(Nyears,Nyears);
+>   matrix<Type> Pcum(Nyears,Nyears);
+>
+>       std::cout<< sum(vector<Type>(Scum.row(i)))<<std::endl;   //Compiles
+>       std::cout<< sum(vector<Type>(Scum.row(i))*vector<Type>(Pcum.row(i)))<<std::endl;   //no matching function for call to 'sum(const Eige::CwiseBinaryOp....
+>
+> Any suggestions would be appreciated.
+>
+> Thanks,
+>
+> Mark
+>
+> On Wednesday, March 2, 2022 at 8:14:55 AM UTC-8 pthomp...@gmail.com wrote:
+> > Hi Anders, this worked perfectly! Thanks for the suggestion, I hadn't thought about casting.
+> >
+> > Peter
+> >
+> > On Wednesday, March 2, 2022 at 12:53:03 AM UTC-7 Anders Nielsen wrote:
+> > >
+> > > Hi Peter,
+> > >
+> > >
+> > > Something like this should work:
+> > >
+> > >
+> > >   vector<Type> value = vector<Type>(M.row(0)) + v;
+> > >
+> > > Cheers,
+> > >
+> > > Anders.
+> > >
+> > > From: tmb-...@googlegroups.com <tmb-...@googlegroups.com> on behalf of pthomp...@gmail.com <pthomp...@gmail.com>
+> > > Sent: Tuesday, March 1, 2022 10:59 PM
+> > > To: TMB Users
+> > > Subject: [TMB users] Adding matrix rows with TMB vectors
+> > >
+> > > Hello,
+> > >
+> > > I'm trying to write up a model in TMB (I'm quite familiar with R, a little bit less familiar with TMB and C++) and having a bit of trouble. I think I'm missing something obvious, but I've looked a bit at previous questions as well as the docs and still can't figure it out. The problem I'm having can be simplified to the short example below:
+> > >
+> > > #include "TMB.hpp"
+> > > template<class Type>
+> > > Type objective_function<Type>::operator() ()
+> > > {
+> > >   // Data
+> > >   DATA_MATRIX( M );
+> > >
+> > >   // Parameters
+> > >   PARAMETER_VECTOR( v );
+> > >
+> > >   vector<Type> value = M.row(0) + v;
+> > >
+> > >   return 0;
+> > > }
+> > >
+> > > This piece of code doesn't compile because I can't add M.row(0) to v. I'm a bit confused as to why because M.row(0) should be stored as a vector<Type>, and I should theoretically be able to add two vector<Type>'s elementwise. Of course - I'm not suggesting that there is a bug - just wondering what I'm missing! I understand that obviously if these vectors are different lengths, this poses a problem, but figured that would show up as a runtime error - if I'm missing something let me know! What is the proper way to get "value" - is a for loop required?
+> > >
+> > > Any input is appreciated,
+> > > Peter Thompson (he/him)
+> > >
+> > > --
+> > > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at  https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/f764e612-5422-416d-a49d-1656cf8598fcn%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/f764e612-5422-416d-a49d-1656cf8598fcn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u00f2debfd588b763 at groups.google.com  Fri Jul 15 18:06:48 2022
+From: u00f2debfd588b763 at groups.google.com (mark...@gmail.com)
+Date: Fri, 15 Jul 2022 18:06:48 +0000
+Subject: Re: [TMB users] Adding matrix rows with TMB vectors
+Message-ID: <M3a2g4FBxMc.qRMeDUr5AQAJ@tmb-users.groups.google.com>
+In-Reply-To: <M3a2g4FBxMc.Tpz8rs1GAAAJ@tmb-users.groups.google.com>
+References: <M3a2g4FBxMc.Tpz8rs1GAAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/M3a2g4FBxMc/m/qRMeDUr5AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Kasper,
+
+That worked. It is kind of complicated, but I understand it.
+
+Regards,
+
+Mark
+
+On Friday, July 15, 2022 at 2:15:36 AM UTC-7 kasper.k...@gmail.com wrote:
+> The confusion here is that a vector times vector becomes a new expression (not a vector). So, you have to explicitly cast to vector using something like
+>
+> sum(vector<Type>(vector<Type>(Scum.row(i))*vector<Type>(Pcum.row(i))))
+>
+> Alternatively you can choose to work with the expression templates and do
+>
+> Scum.array().row(i).square().sum()
+>
+> Note that 'array()' tells Eigen that you want to apply elementwise operations to your matrix rather than matrix operations.
+>
+>
+> On Thursday, July 14, 2022 at 11:57:09 PM UTC+2 mark...@gmail.com wrote:
+> > Hi everyone,
+> >
+> > I am having similar problems. Here is simple code with errors. vector*vector is supposed to be an element wise multiplication producing a vector (see https://kaskr.github.io/adcomp/matrix_arrays_8cpp-example.html)
+> >
+> >   matrix<Type> Scum(Nyears,Nyears);
+> >   matrix<Type> Pcum(Nyears,Nyears);
+> >
+> >       std::cout<< sum(vector<Type>(Scum.row(i)))<<std::endl;   //Compiles
+> >       std::cout<< sum(vector<Type>(Scum.row(i))*vector<Type>(Pcum.row(i)))<<std::endl;   //no matching function for call to 'sum(const Eige::CwiseBinaryOp....
+> >
+> > Any suggestions would be appreciated.
+> >
+> > Thanks,
+> >
+> > Mark
+> >
+> > On Wednesday, March 2, 2022 at 8:14:55 AM UTC-8 pthomp...@gmail.com wrote:
+> > > Hi Anders, this worked perfectly! Thanks for the suggestion, I hadn't thought about casting.
+> > >
+> > > Peter
+> > >
+> > > On Wednesday, March 2, 2022 at 12:53:03 AM UTC-7 Anders Nielsen wrote:
+> > > >
+> > > > Hi Peter,
+> > > >
+> > > >
+> > > > Something like this should work:
+> > > >
+> > > >
+> > > >   vector<Type> value = vector<Type>(M.row(0)) + v;
+> > > >
+> > > > Cheers,
+> > > >
+> > > > Anders.
+> > > >
+> > > > From: tmb-...@googlegroups.com <tmb-...@googlegroups.com> on behalf of pthomp...@gmail.com <pthomp...@gmail.com>
+> > > > Sent: Tuesday, March 1, 2022 10:59 PM
+> > > > To: TMB Users
+> > > > Subject: [TMB users] Adding matrix rows with TMB vectors
+> > > >
+> > > > Hello,
+> > > >
+> > > > I'm trying to write up a model in TMB (I'm quite familiar with R, a little bit less familiar with TMB and C++) and having a bit of trouble. I think I'm missing something obvious, but I've looked a bit at previous questions as well as the docs and still can't figure it out. The problem I'm having can be simplified to the short example below:
+> > > >
+> > > > #include "TMB.hpp"
+> > > > template<class Type>
+> > > > Type objective_function<Type>::operator() ()
+> > > > {
+> > > >   // Data
+> > > >   DATA_MATRIX( M );
+> > > >
+> > > >   // Parameters
+> > > >   PARAMETER_VECTOR( v );
+> > > >
+> > > >   vector<Type> value = M.row(0) + v;
+> > > >
+> > > >   return 0;
+> > > > }
+> > > >
+> > > > This piece of code doesn't compile because I can't add M.row(0) to v. I'm a bit confused as to why because M.row(0) should be stored as a vector<Type>, and I should theoretically be able to add two vector<Type>'s elementwise. Of course - I'm not suggesting that there is a bug - just wondering what I'm missing! I understand that obviously if these vectors are different lengths, this poses a problem, but figured that would show up as a runtime error - if I'm missing something let me know! What is the proper way to get "value" - is a for loop required?
+> > > >
+> > > > Any input is appreciated,
+> > > > Peter Thompson (he/him)
+> > > >
+> > > > --
+> > > > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at  https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> > > > To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/f764e612-5422-416d-a49d-1656cf8598fcn%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/f764e612-5422-416d-a49d-1656cf8598fcn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u0495130141859df9 at groups.google.com  Thu Jul 21 13:45:38 2022
+From: u0495130141859df9 at groups.google.com (timothy....@noaa.gov)
+Date: Thu, 21 Jul 2022 13:45:38 +0000
+Subject: OSA residuals using "cdf" vs. other methods with a linear gaussian state-space model
+Message-ID: <43h5FtTTywg.0VKl5VscAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/43h5FtTTywg/m/0VKl5VscAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear All,
+
+I have attached files for a simple linear Gaussian state-space model example with a stationary AR1 process on the latent variable and known observation error variances, which are relatively small.  The code does the AR1 process "by hand" rather than use the namespace density. The OSA residuals produced using the cdf method are very different  from (and much worse than) those using other methods which provide similar residuals. It is most likely an error in my code to use the cdf method.
+
+Also, I suspect there is a typo in the help file for TMB::oneStepPredict in the example code for implementing the cdf method (calling  dnorm and pnorm with sd=0).
+
+Thanks in advance for any help!
+Tim
+
+From ue486b5b76d623341 at groups.google.com  Wed Jul 27 14:15:53 2022
+From: ue486b5b76d623341 at groups.google.com (Jeremy D)
+Date: Wed, 27 Jul 2022 14:15:53 +0000
+Subject: t distribution function (stats::pt)
+Message-ID: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/wOR02nMigdg/m/U4Hmmk9cDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+Can anyone suggest a way to implement the t-distribution function (i.e., stats::pt) in a TMB model?
+This function is needed for the skew t-distribution (sn::dst), which is currently not available in TMB.
+
+Thank you!
+
+From u02e03030784aa6a7 at groups.google.com  Wed Jul 27 15:05:46 2022
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Wed, 27 Jul 2022 15:05:46 +0000
+Subject: Re: t distribution function (stats::pt)
+Message-ID: <wOR02nMigdg.22VbfQhfDAAJ@tmb-users.groups.google.com>
+In-Reply-To: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com>
+References: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/wOR02nMigdg/m/22VbfQhfDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I guess that the reason pt() is not already in TMB is that its numerical implementation is a bit tricky.
+However, if seems that there are other ways of getting dst:
+
+https://en.wikipedia.org/wiki/Skewed_generalized_t_distribution#Skewed_t_distribution
+
+Hans
+
+On Wednesday, July 27, 2022 at 4:15:53 PM UTC+2 Jeremy D wrote:
+> Hi,
+>
+> Can anyone suggest a way to implement the t-distribution function (i.e., stats::pt) in a TMB model?
+> This function is needed for the skew t-distribution (sn::dst), which is currently not available in TMB.
+>
+> Thank you!
+
+From ufd4f3538f907404b at groups.google.com  Wed Jul 27 15:29:06 2022
+From: ufd4f3538f907404b at groups.google.com (Ben Bolker)
+Date: Wed, 27 Jul 2022 15:29:06 +0000
+Subject: Re: [TMB users] Re: t distribution function (stats::pt)
+Message-ID: <wOR02nMigdg.jeZWb05gDAAJ@tmb-users.groups.google.com>
+In-Reply-To: <wOR02nMigdg.22VbfQhfDAAJ@tmb-users.groups.google.com>
+References: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com> <wOR02nMigdg.22VbfQhfDAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/wOR02nMigdg/m/jeZWb05gDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+    Slightly naive Q: since (AFAIK) the R functions for pt() and dt()
+are available in TMB and since the derivative of pt() is dt() (by
+definition), it would seem not too hard (for some definition of "hard")
+to define a new atomic function following
+
+http://kaskr.github.io/adcomp/_book/AtomicFunctions.html
+
+   The code below *almost* compiles, but gets an error
+
+error: expected constructor, destructor, or type conversion before ‘(’ token
+    34 | VECTORIZE_1t(pt)
+
+  There's probably some tiny syntax error (see
+<https://stackoverflow.com/questions/8958044/expected-constructor-destructor-or-type-conversion-before-token>:
+"If the compiler can't match the definition's signature to the
+declaration's signature it thinks the definition is not a constructor
+and then doesn't know how to parse the code and displays this error")
+
+   Maybe someone else can see what's wrong, or can tell me why this
+wouldn't work.
+
+====
+#include <TMB.hpp>
+
+extern "C" {
+   double Rf_pt(double q);
+   double Rf_dt(double x);
+}
+
+TMB_ATOMIC_VECTOR_FUNCTION(
+     // ATOMIC_NAME
+     pt
+     ,
+     // OUTPUT_DIM
+     1,
+     // ATOMIC_DOUBLE
+     ty[0] = Rf_pt(tx[0]); // Call the 'double' version
+     ,
+     // ATOMIC_REVERSE
+     Type x  = ty[0];      // Function value from forward pass
+     Type dp = Rf_dt(x);   // Derivative (do we need a cast here??)
+     px[0] = dp * py[0];   // Reverse mode chain rule
+			   )
+
+template<class Type>
+Type pt(Type x){
+   CppAD::vector<Type> tx(1);
+   tx[0] = x;
+   return pt(tx)[0];
+}
+
+// Vectorized version
+VECTORIZE_1t(pt)
+
+On 2022-07-27 11:05 a.m., Hans Skaug wrote:
+> I guess that the reason pt() is not already in TMB is that its numerical
+> implementation is a bit tricky.
+> However, if seems that there are other ways of getting dst:
+>
+> https://en.wikipedia.org/wiki/Skewed_generalized_t_distribution#Skewed_t_distribution
+>
+> Hans
+>
+> On Wednesday, July 27, 2022 at 4:15:53 PM UTC+2 Jeremy D wrote:
+>
+>     Hi,
+>
+>     Can anyone suggest a way to implement the t-distribution function
+>     (i.e., stats::pt) in a TMB model?
+>     This function is needed for the skew t-distribution (sn::dst), which
+>     is currently not available in TMB.
+>
+>     Thank you!
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before
+> posting, please check the wiki and issuetracker at
+> https://github.com/kaskr/adcomp/ <https://github.com/kaskr/adcomp/>.
+> Please try to create a simple repeatable example to go with your
+> question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google
+> Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send
+> an email to tmb-users+...@googlegroups.com
+> <mailto:tmb-users+...@googlegroups.com>.
+> To view this discussion on the web visit
+> https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com
+> <https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Dr. Benjamin Bolker
+Professor, Mathematics & Statistics and Biology, McMaster University
+Director, School of Computational Science and Engineering
+(Acting) Graduate chair, Mathematics & Statistics
+
+From ue5c7e56038437512 at groups.google.com  Wed Jul 27 21:07:27 2022
+From: ue5c7e56038437512 at groups.google.com (jcavieresg)
+Date: Wed, 27 Jul 2022 21:07:27 +0000
+Subject: Generated quantities with tmbstan (from the TMB object)
+Message-ID: <d7WYOM6P3q8.gsmuI8VyDAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/d7WYOM6P3q8/m/gsmuI8VyDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+I have a "tmbstan" model and I would like to obtain generated quantities but for a random variable and not for the parameters (https://github.com/kaskr/tmbstan/blob/master/README.md)
+
+I simulated a random variable with normal distribution using the TMB function "SIMULATE()" but I don't know if I could do something similar like the Stan expression: "generated quantities{}" in the template of TMB.
+
+I will be grateful if someone can help me.
+Best wishes,
+
+From ue486b5b76d623341 at groups.google.com  Fri Jul 29 16:54:50 2022
+From: ue486b5b76d623341 at groups.google.com (Jeremy D)
+Date: Fri, 29 Jul 2022 16:54:50 +0000
+Subject: Re: [TMB users] Re: t distribution function (stats::pt)
+Message-ID: <wOR02nMigdg.FfNnggOEAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <wOR02nMigdg.jeZWb05gDAAJ@tmb-users.groups.google.com>
+References: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com> <wOR02nMigdg.jeZWb05gDAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/wOR02nMigdg/m/FfNnggOEAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you both for your replies.
+I'm looking into the reformulations of skewed-t that Hank's suggested, but I'm still hoping we could get Ben's code to work so we could use pt, and also understand more generally how the syntax error he mentioned can be fixed.
+
+On Wednesday, July 27, 2022 at 11:29:06 AM UTC-4 Ben Bolker wrote:
+> Slightly naive Q: since (AFAIK) the R functions for pt() and dt()
+> are available in TMB and since the derivative of pt() is dt() (by
+> definition), it would seem not too hard (for some definition of "hard")
+> to define a new atomic function following
+>
+> http://kaskr.github.io/adcomp/_book/AtomicFunctions.html
+>
+> The code below *almost* compiles, but gets an error
+>
+> error: expected constructor, destructor, or type conversion before ‘(’ token
+> 34 | VECTORIZE_1t(pt)
+>
+> There's probably some tiny syntax error (see
+> <https://stackoverflow.com/questions/8958044/expected-constructor-destructor-or-type-conversion-before-token>:
+> "If the compiler can't match the definition's signature to the
+> declaration's signature it thinks the definition is not a constructor
+> and then doesn't know how to parse the code and displays this error")
+>
+> Maybe someone else can see what's wrong, or can tell me why this
+> wouldn't work.
+>
+> ====
+> #include <TMB.hpp>
+>
+> extern "C" {
+> double Rf_pt(double q);
+> double Rf_dt(double x);
+> }
+>
+> TMB_ATOMIC_VECTOR_FUNCTION(
+> // ATOMIC_NAME
+> pt
+> ,
+> // OUTPUT_DIM
+> 1,
+> // ATOMIC_DOUBLE
+> ty[0] = Rf_pt(tx[0]); // Call the 'double' version
+> ,
+> // ATOMIC_REVERSE
+> Type x = ty[0]; // Function value from forward pass
+> Type dp = Rf_dt(x); // Derivative (do we need a cast here??)
+> px[0] = dp * py[0]; // Reverse mode chain rule
+> )
+>
+> template<class Type>
+> Type pt(Type x){
+> CppAD::vector<Type> tx(1);
+> tx[0] = x;
+> return pt(tx)[0];
+> }
+>
+> // Vectorized version
+> VECTORIZE_1t(pt)
+>
+>
+> On 2022-07-27 11:05 a.m., Hans Skaug wrote:
+> > I guess that the reason pt() is not already in TMB is that its numerical
+> > implementation is a bit tricky.
+> > However, if seems that there are other ways of getting dst:
+> >
+> > https://en.wikipedia.org/wiki/Skewed_generalized_t_distribution#Skewed_t_distribution
+> >
+> > Hans
+> >
+> > On Wednesday, July 27, 2022 at 4:15:53 PM UTC+2 Jeremy D wrote:
+> >
+> > Hi,
+> >
+> > Can anyone suggest a way to implement the t-distribution function
+> > (i.e., stats::pt) in a TMB model?
+> > This function is needed for the skew t-distribution (sn::dst), which
+> > is currently not available in TMB.
+> >
+> > Thank you!
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before
+> > posting, please check the wiki and issuetracker at
+> > https://github.com/kaskr/adcomp/ <https://github.com/kaskr/adcomp/>.
+> > Please try to create a simple repeatable example to go with your
+> > question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google
+> > Groups "TMB Users" group.
+> > To unsubscribe from this group and stop receiving emails from it, send
+> > an email to tmb-users+...@googlegroups.com
+> > <mailto:tmb-users+...@googlegroups.com>.
+> > To view this discussion on the web visit
+> > https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com
+> > <https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> Dr. Benjamin Bolker
+> Professor, Mathematics & Statistics and Biology, McMaster University
+> Director, School of Computational Science and Engineering
+> (Acting) Graduate chair, Mathematics & Statistics
+
+From u02e03030784aa6a7 at groups.google.com  Sun Jul 31 06:09:41 2022
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Sun, 31 Jul 2022 06:09:41 +0000
+Subject: Re: [TMB users] Re: t distribution function (stats::pt)
+Message-ID: <wOR02nMigdg.PgJB7vf9AgAJ@tmb-users.groups.google.com>
+In-Reply-To: <wOR02nMigdg.FfNnggOEAgAJ@tmb-users.groups.google.com>
+References: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com> <wOR02nMigdg.FfNnggOEAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/wOR02nMigdg/m/PgJB7vf9AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ben is right about using atomic functions, but the problem is that
+we only have a formula for the derivative wrt "x", and not wrt to "df".
+This is what prevents a straight forward implementation of pt() in TMB (I think):
+
+Below I have written a code where "df" is hardcoded. Then there is no
+need for the derivative wrt df, but of course "df" cannot be estimated as a parameter.
+ I do not know if this is  acceptable for Jeremy's application.
+(I also skip the vectorization stuff, so the code only works for scalar "x".)
+
+My code seems to work, but I do not claim to have a full understanding of this,
+so my code should be verified numerically before being used.
+
+Hans
+------------------------------------------
+
+// pt() with hardcoded df
+#include <TMB.hpp>
+
+extern "C" {
+   double Rf_pt(double q,double df,int,int);
+
+}
+
+TMB_ATOMIC_VECTOR_FUNCTION(
+     // ATOMIC_NAME
+     pt
+     ,
+     // OUTPUT_DIM
+     1,
+     // ATOMIC_DOUBLE
+
+     double df=2.0;  // First location of hardcoding
+     ty[0] = Rf_pt(tx[0],df,1,0); // Call the 'double' version
+     ,
+     // ATOMIC_REVERSE
+     Type df = 2.0;  // Second location of hardcoding
+     Type x  = tx[0];
+     px[0] = dt(x,df,false) * py[0];   // Reverse mode chain rule
+
+                           )
+template<class Type>
+Type pt(Type x){
+   CppAD::vector<Type> tx(1);
+   tx[0] = x;
+   return pt(tx)[0];
+}
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  DATA_VECTOR(z);
+  PARAMETER_VECTOR(x);                             // Underlying latent random
+  return pt(x(0));
+}
+
+On Friday, July 29, 2022 at 6:54:50 PM UTC+2 Jeremy D wrote:
+> Thank you both for your replies.
+> I'm looking into the reformulations of skewed-t that Hank's suggested, but I'm still hoping we could get Ben's code to work so we could use pt, and also understand more generally how the syntax error he mentioned can be fixed.
+>
+>
+>
+> On Wednesday, July 27, 2022 at 11:29:06 AM UTC-4 Ben Bolker wrote:
+> > Slightly naive Q: since (AFAIK) the R functions for pt() and dt()
+> > are available in TMB and since the derivative of pt() is dt() (by
+> > definition), it would seem not too hard (for some definition of "hard")
+> > to define a new atomic function following
+> >
+> > http://kaskr.github.io/adcomp/_book/AtomicFunctions.html
+> >
+> > The code below *almost* compiles, but gets an error
+> >
+> > error: expected constructor, destructor, or type conversion before ‘(’ token
+> > 34 | VECTORIZE_1t(pt)
+> >
+> > There's probably some tiny syntax error (see
+> > <https://stackoverflow.com/questions/8958044/expected-constructor-destructor-or-type-conversion-before-token>:
+> > "If the compiler can't match the definition's signature to the
+> > declaration's signature it thinks the definition is not a constructor
+> > and then doesn't know how to parse the code and displays this error")
+> >
+> > Maybe someone else can see what's wrong, or can tell me why this
+> > wouldn't work.
+> >
+> > ====
+> > #include <TMB.hpp>
+> >
+> > extern "C" {
+> > double Rf_pt(double q);
+> > double Rf_dt(double x);
+> > }
+> >
+> > TMB_ATOMIC_VECTOR_FUNCTION(
+> > // ATOMIC_NAME
+> > pt
+> > ,
+> > // OUTPUT_DIM
+> > 1,
+> > // ATOMIC_DOUBLE
+> > ty[0] = Rf_pt(tx[0]); // Call the 'double' version
+> > ,
+> > // ATOMIC_REVERSE
+> > Type x = ty[0]; // Function value from forward pass
+> > Type dp = Rf_dt(x); // Derivative (do we need a cast here??)
+> > px[0] = dp * py[0]; // Reverse mode chain rule
+> > )
+> >
+> > template<class Type>
+> > Type pt(Type x){
+> > CppAD::vector<Type> tx(1);
+> > tx[0] = x;
+> > return pt(tx)[0];
+> > }
+> >
+> > // Vectorized version
+> > VECTORIZE_1t(pt)
+> >
+> >
+> > On 2022-07-27 11:05 a.m., Hans Skaug wrote:
+> > > I guess that the reason pt() is not already in TMB is that its numerical
+> > > implementation is a bit tricky.
+> > > However, if seems that there are other ways of getting dst:
+> > >
+> > > https://en.wikipedia.org/wiki/Skewed_generalized_t_distribution#Skewed_t_distribution
+> > >
+> > > Hans
+> > >
+> > > On Wednesday, July 27, 2022 at 4:15:53 PM UTC+2 Jeremy D wrote:
+> > >
+> > > Hi,
+> > >
+> > > Can anyone suggest a way to implement the t-distribution function
+> > > (i.e., stats::pt) in a TMB model?
+> > > This function is needed for the skew t-distribution (sn::dst), which
+> > > is currently not available in TMB.
+> > >
+> > > Thank you!
+> > >
+> > > --
+> > > To post to this group, send email to us...@tmb-project.org. Before
+> > > posting, please check the wiki and issuetracker at
+> > > https://github.com/kaskr/adcomp/ <https://github.com/kaskr/adcomp/>.
+> > > Please try to create a simple repeatable example to go with your
+> > > question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > ---
+> > > You received this message because you are subscribed to the Google
+> > > Groups "TMB Users" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send
+> > > an email to tmb-users+...@googlegroups.com
+> > > <mailto:tmb-users+...@googlegroups.com>.
+> > > To view this discussion on the web visit
+> > > https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com
+> > > <https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > Dr. Benjamin Bolker
+> > Professor, Mathematics & Statistics and Biology, McMaster University
+> > Director, School of Computational Science and Engineering
+> > (Acting) Graduate chair, Mathematics & Statistics
+
+From u258b98968d0ad8b9 at groups.google.com  Sun Jul 31 11:01:58 2022
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Sun, 31 Jul 2022 11:01:58 +0000
+Subject: Re: OSA residuals using "cdf" vs. other methods with a linear gaussian state-space model
+Message-ID: <43h5FtTTywg.moD3IusNAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <43h5FtTTywg.0VKl5VscAQAJ@tmb-users.groups.google.com>
+References: <43h5FtTTywg.0VKl5VscAQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/43h5FtTTywg/m/moD3IusNAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Your code is correct and points out some flaws with the CDF method.
+
+First problem, is that the method failed without giving an error or warning. Only NANs to indicate something went completely wrong. I tracked it down to be an issue with random effect initialization that wasn't stable. This is now fixed in the TMB master branch.
+
+The improved initialization gets the cdf method closer to the other two, but unfortunately it's still too inaccurate. This is a known (yet undocumented) issue with the cdf method, that happens exactly when the measurement error is small.
+
+I expect a corrected CDF method can be developed in the future, but for now one has to be very careful when using it for random effect models.
+
+On Thursday, July 21, 2022 at 3:45:38 PM UTC+2 timothy....@noaa.gov wrote:
+> Dear All,
+>
+> I have attached files for a simple linear Gaussian state-space model example with a stationary AR1 process on the latent variable and known observation error variances, which are relatively small.  The code does the AR1 process "by hand" rather than use the namespace density. The OSA residuals produced using the cdf method are very different  from (and much worse than) those using other methods which provide similar residuals. It is most likely an error in my code to use the cdf method.
+>
+> Also, I suspect there is a typo in the help file for TMB::oneStepPredict in the example code for implementing the cdf method (calling  dnorm and pnorm with sd=0).
+>
+> Thanks in advance for any help!
+> Tim
+>
+
+From u258b98968d0ad8b9 at groups.google.com  Sun Jul 31 11:33:32 2022
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Sun, 31 Jul 2022 11:33:32 +0000
+Subject: Re: [TMB users] Re: t distribution function (stats::pt)
+Message-ID: <wOR02nMigdg.LBynMaQPAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <wOR02nMigdg.PgJB7vf9AgAJ@tmb-users.groups.google.com>
+References: <wOR02nMigdg.U4Hmmk9cDAAJ@tmb-users.groups.google.com> <wOR02nMigdg.PgJB7vf9AgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/wOR02nMigdg/m/LBynMaQPAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I agree with the analysis of Hans.
+
+An alternative is to look at the R source https://github.com/wch/r-source/blob/trunk/src/nmath/pt.c#L24 which gives some hints on how to express pt in terms of pbeta (which is available in TMB).
+
+On Sunday, July 31, 2022 at 8:09:41 AM UTC+2 Hans Skaug wrote:
+> Ben is right about using atomic functions, but the problem is that
+> we only have a formula for the derivative wrt "x", and not wrt to "df".
+> This is what prevents a straight forward implementation of pt() in TMB (I think):
+>
+> Below I have written a code where "df" is hardcoded. Then there is no
+> need for the derivative wrt df, but of course "df" cannot be estimated as a parameter.
+>  I do not know if this is  acceptable for Jeremy's application.
+> (I also skip the vectorization stuff, so the code only works for scalar "x".)
+>
+> My code seems to work, but I do not claim to have a full understanding of this,
+> so my code should be verified numerically before being used.
+>
+> Hans
+> ------------------------------------------
+>
+> // pt() with hardcoded df
+> #include <TMB.hpp>
+>
+> extern "C" {
+>    double Rf_pt(double q,double df,int,int);
+>
+> }
+>
+> TMB_ATOMIC_VECTOR_FUNCTION(
+>      // ATOMIC_NAME
+>      pt
+>      ,
+>      // OUTPUT_DIM
+>      1,
+>      // ATOMIC_DOUBLE
+>      double df=2.0;  // First location of hardcoding
+>      ty[0] = Rf_pt(tx[0],df,1,0); // Call the 'double' version
+>      ,
+>      // ATOMIC_REVERSE
+>      Type df = 2.0;  // Second location of hardcoding
+>      Type x  = tx[0];
+>      px[0] = dt(x,df,false) * py[0];   // Reverse mode chain rule
+>
+>                            )
+> template<class Type>
+> Type pt(Type x){
+>    CppAD::vector<Type> tx(1);
+>    tx[0] = x;
+>    return pt(tx)[0];
+> }
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   DATA_VECTOR(z);
+>   PARAMETER_VECTOR(x);                             // Underlying latent random
+>   return pt(x(0));
+> }
+>
+> On Friday, July 29, 2022 at 6:54:50 PM UTC+2 Jeremy D wrote:
+> > Thank you both for your replies.
+> > I'm looking into the reformulations of skewed-t that Hank's suggested, but I'm still hoping we could get Ben's code to work so we could use pt, and also understand more generally how the syntax error he mentioned can be fixed.
+> >
+> >
+> >
+> > On Wednesday, July 27, 2022 at 11:29:06 AM UTC-4 Ben Bolker wrote:
+> > > Slightly naive Q: since (AFAIK) the R functions for pt() and dt()
+> > > are available in TMB and since the derivative of pt() is dt() (by
+> > > definition), it would seem not too hard (for some definition of "hard")
+> > > to define a new atomic function following
+> > >
+> > > http://kaskr.github.io/adcomp/_book/AtomicFunctions.html
+> > >
+> > > The code below *almost* compiles, but gets an error
+> > >
+> > > error: expected constructor, destructor, or type conversion before ‘(’ token
+> > > 34 | VECTORIZE_1t(pt)
+> > >
+> > > There's probably some tiny syntax error (see
+> > > <https://stackoverflow.com/questions/8958044/expected-constructor-destructor-or-type-conversion-before-token>:
+> > > "If the compiler can't match the definition's signature to the
+> > > declaration's signature it thinks the definition is not a constructor
+> > > and then doesn't know how to parse the code and displays this error")
+> > >
+> > > Maybe someone else can see what's wrong, or can tell me why this
+> > > wouldn't work.
+> > >
+> > > ====
+> > > #include <TMB.hpp>
+> > >
+> > > extern "C" {
+> > > double Rf_pt(double q);
+> > > double Rf_dt(double x);
+> > > }
+> > >
+> > > TMB_ATOMIC_VECTOR_FUNCTION(
+> > > // ATOMIC_NAME
+> > > pt
+> > > ,
+> > > // OUTPUT_DIM
+> > > 1,
+> > > // ATOMIC_DOUBLE
+> > > ty[0] = Rf_pt(tx[0]); // Call the 'double' version
+> > > ,
+> > > // ATOMIC_REVERSE
+> > > Type x = ty[0]; // Function value from forward pass
+> > > Type dp = Rf_dt(x); // Derivative (do we need a cast here??)
+> > > px[0] = dp * py[0]; // Reverse mode chain rule
+> > > )
+> > >
+> > > template<class Type>
+> > > Type pt(Type x){
+> > > CppAD::vector<Type> tx(1);
+> > > tx[0] = x;
+> > > return pt(tx)[0];
+> > > }
+> > >
+> > > // Vectorized version
+> > > VECTORIZE_1t(pt)
+> > >
+> > >
+> > > On 2022-07-27 11:05 a.m., Hans Skaug wrote:
+> > > > I guess that the reason pt() is not already in TMB is that its numerical
+> > > > implementation is a bit tricky.
+> > > > However, if seems that there are other ways of getting dst:
+> > > >
+> > > > https://en.wikipedia.org/wiki/Skewed_generalized_t_distribution#Skewed_t_distribution
+> > > >
+> > > > Hans
+> > > >
+> > > > On Wednesday, July 27, 2022 at 4:15:53 PM UTC+2 Jeremy D wrote:
+> > > >
+> > > > Hi,
+> > > >
+> > > > Can anyone suggest a way to implement the t-distribution function
+> > > > (i.e., stats::pt) in a TMB model?
+> > > > This function is needed for the skew t-distribution (sn::dst), which
+> > > > is currently not available in TMB.
+> > > >
+> > > > Thank you!
+> > > >
+> > > > --
+> > > > To post to this group, send email to us...@tmb-project.org. Before
+> > > > posting, please check the wiki and issuetracker at
+> > > > https://github.com/kaskr/adcomp/ <https://github.com/kaskr/adcomp/>.
+> > > > Please try to create a simple repeatable example to go with your
+> > > > question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > > > ---
+> > > > You received this message because you are subscribed to the Google
+> > > > Groups "TMB Users" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send
+> > > > an email to tmb-users+...@googlegroups.com
+> > > > <mailto:tmb-users+...@googlegroups.com>.
+> > > > To view this discussion on the web visit
+> > > > https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com
+> > > > <https://groups.google.com/d/msgid/tmb-users/a5679c00-80d9-4195-904b-0373adfb9401n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > > --
+> > > Dr. Benjamin Bolker
+> > > Professor, Mathematics & Statistics and Biology, McMaster University
+> > > Director, School of Computational Science and Engineering
+> > > (Acting) Graduate chair, Mathematics & Statistics
+

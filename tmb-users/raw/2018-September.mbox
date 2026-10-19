@@ -1,0 +1,2041 @@
+From u070cd47416981a8b at groups.google.com  Sun Sep 16 05:31:28 2018
+From: u070cd47416981a8b at groups.google.com (gary...@gmail.com)
+Date: Sun, 16 Sep 2018 05:31:28 +0000
+Subject: SSM estimate gives very high standard deviation
+Message-ID: <iG5_dXlYDtc.5j6IqshSEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/iG5_dXlYDtc/m/5j6IqshSEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm trying to make a simulate a simple SSM
+
+I(t+1) | N(t) ~ Normal(N(t),sigma)
+
+N(t+1) | N(t) ~ Normal(N(t),tau)
+
+N(0) ~ Normal(0,tau)
+
+then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  DATA_VECTOR(I);
+  PARAMETER(tau);
+  PARAMETER(sigma);
+  PARAMETER_VECTOR(N);
+
+  Type nll;
+
+  nll = 0;
+  nll += pow(N[0],2)/(2*pow(tau,2));
+
+  for (int t = 1; t < N.size(); ++t)
+  {
+    nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+    nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+  }
+
+  return nll;
+}
+
+The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+
+          Estimate Std. Error
+tau   8.266817e+18        NaN
+sigma 8.177680e+18        NaN
+Warning:
+Hessian of fixed effects was not positive definite.
+Maximum gradient component: 6.666656e-18
+
+R code is as below.
+
+setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+compile("llm_hc.cpp")
+dyn.load(dynlib("llm_hc"))
+
+set.seed(0)
+T = 100
+N = rep(0,T)
+tau = 1
+sigma = 1
+N[1] = rnorm(1,0,tau)
+for (t in 2:T) {
+  N[t] = rnorm(1,N[t-1],tau)
+}
+I = rnorm(N[2:T],sigma)
+I
+N
+
+obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+
+rep = sdreport(obj)
+summary.rep = summary(rep)
+
+rep
+summary.rep
+
+est.tau = summary.rep[1,1]
+est.sigma = summary.rep[2,1]
+est.N = summary.rep[3:nrow(summary.rep),1]
+
+plot = ggplot() +
+  labs(color='') +
+  geom_line(aes(x=1:T,y=N,color='true')) +
+  geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+  xlab('year') +
+  ylab('index')
+plot
+
+From ue7b1d0d43b2fc11e at groups.google.com  Sun Sep 16 06:59:21 2018
+From: ue7b1d0d43b2fc11e at groups.google.com (Kyaw Sint)
+Date: Sun, 16 Sep 2018 06:59:21 +0000
+Subject: Re: SSM estimate gives very high standard deviation
+Message-ID: <iG5_dXlYDtc.k25JhpRXEQAJ@tmb-users.groups.google.com>
+In-Reply-To: <iG5_dXlYDtc.5j6IqshSEQAJ@tmb-users.groups.google.com>
+References: <iG5_dXlYDtc.5j6IqshSEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/iG5_dXlYDtc/m/k25JhpRXEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Gary,
+
+The estimates are incorrect because the -log(tau) and -log(sigma) are missing in the densities for the negative log-likelihood. I pasted my C++ code below. Also, I recommend using the standard deviations in the log-scale. You can use ADREPORT in the C++ code and summary(rep, select="report") to return the estimates in the original scale. I obtain the estimates below but the estimate for tau is still off. Increasing the length of N result in smaller estimates of tau and not the true 1. To obtain the tau used to generate the data, I think you will need to sample many samples o f N, not increase the length of N. Can anyone with knowledge of SSM help?
+
+Hope this helps,
+
+Kyaw Sint (Joe)
+
+> summary(rep, select="report")
+       Estimate Std. Error
+tau   0.1394212 0.05519153
+sigma 0.9526566 0.07388882
+
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator
+
+() ()
+{
+  DATA_VECTOR(I);
+  PARAMETER(logtau);
+  PARAMETER(logsigma);
+  PARAMETER_VECTOR(N);
+
+  Type nll;
+
+  Type tau = exp(logtau);
+  Type sigma = exp(logsigma);
+
+  nll = 0;
+
+  //nll += pow(N[0],2)/(2*pow(tau,2));
+  nll -= -0.5 * pow(N[0]/tau,2) - log(sqrt(2*M_PI)) - logtau;
+
+for (int t = 1
+
+; t < N.size(); ++t)
+  {
+    //nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+    //nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+    nll -= -0.5 * pow((N[t]-N[t-1])/tau,2) - log(sqrt(2*M_PI)) - logtau;
+    nll -= -0.5 * pow((I[t-1]-N[t])/sigma,2) - log(sqrt(2*M_PI)) - logsigma;
+  }
+
+  ADREPORT(tau)
+  ADREPORT(sigma)
+
+  return nll;
+}
+
+On Sunday, September 16, 2018 at 12:31:28 AM UTC-5, gary...@gmail.com wrote:
+> I'm trying to make a simulate a simple SSM
+>
+> I(t+1) | N(t) ~ Normal(N(t),sigma)
+>
+> N(t+1) | N(t) ~ Normal(N(t),tau)
+>
+> N(0) ~ Normal(0,tau)
+>
+>
+> then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+>
+>
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   DATA_VECTOR(I);
+>   PARAMETER(tau);
+>   PARAMETER(sigma);
+>   PARAMETER_VECTOR(N);
+>
+>   Type nll;
+>
+>
+>   nll = 0;
+>   nll += pow(N[0],2)/(2*pow(tau,2));
+>
+>
+>   for (int t = 1; t < N.size(); ++t)
+>   {
+>     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+>     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+>   }
+>
+>
+>   return nll;
+> }
+>
+> The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+>
+>           Estimate Std. Error
+> tau   8.266817e+18        NaN
+> sigma 8.177680e+18        NaN
+> Warning:
+> Hessian of fixed effects was not positive definite.
+> Maximum gradient component: 6.666656e-18
+>
+> R code is as below.
+>
+> setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> compile("llm_hc.cpp")
+> dyn.load(dynlib("llm_hc"))
+>
+>
+> set.seed(0)
+> T = 100
+> N = rep(0,T)
+> tau = 1
+> sigma = 1
+> N[1] = rnorm(1,0,tau)
+> for (t in 2:T) {
+>   N[t] = rnorm(1,N[t-1],tau)
+> }
+> I = rnorm(N[2:T],sigma)
+> I
+> N
+>
+>
+> obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+>
+>
+> rep = sdreport(obj)
+> summary.rep = summary(rep)
+>
+>
+> rep
+> summary.rep
+>
+>
+> est.tau = summary.rep[1,1]
+> est.sigma = summary.rep[2,1]
+> est.N = summary.rep[3:nrow(summary.rep),1]
+>
+>
+> plot = ggplot() +
+>   labs(color='') +
+>   geom_line(aes(x=1:T,y=N,color='true')) +
+>   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+>   xlab('year') +
+>   ylab('index')
+> plot
+>
+>
+>
+>
+
+From u070cd47416981a8b at groups.google.com  Mon Sep 17 05:32:57 2018
+From: u070cd47416981a8b at groups.google.com (gary...@gmail.com)
+Date: Mon, 17 Sep 2018 05:32:57 +0000
+Subject: Re: SSM estimate gives very high standard deviation
+Message-ID: <iG5_dXlYDtc.T1vw-nGhEQAJ@tmb-users.groups.google.com>
+In-Reply-To: <iG5_dXlYDtc.k25JhpRXEQAJ@tmb-users.groups.google.com>
+References: <iG5_dXlYDtc.5j6IqshSEQAJ@tmb-users.groups.google.com> <iG5_dXlYDtc.k25JhpRXEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/iG5_dXlYDtc/m/T1vw-nGhEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Kyaw!
+
+Silly me that I have just missed the variance term in the log-likelihood.
+
+Is it because of numerical stability that you recommend log-scale?
+
+I tried the original code with log(tau) and log(sigma) and I've got a result similar to yours. Below is my .cpp code:
+
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  DATA_VECTOR(I);
+
+  PARAMETER(tau);
+  PARAMETER(sigma);
+  PARAMETER_VECTOR(N);
+
+  Type nll;
+
+  nll = 0.0;
+  nll += pow(N[0],2)/(2.0*pow(tau,2))+(N.size()+1)*log(tau)+N.size()*log(sigma);
+
+  for (int t = 1; t < N.size(); ++t)
+  {
+
+    nll += pow(N[t]-N[t-1],2)/(2.0*pow(tau,2));
+    nll += pow(I[t-1]-N[t],2)/(2.0*pow(sigma,2));
+  }
+
+  return nll;
+}
+
+But when I tried initialize sigma=0.3 (in my R code) I've got error:
+
+ Error in optimHess(par.fixed, obj$fn, obj$gr) : gradient in optim evaluated to length 1 not 2 Calls: <Anonymous> ... withVisible -> eval -> eval -> sdreport -> optimHess In addition: There were 27 warnings (use warnings() to see them)
+
+Do you know what might have caused this problem?
+
+On Saturday, September 15, 2018 at 11:59:21 PM UTC-7, Kyaw Sint wrote:
+> Hi Gary,
+>
+> The estimates are incorrect because the -log(tau) and -log(sigma) are missing in the densities for the negative log-likelihood. I pasted my C++ code below. Also, I recommend using the standard deviations in the log-scale. You can use ADREPORT in the C++ code and summary(rep, select="report") to return the estimates in the original scale. I obtain the estimates below but the estimate for tau is still off. Increasing the length of N result in smaller estimates of tau and not the true 1. To obtain the tau used to generate the data, I think you will need to sample many samples o f N, not increase the length of N. Can anyone with knowledge of SSM help?
+>
+> Hope this helps,
+>
+> Kyaw Sint (Joe)
+>
+>
+>
+> > summary(rep, select="report")
+>        Estimate Std. Error
+> tau   0.1394212 0.05519153
+> sigma 0.9526566 0.07388882
+>
+>
+>
+> #include <TMB.hpp>
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   DATA_VECTOR(I);
+>   PARAMETER(logtau);
+>   PARAMETER(logsigma);
+>   PARAMETER_VECTOR(N);
+>
+>   Type nll;
+>
+>   Type tau = exp(logtau);
+>   Type sigma = exp(logsigma);
+>
+>   nll = 0;
+>
+>   //nll += pow(N[0],2)/(2*pow(tau,2));
+>   nll -= -0.5 * pow(N[0]/tau,2) - log(sqrt(2*M_PI)) - logtau;
+>
+>   for (int t = 1; t < N.size(); ++t)
+>   {
+>     //nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+>     //nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+>     nll -= -0.5 * pow((N[t]-N[t-1])/tau,2) - log(sqrt(2*M_PI)) - logtau;
+>     nll -= -0.5 * pow((I[t-1]-N[t])/sigma,2) - log(sqrt(2*M_PI)) - logsigma;
+>   }
+>
+>   ADREPORT(tau)
+>   ADREPORT(sigma)
+>
+>   return nll;
+> }
+>
+>
+>
+> On Sunday, September 16, 2018 at 12:31:28 AM UTC-5, gary...@gmail.com wrote:
+> > I'm trying to make a simulate a simple SSM
+> >
+> > I(t+1) | N(t) ~ Normal(N(t),sigma)
+> >
+> > N(t+1) | N(t) ~ Normal(N(t),tau)
+> >
+> > N(0) ~ Normal(0,tau)
+> >
+> >
+> > then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+> >
+> >
+> >
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> >   DATA_VECTOR(I);
+> >   PARAMETER(tau);
+> >   PARAMETER(sigma);
+> >   PARAMETER_VECTOR(N);
+> >
+> >   Type nll;
+> >
+> >
+> >   nll = 0;
+> >   nll += pow(N[0],2)/(2*pow(tau,2));
+> >
+> >
+> >   for (int t = 1; t < N.size(); ++t)
+> >   {
+> >     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+> >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+> >   }
+> >
+> >
+> >   return nll;
+> > }
+> >
+> > The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+> >
+> >           Estimate Std. Error
+> > tau   8.266817e+18        NaN
+> > sigma 8.177680e+18        NaN
+> > Warning:
+> > Hessian of fixed effects was not positive definite.
+> > Maximum gradient component: 6.666656e-18
+> >
+> > R code is as below.
+> >
+> > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > compile("llm_hc.cpp")
+> > dyn.load(dynlib("llm_hc"))
+> >
+> >
+> > set.seed(0)
+> > T = 100
+> > N = rep(0,T)
+> > tau = 1
+> > sigma = 1
+> > N[1] = rnorm(1,0,tau)
+> > for (t in 2:T) {
+> >   N[t] = rnorm(1,N[t-1],tau)
+> > }
+> > I = rnorm(N[2:T],sigma)
+> > I
+> > N
+> >
+> >
+> > obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> >
+> >
+> > rep = sdreport(obj)
+> > summary.rep = summary(rep)
+> >
+> >
+> > rep
+> > summary.rep
+> >
+> >
+> > est.tau = summary.rep[1,1]
+> > est.sigma = summary.rep[2,1]
+> > est.N = summary.rep[3:nrow(summary.rep),1]
+> >
+> >
+> > plot = ggplot() +
+> >   labs(color='') +
+> >   geom_line(aes(x=1:T,y=N,color='true')) +
+> >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> >   xlab('year') +
+> >   ylab('index')
+> > plot
+> >
+> >
+> >
+> >
+
+From u070cd47416981a8b at groups.google.com  Mon Sep 17 05:39:17 2018
+From: u070cd47416981a8b at groups.google.com (gary...@gmail.com)
+Date: Mon, 17 Sep 2018 05:39:17 +0000
+Subject: Should there be any difference between passing value as data or a Type constant defined within .cpp?
+Message-ID: <uq9eHxibnpM.pDv6hcqhEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/uq9eHxibnpM/m/pDv6hcqhEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm trying to pass beta as a constant to TMB model.
+
+Before I was using Type beta = Type(0.3);.
+
+Now I want to change to DATA_SCALAR(beta);.
+
+Should I expect the same result?
+
+From u070cd47416981a8b at groups.google.com  Mon Sep 17 19:11:54 2018
+From: u070cd47416981a8b at groups.google.com (gary...@gmail.com)
+Date: Mon, 17 Sep 2018 19:11:54 +0000
+Subject: Re: SSM estimate gives very high standard deviation
+Message-ID: <iG5_dXlYDtc.wFFlpSLOEQAJ@tmb-users.groups.google.com>
+In-Reply-To: <iG5_dXlYDtc.T1vw-nGhEQAJ@tmb-users.groups.google.com>
+References: <iG5_dXlYDtc.5j6IqshSEQAJ@tmb-users.groups.google.com> <iG5_dXlYDtc.T1vw-nGhEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/iG5_dXlYDtc/m/wFFlpSLOEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is the plot I generated
+
+I'm using the code
+
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  DATA_VECTOR(I);
+
+  PARAMETER(rho);
+  PARAMETER(tau);
+  PARAMETER(sigma);
+
+  PARAMETER_VECTOR(N);
+
+  Type nll = 0.0;
+
+  nll += pow(N[0],2)/(2*pow(tau,2))+log(tau);
+
+  for (int t = 1; t < N.size(); ++t)
+  {
+
+    nll += pow(N[t]-rho*N[t-1],2)/(2*pow(tau,2))+log(tau);
+    nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2))+log(sigma);
+  }
+
+  ADREPORT(rho);
+  ADREPORT(tau);
+  ADREPORT(sigma);
+
+  REPORT(rho);
+  REPORT(tau);
+  REPORT(sigma);
+
+  return nll;
+}
+
+and
+
+#//////////////////////////////
+#### simple SSM hard-coded ####
+#//////////////////////////////
+
+require(TMB)
+require(ggplot2)
+
+setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+compile("llm_hc.cpp")
+dyn.load(dynlib("llm_hc"))
+
+set.seed(0)
+T = 100
+N = rep(0,T)
+tau = 1
+
+sigma = 0.3
+rho = 0.5
+
+N[1] = rnorm(1,0,tau)
+for (t in 2:T) {
+
+  N[t] = rnorm(1,rho * N[t-1],tau)
+
+}
+I = rnorm(N[2:T],sigma)
+I
+N
+
+obj = MakeADFun(data=list('I'=I),
+
+                parameters=list(rho=rho,
+                                tau=tau,
+                                sigma=sigma,
+                                N=N),
+                random='N',
+
+                DLL='llm_hc')
+opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+
+sdr = sdreport(obj)
+summary.rep.fixed = summary(sdr,"fixed")
+summary.rep.random = summary(sdr,"random")
+
+est.rho = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='rho',1]
+est.tau = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='tau',1]
+est.sigma = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='sigma',1]
+est.N = summary.rep.random[dimnames(summary.rep.random)[[1]]=='N',1]
+
+plot = ggplot() +
+  labs(color='') +
+  geom_line(aes(x=1:T,y=N,color='true')) +
+  geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+  xlab('year') +
+  ylab('index')
+plot
+
+Clearly the prediction is quite far-off.
+
+On Saturday, September 15, 2018 at 10:31:28 PM UTC-7, gary...@gmail.com wrote:
+> I'm trying to make a simulate a simple SSM
+>
+> I(t+1) | N(t) ~ Normal(N(t),sigma)
+>
+> N(t+1) | N(t) ~ Normal(N(t),tau)
+>
+> N(0) ~ Normal(0,tau)
+>
+>
+> then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+>
+>
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   DATA_VECTOR(I);
+>   PARAMETER(tau);
+>   PARAMETER(sigma);
+>   PARAMETER_VECTOR(N);
+>
+>   Type nll;
+>
+>
+>   nll = 0;
+>   nll += pow(N[0],2)/(2*pow(tau,2));
+>
+>
+>   for (int t = 1; t < N.size(); ++t)
+>   {
+>     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+>     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+>   }
+>
+>
+>   return nll;
+> }
+>
+> The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+>
+>           Estimate Std. Error
+> tau   8.266817e+18        NaN
+> sigma 8.177680e+18        NaN
+> Warning:
+> Hessian of fixed effects was not positive definite.
+> Maximum gradient component: 6.666656e-18
+>
+> R code is as below.
+>
+> setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> compile("llm_hc.cpp")
+> dyn.load(dynlib("llm_hc"))
+>
+>
+> set.seed(0)
+> T = 100
+> N = rep(0,T)
+> tau = 1
+> sigma = 1
+> N[1] = rnorm(1,0,tau)
+> for (t in 2:T) {
+>   N[t] = rnorm(1,N[t-1],tau)
+> }
+> I = rnorm(N[2:T],sigma)
+> I
+> N
+>
+>
+> obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+>
+>
+> rep = sdreport(obj)
+> summary.rep = summary(rep)
+>
+>
+> rep
+> summary.rep
+>
+>
+> est.tau = summary.rep[1,1]
+> est.sigma = summary.rep[2,1]
+> est.N = summary.rep[3:nrow(summary.rep),1]
+>
+>
+> plot = ggplot() +
+>   labs(color='') +
+>   geom_line(aes(x=1:T,y=N,color='true')) +
+>   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+>   xlab('year') +
+>   ylab('index')
+> plot
+>
+>
+>
+>
+
+On Saturday, September 15, 2018 at 10:31:28 PM UTC-7, gary...@gmail.com wrote:
+> I'm trying to make a simulate a simple SSM
+>
+> I(t+1) | N(t) ~ Normal(N(t),sigma)
+>
+> N(t+1) | N(t) ~ Normal(N(t),tau)
+>
+> N(0) ~ Normal(0,tau)
+>
+>
+> then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+>
+>
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   DATA_VECTOR(I);
+>   PARAMETER(tau);
+>   PARAMETER(sigma);
+>   PARAMETER_VECTOR(N);
+>
+>   Type nll;
+>
+>
+>   nll = 0;
+>   nll += pow(N[0],2)/(2*pow(tau,2));
+>
+>
+>   for (int t = 1; t < N.size(); ++t)
+>   {
+>     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+>     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+>   }
+>
+>
+>   return nll;
+> }
+>
+> The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+>
+>           Estimate Std. Error
+> tau   8.266817e+18        NaN
+> sigma 8.177680e+18        NaN
+> Warning:
+> Hessian of fixed effects was not positive definite.
+> Maximum gradient component: 6.666656e-18
+>
+> R code is as below.
+>
+> setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> compile("llm_hc.cpp")
+> dyn.load(dynlib("llm_hc"))
+>
+>
+> set.seed(0)
+> T = 100
+> N = rep(0,T)
+> tau = 1
+> sigma = 1
+> N[1] = rnorm(1,0,tau)
+> for (t in 2:T) {
+>   N[t] = rnorm(1,N[t-1],tau)
+> }
+> I = rnorm(N[2:T],sigma)
+> I
+> N
+>
+>
+> obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+>
+>
+> rep = sdreport(obj)
+> summary.rep = summary(rep)
+>
+>
+> rep
+> summary.rep
+>
+>
+> est.tau = summary.rep[1,1]
+> est.sigma = summary.rep[2,1]
+> est.N = summary.rep[3:nrow(summary.rep),1]
+>
+>
+> plot = ggplot() +
+>   labs(color='') +
+>   geom_line(aes(x=1:T,y=N,color='true')) +
+>   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+>   xlab('year') +
+>   ylab('index')
+> plot
+>
+>
+>
+>
+
+From ue7b1d0d43b2fc11e at groups.google.com  Tue Sep 18 04:33:53 2018
+From: ue7b1d0d43b2fc11e at groups.google.com (Kyaw Sint)
+Date: Tue, 18 Sep 2018 04:33:53 +0000
+Subject: Re: SSM estimate gives very high standard deviation
+Message-ID: <iG5_dXlYDtc.Oy8Ui83sEQAJ@tmb-users.groups.google.com>
+In-Reply-To: <iG5_dXlYDtc.wFFlpSLOEQAJ@tmb-users.groups.google.com>
+References: <iG5_dXlYDtc.5j6IqshSEQAJ@tmb-users.groups.google.com> <iG5_dXlYDtc.wFFlpSLOEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/iG5_dXlYDtc/m/Oy8Ui83sEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Gary,
+
+Using log scale is better for numerical stability.  Software also throw an error if you give a negative value to the log function which could occur during the calculations. Another common problem I have encountered is division by zero and exponentiating to very large or small numbers.
+
+>From your plot, my intuition is that your model is using the previous N and not considering other previous N. Can you apply a correlation structure in a SSM model? Check the multivariate distributions and autoregressive processes chapter in the TMB documentation https://kaskr.github.io/adcomp/_book/Densities.html
+
+Kyaw Sint (Joe)
+
+On Monday, September 17, 2018 at 2:11:54 PM UTC-5, gary...@gmail.com wrote:
+>
+> This is the plot I generated
+>
+>
+>
+> I'm using the code
+>
+> #include <TMB.hpp>
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   DATA_VECTOR(I);
+>
+>   PARAMETER(rho);
+>   PARAMETER(tau);
+>   PARAMETER(sigma);
+>
+>   PARAMETER_VECTOR(N);
+>
+>   Type nll = 0.0;
+>
+>   nll += pow(N[0],2)/(2*pow(tau,2))+log(tau);
+>
+>   for (int t = 1; t < N.size(); ++t)
+>   {
+>     nll += pow(N[t]-rho*N[t-1],2)/(2*pow(tau,2))+log(tau);
+>     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2))+log(sigma);
+>   }
+>
+>   ADREPORT(rho);
+>   ADREPORT(tau);
+>   ADREPORT(sigma);
+>
+>   REPORT(rho);
+>   REPORT(tau);
+>   REPORT(sigma);
+>
+>   return nll;
+> }
+>
+>
+> and
+>
+> #//////////////////////////////
+> #### simple SSM hard-coded ####
+> #//////////////////////////////
+>
+> require(TMB)
+> require(ggplot2)
+>
+> setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> compile("llm_hc.cpp")
+> dyn.load(dynlib("llm_hc"))
+>
+> set.seed(0)
+> T = 100
+> N = rep(0,T)
+> tau = 1
+> sigma = 0.3
+> rho = 0.5
+> N[1] = rnorm(1,0,tau)
+> for (t in 2:T) {
+>   N[t] = rnorm(1,rho * N[t-1],tau)
+> }
+> I = rnorm(N[2:T],sigma)
+> I
+> N
+>
+> obj = MakeADFun(data=list('I'=I),
+>                 parameters=list(rho=rho,
+>                                 tau=tau,
+>                                 sigma=sigma,
+>                                 N=N),
+>                 random='N',
+>                 DLL='llm_hc')
+> opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+>
+> sdr = sdreport(obj)
+> summary.rep.fixed = summary(sdr,"fixed")
+> summary.rep.random = summary(sdr,"random")
+>
+> est.rho = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='rho',1]
+> est.tau = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='tau',1]
+> est.sigma = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='sigma',1]
+> est.N = summary.rep.random[dimnames(summary.rep.random)[[1]]=='N',1]
+>
+> plot = ggplot() +
+>   labs(color='') +
+>   geom_line(aes(x=1:T,y=N,color='true')) +
+>   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+>   xlab('year') +
+>   ylab('index')
+> plot
+>
+>
+> Clearly the prediction is quite far-off.
+>
+>
+>
+>
+>
+>
+> On Saturday, September 15, 2018 at 10:31:28 PM UTC-7, gary...@gmail.com wrote:
+> > I'm trying to make a simulate a simple SSM
+> >
+> > I(t+1) | N(t) ~ Normal(N(t),sigma)
+> >
+> > N(t+1) | N(t) ~ Normal(N(t),tau)
+> >
+> > N(0) ~ Normal(0,tau)
+> >
+> >
+> > then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+> >
+> >
+> >
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> >   DATA_VECTOR(I);
+> >   PARAMETER(tau);
+> >   PARAMETER(sigma);
+> >   PARAMETER_VECTOR(N);
+> >
+> >   Type nll;
+> >
+> >
+> >   nll = 0;
+> >   nll += pow(N[0],2)/(2*pow(tau,2));
+> >
+> >
+> >   for (int t = 1; t < N.size(); ++t)
+> >   {
+> >     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+> >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+> >   }
+> >
+> >
+> >   return nll;
+> > }
+> >
+> > The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+> >
+> >           Estimate Std. Error
+> > tau   8.266817e+18        NaN
+> > sigma 8.177680e+18        NaN
+> > Warning:
+> > Hessian of fixed effects was not positive definite.
+> > Maximum gradient component: 6.666656e-18
+> >
+> > R code is as below.
+> >
+> > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > compile("llm_hc.cpp")
+> > dyn.load(dynlib("llm_hc"))
+> >
+> >
+> > set.seed(0)
+> > T = 100
+> > N = rep(0,T)
+> > tau = 1
+> > sigma = 1
+> > N[1] = rnorm(1,0,tau)
+> > for (t in 2:T) {
+> >   N[t] = rnorm(1,N[t-1],tau)
+> > }
+> > I = rnorm(N[2:T],sigma)
+> > I
+> > N
+> >
+> >
+> > obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> >
+> >
+> > rep = sdreport(obj)
+> > summary.rep = summary(rep)
+> >
+> >
+> > rep
+> > summary.rep
+> >
+> >
+> > est.tau = summary.rep[1,1]
+> > est.sigma = summary.rep[2,1]
+> > est.N = summary.rep[3:nrow(summary.rep),1]
+> >
+> >
+> > plot = ggplot() +
+> >   labs(color='') +
+> >   geom_line(aes(x=1:T,y=N,color='true')) +
+> >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> >   xlab('year') +
+> >   ylab('index')
+> > plot
+> >
+> >
+> >
+> >
+>
+> On Saturday, September 15, 2018 at 10:31:28 PM UTC-7, gary...@gmail.com wrote:
+> > I'm trying to make a simulate a simple SSM
+> >
+> > I(t+1) | N(t) ~ Normal(N(t),sigma)
+> >
+> > N(t+1) | N(t) ~ Normal(N(t),tau)
+> >
+> > N(0) ~ Normal(0,tau)
+> >
+> >
+> > then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+> >
+> >
+> >
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> >   DATA_VECTOR(I);
+> >   PARAMETER(tau);
+> >   PARAMETER(sigma);
+> >   PARAMETER_VECTOR(N);
+> >
+> >   Type nll;
+> >
+> >
+> >   nll = 0;
+> >   nll += pow(N[0],2)/(2*pow(tau,2));
+> >
+> >
+> >   for (int t = 1; t < N.size(); ++t)
+> >   {
+> >     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+> >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+> >   }
+> >
+> >
+> >   return nll;
+> > }
+> >
+> > The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+> >
+> >           Estimate Std. Error
+> > tau   8.266817e+18        NaN
+> > sigma 8.177680e+18        NaN
+> > Warning:
+> > Hessian of fixed effects was not positive definite.
+> > Maximum gradient component: 6.666656e-18
+> >
+> > R code is as below.
+> >
+> > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > compile("llm_hc.cpp")
+> > dyn.load(dynlib("llm_hc"))
+> >
+> >
+> > set.seed(0)
+> > T = 100
+> > N = rep(0,T)
+> > tau = 1
+> > sigma = 1
+> > N[1] = rnorm(1,0,tau)
+> > for (t in 2:T) {
+> >   N[t] = rnorm(1,N[t-1],tau)
+> > }
+> > I = rnorm(N[2:T],sigma)
+> > I
+> > N
+> >
+> >
+> > obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> >
+> >
+> > rep = sdreport(obj)
+> > summary.rep = summary(rep)
+> >
+> >
+> > rep
+> > summary.rep
+> >
+> >
+> > est.tau = summary.rep[1,1]
+> > est.sigma = summary.rep[2,1]
+> > est.N = summary.rep[3:nrow(summary.rep),1]
+> >
+> >
+> > plot = ggplot() +
+> >   labs(color='') +
+> >   geom_line(aes(x=1:T,y=N,color='true')) +
+> >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> >   xlab('year') +
+> >   ylab('index')
+> > plot
+> >
+> >
+> >
+> >
+
+From u070cd47416981a8b at groups.google.com  Tue Sep 18 05:00:16 2018
+From: u070cd47416981a8b at groups.google.com (gary...@gmail.com)
+Date: Tue, 18 Sep 2018 05:00:16 +0000
+Subject: Re: SSM estimate gives very high standard deviation
+Message-ID: <iG5_dXlYDtc.SQJtAT7uEQAJ@tmb-users.groups.google.com>
+In-Reply-To: <iG5_dXlYDtc.Oy8Ui83sEQAJ@tmb-users.groups.google.com>
+References: <iG5_dXlYDtc.5j6IqshSEQAJ@tmb-users.groups.google.com> <iG5_dXlYDtc.Oy8Ui83sEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/iG5_dXlYDtc/m/SQJtAT7uEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Joe,
+
+Do you think this is really the case?
+
+I have tried
+
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+
+  DATA_VECTOR(Y);
+
+  PARAMETER_VECTOR(X);
+
+  PARAMETER(logRho);
+  PARAMETER(logSdState);
+  PARAMETER(logSdObs);
+
+  Type sdState = exp(logSdState);
+  Type sdObs = exp(logSdObs);
+  Type rho = exp(logRho);
+
+  Type nll = 0.0;
+
+  nll -= dnorm(X(0), Type(0.0), sdState, true);
+
+  for (int i = 1; i < X.size(); ++i)
+  {
+    nll -= dnorm(X(i), rho*X(i-1), sdState, true);
+  }
+
+  for (int i = 0; i < Y.size(); ++i) {
+    nll -= dnorm(Y(i), X(i), sdObs, true);
+  }
+
+  ADREPORT(rho);
+  ADREPORT(sdState);
+  ADREPORT(sdObs);
+
+  REPORT(rho);
+  REPORT(sdState);
+  REPORT(sdObs);
+
+  SIMULATE {
+    for (int i = 1; i < X.size(); ++i)
+    {
+      X(i) = rnorm(rho*X(i-1), sdState);
+    }
+
+    for (int i = 0; i < Y.size(); ++i)
+    {
+      Y(i) = rnorm(X(i), sdObs);
+    }
+
+    REPORT(X);
+    REPORT(Y);
+
+    REPORT(rho);
+    REPORT(logSdState);
+    REPORT(logSdObs);
+  }
+
+  return nll;
+}
+
+And the result looks very reasonable. (just ignore the simulated values)
+
+The R code is here
+
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+
+  DATA_VECTOR(Y);
+
+  PARAMETER_VECTOR(X);
+
+  PARAMETER(logRho);
+  PARAMETER(logSdState);
+  PARAMETER(logSdObs);
+
+  Type sdState = exp(logSdState);
+  Type sdObs = exp(logSdObs);
+  Type rho = exp(logRho);
+
+  Type nll = 0.0;
+
+  nll -= dnorm(X(0), Type(0.0), sdState, true);
+
+  for (int i = 1; i < X.size(); ++i)
+  {
+    nll -= dnorm(X(i), rho*X(i-1), sdState, true);
+  }
+
+  for (int i = 0; i < Y.size(); ++i) {
+    nll -= dnorm(Y(i), X(i), sdObs, true);
+  }
+
+  ADREPORT(rho);
+  ADREPORT(sdState);
+  ADREPORT(sdObs);
+
+  REPORT(rho);
+  REPORT(sdState);
+  REPORT(sdObs);
+
+  SIMULATE {
+    for (int i = 1; i < X.size(); ++i)
+    {
+      X(i) = rnorm(rho*X(i-1), sdState);
+    }
+
+    for (int i = 0; i < Y.size(); ++i)
+    {
+      Y(i) = rnorm(X(i), sdObs);
+    }
+
+    REPORT(X);
+    REPORT(Y);
+
+    REPORT(rho);
+    REPORT(logSdState);
+    REPORT(logSdObs);
+  }
+
+  return nll;
+}
+
+On Monday, September 17, 2018 at 9:33:53 PM UTC-7, Kyaw Sint wrote:
+> Hi Gary,
+>
+> Using log scale is better for numerical stability.  Software also throw an error if you give a negative value to the log function which could occur during the calculations. Another common problem I have encountered is division by zero and exponentiating to very large or small numbers.
+>
+> From your plot, my intuition is that your model is using the previous N and not considering other previous N. Can you apply a correlation structure in a SSM model? Check the multivariate distributions and autoregressive processes chapter in the TMB documentation https://kaskr.github.io/adcomp/_book/Densities.html
+>
+> Kyaw Sint (Joe)
+>
+>
+>
+>
+> On Monday, September 17, 2018 at 2:11:54 PM UTC-5, gary...@gmail.com wrote:
+> >
+> > This is the plot I generated
+> >
+> >
+> >
+> > I'm using the code
+> >
+> > #include <TMB.hpp>
+> >
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> >   DATA_VECTOR(I);
+> >
+> >   PARAMETER(rho);
+> >   PARAMETER(tau);
+> >   PARAMETER(sigma);
+> >
+> >   PARAMETER_VECTOR(N);
+> >
+> >   Type nll = 0.0;
+> >
+> >   nll += pow(N[0],2)/(2*pow(tau,2))+log(tau);
+> >
+> >   for (int t = 1; t < N.size(); ++t)
+> >   {
+> >     nll += pow(N[t]-rho*N[t-1],2)/(2*pow(tau,2))+log(tau);
+> >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2))+log(sigma);
+> >   }
+> >
+> >   ADREPORT(rho);
+> >   ADREPORT(tau);
+> >   ADREPORT(sigma);
+> >
+> >   REPORT(rho);
+> >   REPORT(tau);
+> >   REPORT(sigma);
+> >
+> >   return nll;
+> > }
+> >
+> >
+> > and
+> >
+> > #//////////////////////////////
+> > #### simple SSM hard-coded ####
+> > #//////////////////////////////
+> >
+> > require(TMB)
+> > require(ggplot2)
+> >
+> > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > compile("llm_hc.cpp")
+> > dyn.load(dynlib("llm_hc"))
+> >
+> > set.seed(0)
+> > T = 100
+> > N = rep(0,T)
+> > tau = 1
+> > sigma = 0.3
+> > rho = 0.5
+> > N[1] = rnorm(1,0,tau)
+> > for (t in 2:T) {
+> >   N[t] = rnorm(1,rho * N[t-1],tau)
+> > }
+> > I = rnorm(N[2:T],sigma)
+> > I
+> > N
+> >
+> > obj = MakeADFun(data=list('I'=I),
+> >                 parameters=list(rho=rho,
+> >                                 tau=tau,
+> >                                 sigma=sigma,
+> >                                 N=N),
+> >                 random='N',
+> >                 DLL='llm_hc')
+> > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> >
+> > sdr = sdreport(obj)
+> > summary.rep.fixed = summary(sdr,"fixed")
+> > summary.rep.random = summary(sdr,"random")
+> >
+> > est.rho = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='rho',1]
+> > est.tau = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='tau',1]
+> > est.sigma = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='sigma',1]
+> > est.N = summary.rep.random[dimnames(summary.rep.random)[[1]]=='N',1]
+> >
+> > plot = ggplot() +
+> >   labs(color='') +
+> >   geom_line(aes(x=1:T,y=N,color='true')) +
+> >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> >   xlab('year') +
+> >   ylab('index')
+> > plot
+> >
+> >
+> > Clearly the prediction is quite far-off.
+> >
+> >
+> >
+> >
+> >
+> >
+> > On Saturday, September 15, 2018 at 10:31:28 PM UTC-7, gary...@gmail.com wrote:
+> > > I'm trying to make a simulate a simple SSM
+> > >
+> > > I(t+1) | N(t) ~ Normal(N(t),sigma)
+> > >
+> > > N(t+1) | N(t) ~ Normal(N(t),tau)
+> > >
+> > > N(0) ~ Normal(0,tau)
+> > >
+> > >
+> > > then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+> > >
+> > >
+> > >
+> > > template<class Type>
+> > > Type objective_function<Type>::operator() ()
+> > > {
+> > >   DATA_VECTOR(I);
+> > >   PARAMETER(tau);
+> > >   PARAMETER(sigma);
+> > >   PARAMETER_VECTOR(N);
+> > >
+> > >   Type nll;
+> > >
+> > >
+> > >   nll = 0;
+> > >   nll += pow(N[0],2)/(2*pow(tau,2));
+> > >
+> > >
+> > >   for (int t = 1; t < N.size(); ++t)
+> > >   {
+> > >     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+> > >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+> > >   }
+> > >
+> > >
+> > >   return nll;
+> > > }
+> > >
+> > > The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+> > >
+> > >           Estimate Std. Error
+> > > tau   8.266817e+18        NaN
+> > > sigma 8.177680e+18        NaN
+> > > Warning:
+> > > Hessian of fixed effects was not positive definite.
+> > > Maximum gradient component: 6.666656e-18
+> > >
+> > > R code is as below.
+> > >
+> > > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > > compile("llm_hc.cpp")
+> > > dyn.load(dynlib("llm_hc"))
+> > >
+> > >
+> > > set.seed(0)
+> > > T = 100
+> > > N = rep(0,T)
+> > > tau = 1
+> > > sigma = 1
+> > > N[1] = rnorm(1,0,tau)
+> > > for (t in 2:T) {
+> > >   N[t] = rnorm(1,N[t-1],tau)
+> > > }
+> > > I = rnorm(N[2:T],sigma)
+> > > I
+> > > N
+> > >
+> > >
+> > > obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> > > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> > >
+> > >
+> > > rep = sdreport(obj)
+> > > summary.rep = summary(rep)
+> > >
+> > >
+> > > rep
+> > > summary.rep
+> > >
+> > >
+> > > est.tau = summary.rep[1,1]
+> > > est.sigma = summary.rep[2,1]
+> > > est.N = summary.rep[3:nrow(summary.rep),1]
+> > >
+> > >
+> > > plot = ggplot() +
+> > >   labs(color='') +
+> > >   geom_line(aes(x=1:T,y=N,color='true')) +
+> > >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> > >   xlab('year') +
+> > >   ylab('index')
+> > > plot
+> > >
+> > >
+> > >
+> > >
+> >
+> > On Saturday, September 15, 2018 at 10:31:28 PM UTC-7, gary...@gmail.com wrote:
+> > > I'm trying to make a simulate a simple SSM
+> > >
+> > > I(t+1) | N(t) ~ Normal(N(t),sigma)
+> > >
+> > > N(t+1) | N(t) ~ Normal(N(t),tau)
+> > >
+> > > N(0) ~ Normal(0,tau)
+> > >
+> > >
+> > > then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+> > >
+> > >
+> > >
+> > > template<class Type>
+> > > Type objective_function<Type>::operator() ()
+> > > {
+> > >   DATA_VECTOR(I);
+> > >   PARAMETER(tau);
+> > >   PARAMETER(sigma);
+> > >   PARAMETER_VECTOR(N);
+> > >
+> > >   Type nll;
+> > >
+> > >
+> > >   nll = 0;
+> > >   nll += pow(N[0],2)/(2*pow(tau,2));
+> > >
+> > >
+> > >   for (int t = 1; t < N.size(); ++t)
+> > >   {
+> > >     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+> > >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+> > >   }
+> > >
+> > >
+> > >   return nll;
+> > > }
+> > >
+> > > The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+> > >
+> > >           Estimate Std. Error
+> > > tau   8.266817e+18        NaN
+> > > sigma 8.177680e+18        NaN
+> > > Warning:
+> > > Hessian of fixed effects was not positive definite.
+> > > Maximum gradient component: 6.666656e-18
+> > >
+> > > R code is as below.
+> > >
+> > > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > > compile("llm_hc.cpp")
+> > > dyn.load(dynlib("llm_hc"))
+> > >
+> > >
+> > > set.seed(0)
+> > > T = 100
+> > > N = rep(0,T)
+> > > tau = 1
+> > > sigma = 1
+> > > N[1] = rnorm(1,0,tau)
+> > > for (t in 2:T) {
+> > >   N[t] = rnorm(1,N[t-1],tau)
+> > > }
+> > > I = rnorm(N[2:T],sigma)
+> > > I
+> > > N
+> > >
+> > >
+> > > obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> > > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> > >
+> > >
+> > > rep = sdreport(obj)
+> > > summary.rep = summary(rep)
+> > >
+> > >
+> > > rep
+> > > summary.rep
+> > >
+> > >
+> > > est.tau = summary.rep[1,1]
+> > > est.sigma = summary.rep[2,1]
+> > > est.N = summary.rep[3:nrow(summary.rep),1]
+> > >
+> > >
+> > > plot = ggplot() +
+> > >   labs(color='') +
+> > >   geom_line(aes(x=1:T,y=N,color='true')) +
+> > >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> > >   xlab('year') +
+> > >   ylab('index')
+> > > plot
+> > >
+> > >
+> > >
+> > >
+
+From ue7b1d0d43b2fc11e at groups.google.com  Tue Sep 18 05:35:02 2018
+From: ue7b1d0d43b2fc11e at groups.google.com (Kyaw Sint)
+Date: Tue, 18 Sep 2018 05:35:02 +0000
+Subject: Re: SSM estimate gives very high standard deviation
+Message-ID: <iG5_dXlYDtc.8Nts0SPwEQAJ@tmb-users.groups.google.com>
+In-Reply-To: <iG5_dXlYDtc.SQJtAT7uEQAJ@tmb-users.groups.google.com>
+References: <iG5_dXlYDtc.5j6IqshSEQAJ@tmb-users.groups.google.com> <iG5_dXlYDtc.SQJtAT7uEQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/iG5_dXlYDtc/m/8Nts0SPwEQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Gary,
+
+I am not very familiar with SSM modeling. It seems like you've made progress. It was off by a factor of rho? What readings and slides would you recommend for a SSM beginner?
+
+Thanks,
+
+Kyaw Sint (Joe)
+
+On Tuesday, September 18, 2018 at 12:00:16 AM UTC-5, gary...@gmail.com wrote:
+> Thanks Joe,
+>
+> Do you think this is really the case?
+>
+> I have tried
+>
+> #include <TMB.hpp>
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   DATA_VECTOR(Y);
+>
+>   PARAMETER_VECTOR(X);
+>
+>   PARAMETER(logRho);
+>   PARAMETER(logSdState);
+>   PARAMETER(logSdObs);
+>
+>   Type sdState = exp(logSdState);
+>   Type sdObs = exp(logSdObs);
+>   Type rho = exp(logRho);
+>
+>   Type nll = 0.0;
+>
+>   nll -= dnorm(X(0), Type(0.0), sdState, true);
+>
+>   for (int i = 1; i < X.size(); ++i)
+>   {
+>     nll -= dnorm(X(i), rho*X(i-1), sdState, true);
+>   }
+>
+>   for (int i = 0; i < Y.size(); ++i) {
+>     nll -= dnorm(Y(i), X(i), sdObs, true);
+>   }
+>
+>   ADREPORT(rho);
+>   ADREPORT(sdState);
+>   ADREPORT(sdObs);
+>
+>   REPORT(rho);
+>   REPORT(sdState);
+>   REPORT(sdObs);
+>
+>   SIMULATE {
+>     for (int i = 1; i < X.size(); ++i)
+>     {
+>       X(i) = rnorm(rho*X(i-1), sdState);
+>     }
+>
+>     for (int i = 0; i < Y.size(); ++i)
+>     {
+>       Y(i) = rnorm(X(i), sdObs);
+>     }
+>
+>     REPORT(X);
+>     REPORT(Y);
+>
+>     REPORT(rho);
+>     REPORT(logSdState);
+>     REPORT(logSdObs);
+>   }
+>
+>   return nll;
+> }
+>
+>
+> And the result looks very reasonable. (just ignore the simulated values)
+>
+>
+> The R code is here
+>
+> #include <TMB.hpp>
+>
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   DATA_VECTOR(Y);
+>
+>   PARAMETER_VECTOR(X);
+>
+>
+>   PARAMETER(logRho);
+>   PARAMETER(logSdState);
+>   PARAMETER(logSdObs);
+>
+>
+>   Type sdState = exp(logSdState);
+>   Type sdObs = exp(logSdObs);
+>   Type rho = exp(logRho);
+>
+>
+>   Type nll = 0.0;
+>
+>
+>   nll -= dnorm(X(0), Type(0.0), sdState, true);
+>
+>
+>   for (int i = 1; i < X.size(); ++i)
+>   {
+>     nll -= dnorm(X(i), rho*X(i-1), sdState, true);
+>   }
+>
+>
+>   for (int i = 0; i < Y.size(); ++i) {
+>     nll -= dnorm(Y(i), X(i), sdObs, true);
+>   }
+>
+>
+>   ADREPORT(rho);
+>   ADREPORT(sdState);
+>   ADREPORT(sdObs);
+>
+>
+>   REPORT(rho);
+>   REPORT(sdState);
+>   REPORT(sdObs);
+>
+>
+>   SIMULATE {
+>     for (int i = 1; i < X.size(); ++i)
+>     {
+>       X(i) = rnorm(rho*X(i-1), sdState);
+>     }
+>
+>
+>     for (int i = 0; i < Y.size(); ++i)
+>     {
+>       Y(i) = rnorm(X(i), sdObs);
+>     }
+>
+>
+>     REPORT(X);
+>     REPORT(Y);
+>
+>
+>     REPORT(rho);
+>     REPORT(logSdState);
+>     REPORT(logSdObs);
+>   }
+>
+>
+>   return nll;
+> }
+>
+>
+>
+>
+>
+> On Monday, September 17, 2018 at 9:33:53 PM UTC-7, Kyaw Sint wrote:
+> > Hi Gary,
+> >
+> > Using log scale is better for numerical stability.  Software also throw an error if you give a negative value to the log function which could occur during the calculations. Another common problem I have encountered is division by zero and exponentiating to very large or small numbers.
+> >
+> > From your plot, my intuition is that your model is using the previous N and not considering other previous N. Can you apply a correlation structure in a SSM model? Check the multivariate distributions and autoregressive processes chapter in the TMB documentation https://kaskr.github.io/adcomp/_book/Densities.html
+> >
+> > Kyaw Sint (Joe)
+> >
+> >
+> >
+> >
+> > On Monday, September 17, 2018 at 2:11:54 PM UTC-5, gary...@gmail.com wrote:
+> > >
+> > > This is the plot I generated
+> > >
+> > >
+> > >
+> > > I'm using the code
+> > >
+> > > #include <TMB.hpp>
+> > >
+> > > template<class Type>
+> > > Type objective_function<Type>::operator() ()
+> > > {
+> > >   DATA_VECTOR(I);
+> > >
+> > >   PARAMETER(rho);
+> > >   PARAMETER(tau);
+> > >   PARAMETER(sigma);
+> > >
+> > >   PARAMETER_VECTOR(N);
+> > >
+> > >   Type nll = 0.0;
+> > >
+> > >   nll += pow(N[0],2)/(2*pow(tau,2))+log(tau);
+> > >
+> > >   for (int t = 1; t < N.size(); ++t)
+> > >   {
+> > >     nll += pow(N[t]-rho*N[t-1],2)/(2*pow(tau,2))+log(tau);
+> > >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2))+log(sigma);
+> > >   }
+> > >
+> > >   ADREPORT(rho);
+> > >   ADREPORT(tau);
+> > >   ADREPORT(sigma);
+> > >
+> > >   REPORT(rho);
+> > >   REPORT(tau);
+> > >   REPORT(sigma);
+> > >
+> > >   return nll;
+> > > }
+> > >
+> > >
+> > > and
+> > >
+> > > #//////////////////////////////
+> > > #### simple SSM hard-coded ####
+> > > #//////////////////////////////
+> > >
+> > > require(TMB)
+> > > require(ggplot2)
+> > >
+> > > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > > compile("llm_hc.cpp")
+> > > dyn.load(dynlib("llm_hc"))
+> > >
+> > > set.seed(0)
+> > > T = 100
+> > > N = rep(0,T)
+> > > tau = 1
+> > > sigma = 0.3
+> > > rho = 0.5
+> > > N[1] = rnorm(1,0,tau)
+> > > for (t in 2:T) {
+> > >   N[t] = rnorm(1,rho * N[t-1],tau)
+> > > }
+> > > I = rnorm(N[2:T],sigma)
+> > > I
+> > > N
+> > >
+> > > obj = MakeADFun(data=list('I'=I),
+> > >                 parameters=list(rho=rho,
+> > >                                 tau=tau,
+> > >                                 sigma=sigma,
+> > >                                 N=N),
+> > >                 random='N',
+> > >                 DLL='llm_hc')
+> > > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> > >
+> > > sdr = sdreport(obj)
+> > > summary.rep.fixed = summary(sdr,"fixed")
+> > > summary.rep.random = summary(sdr,"random")
+> > >
+> > > est.rho = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='rho',1]
+> > > est.tau = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='tau',1]
+> > > est.sigma = summary.rep.fixed[dimnames(summary.rep.fixed)[[1]]=='sigma',1]
+> > > est.N = summary.rep.random[dimnames(summary.rep.random)[[1]]=='N',1]
+> > >
+> > > plot = ggplot() +
+> > >   labs(color='') +
+> > >   geom_line(aes(x=1:T,y=N,color='true')) +
+> > >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> > >   xlab('year') +
+> > >   ylab('index')
+> > > plot
+> > >
+> > >
+> > > Clearly the prediction is quite far-off.
+> > >
+> > >
+> > >
+> > >
+> > >
+> > >
+> > > On Saturday, September 15, 2018 at 10:31:28 PM UTC-7, gary...@gmail.com wrote:
+> > > > I'm trying to make a simulate a simple SSM
+> > > >
+> > > > I(t+1) | N(t) ~ Normal(N(t),sigma)
+> > > >
+> > > > N(t+1) | N(t) ~ Normal(N(t),tau)
+> > > >
+> > > > N(0) ~ Normal(0,tau)
+> > > >
+> > > >
+> > > > then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+> > > >
+> > > >
+> > > >
+> > > > template<class Type>
+> > > > Type objective_function<Type>::operator() ()
+> > > > {
+> > > >   DATA_VECTOR(I);
+> > > >   PARAMETER(tau);
+> > > >   PARAMETER(sigma);
+> > > >   PARAMETER_VECTOR(N);
+> > > >
+> > > >   Type nll;
+> > > >
+> > > >
+> > > >   nll = 0;
+> > > >   nll += pow(N[0],2)/(2*pow(tau,2));
+> > > >
+> > > >
+> > > >   for (int t = 1; t < N.size(); ++t)
+> > > >   {
+> > > >     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+> > > >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+> > > >   }
+> > > >
+> > > >
+> > > >   return nll;
+> > > > }
+> > > >
+> > > > The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+> > > >
+> > > >           Estimate Std. Error
+> > > > tau   8.266817e+18        NaN
+> > > > sigma 8.177680e+18        NaN
+> > > > Warning:
+> > > > Hessian of fixed effects was not positive definite.
+> > > > Maximum gradient component: 6.666656e-18
+> > > >
+> > > > R code is as below.
+> > > >
+> > > > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > > > compile("llm_hc.cpp")
+> > > > dyn.load(dynlib("llm_hc"))
+> > > >
+> > > >
+> > > > set.seed(0)
+> > > > T = 100
+> > > > N = rep(0,T)
+> > > > tau = 1
+> > > > sigma = 1
+> > > > N[1] = rnorm(1,0,tau)
+> > > > for (t in 2:T) {
+> > > >   N[t] = rnorm(1,N[t-1],tau)
+> > > > }
+> > > > I = rnorm(N[2:T],sigma)
+> > > > I
+> > > > N
+> > > >
+> > > >
+> > > > obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> > > > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> > > >
+> > > >
+> > > > rep = sdreport(obj)
+> > > > summary.rep = summary(rep)
+> > > >
+> > > >
+> > > > rep
+> > > > summary.rep
+> > > >
+> > > >
+> > > > est.tau = summary.rep[1,1]
+> > > > est.sigma = summary.rep[2,1]
+> > > > est.N = summary.rep[3:nrow(summary.rep),1]
+> > > >
+> > > >
+> > > > plot = ggplot() +
+> > > >   labs(color='') +
+> > > >   geom_line(aes(x=1:T,y=N,color='true')) +
+> > > >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> > > >   xlab('year') +
+> > > >   ylab('index')
+> > > > plot
+> > > >
+> > > >
+> > > >
+> > > >
+> > >
+> > > On Saturday, September 15, 2018 at 10:31:28 PM UTC-7, gary...@gmail.com wrote:
+> > > > I'm trying to make a simulate a simple SSM
+> > > >
+> > > > I(t+1) | N(t) ~ Normal(N(t),sigma)
+> > > >
+> > > > N(t+1) | N(t) ~ Normal(N(t),tau)
+> > > >
+> > > > N(0) ~ Normal(0,tau)
+> > > >
+> > > >
+> > > > then estimate it using TMB. But the deviation estimate from TMB is very large. Below is the model specification in C++.
+> > > >
+> > > >
+> > > >
+> > > > template<class Type>
+> > > > Type objective_function<Type>::operator() ()
+> > > > {
+> > > >   DATA_VECTOR(I);
+> > > >   PARAMETER(tau);
+> > > >   PARAMETER(sigma);
+> > > >   PARAMETER_VECTOR(N);
+> > > >
+> > > >   Type nll;
+> > > >
+> > > >
+> > > >   nll = 0;
+> > > >   nll += pow(N[0],2)/(2*pow(tau,2));
+> > > >
+> > > >
+> > > >   for (int t = 1; t < N.size(); ++t)
+> > > >   {
+> > > >     nll += pow(N[t]-N[t-1],2)/(2*pow(tau,2));
+> > > >     nll += pow(I[t-1]-N[t],2)/(2*pow(sigma,2));
+> > > >   }
+> > > >
+> > > >
+> > > >   return nll;
+> > > > }
+> > > >
+> > > > The standard deviation estimate is as below. The true standard deviation I specified was 1. But the estimate gives 8.266817e+18. Hessian is not positive definite either - which I think it should be since the objective is convex.
+> > > >
+> > > >           Estimate Std. Error
+> > > > tau   8.266817e+18        NaN
+> > > > sigma 8.177680e+18        NaN
+> > > > Warning:
+> > > > Hessian of fixed effects was not positive definite.
+> > > > Maximum gradient component: 6.666656e-18
+> > > >
+> > > > R code is as below.
+> > > >
+> > > > setwd('/Users/garyzhu/Desktop/popSSM/gary/gary_code/tmb_explorer')
+> > > > compile("llm_hc.cpp")
+> > > > dyn.load(dynlib("llm_hc"))
+> > > >
+> > > >
+> > > > set.seed(0)
+> > > > T = 100
+> > > > N = rep(0,T)
+> > > > tau = 1
+> > > > sigma = 1
+> > > > N[1] = rnorm(1,0,tau)
+> > > > for (t in 2:T) {
+> > > >   N[t] = rnorm(1,N[t-1],tau)
+> > > > }
+> > > > I = rnorm(N[2:T],sigma)
+> > > > I
+> > > > N
+> > > >
+> > > >
+> > > > obj = MakeADFun(data=list('I'=I),parameters=list('tau'=tau,'sigma'=sigma,'N'=N),random='N',DLL='llm_hc')
+> > > > opt = nlminb(start=obj$par,obj=obj$fn,gr=obj$gr,control=list(eval.max=5000,iter.max=5000))
+> > > >
+> > > >
+> > > > rep = sdreport(obj)
+> > > > summary.rep = summary(rep)
+> > > >
+> > > >
+> > > > rep
+> > > > summary.rep
+> > > >
+> > > >
+> > > > est.tau = summary.rep[1,1]
+> > > > est.sigma = summary.rep[2,1]
+> > > > est.N = summary.rep[3:nrow(summary.rep),1]
+> > > >
+> > > >
+> > > > plot = ggplot() +
+> > > >   labs(color='') +
+> > > >   geom_line(aes(x=1:T,y=N,color='true')) +
+> > > >   geom_line(aes(x=1:T,y=est.N,color='predicted')) +
+> > > >   xlab('year') +
+> > > >   ylab('index')
+> > > > plot
+> > > >
+> > > >
+> > > >
+> > > >
+

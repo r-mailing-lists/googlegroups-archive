@@ -1,0 +1,2620 @@
+From u0050bbd3c8c987b9 at groups.google.com  Mon Feb  1 16:58:15 2016
+From: u0050bbd3c8c987b9 at groups.google.com (Marguerite Mauritz)
+Date: Mon, 01 Feb 2016 16:58:15 +0000
+Subject: Re: [D-RUG]: blocked split-plot ANOVA with fixed and random effects
+Message-ID: <dHzI8w4N_zQ.6KZqpzwqDAAJ@davis-rug.groups.google.com>
+In-Reply-To: <dHzI8w4N_zQ.tZLnV4g8UDgJ@davis-rug.groups.google.com>
+References: <dHzI8w4N_zQ.tZLnV4g8UDgJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/dHzI8w4N_zQ/m/6KZqpzwqDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I have been extremely remiss in posting a response to outline the final model that I have ended up with. I apologise, but better late than not at all, since I hope others find this thread useful.
+After the helpful advice I received here, some reading, and discussion with a statistician here at Northern Arizona University, I came up with the following analytic approach:
+
+I first have to define an explicit nesting structure, to be certain that lme4 can recognise the sample design. I then put the split-plot block design structure in the random effects, allowing for random intercepts. The random effect structure was not tested for significance (or explanatory power) because it is an integral part of the experimental design and therefore should not be excluded, even if the random effect offers no model improvement. In the summary output I can look at the variance associated with each random component, in order to understand where most of the variation lies.
+In order to account for the repeated measures aspect of the experiment I include a categorical year effect in the random effects, and allow the intercept to be different in each year of the study. This allows the 'starting point' of each year to be different. The effect of change through time is tested by including a continuous time variable, centered on 0, in the fixed effects. This tests whether the slope through time is significant. Centering the variable is useful because it constrains the model to the time interval over which I have data; I do not want 2009-2013 as real numeric values, since that makes no sense. My starting year is 2009, not calendar year 0.
+The other fixed effects are treatments, I set a reference for each treatment, to make sure that the model intercepts represent the 'control' treatment. By allowing full interactions: WW*SW*time I am able to represent the crossed nature of the WW*SW treatment and can test whether the changes through time differ with treatments.
+
+Finally, I can look at the summary output of the model, calculate confidence intervals for the fixed effects (not-overlapping zero is significant at the 95% CI), and determine residuals of the fixed and random effects.
+
+Code below:
+library(data.table)
+library(ggplot2)
+library(gridExtra)
+library(lme4)
+library(sjPlot)
+
+# Prepare the data for stats
+# data that contains the CO2 flux (NEE.sum) dependent response variables, and independent predictor variables: WW, SW, and WW x SW treatment, years that the experiment ran
+
+data2 <- flux.variables
+
+# make unique variables for each nested unit for clarity, lme4 will recognise the implicit nesting
+data2$block <- as.factor(data2$block)
+
+# make model with fence coded 1-2 and plot coded 1-4, then create unique names for each fence, WW or plot
+data2$fence_2 <- ifelse(data2$fence == 1 | data2$fence == 3 | data2$fence == 5, "1", "2")
+data2$plot_4 <- ifelse(data2$plot == 1 | data2$plot == 5, "1",
+                       ifelse(data2$plot == 2 | data2$plot == 6, "2",
+                              ifelse(data2$plot == 3 | data2$plot == 7, "3","4")))
+
+data2$fence_2 <- as.factor(data2$fence_2)
+data2$plot <- as.factor(data2$plot)
+data2$plot_4 <- as.factor(data2$plot_4)
+
+# create variable for random structure
+data2 <- within (data2, {
+  wholeplot <- factor(block:fence_2:WW)
+  SWplot <- factor(block:fence_2:WW:SW) # this is in case I want to nest SW
+  subplot4 <- factor(block:fence_2:WW:plot_4)
+})
+
+# stats lab consultation with Derek Sonderegger:
+# For repeated measures
+# make time a continuous variable to put in main effects (to test year effect)
+# and make year a categorical variable and include in random effects
+
+# center time on 0 so that 2009 is used as the reference year
+baseyear <- min(data2$year)
+data2$time <- as.numeric(data2$year - baseyear)
+
+# make year a factor:
+# categorical variable to put in random structure (time will be continuous as fixed effect),
+# year effect will account for the offset from the overall trend throught time
+data2$year <- as.factor(data2$year)
+
+# reorder levels of time and treatment in the data to make sure that control in year 2009 is the reference
+# for the intercept
+print(levels(data2$treatment))
+print(levels(factor(data2$time)))
+
+data2$treatment <- relevel(data2$treatment, ref="Control")
+print(levels(data2$treatment))
+
+# The data look like this:
+ year fence  treatment block SW WW    NEE.sum      fence_2  plot_4      subplot4  SWplot       wholeplot    time
+1: 2009     1        Air        A      S  C        -29.318239       1            1            A:1:C:1     A:1:C:S     A:1:C          0
+2: 2009     1    Control     A     C  C         3.934905         1             2           A:1:C:2     A:1:C:C     A:1:C          0
+3: 2009     1        Air        A      S  C       34.577143         1            3         A:1:C:3        A:1:C:S     A:1:C          0
+4: 2009     1    Control     A     C  C        3.516462         1             4        A:1:C:4          A:1:C:C     A:1:C          0
+5: 2009     1 Air & Soil    A      S  W      -13.604757       1             1        A:1:W:1        A:1:W:S     A:1:W         0
+6: 2009     1       Soil        A     C  W        -3.140330       1             2        A:1:W:2        A:1:W:C     A:1:W         0
+
+# Model1:
+# WW * SW * time: effects of treatment over time;
+# WW is nested and SW is crossed (split-plot design);
+# WW is part of the random nesting structure;
+# whole plot is: block/fence/WW;
+# subplot is block/fence/WW/plot
+
+model1 <- lmer(NEE.sum ~ WW * SW * time + # use * or + depending on the interactions you want to specify
+                 (1 | block/fence_2/wholeplot/subplot4) + (1|year),
+               data = data2)
+
+# display output of model and the effect size of each fixed effect
+summary(model1)
+# display the confidence interval around each fixed effect
+confint(model1,method="boot",boot.type="norm",level=0.95,nsim=1000)
+
+# I also want to know whether the distribution of residuals and model fit differ
+# between the model with time and the model with environmental/biological predictors.
+model1resids <- resid(model1)
+model1fitted <- fitted(model1)
+model1sqrtres <- sqrt(abs(resid(model1)))
+
+par(mfrow=c(2,2), mar = c(4,4,3,2))
+plot(model1fitted, model1resids, main='resid, model1: WW*SW*time')
+plot(model1fitted, model1sqrtres, main='sqrt resid, model1: WW*SW*time')
+qqnorm(model1resids, main = 'model1: WW*SW*time')
+qqline(model1resids)
+par(mfrow=c(1,1))
+
+# Look at the residuals and qqnorm plot from model1 of the random effects to see if they fall on the
+# line (=normal).
+# I believe that this will apply to all models with the same response variable since
+# the RE structure remains the same.
+# test the random effect quantiles - if they fall on the qq line, they are normal
+sjp.glmer(model1, type="re.qq")
+
+Marguerite
+---------------------------------------------------------------------------------------------------------
+
+On Monday, December 8, 2014 at 10:22:34 AM UTC-7, Emily Peffer wrote:
+> Hi Marguerite,
+>
+> I had a similar coding debacle about a year ago that involved multiple levels of nesting and random and fixed effects (ugh!), but I think I finally figured it out using lme.
+>
+> Try this:
+>
+> #your 'fence' effect is equivalent to your winter warming effect (main plot- I'm calling it WWWC), so you don't need to have both in your model
+> #I'm calling your summer warming trt (subplot) SCSW
+> #first line has all your fixed effects, second line specifies nesting structure of random effects
+>
+> lme(carbon~year*WWWC*SCSW,
+>        random=~1|Block/WWWC/SCSW,
+>        data=data)
+>
+>
+> As far as data organization, I think that as long as your model is specified correctly, it doesn't matter much how you number your variables. Just have one column for each factor in your model, and make sure that R knows that everything is a factor.
+>
+> Hope that helps,
+> Emily
+>
+> On Sun, Dec 7, 2014 at 10:07 PM, Marguerite Mauritz <mauritzm...@gmail.com> wrote:
+> > Hello,
+> >
+> > I'm trying to analyse a blocked split plot design in lme4 and cannot figure out the correct code.
+> >
+> > The design I have is a blocked split-plot design with repeated measures so I have 2 between-plot and 2 within-plot effects.
+> > There are 3 random blocks on the landscape with two fences in each block. Each fence is split and has either a winter warming (WW) or no winter warming (WC). On either side of the fence there are 4 sub-plots, 2 of which have a summer warming treatment (SW) and 2 of which have no summer warming (SC). Every sub-plot is monitored once a year for 5 years. The question is whether carbon flux changes significantly between treatments and through time.
+> >
+> > It looks like this:
+> >
+> > 3 blocks replicated on the landscape, random between-subject effect
+> > 2 fences nested in each block, this is the unit of replication for my fixed between-subject effect WW described below, these are coded 1-6 so that each fence in each block has a unique ID
+> > 1 treatment applied to each fence, either WW or WC, fixed between- subject effect
+> > 1 treatment crossed with each treatment at the fence level, either SW or SC, these are applied in 2 sub-plots per fence, fixed within-subject effect
+> > this produces WWxSW, WWxSC, WCxSW and WCxSC treatments
+> > each sub-plot is monitored once per year for 5 years, fixed within-subject effect
+> >
+> > The tricky thing is that I want block/fence to be my unit of replication for the WW effect and I want sub-plot to be my unit of replication for years.
+> >
+> > I want to make sure my variables are coded correctly. Currently each fence is unique 1:6, blocks are A,B,C and sub-plots are 1:8, repeated in every block/fence combination. This makes sense to me, the fences and blocks are unique; plot 1 in every block/fence comes from the same treatment and, if treatment has an effect, they should behave similarly regardless of where they are on the landscape.
+> >
+> > I have a few model attempts, but I'm pretty sure they're all wrong. It's the different units of replication that are totally throwing me off.
+> >
+> > # split-split plot design. I think this would be correct if WW and year had the same unit of replication?
+> > model1 <- lmer(carbon ~ WW*SW*year +
+> >                  (1|block/fence/WW/year),
+> >                data = d)
+> >
+> > #  I don't think this is correct although it will run.
+> > model2 <- lmer (carbon ~ WW*SW*year +               # these are my fixed effects, WW is between-subject and SW, year are within-subject
+> > (1|block) +                                                        # random between-subject effect
+> > (1+WW|block) + (1+WW|block:fence)             # I am not sure this is correct, I want it to be WW applied to fences nested in blocks
+> > (1+year|sub-plot),                                             # also not sure this is right, I want it to be year repeated at the sub-plot level
+> > data = d)
+> >
+> > Every variation of model I have tried gives me 1 DF for each effect when I check the anova(model) output. That just doesn't make sense. Year should have 4.
+> >
+> > Part of the lmer output is a list of grouping variables after the random effects.
+> > summary(model1)
+> >
+> > Number of obs: 240, groups:
+> > year:(WW:(fence:block)), 60; WW:(fence:block), 12; fence:block, 6; block, 3
+> >
+> > What exactly do these mean? Are they the F-ratio denominator?
+> >
+> > Thanks very much for any help,
+> > Marguerite
+> >
+> >
+> > *********
+> > This questions is quite similar to Emily Peffer's post from some time ago:
+> > ANOVA with nested random and fixed effects: help!
+> > But with a few differences, namely, my biggest landscape factor (what I'm calling block) is a random effect and I have one treatment effect which has one unit of replication and another treatment effect (repeated measure) which has a different unit of replication.
+> >
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at http://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u2f78e326d6f095da at groups.google.com  Mon Feb  1 19:29:22 2016
+From: u2f78e326d6f095da at groups.google.com (Jessica Mizzi)
+Date: Mon, 01 Feb 2016 19:29:22 +0000
+Subject: Workshop announcement: Introductory Git - 2/5/16
+Message-ID: <TIT3xlwY_jI.eUlAtHsyDAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/TIT3xlwY_jI/m/eUlAtHsyDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Workshop announcement: Introductory Git
+
+Who: Titus Brown
+When: February 5, 2016
+Times: 9:15am-12:15pm PST
+Where: DSI Space, Shield Library, UC Davis campus
+
+Description:
+
+This workshop will introduce the basics of git, a widely used system for
+managing changes to files.  git and related systems are key for replicability
+when doing any kind of computational analysis.
+
+This will be a gentle introduction to git that follows the Software Carpentry
+lesson, here,
+
+https://swcarpentry.github.io/git-novice/
+
+Some experience with the command line is strongly suggested, but you don't
+need to be an expert by any means; we will have friendly TAs, too!
+
+We will also talk about github, a site that enables collaboration around
+files in git.
+
+This workshop is open to everyone, including graduate students,
+postdocs, staff, faculty, and community members.
+
+More at:
+http://dib-training.readthedocs.org/en/pub/2016-02-05-intro-git.html
+
+Register at:
+https://www.eventbrite.com/e/introductory-git-half-day-workshop-tickets-20040916922
+
+Attendance Policy:
+If you register for this workshop but cannot attend, please release
+your spot on EventBrite or contact Jessica Mizzi (jessic...@gmail.com).
+If you register but do not attend (which takes up a spot that could have
+gone to someone on our waitlist!), you may not be able to register for
+future workshops.
+
+From u6e4e37c602c2b104 at groups.google.com  Mon Feb  1 21:28:13 2016
+From: u6e4e37c602c2b104 at groups.google.com (Michael Levy)
+Date: Mon, 01 Feb 2016 21:28:13 +0000
+Subject: Talk Tomorrow: Brandon Hurr on working with multiple tables using dplyr's joins
+Message-ID: <CMxFslafrJg.BPZtEvg4DAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/CMxFslafrJg/m/BPZtEvg4DAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+Tomorrow at 3:10 in Wickson 2124, Brandon Hurr will give a talk on using dplyr’s join operations to work with related data tables. If you can’t make it in person, the talk will be livecast here <https://plus.google.com/events/ckviuc7f9l58djgsopvi1dpa36c>. After the talk, we’ll have the usual work session until 5pm. Here is a short blurb from Brandon, and the attached script is for following along during the talk.
+>
+> In the real world, data is often connected, but stored in independent datasets (tables). Join operations in dplyr mimic those in SQL and allow multiple table integration and filtering. I will introduce you to these operations, and show you how to use them with examples (attached).
+
+See you tomorrow,
+
+Michael
+​
+
+From u57059e469d052267 at groups.google.com  Tue Feb  2 23:43:14 2016
+From: u57059e469d052267 at groups.google.com (Anand Rao)
+Date: Tue, 02 Feb 2016 23:43:14 +0000
+Subject: always missing 1st line from input in the output
+Message-ID: <wXtfj-K9Dn0.RAaRs-qODAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/wXtfj-K9Dn0/m/RAaRs-qODAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi folks,
+
+I seek some help with a problem that does not seem to go away - the 1st input line in my file never appear in my output.
+
+I am trying to perform Fisher's Exact paired tests on an input file with multiple rows (one row for each protein) and multiple columns (multiple biological properties), and adjusting p-value using FDR.
+
+For each row (or protein), I want to compare whether each of its properties is statistically more abundant than expected by just chance.
+The amino acid residue counts (for single protein, and sum total of all proteins) are therefore used for this calculation.
+
+I am attaching an example input file, and my R code thus far (with various variation commented out).
+
+I'd like the output to contain the protein ID as well as CoDomain classification information (as 'A' or 'P'), followed by adjusted p-values for each property (14 columns) for a row, iterated over each of the input rows.
+
+When I convert table to dataframe, I am always missing input line #1 from the output. 654 input lines, 653 output lines!!!!
+
+When I do NOT convert read.table to dataframe, I get only < 600 lines in output, compared to input file with 654 data lines.
+
+I've tried several variations of my R script, but I am not sure about where I am going wrong - read.table? or cat / output step? elsewhere?
+I hope someone can help fix the bug in my R script and explain to me what I was doing wrong, so I wont make this same mistake again.
+
+Thanks!
+Anand
+
+From u47ca46208a81ec5e at groups.google.com  Wed Feb  3 01:00:54 2016
+From: u47ca46208a81ec5e at groups.google.com (Michael Koontz)
+Date: Wed, 03 Feb 2016 01:00:54 +0000
+Subject: Re: [D-RUG]: always missing 1st line from input in the output
+Message-ID: <wXtfj-K9Dn0.CcNt5yeTDAAJ@davis-rug.groups.google.com>
+In-Reply-To: <wXtfj-K9Dn0.RAaRs-qODAAJ@davis-rug.groups.google.com>
+References: <wXtfj-K9Dn0.RAaRs-qODAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/wXtfj-K9Dn0/m/CcNt5yeTDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Anand,
+
+I think your loop is okay, but the use of sink() might be the culprit. It looks like sink() works similarly to some of the graphics device functions, like pdf(). You open a path for your data to go, and then you close up that path after you’ve finished adding everything by bookending the sink() function call and the close() function call around the block of code that generates the output you want to save.
+
+If I take out all of your uses of sink() and close() and just add a single call to sink(outfile) immediately before the loop, and a call to close(outfile) immediately after the loop, then it looks like the complete output file is generated.
+
+I think the problem before was that the first sink(outfile) function call came as the *final* step of the loop. So the things in the loop worked great, the first row of output was printed to the screen, and THEN the file was opened for input. So the first time any results were actually written to that file was after the 2nd iteration of the loop.
+
+I don’t know how common it is to use sink() and close() in your domain. I’ve never used them, but that doesn’t mean they aren’t the right choice for you case. Another way to do this without using sink() and close() would be:
+
+1) Create a storage data frame just before the loop:
+
+d <- as.data.frame(matrix(0, nrow=r, ncol=16))
+
+2) Put the output from each iteration of the loop into the appropriate row (do this right after you make the ‘out’ variable):
+
+d[i, ] <- out # Put the ‘out’ variable into the ith row of the d data frame
+
+3) Check your work by looking at the the top 6 rows of d *outside* the loop.
+
+head(d)
+
+4) Write the variable to a csv file:
+
+write.csv(d, outfile, row.names=FALSE)
+
+--
+Michael Koontz — website <http://michaeljkoontz.weebly.com/>
+Graduate Group in Ecology
+Plant and Environmental Sciences <https://www.google.com/maps/place/Plant+and+Environmental+Sciences+Bldg,+University+of+California,+Davis,+Davis,+CA+95616/@38.5427751,-121.7570251,16z/data=!4m2!3m1!1s0x808529085c693a13:0xe20b0046ee4eb4f7>, Room 2211
+University of California, Davis
+Davis, CA 95616
+
+> On Feb 2, 2016, at 3:43 PM, Anand Rao <anand...@gmail.com> wrote:
+>
+
+> Hi folks,
+>
+> I seek some help with a problem that does not seem to go away - the 1st input line in my file never appear in my output.
+>
+> I am trying to perform Fisher's Exact paired tests on an input file with multiple rows (one row for each protein) and multiple columns (multiple biological properties), and adjusting p-value using FDR.
+>
+> For each row (or protein), I want to compare whether each of its properties is statistically more abundant than expected by just chance.
+> The amino acid residue counts (for single protein, and sum total of all proteins) are therefore used for this calculation.
+>
+> I am attaching an example input file, and my R code thus far (with various variation commented out).
+>
+> I'd like the output to contain the protein ID as well as CoDomain classification information (as 'A' or 'P'), followed by adjusted p-values for each property (14 columns) for a row, iterated over each of the input rows.
+>
+> When I convert table to dataframe, I am always missing input line #1 from the output. 654 input lines, 653 output lines!!!!
+>
+> When I do NOT convert read.table to dataframe, I get only < 600 lines in output, compared to input file with 654 data lines.
+>
+> I've tried several variations of my R script, but I am not sure about where I am going wrong - read.table? or cat / output step? elsewhere?
+> I hope someone can help fix the bug in my R script and explain to me what I was doing wrong, so I wont make this same mistake again.
+>
+> Thanks!
+> Anand
+>
+
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+> <Fishers_Exact_Test_NR-FBPs_Co-Domain_PRESENT-Vs-ABSENT_IDR,DBR.R><Aco195_NR-FBP-CDA,CDP.PID-DBR>
+
+From u57059e469d052267 at groups.google.com  Wed Feb  3 02:00:52 2016
+From: u57059e469d052267 at groups.google.com (Anand Rao)
+Date: Wed, 03 Feb 2016 02:00:52 +0000
+Subject: Re: [D-RUG]: always missing 1st line from input in the output
+Message-ID: <wXtfj-K9Dn0.DeB5h22WDAAJ@davis-rug.groups.google.com>
+In-Reply-To: <wXtfj-K9Dn0.CcNt5yeTDAAJ@davis-rug.groups.google.com>
+References: <wXtfj-K9Dn0.RAaRs-qODAAJ@davis-rug.groups.google.com> <wXtfj-K9Dn0.CcNt5yeTDAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/wXtfj-K9Dn0/m/DeB5h22WDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Michael,
+
+Your solution - Re-locating sink(outfile) to just before the loop, and using it just once, solved my problems.
+I now have the results I was hoping to generate.
+
+Thanks for promptly posting your elegant explanation / solution. I appreciate it.
+
+Cheers,
+Anand
+
+On Tuesday, February 2, 2016 at 5:00:54 PM UTC-8, Michael Koontz wrote:
+> Hi Anand,
+>
+> I think your loop is okay, but the use of sink() might be the culprit. It looks like sink() works similarly to some of the graphics device functions, like pdf(). You open a path for your data to go, and then you close up that path after you’ve finished adding everything by bookending the sink() function call and the close() function call around the block of code that generates the output you want to save.
+>
+> If I take out all of your uses of sink() and close() and just add a single call to sink(outfile) immediately before the loop, and a call to close(outfile) immediately after the loop, then it looks like the complete output file is generated.
+>
+> I think the problem before was that the first sink(outfile) function call came as the *final* step of the loop. So the things in the loop worked great, the first row of output was printed to the screen, and THEN the file was opened for input. So the first time any results were actually written to that file was after the 2nd iteration of the loop.
+>
+> I don’t know how common it is to use sink() and close() in your domain. I’ve never used them, but that doesn’t mean they aren’t the right choice for you case. Another way to do this without using sink() and close() would be:
+>
+> 1) Create a storage data frame just before the loop:
+>
+> d <- as.data.frame(matrix(0, nrow=r, ncol=16))
+>
+> 2) Put the output from each iteration of the loop into the appropriate row (do this right after you make the ‘out’ variable):
+>
+> d[i, ] <- out # Put the ‘out’ variable into the ith row of the d data frame
+>
+> 3) Check your work by looking at the the top 6 rows of d *outside* the loop.
+>
+> head(d)
+>
+> 4) Write the variable to a csv file:
+>
+> write.csv(d, outfile, row.names=FALSE)
+>
+>
+>
+> --
+> Michael Koontz — website <http://michaeljkoontz.weebly.com/>
+> Graduate Group in Ecology
+> Plant and Environmental Sciences <https://www.google.com/maps/place/Plant+and+Environmental+Sciences+Bldg,+University+of+California,+Davis,+Davis,+CA+95616/@38.5427751,-121.7570251,16z/data=!4m2!3m1!1s0x808529085c693a13:0xe20b0046ee4eb4f7>, Room 2211
+> University of California, Davis
+> Davis, CA 95616
+>
+>
+>
+>
+>
+>
+> > On Feb 2, 2016, at 3:43 PM, Anand Rao <anand...@gmail.com> wrote:
+> >
+> > Hi folks,
+> >
+> > I seek some help with a problem that does not seem to go away - the 1st input line in my file never appear in my output.
+> >
+> > I am trying to perform Fisher's Exact paired tests on an input file with multiple rows (one row for each protein) and multiple columns (multiple biological properties), and adjusting p-value using FDR.
+> >
+> > For each row (or protein), I want to compare whether each of its properties is statistically more abundant than expected by just chance.
+> > The amino acid residue counts (for single protein, and sum total of all proteins) are therefore used for this calculation.
+> >
+> > I am attaching an example input file, and my R code thus far (with various variation commented out).
+> >
+> > I'd like the output to contain the protein ID as well as CoDomain classification information (as 'A' or 'P'), followed by adjusted p-values for each property (14 columns) for a row, iterated over each of the input rows.
+> >
+> > When I convert table to dataframe, I am always missing input line #1 from the output. 654 input lines, 653 output lines!!!!
+> >
+> > When I do NOT convert read.table to dataframe, I get only < 600 lines in output, compared to input file with 654 data lines.
+> >
+> > I've tried several variations of my R script, but I am not sure about where I am going wrong - read.table? or cat / output step? elsewhere?
+> > I hope someone can help fix the bug in my R script and explain to me what I was doing wrong, so I wont make this same mistake again.
+> >
+> > Thanks!
+> > Anand
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+> > <Fishers_Exact_Test_NR-FBPs_Co-Domain_PRESENT-Vs-ABSENT_IDR,DBR.R><Aco195_NR-FBP-CDA,CDP.PID-DBR>
+>
+
+From u80f3b08eb9d82ac3 at groups.google.com  Thu Feb  4 00:31:05 2016
+From: u80f3b08eb9d82ac3 at groups.google.com (Meghan S)
+Date: Thu, 04 Feb 2016 00:31:05 +0000
+Subject: 3d plots (of streamflow data)
+Message-ID: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/P-1yavL88sA/m/K6Aj8BvgDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I would really like to create 3D plots of streamflow data, where x=Year, y=Day of the water year (1-365), z=discharge (streamflow).
+
+I've attached an example of the plot type I'm trying to recreate.  I only have 4 years of the streamflow data I'd like to plot, but the structure is the same.
+Here's another example:
+
+Does anyone have any ideas?  I've tried scatter3D with no luck.  Some users recommend latticeExtra, but I can't get it to work in this context.
+
+Open to ideas!
+Thanks,
+Meghan
+
+From uac6e661afedf7f7a at groups.google.com  Thu Feb  4 17:54:09 2016
+From: uac6e661afedf7f7a at groups.google.com (Alison Whipple)
+Date: Thu, 04 Feb 2016 17:54:09 +0000
+Subject: Re: 3d plots (of streamflow data)
+Message-ID: <P-1yavL88sA.VS_MRQcZDQAJ@davis-rug.groups.google.com>
+In-Reply-To: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com>
+References: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/P-1yavL88sA/m/VS_MRQcZDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Meghan,
+
+I've had some success using persp, where x=Year, y=Day, and z is a matrix of the flows, with ncol=#days, nrow=#years. I haven't been able to produce one as visually appealing as I'd like, but this does the basics.
+
+I'd love to hear if there are other suggestions out there as well.
+
+Best,
+Alison
+
+On Wednesday, February 3, 2016 at 4:31:05 PM UTC-8, Meghan S wrote:
+> Hi all,
+>
+> I would really like to create 3D plots of streamflow data, where x=Year, y=Day of the water year (1-365), z=discharge (streamflow).
+>
+> I've attached an example of the plot type I'm trying to recreate.  I only have 4 years of the streamflow data I'd like to plot, but the structure is the same.
+> Here's another example:
+>
+> Does anyone have any ideas?  I've tried scatter3D with no luck.  Some users recommend latticeExtra, but I can't get it to work in this context.
+>
+> Open to ideas!
+> Thanks,
+> Meghan
+
+From u91fcdff1323a6831 at groups.google.com  Thu Feb  4 19:12:18 2016
+From: u91fcdff1323a6831 at groups.google.com (Ryan Peek)
+Date: Thu, 04 Feb 2016 19:12:18 +0000
+Subject: Re: 3d plots (of streamflow data)
+Message-ID: <P-1yavL88sA.qMOcJ0sdDQAJ@davis-rug.groups.google.com>
+In-Reply-To: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com>
+References: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/P-1yavL88sA/m/qMOcJ0sdDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+ <https://lh3.googleusercontent.com/-6a3JQ6zlWkA/VrOie9m1MdI/AAAAAAAAAeI/PTru-6VgckI/s1600/3d_plot.png>
+Hi Meghan,
+
+Is there a particular reason to use the 3d view? You could easily use facets in ggplot to plot the same data and it may be easier to interpret because there wouldn't be data potentially obstructed by layers in front. You would certainly have many more options if you considered dropping the 3D requirement, and it might be easier to interpret for the reader. However, if you are keen to visualize in 3d, I've used persp a bit as well, but for xyz surface plots of topography. One new package which is really fun to use, though more for exploratory purposes is "plot_ly".
+
+As an example here's some code you could try using your data. You can export as PNG from the plot itself (if you click small button and open in a browser it will be easier to do than in RStudio).  The included snapshot is from a bigger dataset I used of some 3d bar topography data, but grouped by the scan location.
+
+## Create data (this is just pasted from a random flow/temp dataset)
+x <- seq(1,25,1)
+y <- c(8.036730769, 7.829166667, 8.482916667, 9.4690625, 10.5978125, 11.4896875, 11.86989583,
+       11.70260417, 11.37947917, 10.479375, 9.987395833, 10.0953125, 9.593333333, 9.5659375, 10.02875,
+       10.3746875, 10.12479167, 9.889791667, 9.491458333, 9.259583333, 9.956041667, 10.16895833, 10.3225,
+       11.8078125, 12.21947917)
+z <- c(2.443436087, 4.369033438, 6.766952479, 4.176211145, 2.539315738, 4.554630615, 3.852905435, 4.27978627,
+       2.293411763, 4.339267628, 4.245072739, 3.644484732, 5.866500184, 5.475036304, 5.029551926, 2.199508359,
+       4.404874198, 4.991906775, 2.162372383, 2.901433674, 2.363337489, 9.884017923, 5.277798281, 3.074637322,13.5933143)
+
+site<-c(rep("NFA",5), rep("MFA",5), rep("SFA",5), rep("NFY",5),rep("MFY",5)) # make site names, this could be year
+df<-data.frame(x, y, z, site)
+
+library(plotly)
+with(df, plot_ly(x=x,y=y,z=z, group=site, type="scatter3d"))
+
+Hope this helps,
+Adios,
+Ryan
+
+ <https://lh3.googleusercontent.com/-6a3JQ6zlWkA/VrOie9m1MdI/AAAAAAAAAeI/PTru-6VgckI/s1600/3d_plot.png>
+
+On Wednesday, February 3, 2016 at 4:31:05 PM UTC-8, Meghan S wrote:
+
+> Hi all,
+>
+> I would really like to create 3D plots of streamflow data, where x=Year, y=Day of the water year (1-365), z=discharge (streamflow).
+>
+> I've attached an example of the plot type I'm trying to recreate.  I only have 4 years of the streamflow data I'd like to plot, but the structure is the same.
+> Here's another example:
+>
+> Does anyone have any ideas?  I've tried scatter3D with no luck.  Some users recommend latticeExtra, but I can't get it to work in this context.
+>
+> Open to ideas!
+> Thanks,
+> Meghan
+
+From u244f5e4abbc229bf at groups.google.com  Fri Feb  5 00:32:04 2016
+From: u244f5e4abbc229bf at groups.google.com (Jason Moore)
+Date: Fri, 05 Feb 2016 00:32:04 +0000
+Subject: Next "The Hacker Within" Meetup, Thursday Feb. 11 @ 5:10pm: Git Internals with Michael Hannon
+Message-ID: <PyPcA5KqErM.ptbFOr4uDQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/PyPcA5KqErM/m/ptbFOr4uDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The next Hacker Within meetup topic is on "Git Internals" where Mike Hannon will lead us through a tutorial to explore what makes Git tick. See:
+
+http://www.thehackerwithin.org/davis/posts/git-internals
+
+for the info. This will be updated over the next week. Be sure to bring your laptop with the recommend software installed.
+
+We still need a few lightning talk topics! These are just quick 5 minute presentations to introduce a tool, a problem, or whatever you think is relevant. Please email me if you'd like to share for the lightning talks.
+
+When: Thursday February 11th @ 5:10pm
+Where: Data Science Initiative Classroom in Room 360 of the Shields Library
+
+Format: 1 hr tutorial, several 5 minute lightning talks, hacking session till people get bored
+
+Jason
+moorepants.info <http://moorepants.info>
++01 530-601-9791
+
+From ua2bfdf24157fa01a at groups.google.com  Fri Feb  5 00:37:52 2016
+From: ua2bfdf24157fa01a at groups.google.com (Matt Espe)
+Date: Fri, 05 Feb 2016 00:37:52 +0000
+Subject: Re: 3d plots (of streamflow data)
+Message-ID: <P-1yavL88sA.TAfWIg8vDQAJ@davis-rug.groups.google.com>
+In-Reply-To: <P-1yavL88sA.qMOcJ0sdDQAJ@davis-rug.groups.google.com>
+References: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com> <P-1yavL88sA.qMOcJ0sdDQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/P-1yavL88sA/m/TAfWIg8vDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Meghan,
+
+I would second Ryan and suggest you consider not using a 3D plot.
+
+Personally, I find the second graph in "example.png" to be a bit of a nightmare to read - it is difficult to compare years because the 3D perspective messes with the relative heights of the peaks, features are obscured in cases where a large peak is in front of a smaller valley, etc. It might not be so bad with only 4 years of data, but even then I am not sure what you would gain over a simpler graph style (in terms of ease of reading).
+
+Matt
+
+On Thursday, February 4, 2016 at 11:12:18 AM UTC-8, Ryan Peek wrote:
+>
+>  <https://lh3.googleusercontent.com/-6a3JQ6zlWkA/VrOie9m1MdI/AAAAAAAAAeI/PTru-6VgckI/s1600/3d_plot.png>
+> Hi Meghan,
+>
+> Is there a particular reason to use the 3d view? You could easily use facets in ggplot to plot the same data and it may be easier to interpret because there wouldn't be data potentially obstructed by layers in front. You would certainly have many more options if you considered dropping the 3D requirement, and it might be easier to interpret for the reader. However, if you are keen to visualize in 3d, I've used persp a bit as well, but for xyz surface plots of topography. One new package which is really fun to use, though more for exploratory purposes is "plot_ly".
+>
+> As an example here's some code you could try using your data. You can export as PNG from the plot itself (if you click small button and open in a browser it will be easier to do than in RStudio).  The included snapshot is from a bigger dataset I used of some 3d bar topography data, but grouped by the scan location.
+>
+> ## Create data (this is just pasted from a random flow/temp dataset)
+> x <- seq(1,25,1)
+> y <- c(8.036730769, 7.829166667, 8.482916667, 9.4690625, 10.5978125, 11.4896875, 11.86989583,
+>        11.70260417, 11.37947917, 10.479375, 9.987395833, 10.0953125, 9.593333333, 9.5659375, 10.02875,
+>        10.3746875, 10.12479167, 9.889791667, 9.491458333, 9.259583333, 9.956041667, 10.16895833, 10.3225,
+>        11.8078125, 12.21947917)
+> z <- c(2.443436087, 4.369033438, 6.766952479, 4.176211145, 2.539315738, 4.554630615, 3.852905435, 4.27978627,
+>        2.293411763, 4.339267628, 4.245072739, 3.644484732, 5.866500184, 5.475036304, 5.029551926, 2.199508359,
+>        4.404874198, 4.991906775, 2.162372383, 2.901433674, 2.363337489, 9.884017923, 5.277798281, 3.074637322,13.5933143)
+>
+> site<-c(rep("NFA",5), rep("MFA",5), rep("SFA",5), rep("NFY",5),rep("MFY",5)) # make site names, this could be year
+> df<-data.frame(x, y, z, site)
+>
+> library(plotly)
+> with(df, plot_ly(x=x,y=y,z=z, group=site, type="scatter3d"))
+>
+>
+> Hope this helps,
+> Adios,
+> Ryan
+>
+>  <https://lh3.googleusercontent.com/-6a3JQ6zlWkA/VrOie9m1MdI/AAAAAAAAAeI/PTru-6VgckI/s1600/3d_plot.png>
+>
+>
+> On Wednesday, February 3, 2016 at 4:31:05 PM UTC-8, Meghan S wrote:
+> > Hi all,
+> >
+> > I would really like to create 3D plots of streamflow data, where x=Year, y=Day of the water year (1-365), z=discharge (streamflow).
+> >
+> > I've attached an example of the plot type I'm trying to recreate.  I only have 4 years of the streamflow data I'd like to plot, but the structure is the same.
+> > Here's another example:
+> >
+> > Does anyone have any ideas?  I've tried scatter3D with no luck.  Some users recommend latticeExtra, but I can't get it to work in this context.
+> >
+> > Open to ideas!
+> > Thanks,
+> > Meghan
+
+From uac6e661afedf7f7a at groups.google.com  Fri Feb  5 00:57:16 2016
+From: uac6e661afedf7f7a at groups.google.com (Alison Whipple)
+Date: Fri, 05 Feb 2016 00:57:16 +0000
+Subject: Re: 3d plots (of streamflow data)
+Message-ID: <P-1yavL88sA.eCKTIh4wDQAJ@davis-rug.groups.google.com>
+In-Reply-To: <P-1yavL88sA.TAfWIg8vDQAJ@davis-rug.groups.google.com>
+References: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com> <P-1yavL88sA.TAfWIg8vDQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/P-1yavL88sA/m/eCKTIh4wDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Meghan,
+
+I've found raster hydrographs to be my go to for visualizing a stream record, which avoids these 3D issues. I've used image2D from the plot3D package (see attached example).
+
+~Alison
+
+On Thursday, February 4, 2016 at 4:37:52 PM UTC-8, Matt Espe wrote:
+> Hi Meghan,
+>
+> I would second Ryan and suggest you consider not using a 3D plot.
+>
+> Personally, I find the second graph in "example.png" to be a bit of a nightmare to read - it is difficult to compare years because the 3D perspective messes with the relative heights of the peaks, features are obscured in cases where a large peak is in front of a smaller valley, etc. It might not be so bad with only 4 years of data, but even then I am not sure what you would gain over a simpler graph style (in terms of ease of reading).
+>
+> Matt
+>
+>
+>
+> On Thursday, February 4, 2016 at 11:12:18 AM UTC-8, Ryan Peek wrote:
+> >
+> >  <https://lh3.googleusercontent.com/-6a3JQ6zlWkA/VrOie9m1MdI/AAAAAAAAAeI/PTru-6VgckI/s1600/3d_plot.png>
+> > Hi Meghan,
+> >
+> > Is there a particular reason to use the 3d view? You could easily use facets in ggplot to plot the same data and it may be easier to interpret because there wouldn't be data potentially obstructed by layers in front. You would certainly have many more options if you considered dropping the 3D requirement, and it might be easier to interpret for the reader. However, if you are keen to visualize in 3d, I've used persp a bit as well, but for xyz surface plots of topography. One new package which is really fun to use, though more for exploratory purposes is "plot_ly".
+> >
+> > As an example here's some code you could try using your data. You can export as PNG from the plot itself (if you click small button and open in a browser it will be easier to do than in RStudio).  The included snapshot is from a bigger dataset I used of some 3d bar topography data, but grouped by the scan location.
+> >
+> > ## Create data (this is just pasted from a random flow/temp dataset)
+> > x <- seq(1,25,1)
+> > y <- c(8.036730769, 7.829166667, 8.482916667, 9.4690625, 10.5978125, 11.4896875, 11.86989583,
+> >        11.70260417, 11.37947917, 10.479375, 9.987395833, 10.0953125, 9.593333333, 9.5659375, 10.02875,
+> >        10.3746875, 10.12479167, 9.889791667, 9.491458333, 9.259583333, 9.956041667, 10.16895833, 10.3225,
+> >        11.8078125, 12.21947917)
+> > z <- c(2.443436087, 4.369033438, 6.766952479, 4.176211145, 2.539315738, 4.554630615, 3.852905435, 4.27978627,
+> >        2.293411763, 4.339267628, 4.245072739, 3.644484732, 5.866500184, 5.475036304, 5.029551926, 2.199508359,
+> >        4.404874198, 4.991906775, 2.162372383, 2.901433674, 2.363337489, 9.884017923, 5.277798281, 3.074637322,13.5933143)
+> >
+> > site<-c(rep("NFA",5), rep("MFA",5), rep("SFA",5), rep("NFY",5),rep("MFY",5)) # make site names, this could be year
+> > df<-data.frame(x, y, z, site)
+> >
+> > library(plotly)
+> > with(df, plot_ly(x=x,y=y,z=z, group=site, type="scatter3d"))
+> >
+> >
+> > Hope this helps,
+> > Adios,
+> > Ryan
+> >
+> >  <https://lh3.googleusercontent.com/-6a3JQ6zlWkA/VrOie9m1MdI/AAAAAAAAAeI/PTru-6VgckI/s1600/3d_plot.png>
+> >
+> >
+> > On Wednesday, February 3, 2016 at 4:31:05 PM UTC-8, Meghan S wrote:
+> > > Hi all,
+> > >
+> > > I would really like to create 3D plots of streamflow data, where x=Year, y=Day of the water year (1-365), z=discharge (streamflow).
+> > >
+> > > I've attached an example of the plot type I'm trying to recreate.  I only have 4 years of the streamflow data I'd like to plot, but the structure is the same.
+> > > Here's another example:
+> > >
+> > > Does anyone have any ideas?  I've tried scatter3D with no luck.  Some users recommend latticeExtra, but I can't get it to work in this context.
+> > >
+> > > Open to ideas!
+> > > Thanks,
+> > > Meghan
+
+From u2f78e326d6f095da at groups.google.com  Fri Feb  5 14:14:56 2016
+From: u2f78e326d6f095da at groups.google.com (Jessica Mizzi)
+Date: Fri, 05 Feb 2016 14:14:56 +0000
+Subject: Workshops Announcements: Regular Expressions & Python, scipy.optimize, Sphinx, Webhooks and Bitbucket
+Message-ID: <rhTWWXAOOh0.o-pbnKVbDQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/rhTWWXAOOh0/m/o-pbnKVbDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+We have three upcoming workshops. All three are located in the DSI space in the UC Davis Shields Library (http://dib-training.readthedocs.org/en/pub/DSI-space-directions.html)
+
+1. Regular Expressions & Python - February 17, 2016
+Instructor: Tiffany Timbers, SFU
+
+Description: This half-day workshop will introduce the topic of regular expressions (using patterns to match strings) and how it can be implemented in the programming language Python.
+
+We will explore examples of using regular expressions find transcription factor binding sites and to find regions of phage DNA (spacers) in bacterial genomes - key parts of the CRISPR bacterial immune system. We will also explore how to build a test suite for regular expression searches to ensure the regular expression pattern matching is accurate.
+
+This workshop will be taught remotely and broadcast to UC Davis via Google Hangouts. It will also be streaming on YouTube.
+
+For more information: http://dib-training.readthedocs.org/en/pub/2016-02-17-regular-expressions-python.html
+
+2. scipy.optimize - February 19, 2016
+Instructor: Ariel Rokem
+
+Description: The scipy.optimize library is part of a Python based collection of open source software for scientific, mathematic, and engineering work called Scipy (http://scipy.org/).
+
+In this half-day workshop, we will focus on using this library to find models that are good approximations of data. We will learn how fit different models to experimental data and how to compare different models to each other.
+
+This workshop will be taught remotely and broadcast to UC Davis via Google Hangouts. It will also be streaming on YouTube.
+
+For more information: http://dib-training.readthedocs.org/en/pub/2016-02-19-scipy-lr.html
+
+3. Sphinx, Webhooks, and Bitbucket - February 29th, 2016
+Instructor: Adelaide Rhodes
+
+This workshop will cover using webhooks with Bitbucket to create Web sites that automatically update when you make changes in a Bitbucket repository. Sphinx and reStructuredText will be used to build the underlying Web site.
+
+This workshop will be taught remotely and broadcast to UC Davis via Google Hangouts. It will also be streaming on YouTube.
+
+For more information: http://dib-training.readthedocs.org/en/pub/2016-02-29-sph-webh-bitb-lr.html
+
+From u470a59fea9e139e0 at groups.google.com  Sun Feb  7 05:22:57 2016
+From: u470a59fea9e139e0 at groups.google.com (Danielle Hagood)
+Date: Sun, 07 Feb 2016 05:22:57 +0000
+Subject: Re: Talk Tomorrow: Brandon Hurr on working with multiple tables using dplyr's joins
+Message-ID: <CMxFslafrJg.3lJ-0cbbDQAJ@davis-rug.groups.google.com>
+In-Reply-To: <CMxFslafrJg.BPZtEvg4DAAJ@davis-rug.groups.google.com>
+References: <CMxFslafrJg.BPZtEvg4DAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/CMxFslafrJg/m/3lJ-0cbbDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Did Brandon Hurr share his slides anywhere? I want to reference them while playing with joins.
+
+On Monday, February 1, 2016 at 1:28:13 PM UTC-8, Michael wrote:
+>
+> Hi all,
+>
+> Tomorrow at 3:10 in Wickson 2124, Brandon Hurr will give a talk on using dplyr’s join operations to work with related data tables. If you can’t make it in person, the talk will be livecast here <https://plus.google.com/events/ckviuc7f9l58djgsopvi1dpa36c>. After the talk, we’ll have the usual work session until 5pm. Here is a short blurb from Brandon, and the attached script is for following along during the talk.
+> >
+> > In the real world, data is often connected, but stored in independent datasets (tables). Join operations in dplyr mimic those in SQL and allow multiple table integration and filtering. I will introduce you to these operations, and show you how to use them with examples (attached).
+>
+> See you tomorrow,
+>
+> Michael
+> ​
+
+From u27405c4b711a1080 at groups.google.com  Sun Feb  7 05:28:01 2016
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Sun, 07 Feb 2016 05:28:01 +0000
+Subject: Re: [D-RUG]: Re: Talk Tomorrow: Brandon Hurr on working with multiple tables using dplyr's joins
+Message-ID: <CMxFslafrJg.-ttRjQ3cDQAJ@davis-rug.groups.google.com>
+In-Reply-To: <CMxFslafrJg.3lJ-0cbbDQAJ@davis-rug.groups.google.com>
+References: <CMxFslafrJg.BPZtEvg4DAAJ@davis-rug.groups.google.com> <CMxFslafrJg.3lJ-0cbbDQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/CMxFslafrJg/m/-ttRjQ3cDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm still working on getting them up somewhere but you can download them from here as TalkMain.html
+https://github.com/bhive01/2016-02-D-RUG-dplyr-II-talk
+
+Or clone the whole thing and build from the Rmd file in Rstudio.
+
+B
+
+On Sat, Feb 6, 2016 at 21:22 Danielle Hagood <daniell...@gmail.com> wrote:
+
+> Did Brandon Hurr share his slides anywhere? I want to reference them while playing with joins.
+>
+> On Monday, February 1, 2016 at 1:28:13 PM UTC-8, Michael wrote:
+> >
+> > Hi all,
+> >
+> > Tomorrow at 3:10 in Wickson 2124, Brandon Hurr will give a talk on using dplyr’s join operations to work with related data tables. If you can’t make it in person, the talk will be livecast here <https://plus.google.com/events/ckviuc7f9l58djgsopvi1dpa36c>. After the talk, we’ll have the usual work session until 5pm. Here is a short blurb from Brandon, and the attached script is for following along during the talk.
+> > >
+> > > In the real world, data is often connected, but stored in independent datasets (tables). Join operations in dplyr mimic those in SQL and allow multiple table integration and filtering. I will introduce you to these operations, and show you how to use them with examples (attached).
+> >
+> > See you tomorrow,
+> >
+> > Michael
+> > ​
+>
+
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ud567d0ef3c054a35 at groups.google.com  Sun Feb  7 05:58:04 2016
+From: ud567d0ef3c054a35 at groups.google.com (Michael Hannon)
+Date: Sun, 07 Feb 2016 05:58:04 +0000
+Subject: Re: [D-RUG]: Re: Talk Tomorrow: Brandon Hurr on working with multiple tables using dplyr's joins
+Message-ID: <CMxFslafrJg.5YaZirHdDQAJ@davis-rug.groups.google.com>
+In-Reply-To: <CMxFslafrJg.-ttRjQ3cDQAJ@davis-rug.groups.google.com>
+References: <CMxFslafrJg.BPZtEvg4DAAJ@davis-rug.groups.google.com> <CMxFslafrJg.-ttRjQ3cDQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/CMxFslafrJg/m/5YaZirHdDQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I thought the R file that Brandon included originally was very useful.
+I've attached it to this document.  (I hope that's OK.)
+
+-- Mike
+
+On Sat, Feb 6, 2016 at 9:27 PM, Brandon Hurr <brando...@gmail.com> wrote:
+> I'm still working on getting them up somewhere but you can download them
+> from here as TalkMain.html
+> https://github.com/bhive01/2016-02-D-RUG-dplyr-II-talk
+>
+> Or clone the whole thing and build from the Rmd file in Rstudio.
+>
+> B
+>
+> On Sat, Feb 6, 2016 at 21:22 Danielle Hagood <daniell...@gmail.com>
+> wrote:
+>>
+>> Did Brandon Hurr share his slides anywhere? I want to reference them while
+>> playing with joins.
+>>
+>> On Monday, February 1, 2016 at 1:28:13 PM UTC-8, Michael wrote:
+>>>
+>>> Hi all,
+>>>
+>>> Tomorrow at 3:10 in Wickson 2124, Brandon Hurr will give a talk on using
+>>> dplyr’s join operations to work with related data tables. If you can’t make
+>>> it in person, the talk will be livecast here. After the talk, we’ll have the
+>>> usual work session until 5pm. Here is a short blurb from Brandon, and the
+>>> attached script is for following along during the talk.
+>>>
+>>> In the real world, data is often connected, but stored in independent
+>>> datasets (tables). Join operations in dplyr mimic those in SQL and allow
+>>> multiple table integration and filtering. I will introduce you to these
+>>> operations, and show you how to use them with examples (attached).
+>>>
+>>> See you tomorrow,
+>>>
+>>> Michael
+>>
+>> --
+>> Check out our R resources at
+>> http://www.noamross.net/davis-r-users-group.html
+>> ---
+>> You received this message because you are subscribed to the Google Groups
+>> "Davis R Users' Group" group.
+>> To unsubscribe from this group and stop receiving emails from it, send an
+>> email to davis-rug+...@googlegroups.com.
+>> Visit this group at https://groups.google.com/group/davis-rug.
+>> For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> Check out our R resources at
+> http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups
+> "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an
+> email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u80f3b08eb9d82ac3 at groups.google.com  Mon Feb  8 18:31:51 2016
+From: u80f3b08eb9d82ac3 at groups.google.com (Meghan S)
+Date: Mon, 08 Feb 2016 18:31:51 +0000
+Subject: Re: 3d plots (of streamflow data)
+Message-ID: <P-1yavL88sA.OpklQi8BAQAJ@davis-rug.groups.google.com>
+In-Reply-To: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com>
+References: <P-1yavL88sA.K6Aj8BvgDAAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/P-1yavL88sA/m/OpklQi8BAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you all for your input.  I agree that 3D is less than ideal, and my reason for moving in that direction is that a multi-panel figure would be quite 'multi-paneled'!  I am trying to visualize 4 years of data at 3 stream gages (upper, mid, lower river).  However, this could lead one to the argument that I should NOT try to visualize that much data in the first place.  Initially, at least, this figure(s) is for referencing while writing, and may never be in a publication (the data is part of a larger multivariate analysis).
+
+I will look into persp and image2D, but I will also try to multi-panel approach.
+
+Meghan
+
+On Wednesday, February 3, 2016 at 4:31:05 PM UTC-8, Meghan S wrote:
+
+> Hi all,
+>
+> I would really like to create 3D plots of streamflow data, where x=Year, y=Day of the water year (1-365), z=discharge (streamflow).
+>
+> I've attached an example of the plot type I'm trying to recreate.  I only have 4 years of the streamflow data I'd like to plot, but the structure is the same.
+> Here's another example:
+>
+> Does anyone have any ideas?  I've tried scatter3D with no luck.  Some users recommend latticeExtra, but I can't get it to work in this context.
+>
+> Open to ideas!
+> Thanks,
+> Meghan
+
+From u6e4e37c602c2b104 at groups.google.com  Mon Feb  8 23:03:36 2016
+From: u6e4e37c602c2b104 at groups.google.com (Michael)
+Date: Mon, 08 Feb 2016 23:03:36 +0000
+Subject: Work session tomorrow 3:10 - 5pm, Wickson 2124
+Message-ID: <QBzrFz45EJ8.MJthewMQAQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/QBzrFz45EJ8/m/MJthewMQAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+We will have the usual work session tomorrow starting at 3:10 in Wickson 2124. Bring your laptops and projects; we'll bring snacks.
+
+See you tomorrow,
+
+Michael
+
+From ud0d6d503f5acae62 at groups.google.com  Fri Feb 12 04:54:16 2016
+From: ud0d6d503f5acae62 at groups.google.com (unknown)
+Date: Fri, 12 Feb 2016 04:54:16 +0000
+Subject: 
+Message-ID: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/GyJNazVlt1g/m/nwTfAOQOAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u0c0915d54307a5d8 at groups.google.com  Fri Feb 12 05:21:23 2016
+From: u0c0915d54307a5d8 at groups.google.com (Rosemary Hartman)
+Date: Fri, 12 Feb 2016 05:21:23 +0000
+Subject: Re: [D-RUG]: Heat maps are all the rage, so I want to do one
+Message-ID: <GyJNazVlt1g.Cthy9F4QAgAJ@davis-rug.groups.google.com>
+In-Reply-To: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com>
+References: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/GyJNazVlt1g/m/Cthy9F4QAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Zach,
+
+Welcome to the black-hole-vortex that is R! If I understand you correctly, these are your vairables:
+
+1. inflamation marker
+2. microbe genus
+3. microbe abundance
+4. time
+
+It's hard to accurately show more than three variables in a single plot, but I could imagine you presenting three plots, one for each time point, with your inflamation markers on one axis, microbe identity on the other axis, and microbe abundance as a color. You can actually do this relatively easily with ggplot2 and the "tile" geom. This blog post shows it quite elegantly: https://martinsbioblogg.wordpress.com/2013/03/21/using-r-correlation-heatmap-with-ggplot2/
+
+On Thu, Feb 11, 2016 at 8:54 PM, Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> Hi.  I'm newer to R, and therefore the group.  Anyhow, I'm a grad student in Nutrition.  I have a large dataset from which I am making multiple correlations.  I was thinking of visualizing these associations with a heat map, for a poster presentation.  The data consist of a few markers of inflammation at 3 separate time points, as well as microbial relative abundance (from QYME), from phylum~genus, all at 3 time points.  Would a heat map be appropriate to visualize such associations?  I'm sure I can find this answer online, as well as at the Sessions on Mondays, but I was hoping someone could point me in a good direction so I could learn a bit and come prepared to a session...
+>
+> I'm willing to share my data if that would help, but I imagine I should just show up to one of the meetings on Monday.
+>
+> Thanks all!
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Rosemary Hartman
+roseh...@gmail.com
+301-538-0136
+
+From u27405c4b711a1080 at groups.google.com  Fri Feb 12 16:50:49 2016
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Fri, 12 Feb 2016 16:50:49 +0000
+Subject: Re: [D-RUG]: Heat maps are all the rage, so I want to do one
+Message-ID: <GyJNazVlt1g.5DLzGf41AgAJ@davis-rug.groups.google.com>
+In-Reply-To: <GyJNazVlt1g.Cthy9F4QAgAJ@davis-rug.groups.google.com>
+References: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com> <GyJNazVlt1g.Cthy9F4QAgAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/GyJNazVlt1g/m/5DLzGf41AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Facet over the 4th and you should be good.
+
+On Thu, Feb 11, 2016 at 9:21 PM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> Hi Zach,
+>
+> Welcome to the black-hole-vortex that is R! If I understand you correctly, these are your vairables:
+>
+> 1. inflamation marker
+> 2. microbe genus
+> 3. microbe abundance
+> 4. time
+>
+> It's hard to accurately show more than three variables in a single plot, but I could imagine you presenting three plots, one for each time point, with your inflamation markers on one axis, microbe identity on the other axis, and microbe abundance as a color. You can actually do this relatively easily with ggplot2 and the "tile" geom. This blog post shows it quite elegantly: https://martinsbioblogg.wordpress.com/2013/03/21/using-r-correlation-heatmap-with-ggplot2/
+>
+> On Thu, Feb 11, 2016 at 8:54 PM, Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> > Hi.  I'm newer to R, and therefore the group.  Anyhow, I'm a grad student in Nutrition.  I have a large dataset from which I am making multiple correlations.  I was thinking of visualizing these associations with a heat map, for a poster presentation.  The data consist of a few markers of inflammation at 3 separate time points, as well as microbial relative abundance (from QYME), from phylum~genus, all at 3 time points.  Would a heat map be appropriate to visualize such associations?  I'm sure I can find this answer online, as well as at the Sessions on Mondays, but I was hoping someone could point me in a good direction so I could learn a bit and come prepared to a session...
+> >
+> > I'm willing to share my data if that would help, but I imagine I should just show up to one of the meetings on Monday.
+> >
+> > Thanks all!
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Rosemary Hartman
+> roseh...@gmail.com
+> 301-538-0136
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u6e4e37c602c2b104 at groups.google.com  Fri Feb 12 17:57:38 2016
+From: u6e4e37c602c2b104 at groups.google.com (Michael Levy)
+Date: Fri, 12 Feb 2016 17:57:38 +0000
+Subject: Re: [D-RUG]: Heat maps are all the rage, so I want to do one
+Message-ID: <GyJNazVlt1g.jVJEiqM5AgAJ@davis-rug.groups.google.com>
+In-Reply-To: <GyJNazVlt1g.5DLzGf41AgAJ@davis-rug.groups.google.com>
+References: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com> <GyJNazVlt1g.5DLzGf41AgAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/GyJNazVlt1g/m/jVJEiqM5AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Zach,
+
+Welcome to D-RUG!
+
+How to visualize really depends on what point you’re trying to illustrate with the data. You can map variables to at least x, y, color, and size of points and then facet over a fifth variable. Point shape is another possibility, but it’s not as visually obvious as the others. One naive idea that comes to mind for your data is a separate pairs plot for each time point in your dataset, something like this:
+d = data.frame(
+    marker1 = rnorm(300),
+    marker2 = rnorm(300),
+    marker3 = rnorm(300),
+    time = rep(1:3, each = 100)
+)
+dsplit = split(d, d$time)
+lapply(dsplit, function(df) pairs(df[, -4], main = paste('time', unique(df$time))))
+
+You could also color points by time point instead of faceting over that variable. But again, the right approach will depend on what conclusions you want to illustrate, as well as the size of your dataset and other factors. One other thought is that if you are really interested in the correlations and not the values, it might make sense to extract the correlation between each pair of markers and visualize those, e.g. using the corrplot function from the package of the same name.
+
+We’d love to see you at the meetings, but note that they are Tuesdays this quarter: 3 - 5 in Wickson 2124. Cheers,
+
+Michael
+​
+
+--
+Michael Levy
+c: 304-376-4523
+
+On Fri, Feb 12, 2016 at 8:50 AM, Brandon Hurr <brando...@gmail.com> wrote:
+> Facet over the 4th and you should be good.
+>
+> On Thu, Feb 11, 2016 at 9:21 PM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > Hi Zach,
+> >
+> > Welcome to the black-hole-vortex that is R! If I understand you correctly, these are your vairables:
+> >
+> > 1. inflamation marker
+> > 2. microbe genus
+> > 3. microbe abundance
+> > 4. time
+> >
+> > It's hard to accurately show more than three variables in a single plot, but I could imagine you presenting three plots, one for each time point, with your inflamation markers on one axis, microbe identity on the other axis, and microbe abundance as a color. You can actually do this relatively easily with ggplot2 and the "tile" geom. This blog post shows it quite elegantly: https://martinsbioblogg.wordpress.com/2013/03/21/using-r-correlation-heatmap-with-ggplot2/
+> >
+> > On Thu, Feb 11, 2016 at 8:54 PM, Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> > > Hi.  I'm newer to R, and therefore the group.  Anyhow, I'm a grad student in Nutrition.  I have a large dataset from which I am making multiple correlations.  I was thinking of visualizing these associations with a heat map, for a poster presentation.  The data consist of a few markers of inflammation at 3 separate time points, as well as microbial relative abundance (from QYME), from phylum~genus, all at 3 time points.  Would a heat map be appropriate to visualize such associations?  I'm sure I can find this answer online, as well as at the Sessions on Mondays, but I was hoping someone could point me in a good direction so I could learn a bit and come prepared to a session...
+> > >
+> > > I'm willing to share my data if that would help, but I imagine I should just show up to one of the meetings on Monday.
+> > >
+> > > Thanks all!
+> > >
+> > > --
+> > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > Rosemary Hartman
+> > roseh...@gmail.com
+> > 301-538-0136
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u0d5c994b344af3a8 at groups.google.com  Mon Feb 15 16:21:51 2016
+From: u0d5c994b344af3a8 at groups.google.com (Gouri Shankar Mishra)
+Date: Mon, 15 Feb 2016 16:21:51 +0000
+Subject: Tutorial on web services?
+Message-ID: <0yYFsa1J4yc.2myUMicgAwAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/0yYFsa1J4yc/m/2myUMicgAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi All
+
+I have a bunch of X-Y coordinates and I am trying to find the following information
+(a) Median home prices in that location from Zillow
+(b) Census Tract to which that X-Y location belongs to
+(c) Population density, median income etc etc. from US Census
+(d) Some other similar information.
+
+As I understand it - this will involve making API calls to the relevant websites. I am looking for a tutorial / introductory material to help me get started. Would you know of any resources? I searched through DRUG discussions, but did not find any such discussions.
+
+Thanks in advance.
+
+From u8c8f0ca54c4a2459 at groups.google.com  Mon Feb 15 18:17:48 2016
+From: u8c8f0ca54c4a2459 at groups.google.com (Noam Ross)
+Date: Mon, 15 Feb 2016 18:17:48 +0000
+Subject: Re: [D-RUG]: Tutorial on web services?
+Message-ID: <0yYFsa1J4yc.1aIg7nomAwAJ@davis-rug.groups.google.com>
+In-Reply-To: <0yYFsa1J4yc.2myUMicgAwAJ@davis-rug.groups.google.com>
+References: <0yYFsa1J4yc.2myUMicgAwAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/0yYFsa1J4yc/m/1aIg7nomAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I would start with the vignettes in the httr package and links therein: https://cran.r-project.org/web/packages/httr/index.html. The jsonlite package also has a useful vignette.
+
+Also, the CRAN Task views for Web Services and Open Data
+(https://cran.r-project.org/web/views/WebTechnologies.html, https://github.com/ropensci/opendata) may have packages for the data sources you are using.
+
+On Mon, Feb 15, 2016, 11:21 AM Gouri Shankar Mishra <gouri....@gmail.com> wrote:
+
+> Hi All
+>
+> I have a bunch of X-Y coordinates and I am trying to find the following information
+> (a) Median home prices in that location from Zillow
+> (b) Census Tract to which that X-Y location belongs to
+> (c) Population density, median income etc etc. from US Census
+> (d) Some other similar information.
+>
+> As I understand it - this will involve making API calls to the relevant websites. I am looking for a tutorial / introductory material to help me get started. Would you know of any resources? I searched through DRUG discussions, but did not find any such discussions.
+>
+> Thanks in advance.
+>
+
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u6e4e37c602c2b104 at groups.google.com  Tue Feb 16 16:39:41 2016
+From: u6e4e37c602c2b104 at groups.google.com (Michael)
+Date: Tue, 16 Feb 2016 16:39:41 +0000
+Subject: Work session today, 3 - 5pm, Wickson 2124
+Message-ID: <zSUxXZzwiL4.kyBMzLRvAwAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/zSUxXZzwiL4/m/kyBMzLRvAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Bring your laptops, and I'll bring cookies. See you then,
+
+Michael
+
+From ud0d6d503f5acae62 at groups.google.com  Wed Feb 17 02:56:20 2016
+From: ud0d6d503f5acae62 at groups.google.com (unknown)
+Date: Wed, 17 Feb 2016 02:56:20 +0000
+Subject: 
+Message-ID: <GyJNazVlt1g.ruKDUVuRAwAJ@davis-rug.groups.google.com>
+In-Reply-To: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com>
+References: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/GyJNazVlt1g/m/ruKDUVuRAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+
+
+From u27405c4b711a1080 at groups.google.com  Wed Feb 17 03:51:46 2016
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Wed, 17 Feb 2016 03:51:46 +0000
+Subject: Re: [D-RUG]: Heat maps are all the rage, so I want to do one
+Message-ID: <GyJNazVlt1g.W685rGGUAwAJ@davis-rug.groups.google.com>
+In-Reply-To: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com>
+References: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/GyJNazVlt1g/m/W685rGGUAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think you should send the original dataset so helping is easier. NAs would indicate a non-numeric values or missing data.
+Use dput() if possible and paste it into your response or attach a csv.
+
+B
+On Tue, Feb 16, 2016 at 18:56 Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> Hello again.  So, this problem might be dataset specific; I decided to go with a corrplot (from corrplot package) as it seems to basically convert a correlation matrix right into a "visual" matrix, which is really what I'm going for.  This <http://www.sthda.com/english/wiki/visualize-correlation-matrix-using-correlogram#correlogram-visualizing-the-correlation-matrix> is what I followed, but I also followed the cran page on this package to ensure I was doing everything right.
+> I created a small csv consisting of 3 continuous "markers" and 9 or 10 columns of bacterial relative abundance variables.  I ran a correlation:
+> bcorr = cor(b)
+>
+> and when I checked it:
+> head(round(bcorr,2))
+>
+> my matrix looked something like this:
+>
+>          mpo6 neo6 endo6 X6Act15 X6Bact15 X6Firm15 X6Proteo15 X6ActAct X6BactBactero
+> mpo6        1   NA    NA      NA       NA       NA         NA       NA            NA
+> neo6       NA    1    NA      NA       NA       NA         NA       NA            NA
+> endo6      NA   NA     1      NA       NA       NA         NA       NA            NA
+> X6Act15    NA   NA    NA    1.00    -0.51    -0.68      -0.47     0.99         -0.51
+>
+>
+>
+> the NAs indicate something wrong happened (either in the reading of the data) when constructing the correlations between "mpo", "neo", "endo" and the other variables.  I'm wondering if this is because the 3 above are continuous, whereas the others (where there IS a coeficient) are proportions (relative abundance).
+>
+> When I run a simple cor.test between 2 single variables, I get the spearman's rho and p value, just as if I had run it in SigmaPlot or SAS.
+>
+> Is there something I may be doing wrong with these data?
+>
+> quick note: I went back into this small .csv and deleted the relative abundance bacteria data, leaving only the 3 markers, and did the same process.  The output of the matrix is:
+>
+>       mpo6 neo6 endo6
+> mpo6     1   NA    NA
+> neo6    NA    1    NA
+> endo6   NA   NA     1
+>
+> str(b$mpo6) tells me this and the others are integers, so that makes sense.  I can't seem to find out if there are other assumptions I am missing...
+>
+> thoughts?
+
+>
+> On Friday, February 12, 2016 at 9:57:38 AM UTC-8, Michael wrote:
+> >
+> > Hi Zach,
+> >
+> > Welcome to D-RUG!
+> >
+> > How to visualize really depends on what point you’re trying to illustrate with the data. You can map variables to at least x, y, color, and size of points and then facet over a fifth variable. Point shape is another possibility, but it’s not as visually obvious as the others. One naive idea that comes to mind for your data is a separate pairs plot for each time point in your dataset, something like this:
+> > d = data.frame(
+> >     marker1 = rnorm(300),
+> >     marker2 = rnorm(300),
+> >     marker3 = rnorm(300),
+> >     time = rep(1:3, each = 100)
+> > )
+> > dsplit = split(d, d$time)
+> > lapply(dsplit, function(df) pairs(df[, -4], main = paste('time', unique(df$time))))
+> >
+> > You could also color points by time point instead of faceting over that variable. But again, the right approach will depend on what conclusions you want to illustrate, as well as the size of your dataset and other factors. One other thought is that if you are really interested in the correlations and not the values, it might make sense to extract the correlation between each pair of markers and visualize those, e.g. using the corrplot function from the package of the same name.
+> >
+> > We’d love to see you at the meetings, but note that they are Tuesdays this quarter: 3 - 5 in Wickson 2124. Cheers,
+> >
+> > Michael
+> > ​
+> >
+> > --
+> > Michael Levy
+> > c: 304-376-4523
+> >
+> > On Fri, Feb 12, 2016 at 8:50 AM, Brandon Hurr <brando...@gmail.com> wrote:
+> > > Facet over the 4th and you should be good.
+> > > On Thu, Feb 11, 2016 at 9:21 PM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > > > Hi Zach,
+> > > >
+> > > > Welcome to the black-hole-vortex that is R! If I understand you correctly, these are your vairables:
+> > > >
+> > > > 1. inflamation marker
+> > > > 2. microbe genus
+> > > > 3. microbe abundance
+> > > > 4. time
+> > > >
+> > > > It's hard to accurately show more than three variables in a single plot, but I could imagine you presenting three plots, one for each time point, with your inflamation markers on one axis, microbe identity on the other axis, and microbe abundance as a color. You can actually do this relatively easily with ggplot2 and the "tile" geom. This blog post shows it quite elegantly: https://martinsbioblogg.wordpress.com/2013/03/21/using-r-correlation-heatmap-with-ggplot2/
+> > > > On Thu, Feb 11, 2016 at 8:54 PM, Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> > > > > Hi.  I'm newer to R, and therefore the group.  Anyhow, I'm a grad student in Nutrition.  I have a large dataset from which I am making multiple correlations.  I was thinking of visualizing these associations with a heat map, for a poster presentation.  The data consist of a few markers of inflammation at 3 separate time points, as well as microbial relative abundance (from QYME), from phylum~genus, all at 3 time points.  Would a heat map be appropriate to visualize such associations?  I'm sure I can find this answer online, as well as at the Sessions on Mondays, but I was hoping someone could point me in a good direction so I could learn a bit and come prepared to a session...
+> > > > >
+> > > > > I'm willing to share my data if that would help, but I imagine I should just show up to one of the meetings on Monday.
+> > > > >
+> > > > > Thanks all!
+> > > > >
+> > > > > --
+> > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > >
+> > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > > >
+> > > >
+> > > > --
+> > > > Rosemary Hartman
+> > > > roseh...@gmail.com
+> > > > 301-538-0136
+> > > >
+> > > > --
+> > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > >
+> > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > > --
+> > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > >
+> > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u5cdcb6ea17a1da4b at groups.google.com  Wed Feb 17 05:53:25 2016
+From: u5cdcb6ea17a1da4b at groups.google.com (Zachary Pierce)
+Date: Wed, 17 Feb 2016 05:53:25 +0000
+Subject: Re: [D-RUG]: Heat maps are all the rage, so I want to do one
+Message-ID: <GyJNazVlt1g.0d7vSwWbAwAJ@davis-rug.groups.google.com>
+In-Reply-To: <GyJNazVlt1g.W685rGGUAwAJ@davis-rug.groups.google.com>
+References: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com> <GyJNazVlt1g.W685rGGUAwAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/GyJNazVlt1g/m/0d7vSwWbAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Here is a .csv with 15 variables, 48 observations each.  the first 3 (neo, mpo, endo) are markers of intestinal inflammation (not on the same scale, but all continuous), and the others are all bacterial relative abundance data.  As I mentioned earlier, I was trying to produce a correlation matrix, then using corrplot, create a matrix with colors, or numbers [corrplot(data, method = numbers)].
+
+There ARE a few missing observations in some of the variables, but I must have assumed this function would use pairwise deletion.  Further, when I run the corrplot, I get an error stating that the code requires a True/False, but I'm not sure where that needs to go, as I couldn't find it in the description of the package.
+
+Thanks for the help!
+
+On Tuesday, February 16, 2016 at 7:51:46 PM UTC-8, Brandon Hurr wrote:
+> I think you should send the original dataset so helping is easier. NAs would indicate a non-numeric values or missing data.
+> Use dput() if possible and paste it into your response or attach a csv.
+>
+> B
+> On Tue, Feb 16, 2016 at 18:56 Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> > Hello again.  So, this problem might be dataset specific; I decided to go with a corrplot (from corrplot package) as it seems to basically convert a correlation matrix right into a "visual" matrix, which is really what I'm going for.  This <http://www.sthda.com/english/wiki/visualize-correlation-matrix-using-correlogram#correlogram-visualizing-the-correlation-matrix> is what I followed, but I also followed the cran page on this package to ensure I was doing everything right.
+> > I created a small csv consisting of 3 continuous "markers" and 9 or 10 columns of bacterial relative abundance variables.  I ran a correlation:
+> > bcorr = cor(b)
+> >
+> > and when I checked it:
+> > head(round(bcorr,2))
+> >
+> > my matrix looked something like this:
+> >
+> >          mpo6 neo6 endo6 X6Act15 X6Bact15 X6Firm15 X6Proteo15 X6ActAct X6BactBactero
+> > mpo6        1   NA    NA      NA       NA       NA         NA       NA            NA
+> > neo6       NA    1    NA      NA       NA       NA         NA       NA            NA
+> > endo6      NA   NA     1      NA       NA       NA         NA       NA            NA
+> > X6Act15    NA   NA    NA    1.00    -0.51    -0.68      -0.47     0.99         -0.51
+> >
+> >
+> >
+> > the NAs indicate something wrong happened (either in the reading of the data) when constructing the correlations between "mpo", "neo", "endo" and the other variables.  I'm wondering if this is because the 3 above are continuous, whereas the others (where there IS a coeficient) are proportions (relative abundance).
+> >
+> > When I run a simple cor.test between 2 single variables, I get the spearman's rho and p value, just as if I had run it in SigmaPlot or SAS.
+> >
+> > Is there something I may be doing wrong with these data?
+> >
+> > quick note: I went back into this small .csv and deleted the relative abundance bacteria data, leaving only the 3 markers, and did the same process.  The output of the matrix is:
+> >
+> >       mpo6 neo6 endo6
+> > mpo6     1   NA    NA
+> > neo6    NA    1    NA
+> > endo6   NA   NA     1
+> >
+> > str(b$mpo6) tells me this and the others are integers, so that makes sense.  I can't seem to find out if there are other assumptions I am missing...
+> >
+> > thoughts?
+> >
+> > On Friday, February 12, 2016 at 9:57:38 AM UTC-8, Michael wrote:
+> > >
+> > > Hi Zach,
+> > >
+> > > Welcome to D-RUG!
+> > >
+> > > How to visualize really depends on what point you’re trying to illustrate with the data. You can map variables to at least x, y, color, and size of points and then facet over a fifth variable. Point shape is another possibility, but it’s not as visually obvious as the others. One naive idea that comes to mind for your data is a separate pairs plot for each time point in your dataset, something like this:
+> > > d = data.frame(
+> > >     marker1 = rnorm(300),
+> > >     marker2 = rnorm(300),
+> > >     marker3 = rnorm(300),
+> > >     time = rep(1:3, each = 100)
+> > > )
+> > > dsplit = split(d, d$time)
+> > > lapply(dsplit, function(df) pairs(df[, -4], main = paste('time', unique(df$time))))
+> > >
+> > > You could also color points by time point instead of faceting over that variable. But again, the right approach will depend on what conclusions you want to illustrate, as well as the size of your dataset and other factors. One other thought is that if you are really interested in the correlations and not the values, it might make sense to extract the correlation between each pair of markers and visualize those, e.g. using the corrplot function from the package of the same name.
+> > >
+> > > We’d love to see you at the meetings, but note that they are Tuesdays this quarter: 3 - 5 in Wickson 2124. Cheers,
+> > >
+> > > Michael
+> > > ​
+> > >
+> > > --
+> > > Michael Levy
+> > > c: 304-376-4523
+> > >
+> > > On Fri, Feb 12, 2016 at 8:50 AM, Brandon Hurr <brando...@gmail.com> wrote:
+> > > > Facet over the 4th and you should be good.
+> > > > On Thu, Feb 11, 2016 at 9:21 PM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > > > > Hi Zach,
+> > > > >
+> > > > > Welcome to the black-hole-vortex that is R! If I understand you correctly, these are your vairables:
+> > > > >
+> > > > > 1. inflamation marker
+> > > > > 2. microbe genus
+> > > > > 3. microbe abundance
+> > > > > 4. time
+> > > > >
+> > > > > It's hard to accurately show more than three variables in a single plot, but I could imagine you presenting three plots, one for each time point, with your inflamation markers on one axis, microbe identity on the other axis, and microbe abundance as a color. You can actually do this relatively easily with ggplot2 and the "tile" geom. This blog post shows it quite elegantly: https://martinsbioblogg.wordpress.com/2013/03/21/using-r-correlation-heatmap-with-ggplot2/
+> > > > > On Thu, Feb 11, 2016 at 8:54 PM, Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> > > > > > Hi.  I'm newer to R, and therefore the group.  Anyhow, I'm a grad student in Nutrition.  I have a large dataset from which I am making multiple correlations.  I was thinking of visualizing these associations with a heat map, for a poster presentation.  The data consist of a few markers of inflammation at 3 separate time points, as well as microbial relative abundance (from QYME), from phylum~genus, all at 3 time points.  Would a heat map be appropriate to visualize such associations?  I'm sure I can find this answer online, as well as at the Sessions on Mondays, but I was hoping someone could point me in a good direction so I could learn a bit and come prepared to a session...
+> > > > > >
+> > > > > > I'm willing to share my data if that would help, but I imagine I should just show up to one of the meetings on Monday.
+> > > > > >
+> > > > > > Thanks all!
+> > > > > >
+> > > > > > --
+> > > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > > ---
+> > > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > > >
+> > > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > >
+> > > > >
+> > > > >
+> > > > > --
+> > > > > Rosemary Hartman
+> > > > > roseh...@gmail.com
+> > > > > 301-538-0136
+> > > > >
+> > > > > --
+> > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > >
+> > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > > > --
+> > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > >
+> > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u6e4e37c602c2b104 at groups.google.com  Wed Feb 17 18:16:18 2016
+From: u6e4e37c602c2b104 at groups.google.com (Michael Levy)
+Date: Wed, 17 Feb 2016 18:16:18 +0000
+Subject: Re: [D-RUG]: Heat maps are all the rage, so I want to do one
+Message-ID: <GyJNazVlt1g.CBAiQI_DAwAJ@davis-rug.groups.google.com>
+In-Reply-To: <GyJNazVlt1g.0d7vSwWbAwAJ@davis-rug.groups.google.com>
+References: <GyJNazVlt1g.nwTfAOQOAgAJ@davis-rug.groups.google.com> <GyJNazVlt1g.0d7vSwWbAwAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/GyJNazVlt1g/m/CBAiQI_DAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Zach,
+
+There is quite a lot of missingness in this data. You can tell cor() how to handle missingness with the use argument (see the “details” section of ?cor), but even having it scrape out every comparison it can make, there are some variables in your dataset that don’t share any observations, so you cannot calculate a correlation between them. cor returns NA for those, and corrplot won’t deal with NAs… that’s what produces the error you saw. To make it work, you could remove the columns with the worst missingness and/or have cor calculate correlations based on just where two variables both have an entry:
+sum(complete.cases(d))
+(missingness = sapply(d, function(x) sum(is.na <http://is.na>(x))) / nrow(d))
+d = d[, missingness < .5]
+dcor = cor(d, use = 'pairwise.complete.obs')
+library(corrplot)
+corrplot(dcor)
+​
+
+--
+Michael Levy
+c: 304-376-4523
+
+On Tue, Feb 16, 2016 at 9:53 PM, Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> Here is a .csv with 15 variables, 48 observations each.  the first 3 (neo, mpo, endo) are markers of intestinal inflammation (not on the same scale, but all continuous), and the others are all bacterial relative abundance data.  As I mentioned earlier, I was trying to produce a correlation matrix, then using corrplot, create a matrix with colors, or numbers [corrplot(data, method = numbers)].
+>
+> There ARE a few missing observations in some of the variables, but I must have assumed this function would use pairwise deletion.  Further, when I run the corrplot, I get an error stating that the code requires a True/False, but I'm not sure where that needs to go, as I couldn't find it in the description of the package.
+>
+> Thanks for the help!
+>
+> On Tuesday, February 16, 2016 at 7:51:46 PM UTC-8, Brandon Hurr wrote:
+> > I think you should send the original dataset so helping is easier. NAs would indicate a non-numeric values or missing data.
+> > Use dput() if possible and paste it into your response or attach a csv.
+> >
+> > B
+> > On Tue, Feb 16, 2016 at 18:56 Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> > > Hello again.  So, this problem might be dataset specific; I decided to go with a corrplot (from corrplot package) as it seems to basically convert a correlation matrix right into a "visual" matrix, which is really what I'm going for.  This <http://www.sthda.com/english/wiki/visualize-correlation-matrix-using-correlogram#correlogram-visualizing-the-correlation-matrix> is what I followed, but I also followed the cran page on this package to ensure I was doing everything right.
+> > > I created a small csv consisting of 3 continuous "markers" and 9 or 10 columns of bacterial relative abundance variables.  I ran a correlation:
+> > > bcorr = cor(b)
+> > >
+> > > and when I checked it:
+> > > head(round(bcorr,2))
+> > >
+> > > my matrix looked something like this:
+> > >
+> > >          mpo6 neo6 endo6 X6Act15 X6Bact15 X6Firm15 X6Proteo15 X6ActAct X6BactBactero
+> > > mpo6        1   NA    NA      NA       NA       NA         NA       NA            NA
+> > > neo6       NA    1    NA      NA       NA       NA         NA       NA            NA
+> > > endo6      NA   NA     1      NA       NA       NA         NA       NA            NA
+> > > X6Act15    NA   NA    NA    1.00    -0.51    -0.68      -0.47     0.99         -0.51
+> > >
+> > >
+> > >
+> > > the NAs indicate something wrong happened (either in the reading of the data) when constructing the correlations between "mpo", "neo", "endo" and the other variables.  I'm wondering if this is because the 3 above are continuous, whereas the others (where there IS a coeficient) are proportions (relative abundance).
+> > >
+> > > When I run a simple cor.test between 2 single variables, I get the spearman's rho and p value, just as if I had run it in SigmaPlot or SAS.
+> > >
+> > > Is there something I may be doing wrong with these data?
+> > >
+> > > quick note: I went back into this small .csv and deleted the relative abundance bacteria data, leaving only the 3 markers, and did the same process.  The output of the matrix is:
+> > >
+> > >       mpo6 neo6 endo6
+> > > mpo6     1   NA    NA
+> > > neo6    NA    1    NA
+> > > endo6   NA   NA     1
+> > >
+> > > str(b$mpo6) tells me this and the others are integers, so that makes sense.  I can't seem to find out if there are other assumptions I am missing...
+> > >
+> > > thoughts?
+> > >
+> > > On Friday, February 12, 2016 at 9:57:38 AM UTC-8, Michael wrote:
+> > > >
+> > > > Hi Zach,
+> > > >
+> > > > Welcome to D-RUG!
+> > > >
+> > > > How to visualize really depends on what point you’re trying to illustrate with the data. You can map variables to at least x, y, color, and size of points and then facet over a fifth variable. Point shape is another possibility, but it’s not as visually obvious as the others. One naive idea that comes to mind for your data is a separate pairs plot for each time point in your dataset, something like this:
+> > > > d = data.frame(
+> > > >     marker1 = rnorm(300),
+> > > >     marker2 = rnorm(300),
+> > > >     marker3 = rnorm(300),
+> > > >     time = rep(1:3, each = 100)
+> > > > )
+> > > > dsplit = split(d, d$time)
+> > > > lapply(dsplit, function(df) pairs(df[, -4], main = paste('time', unique(df$time))))
+> > > >
+> > > > You could also color points by time point instead of faceting over that variable. But again, the right approach will depend on what conclusions you want to illustrate, as well as the size of your dataset and other factors. One other thought is that if you are really interested in the correlations and not the values, it might make sense to extract the correlation between each pair of markers and visualize those, e.g. using the corrplot function from the package of the same name.
+> > > >
+> > > > We’d love to see you at the meetings, but note that they are Tuesdays this quarter: 3 - 5 in Wickson 2124. Cheers,
+> > > >
+> > > > Michael
+> > > > ​
+> > > >
+> > > > --
+> > > > Michael Levy
+> > > > c: 304-376-4523
+> > > >
+> > > > On Fri, Feb 12, 2016 at 8:50 AM, Brandon Hurr <brando...@gmail.com> wrote:
+> > > > > Facet over the 4th and you should be good.
+> > > > > On Thu, Feb 11, 2016 at 9:21 PM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > > > > > Hi Zach,
+> > > > > >
+> > > > > > Welcome to the black-hole-vortex that is R! If I understand you correctly, these are your vairables:
+> > > > > >
+> > > > > > 1. inflamation marker
+> > > > > > 2. microbe genus
+> > > > > > 3. microbe abundance
+> > > > > > 4. time
+> > > > > >
+> > > > > > It's hard to accurately show more than three variables in a single plot, but I could imagine you presenting three plots, one for each time point, with your inflamation markers on one axis, microbe identity on the other axis, and microbe abundance as a color. You can actually do this relatively easily with ggplot2 and the "tile" geom. This blog post shows it quite elegantly: https://martinsbioblogg.wordpress.com/2013/03/21/using-r-correlation-heatmap-with-ggplot2/
+> > > > > > On Thu, Feb 11, 2016 at 8:54 PM, Zachary Pierce <zspi...@ucdavis.edu> wrote:
+> > > > > > > Hi.  I'm newer to R, and therefore the group.  Anyhow, I'm a grad student in Nutrition.  I have a large dataset from which I am making multiple correlations.  I was thinking of visualizing these associations with a heat map, for a poster presentation.  The data consist of a few markers of inflammation at 3 separate time points, as well as microbial relative abundance (from QYME), from phylum~genus, all at 3 time points.  Would a heat map be appropriate to visualize such associations?  I'm sure I can find this answer online, as well as at the Sessions on Mondays, but I was hoping someone could point me in a good direction so I could learn a bit and come prepared to a session...
+> > > > > > >
+> > > > > > > I'm willing to share my data if that would help, but I imagine I should just show up to one of the meetings on Monday.
+> > > > > > >
+> > > > > > > Thanks all!
+> > > > > > >
+> > > > > > > --
+> > > > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > > > ---
+> > > > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > > > >
+> > > > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > --
+> > > > > > Rosemary Hartman
+> > > > > > roseh...@gmail.com
+> > > > > > 301-538-0136
+> > > > > >
+> > > > > > --
+> > > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > > ---
+> > > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > > >
+> > > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > >
+> > > > > --
+> > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > >
+> > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > > --
+> > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u0c0915d54307a5d8 at groups.google.com  Mon Feb 22 15:02:48 2016
+From: u0c0915d54307a5d8 at groups.google.com (Rosemary Hartman)
+Date: Mon, 22 Feb 2016 15:02:48 +0000
+Subject: formatting grouped bar graphs
+Message-ID: <_2fcMBgtQ3I.5Dag8eZBBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/_2fcMBgtQ3I/m/5Dag8eZBBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello all,
+
+I am graphing the results of an experiment where I tried a different aquatic invertebrate sampling equipment in different habitat types. I had more potential samplers in some habitat types than others. I'd like to make a grouped bar graph where each habitat type is grouped together. I can do this pretty easily with ggplot2, however the resulting graph makes each of the habitat types equal widths, and changes the widths of the bars. I'd like to make each of the bars equal widths and change the width of the groups according to how many bars they have in them. Can anyone help? I feel like this shouldn't be this hard.
+
+This is the code I used for the above plot:
+
+pi4 = ggplot(inverts3, aes(x=target, y= mdiet, fill = Sample.type))
+ pi4 + geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+  ylab("proportion of catch important to fish diets") + ylim(0,1)
+
+I've attached the inverts3 data file if anyone would like to take a stab at it. I'd also be interested in doing the same thing using facets instead of a grouped bar, but I've been having the same problem with the widths of the bars.
+--
+Rosemary Hartman
+roseh...@gmail.com
+301-538-0136
+
+From u2f78e326d6f095da at groups.google.com  Mon Feb 22 19:44:38 2016
+From: u2f78e326d6f095da at groups.google.com (Jessica Mizzi)
+Date: Mon, 22 Feb 2016 19:44:38 +0000
+Subject: Workshop Announcements: Sphinx, Webhooks & Bitbucket (2/29) and Amazon Web Services (3/7)
+Message-ID: <XZyZixRA8Ek.6nhr7EdRBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/XZyZixRA8Ek/m/6nhr7EdRBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Workshop announcements: Sphinx, Webhooks, & Bitbucket and Amazon Web Services and
+
+1. Sphinx, Webhooks, and Bitbucket
+
+Who: Adelaide Rhodes
+When: February 29th, 2016
+Times: 9:15 am - 12:25 pm
+Where: DSI Space, Shields Library, UC Davis Campus
+
+This workshop will cover using webhooks with Bitbucket to create Web sites that automatically update when you make changes in a Bitbucket repository. Sphinx and reStructuredText will be used to build the underlying Web site.
+
+This workshop will be taught remotely and broadcast to UC Davis via Google Hangouts. It will also be streaming on YouTube.
+
+More at:
+http://dib-training.readthedocs.org/en/pub/2016-02-29-sph-webh-bitb-lr.html
+
+Register at:
+https://www.eventbrite.com/e/sphinx-webhooks-and-bitbucket-half-day-workshop-tickets-20041061354
+
+If you register for this workshop but cannot attend, please release
+your spot on EventBrite or contact Jessica Mizzi (jessic...@gmail.com).
+If you register but do not attend (which takes up a spot that could have
+gone to someone on our waitlist!), you may not be able to register for
+future workshops.
+
+2. Amazon Web Services
+
+Who: Titus Brown
+When: March 7, 2016
+Times: 9:15am-12:15pm PST
+Where: DSI Space, Shield Library, UC Davis campus
+
+Description:
+
+Amazon Web Services is one of a number of cloud computing services that offers “rental compute” - a way to buy compute time as you need it.  This is an increasingly common way for scientists to scale up their work, and it also has a number of benefits for reproducibility and teaching.
+
+This tutorial will introduce people to using Amazon Web Services to run programs on a Linux computer rented through their Web interface (“EC2”). I’ll demonstrate the basic process, discuss different options and pricing schemes, and cover the use of AWS disk storage. I’ll also demonstrate S3 (Simple Storage Service) which is a way to store and distribute large files.
+
+Attendees will need to pay their own AWS costs - it will be less than $5 total for the workshop. You will need a reasonably modern computer and there will be some software to pre-install (but not much).
+
+This workshop will be taught locally at UC Davis and broadcast via Google Hangouts on Air/YouTube for those who wish to participate remotely.
+
+This workshop is open to everyone, including graduate students,
+postdocs, staff, faculty, and community members.
+
+More at:
+http://dib-training.readthedocs.org/en/pub/2016-03-03-aws-br.html
+
+Register at:
+https://www.eventbrite.com/e/amazon-web-services-tickets-21073317861
+
+Attendance Policy:
+If you register for this workshop but cannot attend, please release
+your spot on EventBrite or contact Jessica Mizzi (jessic...@gmail.com).
+If you register but do not attend (which takes up a spot that could have
+gone to someone on our waitlist!), you may not be able to register for
+future workshops.
+
+From u6e4e37c602c2b104 at groups.google.com  Mon Feb 22 19:53:45 2016
+From: u6e4e37c602c2b104 at groups.google.com (Michael Levy)
+Date: Mon, 22 Feb 2016 19:53:45 +0000
+Subject: Fwd: [gradfund] FW: Insight Data Science and Engineering Fellowships - June 2016
+Message-ID: <xQd-yFO4wjA.J28ob8dRBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/xQd-yFO4wjA/m/J28ob8dRBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+If you want to go into industry data science this is a pretty sweet pathway.
+
+---------- Forwarded message ----------
+From: Deborah McCook <dlmc...@ucdavis.edu>
+Date: Mon, Feb 22, 2016 at 11:25 AM
+Subject: [gradfund] FW: Insight Data Science and Engineering Fellowships - June 2016
+To: "post...@ucdavis.edu" <post...@ucdavis.edu>, "grad...@ucdavis.edu" <grad...@ucdavis.edu>, Jessica M Stoller <jsto...@ucdavis365.onmicrosoft.com>
+
+The Insight Data Programs are tuition-free post-graduate Fellowships for students and postdocs looking to transition to careers in data science or data engineering.
+
+A number of alumni from UC Davis have gone through the program, including Heather Shapiro (Neuroscience), Michael Woods (Physics), and Chris Miller (Physics), who are now data scientists at Pebble, Yelp, and Rentlytics respectively. We haven’t had Fellows from UC Davis recently, but would love to increase UC Davis graduate participation in Insight.
+
+Thank you,
+Wafa Soofi
+Program Director | Insight Data Science
+
+==================
+Insight Fellows Programs
+
+Now accepting applications for Summer 2016 Insight Fellowships
+
+500+ Insight alumni are now data scientists and data engineers at Facebook, LinkedIn, The New York Times, Apple, Airbnb, Netflix, Memorial Sloan Kettering Cancer Center, Uber, Seven Bridges Genomics, Twitter, Bloomberg, NBC, Microsoft, and 100+ other top companies.
+
+Insight Fellowship:
+  * 7 week, full-time, post-graduate training Fellowship
+  * Mentorship from leading industry data scientists and data engineers
+  * Join an active community of Insight alumni
+  * Self-directed, project-based learning with support from Insight throughout the whole process
+  * Tuition-free with need-based scholarships available to help cover living costs
+
+Insight awards three distinct Fellowships:
+
+Data Science (New York City, Silicon Valley & remote)
+Deadline: March 21st
+For post-docs or PhD students who will graduate by October 2016
+http://insightdatascience.com <http://insightdatascience.com/?16b=ebc8f>
+
+Health Data Science (Boston)
+Deadline: March 21st
+For post-docs, MD, or PhD students who will graduate by October 2016
+http://insighthealthdata.com <http://insighthealthdata.com/?16b=ebc8f>
+
+Data Engineering (New York City & Silicon Valley)
+Deadline: March 28th
+For post-docs or Bachelor’s, Master’s, or PhD students who will graduate by October 2016
+http://insightdataengineering.com <http://insightdataengineering.com/?16b=ebc8f>
+
+Questions? Email us at in...@insightdatascience.com
+==================
+
+From u2083d5dd75475d0e at groups.google.com  Mon Feb 22 20:08:37 2016
+From: u2083d5dd75475d0e at groups.google.com (Patrick Kilduff)
+Date: Mon, 22 Feb 2016 20:08:37 +0000
+Subject: Re: [D-RUG]: formatting grouped bar graphs
+Message-ID: <_2fcMBgtQ3I.cSQW_JZSBQAJ@davis-rug.groups.google.com>
+In-Reply-To: <_2fcMBgtQ3I.5Dag8eZBBQAJ@davis-rug.groups.google.com>
+References: <_2fcMBgtQ3I.5Dag8eZBBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/_2fcMBgtQ3I/m/cSQW_JZSBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I vaguely remember having this problem a while back and, if I remember correctly, I had to create `dummy` factor levels for the levels (in your case, habitat and gear type combinations) without (catch) data and then add zero or empty values before calling ggplot. I hope this helps.
+
+-Patrick
+
+On Mon, Feb 22, 2016 at 10:02 AM, Rosemary Hartman <roseh...@gmail.com> wrote:
+
+> Hello all,
+>
+> I am graphing the results of an experiment where I tried a different aquatic invertebrate sampling equipment in different habitat types. I had more potential samplers in some habitat types than others. I'd like to make a grouped bar graph where each habitat type is grouped together. I can do this pretty easily with ggplot2, however the resulting graph makes each of the habitat types equal widths, and changes the widths of the bars. I'd like to make each of the bars equal widths and change the width of the groups according to how many bars they have in them. Can anyone help? I feel like this shouldn't be this hard.
+>
+> This is the code I used for the above plot:
+>
+> pi4 = ggplot(inverts3, aes(x=target, y= mdiet, fill = Sample.type))
+>  pi4 + geom_bar(stat = "identity", position = "dodge") +
+>   geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+>   ylab("proportion of catch important to fish diets") + ylim(0,1)
+>
+>
+> I've attached the inverts3 data file if anyone would like to take a stab at it. I'd also be interested in doing the same thing using facets instead of a grouped bar, but I've been having the same problem with the widths of the bars.
+> --
+> Rosemary Hartman
+> roseh...@gmail.com
+> 301-538-0136
+
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Patrick Kilduff
+
+Fisheries Scientist
+
+From u27405c4b711a1080 at groups.google.com  Mon Feb 22 20:16:05 2016
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Mon, 22 Feb 2016 20:16:05 +0000
+Subject: Re: [D-RUG]: formatting grouped bar graphs
+Message-ID: <_2fcMBgtQ3I.TNKVQP9SBQAJ@davis-rug.groups.google.com>
+In-Reply-To: <_2fcMBgtQ3I.cSQW_JZSBQAJ@davis-rug.groups.google.com>
+References: <_2fcMBgtQ3I.5Dag8eZBBQAJ@davis-rug.groups.google.com> <_2fcMBgtQ3I.cSQW_JZSBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/_2fcMBgtQ3I/m/TNKVQP9SBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Patrick is right.
+
+require(readr)
+require(dplyr)
+require(ggplot2)
+
+inverts3 <- read_csv("~/Downloads/inverts3.csv")
+
+Sample.type <- unique(inverts3$Sample.type)
+target <- unique(inverts3$target)
+
+expand.grid(Sample.type = Sample.type, target = target, stringsAsFactors=FALSE) %>%
+full_join(., inverts3) %>%
+ggplot(., aes(x=target, y= mdiet, fill = Sample.type)) +
+
+geom_bar(stat = "identity", position = "dodge") +
+geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+ylab("proportion of catch important to fish diets") +
+ylim(0,1)
+
+Does that do what you want Rosemary?
+
+B
+
+On Mon, Feb 22, 2016 at 12:08 PM, Patrick Kilduff <dpki...@ucdavis.edu> wrote:
+> I vaguely remember having this problem a while back and, if I remember correctly, I had to create `dummy` factor levels for the levels (in your case, habitat and gear type combinations) without (catch) data and then add zero or empty values before calling ggplot. I hope this helps.
+>
+> -Patrick
+>
+> On Mon, Feb 22, 2016 at 10:02 AM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > Hello all,
+> >
+> > I am graphing the results of an experiment where I tried a different aquatic invertebrate sampling equipment in different habitat types. I had more potential samplers in some habitat types than others. I'd like to make a grouped bar graph where each habitat type is grouped together. I can do this pretty easily with ggplot2, however the resulting graph makes each of the habitat types equal widths, and changes the widths of the bars. I'd like to make each of the bars equal widths and change the width of the groups according to how many bars they have in them. Can anyone help? I feel like this shouldn't be this hard.
+> >
+> > This is the code I used for the above plot:
+> >
+> > pi4 = ggplot(inverts3, aes(x=target, y= mdiet, fill = Sample.type))
+> >  pi4 + geom_bar(stat = "identity", position = "dodge") +
+> >   geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> >   ylab("proportion of catch important to fish diets") + ylim(0,1)
+> >
+> >
+> > I've attached the inverts3 data file if anyone would like to take a stab at it. I'd also be interested in doing the same thing using facets instead of a grouped bar, but I've been having the same problem with the widths of the bars.
+> > --
+> > Rosemary Hartman
+> > roseh...@gmail.com
+> > 301-538-0136
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Patrick Kilduff
+>
+> Fisheries Scientist
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u0c0915d54307a5d8 at groups.google.com  Mon Feb 22 20:41:14 2016
+From: u0c0915d54307a5d8 at groups.google.com (Rosemary Hartman)
+Date: Mon, 22 Feb 2016 20:41:14 +0000
+Subject: Re: [D-RUG]: formatting grouped bar graphs
+Message-ID: <_2fcMBgtQ3I.UKYAy15UBQAJ@davis-rug.groups.google.com>
+In-Reply-To: <_2fcMBgtQ3I.TNKVQP9SBQAJ@davis-rug.groups.google.com>
+References: <_2fcMBgtQ3I.5Dag8eZBBQAJ@davis-rug.groups.google.com> <_2fcMBgtQ3I.TNKVQP9SBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/_2fcMBgtQ3I/m/UKYAy15UBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Well, the bars are now the same width, but there are large gaps where the zero dummy variables are. I don't want to have a blank space for sample types that are not present in one of the target habitats, I want to change the width of the target habitats to reflect the number of samplers used in each target habitat. Is there a way to scale the width between tick marks?
+
+On Mon, Feb 22, 2016 at 12:15 PM, Brandon Hurr <brando...@gmail.com> wrote:
+> Patrick is right.
+>
+> require(readr)
+> require(dplyr)
+> require(ggplot2)
+>
+>
+> inverts3 <- read_csv("~/Downloads/inverts3.csv")
+>
+> Sample.type <- unique(inverts3$Sample.type)
+> target <- unique(inverts3$target)
+>
+> expand.grid(Sample.type = Sample.type, target = target, stringsAsFactors=FALSE) %>%
+> full_join(., inverts3) %>%
+> ggplot(., aes(x=target, y= mdiet, fill = Sample.type)) +
+> geom_bar(stat = "identity", position = "dodge") +
+> geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> ylab("proportion of catch important to fish diets") +
+> ylim(0,1)
+>
+> Does that do what you want Rosemary?
+>
+> B
+>
+> On Mon, Feb 22, 2016 at 12:08 PM, Patrick Kilduff <dpki...@ucdavis.edu> wrote:
+> > I vaguely remember having this problem a while back and, if I remember correctly, I had to create `dummy` factor levels for the levels (in your case, habitat and gear type combinations) without (catch) data and then add zero or empty values before calling ggplot. I hope this helps.
+> >
+> > -Patrick
+> >
+> > On Mon, Feb 22, 2016 at 10:02 AM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > > Hello all,
+> > >
+> > > I am graphing the results of an experiment where I tried a different aquatic invertebrate sampling equipment in different habitat types. I had more potential samplers in some habitat types than others. I'd like to make a grouped bar graph where each habitat type is grouped together. I can do this pretty easily with ggplot2, however the resulting graph makes each of the habitat types equal widths, and changes the widths of the bars. I'd like to make each of the bars equal widths and change the width of the groups according to how many bars they have in them. Can anyone help? I feel like this shouldn't be this hard.
+> > >
+> > > This is the code I used for the above plot:
+> > >
+> > > pi4 = ggplot(inverts3, aes(x=target, y= mdiet, fill = Sample.type))
+> > >  pi4 + geom_bar(stat = "identity", position = "dodge") +
+> > >   geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> > >   ylab("proportion of catch important to fish diets") + ylim(0,1)
+> > >
+> > >
+> > > I've attached the inverts3 data file if anyone would like to take a stab at it. I'd also be interested in doing the same thing using facets instead of a grouped bar, but I've been having the same problem with the widths of the bars.
+> > > --
+> > > Rosemary Hartman
+> > > roseh...@gmail.com
+> > > 301-538-0136
+> > >
+> > > --
+> > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> >
+> >
+> > --
+> > Patrick Kilduff
+> >
+> > Fisheries Scientist
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+
+Rosemary Hartman
+roseh...@gmail.com
+301-538-0136
+
+From u27405c4b711a1080 at groups.google.com  Mon Feb 22 20:56:32 2016
+From: u27405c4b711a1080 at groups.google.com (Brandon Hurr)
+Date: Mon, 22 Feb 2016 20:56:32 +0000
+Subject: Re: [D-RUG]: formatting grouped bar graphs
+Message-ID: <_2fcMBgtQ3I.eO_FgTRVBQAJ@davis-rug.groups.google.com>
+In-Reply-To: <_2fcMBgtQ3I.UKYAy15UBQAJ@davis-rug.groups.google.com>
+References: <_2fcMBgtQ3I.5Dag8eZBBQAJ@davis-rug.groups.google.com> <_2fcMBgtQ3I.UKYAy15UBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/_2fcMBgtQ3I/m/eO_FgTRVBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Maybe this?
+
+ggplot(inverts3, aes(x=interaction(target, Sample.type), y= mdiet, fill = Sample.type)) +
+
+geom_bar(stat = "identity", position = "dodge") +
+geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+ylab("proportion of catch important to fish diets") +
+
+ylim(0,1) + theme(axis.text.x = element_text(angle=270))
+
+On Mon, Feb 22, 2016 at 12:41 PM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> Well, the bars are now the same width, but there are large gaps where the zero dummy variables are. I don't want to have a blank space for sample types that are not present in one of the target habitats, I want to change the width of the target habitats to reflect the number of samplers used in each target habitat. Is there a way to scale the width between tick marks?
+>
+> On Mon, Feb 22, 2016 at 12:15 PM, Brandon Hurr <brando...@gmail.com> wrote:
+> > Patrick is right.
+> >
+> > require(readr)
+> > require(dplyr)
+> > require(ggplot2)
+> >
+> >
+> > inverts3 <- read_csv("~/Downloads/inverts3.csv")
+> >
+> > Sample.type <- unique(inverts3$Sample.type)
+> > target <- unique(inverts3$target)
+> >
+> > expand.grid(Sample.type = Sample.type, target = target, stringsAsFactors=FALSE) %>%
+> > full_join(., inverts3) %>%
+> > ggplot(., aes(x=target, y= mdiet, fill = Sample.type)) +
+> > geom_bar(stat = "identity", position = "dodge") +
+> > geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> > ylab("proportion of catch important to fish diets") +
+> > ylim(0,1)
+> >
+> > Does that do what you want Rosemary?
+> >
+> > B
+> >
+> > On Mon, Feb 22, 2016 at 12:08 PM, Patrick Kilduff <dpki...@ucdavis.edu> wrote:
+> > > I vaguely remember having this problem a while back and, if I remember correctly, I had to create `dummy` factor levels for the levels (in your case, habitat and gear type combinations) without (catch) data and then add zero or empty values before calling ggplot. I hope this helps.
+> > >
+> > > -Patrick
+> > >
+> > > On Mon, Feb 22, 2016 at 10:02 AM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > > > Hello all,
+> > > >
+> > > > I am graphing the results of an experiment where I tried a different aquatic invertebrate sampling equipment in different habitat types. I had more potential samplers in some habitat types than others. I'd like to make a grouped bar graph where each habitat type is grouped together. I can do this pretty easily with ggplot2, however the resulting graph makes each of the habitat types equal widths, and changes the widths of the bars. I'd like to make each of the bars equal widths and change the width of the groups according to how many bars they have in them. Can anyone help? I feel like this shouldn't be this hard.
+> > > >
+> > > > This is the code I used for the above plot:
+> > > >
+> > > > pi4 = ggplot(inverts3, aes(x=target, y= mdiet, fill = Sample.type))
+> > > >  pi4 + geom_bar(stat = "identity", position = "dodge") +
+> > > >   geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> > > >   ylab("proportion of catch important to fish diets") + ylim(0,1)
+> > > >
+> > > >
+> > > > I've attached the inverts3 data file if anyone would like to take a stab at it. I'd also be interested in doing the same thing using facets instead of a grouped bar, but I've been having the same problem with the widths of the bars.
+> > > > --
+> > > > Rosemary Hartman
+> > > > roseh...@gmail.com
+> > > > 301-538-0136
+> > > >
+> > > > --
+> > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > > --
+> > > Patrick Kilduff
+> > >
+> > > Fisheries Scientist
+> > >
+> > > --
+> > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+>
+>
+> --
+> Rosemary Hartman
+> roseh...@gmail.com
+> 301-538-0136
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u8c8f0ca54c4a2459 at groups.google.com  Mon Feb 22 21:31:34 2016
+From: u8c8f0ca54c4a2459 at groups.google.com (Noam Ross)
+Date: Mon, 22 Feb 2016 21:31:34 +0000
+Subject: Re: [D-RUG]: formatting grouped bar graphs
+Message-ID: <_2fcMBgtQ3I.b3BV7x1XBQAJ@davis-rug.groups.google.com>
+In-Reply-To: <_2fcMBgtQ3I.eO_FgTRVBQAJ@davis-rug.groups.google.com>
+References: <_2fcMBgtQ3I.5Dag8eZBBQAJ@davis-rug.groups.google.com> <_2fcMBgtQ3I.eO_FgTRVBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/_2fcMBgtQ3I/m/b3BV7x1XBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The trick for this is to facet along the grouping variable. In facet_grid() there’s an argument space="free_x" that will cause plots’ width to be proportional to their x scale. This way you can break up the plots by “target” and place these plots side by side horizontally:
+pi4 = ggplot(inverts3, aes(x=Sample.type, y= mdiet, fill = Sample.type))  # <-- Note no 'target' here
+pi4 + geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+  facet_grid(.~target, scales = "free_x", space="free_x") +  # <-- where the magic happens
+  ylab("proportion of catch important to fish diets") + ylim(0,1)
+​
+
+On Mon, Feb 22, 2016 at 3:56 PM Brandon Hurr <brando...@gmail.com> wrote:
+
+> Maybe this?
+>
+> ggplot(inverts3, aes(x=interaction(target, Sample.type), y= mdiet, fill = Sample.type)) +
+> geom_bar(stat = "identity", position = "dodge") +
+> geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> ylab("proportion of catch important to fish diets") +
+> ylim(0,1) + theme(axis.text.x = element_text(angle=270))
+
+> On Mon, Feb 22, 2016 at 12:41 PM, Rosemary Hartman <roseh...@gmail.com> wrote:
+
+> > Well, the bars are now the same width, but there are large gaps where the zero dummy variables are. I don't want to have a blank space for sample types that are not present in one of the target habitats, I want to change the width of the target habitats to reflect the number of samplers used in each target habitat. Is there a way to scale the width between tick marks?
+
+> >
+
+> > On Mon, Feb 22, 2016 at 12:15 PM, Brandon Hurr <brando...@gmail.com> wrote:
+
+> > > Patrick is right.
+> > >
+> > > require(readr)
+> > > require(dplyr)
+> > > require(ggplot2)
+> > >
+> > >
+> > > inverts3 <- read_csv("~/Downloads/inverts3.csv")
+> > >
+> > > Sample.type <- unique(inverts3$Sample.type)
+> > > target <- unique(inverts3$target)
+> > >
+> > > expand.grid(Sample.type = Sample.type, target = target, stringsAsFactors=FALSE) %>%
+> > > full_join(., inverts3) %>%
+> > > ggplot(., aes(x=target, y= mdiet, fill = Sample.type)) +
+> > > geom_bar(stat = "identity", position = "dodge") +
+> > > geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> > > ylab("proportion of catch important to fish diets") +
+> > > ylim(0,1)
+> > >
+> > > Does that do what you want Rosemary?
+> > >
+> > > B
+
+> > > On Mon, Feb 22, 2016 at 12:08 PM, Patrick Kilduff <dpki...@ucdavis.edu> wrote:
+
+> > > > I vaguely remember having this problem a while back and, if I remember correctly, I had to create `dummy` factor levels for the levels (in your case, habitat and gear type combinations) without (catch) data and then add zero or empty values before calling ggplot. I hope this helps.
+> > > >
+> > > > -Patrick
+
+> > > > On Mon, Feb 22, 2016 at 10:02 AM, Rosemary Hartman <roseh...@gmail.com> wrote:
+
+> > > > > Hello all,
+> > > > >
+> > > > > I am graphing the results of an experiment where I tried a different aquatic invertebrate sampling equipment in different habitat types. I had more potential samplers in some habitat types than others. I'd like to make a grouped bar graph where each habitat type is grouped together. I can do this pretty easily with ggplot2, however the resulting graph makes each of the habitat types equal widths, and changes the widths of the bars. I'd like to make each of the bars equal widths and change the width of the groups according to how many bars they have in them. Can anyone help? I feel like this shouldn't be this hard.
+
+> > > > >
+
+> > > > > This is the code I used for the above plot:
+> > > > >
+> > > > > pi4 = ggplot(inverts3, aes(x=target, y= mdiet, fill = Sample.type))
+> > > > >  pi4 + geom_bar(stat = "identity", position = "dodge") +
+> > > > >   geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> > > > >   ylab("proportion of catch important to fish diets") + ylim(0,1)
+> > > > >
+> > > > >
+> > > > > I've attached the inverts3 data file if anyone would like to take a stab at it. I'd also be interested in doing the same thing using facets instead of a grouped bar, but I've been having the same problem with the widths of the bars.
+> > > > > --
+> > > > > Rosemary Hartman
+> > > > > roseh...@gmail.com
+> > > > > 301-538-0136
+
+> > > > > --
+> > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+
+> > > > --
+> > > > Patrick Kilduff
+> > > >
+> > > > Fisheries Scientist
+> > > >
+
+> > > > --
+> > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > For more options, visit https://groups.google.com/d/optout.
+
+> > > --
+> > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > For more options, visit https://groups.google.com/d/optout.
+
+> >
+> >
+> >
+> > --
+> > Rosemary Hartman
+> > roseh...@gmail.com
+> > 301-538-0136
+
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u0c0915d54307a5d8 at groups.google.com  Mon Feb 22 22:52:07 2016
+From: u0c0915d54307a5d8 at groups.google.com (Rosemary Hartman)
+Date: Mon, 22 Feb 2016 22:52:07 +0000
+Subject: Re: [D-RUG]: formatting grouped bar graphs
+Message-ID: <_2fcMBgtQ3I.DAoLOoNbBQAJ@davis-rug.groups.google.com>
+In-Reply-To: <_2fcMBgtQ3I.b3BV7x1XBQAJ@davis-rug.groups.google.com>
+References: <_2fcMBgtQ3I.5Dag8eZBBQAJ@davis-rug.groups.google.com> <_2fcMBgtQ3I.b3BV7x1XBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/_2fcMBgtQ3I/m/DAoLOoNbBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+THAT"S IT!! Thanks so much. I had tried faceting, but I didn't know about the "space= freex" bit, so it didn't work out for me. That is beautiful.
+
+On Mon, Feb 22, 2016 at 1:31 PM, Noam Ross <noam...@gmail.com> wrote:
+>
+> The trick for this is to facet along the grouping variable. In facet_grid() there’s an argument space="free_x" that will cause plots’ width to be proportional to their x scale. This way you can break up the plots by “target” and place these plots side by side horizontally:
+> pi4 = ggplot(inverts3, aes(x=Sample.type, y= mdiet, fill = Sample.type))  # <-- Note no 'target' here
+> pi4 + geom_bar(stat = "identity") +
+>   geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+>   facet_grid(.~target, scales = "free_x", space="free_x") +  # <-- where the magic happens
+>   ylab("proportion of catch important to fish diets") + ylim(0,1)
+> ​
+>
+>
+>
+> On Mon, Feb 22, 2016 at 3:56 PM Brandon Hurr <brando...@gmail.com> wrote:
+> > Maybe this?
+> >
+> > ggplot(inverts3, aes(x=interaction(target, Sample.type), y= mdiet, fill = Sample.type)) +
+> > geom_bar(stat = "identity", position = "dodge") +
+> > geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> > ylab("proportion of catch important to fish diets") +
+> > ylim(0,1) + theme(axis.text.x = element_text(angle=270))
+> >
+> > On Mon, Feb 22, 2016 at 12:41 PM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > > Well, the bars are now the same width, but there are large gaps where the zero dummy variables are. I don't want to have a blank space for sample types that are not present in one of the target habitats, I want to change the width of the target habitats to reflect the number of samplers used in each target habitat. Is there a way to scale the width between tick marks?
+> > >
+> > > On Mon, Feb 22, 2016 at 12:15 PM, Brandon Hurr <brando...@gmail.com> wrote:
+> > > > Patrick is right.
+> > > >
+> > > > require(readr)
+> > > > require(dplyr)
+> > > > require(ggplot2)
+> > > >
+> > > >
+> > > > inverts3 <- read_csv("~/Downloads/inverts3.csv")
+> > > >
+> > > > Sample.type <- unique(inverts3$Sample.type)
+> > > > target <- unique(inverts3$target)
+> > > >
+> > > > expand.grid(Sample.type = Sample.type, target = target, stringsAsFactors=FALSE) %>%
+> > > > full_join(., inverts3) %>%
+> > > > ggplot(., aes(x=target, y= mdiet, fill = Sample.type)) +
+> > > > geom_bar(stat = "identity", position = "dodge") +
+> > > > geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> > > > ylab("proportion of catch important to fish diets") +
+> > > > ylim(0,1)
+> > > >
+> > > > Does that do what you want Rosemary?
+> > > >
+> > > > B
+> > > >
+> > > > On Mon, Feb 22, 2016 at 12:08 PM, Patrick Kilduff <dpki...@ucdavis.edu> wrote:
+> > > > > I vaguely remember having this problem a while back and, if I remember correctly, I had to create `dummy` factor levels for the levels (in your case, habitat and gear type combinations) without (catch) data and then add zero or empty values before calling ggplot. I hope this helps.
+> > > > >
+> > > > > -Patrick
+> > > > >
+> > > > > On Mon, Feb 22, 2016 at 10:02 AM, Rosemary Hartman <roseh...@gmail.com> wrote:
+> > > > > > Hello all,
+> > > > > >
+> > > > > > I am graphing the results of an experiment where I tried a different aquatic invertebrate sampling equipment in different habitat types. I had more potential samplers in some habitat types than others. I'd like to make a grouped bar graph where each habitat type is grouped together. I can do this pretty easily with ggplot2, however the resulting graph makes each of the habitat types equal widths, and changes the widths of the bars. I'd like to make each of the bars equal widths and change the width of the groups according to how many bars they have in them. Can anyone help? I feel like this shouldn't be this hard.
+> > > > > >
+> > > > > > This is the code I used for the above plot:
+> > > > > >
+> > > > > > pi4 = ggplot(inverts3, aes(x=target, y= mdiet, fill = Sample.type))
+> > > > > >  pi4 + geom_bar(stat = "identity", position = "dodge") +
+> > > > > >   geom_errorbar(aes(ymax= mdiet + sediet, ymin = mdiet - sediet), position = "dodge") +
+> > > > > >   ylab("proportion of catch important to fish diets") + ylim(0,1)
+> > > > > >
+> > > > > >
+> > > > > > I've attached the inverts3 data file if anyone would like to take a stab at it. I'd also be interested in doing the same thing using facets instead of a grouped bar, but I've been having the same problem with the widths of the bars.
+> > > > > > --
+> > > > > > Rosemary Hartman
+> > > > > > roseh...@gmail.com
+> > > > > > 301-538-0136
+> > > > > >
+> > > > > > --
+> > > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > > ---
+> > > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > > For more options, visit https://groups.google.com/d/optout.
+> > > > >
+> > > > >
+> > > > >
+> > > > > --
+> > > > > Patrick Kilduff
+> > > > >
+> > > > > Fisheries Scientist
+> > > > >
+> > > > > --
+> > > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > > > --
+> > > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > >
+> > >
+> > > --
+> > > Rosemary Hartman
+> > > roseh...@gmail.com
+> > > 301-538-0136
+> > >
+> > > --
+> > > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/davis-rug.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> > --
+> > Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> > ---
+> > You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/davis-rug.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> Check out our R resources at http://www.noamross.net/davis-r-users-group.html
+> ---
+> You received this message because you are subscribed to the Google Groups "Davis R Users' Group" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to davis-rug+...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/davis-rug.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Rosemary Hartman
+roseh...@gmail.com
+301-538-0136
+
+From u6e4e37c602c2b104 at groups.google.com  Tue Feb 23 16:43:56 2016
+From: u6e4e37c602c2b104 at groups.google.com (Michael)
+Date: Tue, 23 Feb 2016 16:43:56 +0000
+Subject: Work session today
+Message-ID: <swF9MDK2PO4.dpayCwCWBQAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/swF9MDK2PO4/m/dpayCwCWBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+HI all,
+
+We'll have the usual work session this afternoon, 3 - 5, in Wickson 2124. See you then,
+
+Michael
+
+From u2f78e326d6f095da at groups.google.com  Mon Feb 29 18:48:08 2016
+From: u2f78e326d6f095da at groups.google.com (Jessica Mizzi)
+Date: Mon, 29 Feb 2016 18:48:08 +0000
+Subject: Workshop Announcement - Jupyter Notebook 3/9/16
+Message-ID: <8801Gb-JUrM.cYm8oEJ0BwAJ@davis-rug.groups.google.com>
+Archived-At: <https://groups.google.com/g/davis-rug/c/8801Gb-JUrM/m/cYm8oEJ0BwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Workshop announcement: Jupyter Notebook
+
+Who: Titus Brown
+When: March 9th, 2016
+Times: 9:15 am - 12:15 pm
+Where: 1010 Valley Hall, UC Davis Campus
+
+This half day workshop will introduce biologists to Project Jupyter (formerly IPython Notebook). We will assume some minimal experience with Python, but people new to IPython Notebook/Project Jupyter are welcome to attend!
+
+Project Jupyter is a literate data analysis environment (similar to knitr and Shiny) that supports over 40 different programming languages, including R and Python both. It can be used to build reproducible analyses for publication, collaborate over distances on data analysis, and build interactive tutorials and homeworks around data analysis.
+
+More at:
+http://dib-training.readthedocs.org/en/pub/2016-03-09-jupyter-notebook.html
+
+Register at:
+https://www.eventbrite.com/e/jupyter-notebook-half-day-workshop-tickets-21073325885
+
+If you register for this workshop but cannot attend, please release
+your spot on EventBrite or contact Jessica Mizzi (jessic...@gmail.com).
+If you register but do not attend (which takes up a spot that could have
+gone to someone on our waitlist!), you may not be able to register for
+future workshops.
+

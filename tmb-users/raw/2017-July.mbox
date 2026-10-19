@@ -1,0 +1,639 @@
+From u90b303eef43fd993 at groups.google.com  Tue Jul  4 09:40:06 2017
+From: u90b303eef43fd993 at groups.google.com (Kasper Kristensen)
+Date: Tue, 04 Jul 2017 09:40:06 +0000
+Subject: RE: [TMB users] Vector AR(1) random effects
+Message-ID: <lUFR21tNH9c.jWYwKpseBgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/lUFR21tNH9c/m/jWYwKpseBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Note that densities from from namespace 'density' return the negative log likelihood. So code should be:
+
+    nll += VECSCALE(UNSTRUCTURED_CORR(rho),sigma)(error);
+
+From: tmb-...@googlegroups.com [tmb-...@googlegroups.com] on behalf of Jarle Tufto [jarle...@gmail.com]
+Sent: Monday, July 03, 2017 2:15 PM
+To: TMB Users
+Subject: [TMB users] Vector AR(1) random effects
+
+Hi all -
+
+I'm trying to implement random effects having a 2-dimensional vector AR(1) structure in TMB, that is,
+
+  x_t = Phi x_{t-1} + w_t.
+
+where w_t ~ N(0, Sigma).  This is different from
+
+  http://kaskr.github.io/adcomp/classdensity_1_1AR1__t.html
+
+which assumes that Phi is diagonal with equal elements along the diagonal.  The observations y are equal to x plus iid normal errors.
+
+I want to fit the model under the assumption that the process is stationary.  I therefore parameterize the 2x2 matrix Phi in terms of the two eigenvalues lambda_1 and lambda_2 (or more precisely logit((lambda_i+1)/2) and the angles theta_1 and theta_2 of the two unit eigenvectors.  So this restricts Phi to have non-complex eigenvalues.  Sigma is parameterized in the usual way.
+
+The following code (also available at https://github.com/jtufto/tmb-var1.git) compiles and runs but the model doesn't converge as the inner optimization stops after
+233 iterations with the error
+
+  Error in iterate(par) : Newton dropout because inner gradient too steep.
+
+I suspect that there is some error somewhere in my thinking or in my code as I would expect this be easily identifiable with a 2x500 observations of y.
+
+Any comments will be greatly appreciated.
+
+Jarle
+
+#include <TMB.hpp>
+
+template<class Type>
+
+Type objective_function<Type>::operator() ()
+
+{
+
+  using namespace density;
+
+  DATA_MATRIX(y);
+
+  PARAMETER_MATRIX(x);
+
+  PARAMETER(logsdy); Type sdy = exp(logsdy);
+
+  // Sigma parameterized in terms of log of the two sd's and logit2 of rho
+
+  PARAMETER_VECTOR(log_sigma); vector<Type> sigma = exp(log_sigma);
+
+  PARAMETER_VECTOR(rho);
+
+  // Phi parameterized in terms
+
+  PARAMETER_VECTOR(theta);
+
+  PARAMETER_VECTOR(logit_lambda); vector<Type> lambda = 2/(1+exp(-logit_lambda))-1; // eigenvalues
+
+  matrix<Type> eigvec(2,2);
+
+  eigvec(0,0) = cos(theta(0)); eigvec(0,1) = cos(theta(1));
+
+  eigvec(1,0) = sin(theta(0)); eigvec(1,1) = sin(theta(1));
+
+  matrix<Type> D(2,2);
+
+  D(0,0) = lambda(0); D(0,1) = 0;
+
+  D(1,0) = 0;          D(1,1) = lambda(1);
+
+  matrix<Type> Phi = eigvec * D * eigvec.inverse();
+
+  Type nll = 0;
+
+  // Density of VAR(1) process random effects x
+
+  for (int t=1; t<x.rows(); t++) {
+
+    vector<Type> xt = x.row(t);
+
+    vector<Type> xtminus1 = x.row(t-1);
+
+    vector<Type> Phix = Phi*xtminus1;
+
+    vector<Type> error = xt - Phix;
+
+    nll -= VECSCALE(UNSTRUCTURED_CORR(rho),sigma)(error);
+
+  }
+
+  // Conditional density of observations y given x
+
+  for (int t=0; t<y.rows(); t++) {
+
+    for (int i=0; i<2; i++) {
+
+      nll -= dnorm(y(t,i), x(t+x.rows()-y.rows(),i), sdy, true);
+
+    }
+
+  }
+
+  return nll;
+
+}
+
+# setup Phi with real eigenvalues smaller than 1 in absolute value
+theta <- c(0,pi/2)
+lambda <- c(.5,.2)
+vec <- matrix(c(cos(theta),sin(theta)),2,2,byrow=FALSE)
+Phi <- vec %*% diag(lambda) %*% solve(vec)
+Phi
+eigen(Phi)
+
+# Sigma
+rho <- -.5
+sigma <- c(2,3)
+Rho <- diag(2)
+Rho[2,1] <- Rho[1,2] <- rho
+Sigma <- diag(sigma) %*% Rho %*% diag(sigma)
+Sigma
+
+# Stationary covariance matrix
+Gamma0 <- solve(diag(4)-kronecker(Phi,Phi), as.vector(Sigma))
+Gamma0 <- matrix(Gamma0,2,2)
+Gamma0
+
+# Simulate some data
+n <- 500
+x <- matrix(NA,n,2)
+x[1,] <- mvtnorm::rmvnorm(1,sigma=Gamma0)
+for (t in 2:n)
+  x[t,] <- Phi %*% x[t-1,] + t(mvtnorm::rmvnorm(1,sigma=Sigma))
+
+# Check stationary covariance against theoretical value
+var(x)
+Gamma0
+
+# Add some noise to get the data
+sdy <- .1
+y <- x + rnorm(2*n, sd=sdy)
+#matplot(1:n, y, type="l",col=1)
+
+# Fit the model
+library(TMB)
+compile("var1.cpp")
+dyn.load(dynlib("var1"))
+data <- list(y=y)
+burnin <- 10
+parameters <- list(
+  x = matrix(0,nrow(y)+burnin, 2),
+  logsdy = log(sdy),
+  log_sigma = log(sigma),
+  rho = rho,
+  theta = c(0, pi/2),
+  logit_lambda = qlogis((lambda+1)/2)
+)
+obj <- MakeADFun(data,parameters,random="x")
+obj$method="BFGS"
+opt <- do.call(optim,obj)
+sdreport(obj)
+
+--
+To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+---
+You received this message because you are subscribed to the Google Groups "TMB Users" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/56c9ea1a-ca9a-497a-99c4-ecbbd33a4fbf%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/56c9ea1a-ca9a-497a-99c4-ecbbd33a4fbf%40googlegroups.com?utm_medium=email&utm_source=footer>.
+For more options, visit  https://groups.google.com/d/optout.
+
+From ua38e579a8decc4d1 at groups.google.com  Tue Jul  4 09:43:38 2017
+From: ua38e579a8decc4d1 at groups.google.com (Jarle Tufto)
+Date: Tue, 04 Jul 2017 09:43:38 +0000
+Subject: Re: [TMB users] Vector AR(1) random effects
+Message-ID: <lUFR21tNH9c.l2OHxfUIBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <lUFR21tNH9c.jWYwKpseBgAJ@tmb-users.groups.google.com>
+References: <lUFR21tNH9c.jWYwKpseBgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/lUFR21tNH9c/m/l2OHxfUIBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Excellent! That certainly makes a difference!
+
+tirsdag 4. juli 2017 11.40.06 UTC+2 skrev Kasper Kristensen følgende:
+> Note that densities from from namespace 'density' return the negative log likelihood. So code should be:
+>
+>     nll += VECSCALE(UNSTRUCTURED_CORR(rho),sigma)(error);
+>
+>
+> From: tmb-...@googlegroups.com [tmb-...@googlegroups.com] on behalf of Jarle Tufto [jarle...@gmail.com]
+> Sent: Monday, July 03, 2017 2:15 PM
+> To: TMB Users
+> Subject: [TMB users] Vector AR(1) random effects
+>
+> Hi all -
+>
+> I'm trying to implement random effects having a 2-dimensional vector AR(1) structure in TMB, that is,
+>
+>   x_t = Phi x_{t-1} + w_t.
+>
+> where w_t ~ N(0, Sigma).  This is different from
+>
+>   http://kaskr.github.io/adcomp/classdensity_1_1AR1__t.html
+>
+> which assumes that Phi is diagonal with equal elements along the diagonal.  The observations y are equal to x plus iid normal errors.
+>
+> I want to fit the model under the assumption that the process is stationary.  I therefore parameterize the 2x2 matrix Phi in terms of the two eigenvalues lambda_1 and lambda_2 (or more precisely logit((lambda_i+1)/2) and the angles theta_1 and theta_2 of the two unit eigenvectors.  So this restricts Phi to have non-complex eigenvalues.  Sigma is parameterized in the usual way.
+>
+> The following code (also available at https://github.com/jtufto/tmb-var1.git) compiles and runs but the model doesn't converge as the inner optimization stops after
+> 233 iterations with the error
+>
+>   Error in iterate(par) : Newton dropout because inner gradient too steep.
+>
+> I suspect that there is some error somewhere in my thinking or in my code as I would expect this be easily identifiable with a 2x500 observations of y.
+>
+> Any comments will be greatly appreciated.
+>
+> Jarle
+>
+> #include <TMB.hpp>
+>
+> template<class Type>
+>
+> Type objective_function<Type>::operator() ()
+>
+> {
+>
+>   using namespace density;
+>
+>
+>   DATA_MATRIX(y);
+>
+>
+>
+>   PARAMETER_MATRIX(x);
+>
+>   PARAMETER(logsdy); Type sdy = exp(logsdy);
+>
+>
+>
+>   // Sigma parameterized in terms of log of the two sd's and logit2 of rho
+>
+>   PARAMETER_VECTOR(log_sigma); vector<Type> sigma = exp(log_sigma);
+>
+>   PARAMETER_VECTOR(rho);
+>
+>
+>
+>   // Phi parameterized in terms
+>
+>   PARAMETER_VECTOR(theta);
+>
+>   PARAMETER_VECTOR(logit_lambda); vector<Type> lambda = 2/(1+exp(-logit_lambda))-1; // eigenvalues
+>
+>
+>
+>   matrix<Type> eigvec(2,2);
+>
+>   eigvec(0,0) = cos(theta(0)); eigvec(0,1) = cos(theta(1));
+>
+>   eigvec(1,0) = sin(theta(0)); eigvec(1,1) = sin(theta(1));
+>
+>
+>
+>   matrix<Type> D(2,2);
+>
+>   D(0,0) = lambda(0); D(0,1) = 0;
+>
+>   D(1,0) = 0;          D(1,1) = lambda(1);
+>
+>
+>
+>   matrix<Type> Phi = eigvec * D * eigvec.inverse();
+>
+>
+>
+>   Type nll = 0;
+>
+>
+>   // Density of VAR(1) process random effects x
+>
+>   for (int t=1; t<x.rows(); t++) {
+>
+>     vector<Type> xt = x.row(t);
+>
+>     vector<Type> xtminus1 = x.row(t-1);
+>
+>     vector<Type> Phix = Phi*xtminus1;
+>
+>     vector<Type> error = xt - Phix;
+>
+>     nll -= VECSCALE(UNSTRUCTURED_CORR(rho),sigma)(error);
+>
+>   }
+>
+>   // Conditional density of observations y given x
+>
+>   for (int t=0; t<y.rows(); t++) {
+>
+>     for (int i=0; i<2; i++) {
+>
+>       nll -= dnorm(y(t,i), x(t+x.rows()-y.rows(),i), sdy, true);
+>
+>     }
+>
+>   }
+>
+>
+>
+>   return nll;
+>
+> }
+>
+>
+>
+> # setup Phi with real eigenvalues smaller than 1 in absolute value
+> theta <- c(0,pi/2)
+> lambda <- c(.5,.2)
+> vec <- matrix(c(cos(theta),sin(theta)),2,2,byrow=FALSE)
+> Phi <- vec %*% diag(lambda) %*% solve(vec)
+> Phi
+> eigen(Phi)
+>
+> # Sigma
+> rho <- -.5
+> sigma <- c(2,3)
+> Rho <- diag(2)
+> Rho[2,1] <- Rho[1,2] <- rho
+> Sigma <- diag(sigma) %*% Rho %*% diag(sigma)
+> Sigma
+>
+> # Stationary covariance matrix
+> Gamma0 <- solve(diag(4)-kronecker(Phi,Phi), as.vector(Sigma))
+> Gamma0 <- matrix(Gamma0,2,2)
+> Gamma0
+>
+> # Simulate some data
+> n <- 500
+> x <- matrix(NA,n,2)
+> x[1,] <- mvtnorm::rmvnorm(1,sigma=Gamma0)
+> for (t in 2:n)
+>   x[t,] <- Phi %*% x[t-1,] + t(mvtnorm::rmvnorm(1,sigma=Sigma))
+>
+> # Check stationary covariance against theoretical value
+> var(x)
+> Gamma0
+>
+> # Add some noise to get the data
+> sdy <- .1
+> y <- x + rnorm(2*n, sd=sdy)
+> #matplot(1:n, y, type="l",col=1)
+>
+> # Fit the model
+> library(TMB)
+> compile("var1.cpp")
+> dyn.load(dynlib("var1"))
+> data <- list(y=y)
+> burnin <- 10
+> parameters <- list(
+>   x = matrix(0,nrow(y)+burnin, 2),
+>   logsdy = log(sdy),
+>   log_sigma = log(sigma),
+>   rho = rho,
+>   theta = c(0, pi/2),
+>   logit_lambda = qlogis((lambda+1)/2)
+> )
+> obj <- MakeADFun(data,parameters,random="x")
+> obj$method="BFGS"
+> opt <- do.call(optim,obj)
+> sdreport(obj)
+>
+>
+>
+>
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/56c9ea1a-ca9a-497a-99c4-ecbbd33a4fbf%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/56c9ea1a-ca9a-497a-99c4-ecbbd33a4fbf%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit  https://groups.google.com/d/optout.
+
+From u472eb53ede066ba3 at groups.google.com  Tue Jul 25 18:07:08 2017
+From: u472eb53ede066ba3 at groups.google.com (Mark Clements)
+Date: Tue, 25 Jul 2017 18:07:08 +0000
+Subject: Re: [TMB users] Re: B-splines / QR decomposition
+Message-ID: <AxtTSyONA7g.xTzqrfGcAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <AxtTSyONA7g.9Eh4uPcLBQAJ@tmb-users.groups.google.com>
+References: <AxtTSyONA7g.9Eh4uPcLBQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/AxtTSyONA7g/m/xTzqrfGcAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+In re-implementing the splines::bs() function in TMB, I have run into a
+weird bug (reproducible example attached). When I use the objective
+function motivated by an accelerated failure time model:
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+
+  PARAMETER(beta);
+  PARAMETER_VECTOR(betas);
+  DATA_VECTOR(x0);
+  DATA_VECTOR(x1);
+  DATA_VECTOR(boundaryKnots);
+  DATA_VECTOR(interiorKnots);
+  bs<Type> s1(boundaryKnots,interiorKnots,1);
+  vector<Type> xs = x0 + x1 * beta;
+  matrix<Type> Xs = s1.basis(xs);
+  REPORT(Xs);
+  Type f = (Xs*betas).sum();
+  return f;
+}
+
+for some given inputs, I get the correct spline basis (Xs) and function
+value at the initial values. When I evaluate at a different value, I
+also get the correct spline basis (ok), however I get an incorrect
+objective function. This is particularly strange, as the objective is
+only the sum of the basis matrix (which is correct) times the betas
+vector...
+
+Re-coding this with RcppEigen gives the correct objective function with
+no evidence of a memory leak from valgrind (code available).
+
+Is my implementation compatible with TMB? Any help with this would be
+appreciated - I have been struggling with this for a while.
+
+Kindly, Mark.
+
+From u472eb53ede066ba3 at groups.google.com  Tue Jul 25 18:42:21 2017
+From: u472eb53ede066ba3 at groups.google.com (Mark Clements)
+Date: Tue, 25 Jul 2017 18:42:21 +0000
+Subject: Re: [TMB users] Re: B-splines / QR decomposition
+Message-ID: <AxtTSyONA7g.SC1VqN2eAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <AxtTSyONA7g.xTzqrfGcAwAJ@tmb-users.groups.google.com>
+References: <AxtTSyONA7g.9Eh4uPcLBQAJ@tmb-users.groups.google.com> <AxtTSyONA7g.xTzqrfGcAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/AxtTSyONA7g/m/SC1VqN2eAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+To possibly answer my own question:
+https://github.com/kaskr/adcomp/wiki/Things-you-should-NOT-do-in-TMB
+
+The spline knots are external and do not depend on the parameters, while
+the spline evaluation points and spline basis do depend on the
+parameters. In summary, splines with accelerated failure time models
+probably do not fit within the current TMB framework. Out of interest,
+would this work in ADMB?
+
+As an aside, extracting the Q matrix from a QR decomposition is possible
+with TMB. The main trick was to #include <R_ext/Applic.h> before
+#include <TMB.hpp>. The code is:
+
+    MatrixXd qr_q(const MatrixXd& X, double tol = 1E-12)
+    {
+      // Initialize member data and allocate heap memory
+      int n=X.rows(), p=X.cols(), rank=0;
+      MatrixXd qr = X, y(n,n), q(n,n);
+      int* pivot=(int*)R_alloc(p,sizeof(int));
+      double* tau=(double*)R_alloc(p,sizeof(double));
+      double* work=(double*)R_alloc(p*2,sizeof(double));
+      for(int i=0;i<p;i++)
+        pivot[i]=i+1;
+      y.setIdentity();
+      // LINPACK QR factorization via householder transformations
+      F77_CALL(dqrdc2)(qr.data(), &n, &n, &p, &tol, &rank, tau, pivot,
+work);
+      // Compute orthogonal factor Q
+      F77_CALL(dqrqy)(qr.data(), &n, &rank, tau, y.data(), &n, q.data());
+      return q;
+    }
+
+Kindly, Mark.
+
+On 07/25/2017 08:07 PM, Mark Clements wrote:
+> In re-implementing the splines::bs() function in TMB, I have run into a
+> weird bug (reproducible example attached). When I use the objective
+> function motivated by an accelerated failure time model:
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   PARAMETER(beta);
+>   PARAMETER_VECTOR(betas);
+>   DATA_VECTOR(x0);
+>   DATA_VECTOR(x1);
+>   DATA_VECTOR(boundaryKnots);
+>   DATA_VECTOR(interiorKnots);
+>   bs<Type> s1(boundaryKnots,interiorKnots,1);
+>   vector<Type> xs = x0 + x1 * beta;
+>   matrix<Type> Xs = s1.basis(xs);
+>   REPORT(Xs);
+>   Type f = (Xs*betas).sum();
+>   return f;
+> }
+>
+> for some given inputs, I get the correct spline basis (Xs) and function
+> value at the initial values. When I evaluate at a different value, I
+> also get the correct spline basis (ok), however I get an incorrect
+> objective function. This is particularly strange, as the objective is
+> only the sum of the basis matrix (which is correct) times the betas
+> vector...
+>
+> Re-coding this with RcppEigen gives the correct objective function with
+> no evidence of a memory leak from valgrind (code available).
+>
+> Is my implementation compatible with TMB? Any help with this would be
+> appreciated - I have been struggling with this for a while.
+>
+> Kindly, Mark.
+>
+
+From u90b303eef43fd993 at groups.google.com  Wed Jul 26 12:26:01 2017
+From: u90b303eef43fd993 at groups.google.com (Kasper Kristensen)
+Date: Wed, 26 Jul 2017 12:26:01 +0000
+Subject: RE: [TMB users] Re: B-splines / QR decomposition
+Message-ID: <AxtTSyONA7g.Z0GR0JdXAAAJ@tmb-users.groups.google.com>
+In-Reply-To: <AxtTSyONA7g.SC1VqN2eAwAJ@tmb-users.groups.google.com>
+References: <AxtTSyONA7g.9Eh4uPcLBQAJ@tmb-users.groups.google.com> <AxtTSyONA7g.SC1VqN2eAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/AxtTSyONA7g/m/Z0GR0JdXAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+You are right that the problem is caused by parameter dependent branching. ADMB does not have this issue because it re-builds the computational graph for each function evaluation. You can rebuild the computational graph in TMB as well using 'obj$retape()' (after setting obj$env$parameters) within each evaluation, but it will get very slow so is not recommended.
+
+Other options to deal with parameter dependent branching in TMB:
+
+1. Use conditional expressions. E.g. CppAD::CondExpGt(x, y, expr_true, expr_false) returns 'expr_true' if x>y and 'expr_false' otherwise. variants 'Gt' (>), 'Ge' (>=), 'Lt' (<), 'Le' (<=), 'Eq' (==) exist. However, this approach would require major re-write of the spline code. Especially all parts depending on the 'cursor'.
+
+2. In principle one could implement an 'atomic function' that automatically re-builds the computational graph of the spline for each function evaluation (which is much cheaper than rebuilding the entire graph). This is in principle possible but there is not yet an example that demonstrates it.
+
+________________________________________
+From: tmb-...@googlegroups.com [tmb-...@googlegroups.com] on behalf of Mark Clements [mark.c...@ki.se]
+Sent: Tuesday, July 25, 2017 8:42 PM
+To: Hans Skaug; TMB Users
+Subject: Re: [TMB users] Re: B-splines / QR decomposition
+
+To possibly answer my own question:
+https://github.com/kaskr/adcomp/wiki/Things-you-should-NOT-do-in-TMB
+
+The spline knots are external and do not depend on the parameters, while
+the spline evaluation points and spline basis do depend on the
+parameters. In summary, splines with accelerated failure time models
+probably do not fit within the current TMB framework. Out of interest,
+would this work in ADMB?
+
+As an aside, extracting the Q matrix from a QR decomposition is possible
+with TMB. The main trick was to #include <R_ext/Applic.h> before
+#include <TMB.hpp>. The code is:
+
+    MatrixXd qr_q(const MatrixXd& X, double tol = 1E-12)
+    {
+      // Initialize member data and allocate heap memory
+      int n=X.rows(), p=X.cols(), rank=0;
+      MatrixXd qr = X, y(n,n), q(n,n);
+      int* pivot=(int*)R_alloc(p,sizeof(int));
+      double* tau=(double*)R_alloc(p,sizeof(double));
+      double* work=(double*)R_alloc(p*2,sizeof(double));
+      for(int i=0;i<p;i++)
+        pivot[i]=i+1;
+      y.setIdentity();
+      // LINPACK QR factorization via householder transformations
+      F77_CALL(dqrdc2)(qr.data(), &n, &n, &p, &tol, &rank, tau, pivot,
+work);
+      // Compute orthogonal factor Q
+      F77_CALL(dqrqy)(qr.data(), &n, &rank, tau, y.data(), &n, q.data());
+      return q;
+    }
+
+Kindly, Mark.
+
+On 07/25/2017 08:07 PM, Mark Clements wrote:
+> In re-implementing the splines::bs() function in TMB, I have run into a
+> weird bug (reproducible example attached). When I use the objective
+> function motivated by an accelerated failure time model:
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   PARAMETER(beta);
+>   PARAMETER_VECTOR(betas);
+>   DATA_VECTOR(x0);
+>   DATA_VECTOR(x1);
+>   DATA_VECTOR(boundaryKnots);
+>   DATA_VECTOR(interiorKnots);
+>   bs<Type> s1(boundaryKnots,interiorKnots,1);
+>   vector<Type> xs = x0 + x1 * beta;
+>   matrix<Type> Xs = s1.basis(xs);
+>   REPORT(Xs);
+>   Type f = (Xs*betas).sum();
+>   return f;
+> }
+>
+> for some given inputs, I get the correct spline basis (Xs) and function
+> value at the initial values. When I evaluate at a different value, I
+> also get the correct spline basis (ok), however I get an incorrect
+> objective function. This is particularly strange, as the objective is
+> only the sum of the basis matrix (which is correct) times the betas
+> vector...
+>
+> Re-coding this with RcppEigen gives the correct objective function with
+> no evidence of a memory leak from valgrind (code available).
+>
+> Is my implementation compatible with TMB? Any help with this would be
+> appreciated - I have been struggling with this for a while.
+>
+> Kindly, Mark.
+>
+
+--
+
+To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+---
+You received this message because you are subscribed to the Google Groups "TMB Users" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+
+To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/6E62DCB74E59D246B410609BB7A9D723018F24EC53%40KIMSX02.user.ki.se.
+
+For more options, visit https://groups.google.com/d/optout.
+

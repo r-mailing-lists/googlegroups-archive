@@ -1,0 +1,3467 @@
+From ue0fddb5311ed7959 at groups.google.com  Mon Apr  6 10:43:35 2020
+From: ue0fddb5311ed7959 at groups.google.com (Billy)
+Date: Mon, 06 Apr 2020 10:43:35 +0000
+Subject: Re: Group and season-specific occupancy estimates using colext
+Message-ID: <l9CCdAplmAo.ZHo8NiVQBQAJ@unmarked.groups.google.com>
+In-Reply-To: <l9CCdAplmAo.Y0-_07ZKAwAJ@unmarked.groups.google.com>
+References: <l9CCdAplmAo.UirfBTIUBQAJ@unmarked.groups.google.com> <l9CCdAplmAo.Y0-_07ZKAwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/l9CCdAplmAo/m/ZHo8NiVQBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Ken,
+Thanks so much for this and such a clear explanation/worked example, it worked perfectly when applied to my data.
+
+Cheers
+Billy
+
+On Tuesday, March 31, 2020 at 7:41:34 AM UTC+11, Ken Kellner wrote:
+> Hi,
+>
+> If I am understanding your question correctly, a potential alternative approach would be to use the empirical Bayes posterior predictive distribution. For some discussion see here:
+>
+> https://groups.google.com/forum/#!topic/unmarked/qViR90-RHX4
+>
+> I wrote up a quick example based on the `colext` frog example below. In the future some of the functions I used will be built-in to unmarked (they already are in the dev version).
+>
+> library(unmarked)
+>
+> data(frogs)
+> umf <- formatMult(masspcru)
+> obsCovs(umf) <- scale(obsCovs(umf))
+>
+> ## Use 1/4 of data just for run speed in example
+> umf <- umf[which((1:numSites(umf)) %% 4 == 0),]
+>
+> #Add fake site covariate as an example
+> #takes values 'a' or 'b'
+> siteCovs(umf) <- data.frame(fakeCov=factor(sample(c('a','b'), numSites(umf),
+>                                     replace=T)))
+> fm <- colext(psiformula = ~ fakeCov,
+>              gammaformula = ~ fakeCov,
+>              epsilonformula = ~ fakeCov,
+>              pformula = ~ JulianDate + I(JulianDate^2), umf)
+>
+> # Empirical Bayes estimates of number of sites occupied in each year
+> re <- ranef(fm)
+>
+> ########################################################################
+> #These two functions below will be built-in in next version of unmarked
+> #Sample from posterior
+> postSamples <- function(object, nsims=100){
+>
+>   N <- dim(object@post)[1]
+>   K <- dim(object@post)[2]
+>   T <- dim(object@post)[3]
+>
+>   out <- array(NA, c(N, T, nsims))
+>
+>   for (n in 1:N){
+>     for (t in 1:T){
+>         out[n, t, ] <- sample(0:(K-1), nsims, replace=TRUE,
+>                               prob=object@post[n,,t])
+>     }
+>   }
+>   out
+> }
+>
+> #predict method for ranef
+> prRanef <- function(object, func, nsims=100){
+>
+>   ps <- postSamples(object, nsims=nsims)
+>   s1 <- func(ps[,,1])
+>   nm <- names(s1)
+>   row_nm <- rownames(s1)
+>   col_nm <- colnames(s1)
+>
+>   if(is.vector(s1)){
+>     out_dim <- c(length(s1), nsims)
+>   } else{
+>     out_dim <- c(dim(s1), nsims)
+>   }
+>
+>   param <- apply(ps, 3, func)
+>
+>   out <- array(param, out_dim)
+>
+>   if(is.vector(s1)){
+>     rownames(out) <- nm
+>   } else {
+>     rownames(out) <- row_nm
+>     colnames(out) <- col_nm
+>   }
+>
+>   drop(out)
+> }
+> ###############################################################################
+>
+> #Custom function to calculate mean occupancy for each group fakeCov='a' or 'b'
+> #in each time step, for a particular sample from posterior pred distribution
+> avgOcc <- function(x){ #x takes as input M x T matrix (M sites, T years)
+>
+>   nyr <- umf@numPrimary
+>   #output is matrix: 2x7, 2 groups (a and b), 7 years
+>   out <- matrix(NA, nrow=2, ncol=nyr)
+>   colnames(out) <- paste0('yr',1:nyr)
+>   rownames(out) <- c('fakeCovA', 'fakeCovB')
+>
+>   #For each year, calculate the mean occupancy for each of the 2 groups
+>   for (t in 1:nyr){
+>     out[1,t] <- mean(x[siteCovs(umf)$fakeCov=='a',t])
+>     out[2,t] <- mean(x[siteCovs(umf)$fakeCov=='b',t])
+>   }
+>
+>   out
+>
+> }
+>
+> #Take 100 samples from posterior predictive distribution
+> #and apply the function each sample
+> set.seed(123)
+> pr <- prRanef(re, func=avgOcc, nsims=100)
+>
+> #Output is 2x7x100
+> pr
+>
+> #Mean occupancy for each treatment group for each time period
+> apply(pr, c(1,2), mean)
+>
+> #Distribution of values for treatment a in year 1
+> hist(pr[1,1,])
+>
+> #Fancy plot of mean occupancy for each treatment over time
+> library(tidyverse)
+> library(ggplot2)
+>
+> #Calculate means and 95% CI lower and upper bounds and tidy
+> mns <- data.frame(apply(pr, c(1,2), mean)) %>%
+>   rownames_to_column('treatment') %>%
+>   gather(key='year',value='occ', yr1:yr7)
+>
+> lower <- data.frame(apply(pr, c(1,2), quantile, 0.025)) %>%
+>   rownames_to_column('treatment') %>%
+>   gather(key='year',value='lower', yr1:yr7)
+>
+> upper <- data.frame(apply(pr, c(1,2), quantile, 0.975)) %>%
+>   rownames_to_column('treatment') %>%
+>   gather(key='year',value='upper', yr1:yr7)
+>
+> plot_dat <- mns %>% left_join(lower) %>% left_join(upper)
+>
+> plot_dat %>%
+>   mutate(year = as.numeric(gsub("yr", "", year))) %>% #convert yr to numeric
+>   ggplot(aes(x=year, y=occ)) +
+>   geom_ribbon(aes(ymin=lower, ymax=upper,fill=treatment),alpha=0.4) +
+>   geom_line(aes(col=treatment)) +
+>   geom_point(aes(col=treatment), size=2) +
+>   labs(x='Year',y='Mean occupancy') +
+>   theme_bw() +
+>   theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+>
+>
+>
+>
+>
+>
+> On Monday, March 30, 2020 at 6:32:57 AM UTC-4, Billy wrote:
+> > Anyone?
+> >
+> > On Monday, March 23, 2020 at 10:45:24 PM UTC+11, Billy wrote:
+> > > Hi all,
+> > >
+> > > I have a question that I haven't been able to find an answer for yet on the forum.
+> > >
+> > > I've got a multi-season dataset (21 seasons, 150 sites, uneven effort at each site) that I'm running colext models for, so that I can model occupancy dynamics over time. Summary as follows:
+> > >
+> > > unmarkedFrame Object
+> > >
+> > > 150 sites
+> > > Maximum number of observations per site: 252
+> > > Mean number of observations per site: 79.17
+> > > Number of primary survey periods: 21
+> > > Number of secondary survey periods: 12
+> > > Sites with at least one detection: 147
+> > >
+> > > Tabulation of y observations:
+> > >     0     1  <NA>
+> > > 10620  1255 25925
+> > >
+> > > My question that I am trying to answer is how occupancy, colonisation and extinction differ between two treatments. So my sitecov matrix looks like this:
+> > >
+> > > sitecovs = data.frame(Treatment = matrix(c(rep("T",25), rep("C", 25), rep("T", 25),
+> > >                                            rep("T", 25), rep("C", 25), rep("C",25)), nrow=150))
+> > >
+> > > And I also want to test for differences across seasons, so this is in the yearlysitecovs:
+> > >
+> > > season = matrix(c("1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21"), 150, 21, byrow=TRUE)
+> > >
+> > >
+> > > And my formula looks like this:
+> > >
+> > > m1 <- colext(psiformula = ~Treatment-1, # Occupancy
+> > >               gammaformula = ~ Treatment*season-1, # Colonization
+> > >               epsilonformula = ~ Treatment*season-1, # Extinction
+> > >               pformula = ~ 1, # Detection
+> > >               data = umf)
+> > >
+> > > I am wanting to calculate Occupancy at each time step at each treatment. I have been able to follow the example in the dynamic occupancy model vignette and produce an occupancy estimate over time across all my sites, but I now want to look at the two treatments specifically.
+> > >
+> > > My understanding is that I need to calculate this manually using the initial occupancy, and colonisation and extinction estimates and iterate through each time step using a function, and then use nonparboot to get the CIs. I've modified a function from a similar question which gets me most of the way there (https://groups.google.com/forum/#!topic/unmarked/xXAYH19pLvg), but I can't work out how best to modify it to capture the Treatment-specific and season-specific colonisation and extinction estimates (presumably they also require some for loops?):
+> > > psi.year<-function(fm){
+> > >     psi.hat<-plogis(c(sum(coef(fm, type='psi')),coef(fm, type='psi')[1]))
+> > >     gam.hat<-plogis(c(sum(coef(fm, type='col')),coef(fm, type='col')[1]))
+> > >     eps.hat<-plogis(c(sum(coef(fm, type='ext')),coef(fm, type='ext')[1]))
+> > >     psi.mat<-matrix(NA,21,2) #21 'seasons' of data, 2 columns - 2 treatments
+> > >     psi.mat[1,]<-psi.hat
+> > >     for(t in 2:21){
+> > >       psi.mat[t,]<-(psi.mat[t-1,]*(1-eps.hat))+((1-psi.mat[t-1,])*gam.hat)
+> > >     }
+> > >     return(c(psi.mat)) #Had to turn it into a vector so parboot would run
+> > > }
+> > >
+> > > So, my question is, how should I modify the above function to get treatment and season-specific estimates of Occupancy? Or is there a better approach to achieving the same result that i'm missing (e.g. is it better to just use a stacked approach)?
+> > >
+> > > Thanks in advance,
+> > > Billy
+
+From u77e0f8e9f257430f at groups.google.com  Tue Apr  7 11:09:03 2020
+From: u77e0f8e9f257430f at groups.google.com (Krisztina)
+Date: Tue, 07 Apr 2020 11:09:03 +0000
+Subject: How to check if positive or negative impact of chosen covariate
+Message-ID: <jxniB0ILkq4.zD2vcR2gBQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/jxniB0ILkq4/m/zD2vcR2gBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello! A quick, basic question: I want to know if a specific covariate in a model is influencing the detectability/recruitment/survival in a negative or positive way. For example, I have this model:
+
+om8_yellow <- pcountOpen(~1, ~Meadow, ~Reed, ~Day, data = umf_yellow, mixture = "ZIP", K = 2000, dynamics = "autoreg", fix = "none", se = TRUE)
+
+where "day" is the day in the season (1, 2, 3...), "Meadow" is the proportion of meadow at the survey sites, and "Reed" is the proportion of reed at the survey sites. I want to know if detectability increases or decreases as the season progresses, if recruitment increases or decreases with a higher proportion of meadow, and if survival increases or decreases with a higher proportion of reed.
+
+I ran summary(om8_yellow) and this is what I got:
+
+Abundance (log-scale):
+
+ Estimate    SE    z  P(>|z|)
+
+     1.33 0.184 7.21 5.49e-13
+
+Recruitment (log-scale):
+
+            Estimate    SE      z P(>|z|)
+
+(Intercept)   -0.173 0.227 -0.764  0.4451
+
+Meadow         0.489 0.214  2.284  0.0224
+
+Apparent Survival (logit-scale):
+
+            Estimate   SE     z P(>|z|)
+
+(Intercept)    -1.61 1.31 -1.23   0.219
+
+Reed            7.87 7.53  1.05   0.296
+
+Detection (logit-scale):
+
+            Estimate      SE     z  P(>|z|)
+
+(Intercept)   -1.102 0.26910 -4.09 4.24e-05
+
+Day           -0.056 0.00786 -7.13 1.01e-12
+
+Zero-inflation (logit-scale):
+
+ Estimate   SE      z P(>|z|)
+    -9.93 36.4 -0.273   0.785
+
+Should I look at the "Estimate" for each and interpret positive numbers as there is a positive effect and vice versa for negative number?  So for example in this case, a higher proportion of meadow gives higher recruitment, a higher proportion of reed gives higher survival, and the detectability decreases as the season progresses? Thank you in advance.
+
+From ucb40931b0b653347 at groups.google.com  Tue Apr  7 22:02:42 2020
+From: ucb40931b0b653347 at groups.google.com (=?utf-8?q?Jos=C3=A9_Infante?=)
+Date: Tue, 07 Apr 2020 22:02:42 +0000
+Subject: Re: [unmarked] How to check if positive or negative impact of chosen covariate
+Message-ID: <jxniB0ILkq4.NecxGXo2BAAJ@unmarked.groups.google.com>
+In-Reply-To: <jxniB0ILkq4.zD2vcR2gBQAJ@unmarked.groups.google.com>
+References: <jxniB0ILkq4.zD2vcR2gBQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/jxniB0ILkq4/m/NecxGXo2BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Krisztina,
+
+Yes, you interpreted it right.
+
+Regards,
+
+José.
+
+El mar., 7 de abr. de 2020 a la(s) 07:09, Krisztina (krisztin...@gmail.com) escribió:
+
+> Hello! A quick, basic question: I want to know if a specific covariate in a model is influencing the detectability/recruitment/survival in a negative or positive way. For example, I have this model:
+>
+> om8_yellow <- pcountOpen(~1, ~Meadow, ~Reed, ~Day, data = umf_yellow, mixture = "ZIP", K = 2000, dynamics = "autoreg", fix = "none", se = TRUE)
+>
+> where "day" is the day in the season (1, 2, 3...), "Meadow" is the proportion of meadow at the survey sites, and "Reed" is the proportion of reed at the survey sites. I want to know if detectability increases or decreases as the season progresses, if recruitment increases or decreases with a higher proportion of meadow, and if survival increases or decreases with a higher proportion of reed.
+>
+> I ran summary(om8_yellow) and this is what I got:
+>
+> Abundance (log-scale):
+>
+>  Estimate    SE    z  P(>|z|)
+>
+>      1.33 0.184 7.21 5.49e-13
+>
+>
+>
+> Recruitment (log-scale):
+>
+>             Estimate    SE      z P(>|z|)
+>
+> (Intercept)   -0.173 0.227 -0.764  0.4451
+>
+> Meadow         0.489 0.214  2.284  0.0224
+>
+>
+>
+> Apparent Survival (logit-scale):
+>
+>             Estimate   SE     z P(>|z|)
+>
+> (Intercept)    -1.61 1.31 -1.23   0.219
+>
+> Reed            7.87 7.53  1.05   0.296
+>
+>
+>
+> Detection (logit-scale):
+>
+>             Estimate      SE     z  P(>|z|)
+>
+> (Intercept)   -1.102 0.26910 -4.09 4.24e-05
+>
+> Day           -0.056 0.00786 -7.13 1.01e-12
+>
+>
+>
+> Zero-inflation (logit-scale):
+>
+>  Estimate   SE      z P(>|z|)
+>     -9.93 36.4 -0.273   0.785
+>
+>
+> Should I look at the "Estimate" for each and interpret positive numbers as there is a positive effect and vice versa for negative number?  So for example in this case, a higher proportion of meadow gives higher recruitment, a higher proportion of reed gives higher survival, and the detectability decreases as the season progresses? Thank you in advance.
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/4f446ac7-a6da-4c64-ad2e-59c0a399f0a7%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/4f446ac7-a6da-4c64-ad2e-59c0a399f0a7%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u77e0f8e9f257430f at groups.google.com  Wed Apr  8 09:44:10 2020
+From: u77e0f8e9f257430f at groups.google.com (Krisztina)
+Date: Wed, 08 Apr 2020 09:44:10 +0000
+Subject: Re: [unmarked] How to check if positive or negative impact of chosen covariate
+Message-ID: <jxniB0ILkq4.-_-yWhDqBQAJ@unmarked.groups.google.com>
+In-Reply-To: <jxniB0ILkq4.zD2vcR2gBQAJ@unmarked.groups.google.com>
+References: <jxniB0ILkq4.zD2vcR2gBQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/jxniB0ILkq4/m/-_-yWhDqBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Ok, great! Thank you, José!
+
+Den onsdag 8 april 2020 kl. 00:02:42 UTC+2 skrev José Infante:
+
+> Hi Krisztina,
+>
+> Yes, you interpreted it right.
+>
+> Regards,
+>
+> José.
+>
+
+> El mar., 7 de abr. de 2020 a la(s) 07:09, Krisztina (kriszti...@gmail.com) escribió:
+
+> > Hello! A quick, basic question: I want to know if a specific covariate in a model is influencing the detectability/recruitment/survival in a negative or positive way. For example, I have this model:
+> >
+> > om8_yellow <- pcountOpen(~1, ~Meadow, ~Reed, ~Day, data = umf_yellow, mixture = "ZIP", K = 2000, dynamics = "autoreg", fix = "none", se = TRUE)
+> >
+> > where "day" is the day in the season (1, 2, 3...), "Meadow" is the proportion of meadow at the survey sites, and "Reed" is the proportion of reed at the survey sites. I want to know if detectability increases or decreases as the season progresses, if recruitment increases or decreases with a higher proportion of meadow, and if survival increases or decreases with a higher proportion of reed.
+> >
+> > I ran summary(om8_yellow) and this is what I got:
+> >
+> > Abundance (log-scale):
+> >
+> >  Estimate    SE    z  P(>|z|)
+> >
+> >      1.33 0.184 7.21 5.49e-13
+> >
+> >
+> >
+> > Recruitment (log-scale):
+> >
+> >             Estimate    SE      z P(>|z|)
+> >
+> > (Intercept)   -0.173 0.227 -0.764  0.4451
+> >
+> > Meadow         0.489 0.214  2.284  0.0224
+> >
+> >
+> >
+> > Apparent Survival (logit-scale):
+> >
+> >             Estimate   SE     z P(>|z|)
+> >
+> > (Intercept)    -1.61 1.31 -1.23   0.219
+> >
+> > Reed            7.87 7.53  1.05   0.296
+> >
+> >
+> >
+> > Detection (logit-scale):
+> >
+> >             Estimate      SE     z  P(>|z|)
+> >
+> > (Intercept)   -1.102 0.26910 -4.09 4.24e-05
+> >
+> > Day           -0.056 0.00786 -7.13 1.01e-12
+> >
+> >
+> >
+> > Zero-inflation (logit-scale):
+> >
+> >  Estimate   SE      z P(>|z|)
+> >     -9.93 36.4 -0.273   0.785
+> >
+> >
+> > Should I look at the "Estimate" for each and interpret positive numbers as there is a positive effect and vice versa for negative number?  So for example in this case, a higher proportion of meadow gives higher recruitment, a higher proportion of reed gives higher survival, and the detectability decreases as the season progresses? Thank you in advance.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+
+> >
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/4f446ac7-a6da-4c64-ad2e-59c0a399f0a7%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/4f446ac7-a6da-4c64-ad2e-59c0a399f0a7%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u68a511848eac9f91 at groups.google.com  Fri Apr 10 14:43:07 2020
+From: u68a511848eac9f91 at groups.google.com (=?utf-8?b?QWxlamFuZHJhIE1vcsOhbiBPcmTDs8OxZXo=?=)
+Date: Fri, 10 Apr 2020 14:43:07 +0000
+Subject: forest birds: multi-transect multi-year distance sampling data, 'stacked' data and pseudoreplication
+Message-ID: <BQRlicH1bEg.h79m2793AgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/BQRlicH1bEg/m/h79m2793AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello unmarked community,
+
+I´m totally new to distance sampling models but I have this amazing data from a bird monitoring program I´d like to use to understand more about the ecology of forest birds. I hope you can help me clarifying two very basic questions. First, the description of the data set
+243  3-km linear transects divided into six 500m-sections
+abundance recorded along 3 distance bands: 0-25, 25-100, 100-1000m
+4 surveys a year (2 breeding season, 2 winter season). I´m just interested in breeding season so I was planning to use the max. value over the two breeding surveys for each transect-section.
+data collected over the period 2006-2011
+I want to understand spatial variation of abundances over forested landscapes. However, my forest structure data is one for the whole period (i.e. there is not yearly variation). I´m not interested in the annual variation of abundance (so I´m not sure I need to estimate availability 'phi'  on a yearly basis; gdistsamp function, temporary emigration model Chandler et al. 2011). I  just would like to squeeze the most of the data I have for the period the forest structure data was built.
+
+I´ve looked through other questions in this group and I found something similar from 2016!
+https://groups.google.com/forum/#!topic/unmarked/DvliCEn91BI
+where Andy recommended using the gdistsamp function with 'stacked' data structure. I think this will work for my case too but...
+
+My questions here are,
+how should I deal with yearly 'pseudoreplication'? (would adding a factor(year) as a predictor among the abundance covariates suffice?)
+would it make sense at all to use all the abundance data for the 6 years (2006-2011) when I only have one estimate of forest landscape and structure for the whole period?
+how could I incorporate in the model the potential autocorrelation between abundance values along the six sections of each linear transect? (I understand the model does not accept a random effect for the transect. I guess I could add the transect as a fixed effect but it has 243 levels!). Is looking for autocorrelation in residuals the only thing I can do?
+Many thanks for your reading until here and your help
+Best,
+Ale
+
+From uafb61687c14423a1 at groups.google.com  Sat Apr 11 23:44:15 2020
+From: uafb61687c14423a1 at groups.google.com (Jessica Gouvea)
+Date: Sat, 11 Apr 2020 23:44:15 +0000
+Subject: Re: occupancy models, problems with "NaNs"
+Message-ID: <uWTMkNNDxRw.cxV9_tvjAgAJ@unmarked.groups.google.com>
+In-Reply-To: <uWTMkNNDxRw.TnC7V-0-FQAJ@unmarked.groups.google.com>
+References: <uWTMkNNDxRw.TnC7V-0-FQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/uWTMkNNDxRw/m/cxV9_tvjAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everybody,
+
+João I'm with the same problem. I have modeled abundance and had great results. But a doubt came to me: I work with a large-size mammal population (home range about 9km²) in a relative small area (60 km²), so maybe there aren't so many individuals there, considering the home range. So, is this a good model to understand the population?
+
+Thanks
+
+Em terça-feira, 20 de setembro de 2016 17:30:01 UTC-3, joaom...@gmail.com escreveu:
+> Hi all,
+>
+> I'm conducting single season, single species occupancy models. This model focus on the common genet, with camera trap results from 30 sites during 8 14-day periods (as can be seen in the attached picture).
+>
+> However, when trying to model (M1 <- occu(~1 ~1, gg.umf)), I end up getting this warning message: "In sqrt(diag(vcov(obj))) : NaNs produced". The same happens when I backtransform.
+>
+>
+> > (M1 <- occu(~1 ~1, gg.umf))
+>
+> Call:
+> occu(formula = ~1 ~ 1, data = gg.umf)
+>
+> Occupancy:
+>  Estimate  SE   z P(>|z|)
+>      9.91 NaN NaN     NaN
+>
+> Detection:
+>  Estimate   SE     z  P(>|z|)
+>        -1 0.15 -6.69 2.29e-11
+>
+> AIC: 268.219
+> Warning message:
+> In sqrt(diag(vcov(obj))) : NaNs produced
+>
+> > backTransform(M1, type="state")
+> Backtransformed linear combination(s) of Occupancy estimate(s)
+>
+>  Estimate  SE LinComb (Intercept)
+>         1 NaN    9.91           1
+>
+> Transformation: logistic
+> Warning message:
+> In sqrt(diag(v)) : NaNs produced
+>
+> At this point I can't disclose the problem and what to do to solve this.
+>
+> Thanks for any help,
+>
+> João D.
+
+From u0c8e4d9395a2aae5 at groups.google.com  Mon Apr 13 19:13:32 2020
+From: u0c8e4d9395a2aae5 at groups.google.com (mike worland)
+Date: Mon, 13 Apr 2020 19:13:32 +0000
+Subject: Re: forest birds: multi-transect multi-year distance sampling data, 'stacked' data and pseudoreplication
+Message-ID: <BQRlicH1bEg.2oE2uHjBAQAJ@unmarked.groups.google.com>
+In-Reply-To: <BQRlicH1bEg.h79m2793AgAJ@unmarked.groups.google.com>
+References: <BQRlicH1bEg.h79m2793AgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/BQRlicH1bEg/m/2oE2uHjBAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Alejandra,
+
+First, I wouldn't dismiss the temporary emigration model.  I think your approach is fine, but you may be more fully taking advantage of your two surveys with gmultmix.
+
+Your question on stacking data has been covered a lot in this group.  Last I read, it appeared to be generally acceptable as long as you used the year covariate.
+
+To account for spatial autocorrelation, one approach is to add a covariate for densities in adjacent transects or sections (i.e. autologistic regression); see here for more direction: https://groups.google.com/d/msg/unmarked/KYrrgnxVzAg/Srm9UqXkz3QJ.
+
+Regarding using one measure of forest structure, 6 years seems like a long time--you'd need to assume that there was no significant disturbance or succession or management. Repeat structure measures from a subset of transects would be useful.  But with the size of your dataset, I wonder if it's necessary to push that assumption, as you'd have good numbers for many bird species in even a single year.  Estimating spatial and temporal trends using data across the full timeframe, regardless of structure/landscape variables, would likely be useful.
+
+-Mike Worland
+
+From uafb61687c14423a1 at groups.google.com  Tue Apr 14 00:16:05 2020
+From: uafb61687c14423a1 at groups.google.com (Jessica Gouvea)
+Date: Tue, 14 Apr 2020 00:16:05 +0000
+Subject: High naive occupancy and N-mixture models
+Message-ID: <QaH5TSfATD4.qVECSfQ1AQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/QaH5TSfATD4/m/qVECSfQ1AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello unmarked community,
+
+I'm starting with occupancy / abundance modeling and I have some questions about my data:
+
+I have tried to understand the occupancy of giant anteater in a protected area. I modeled the single species single season occupancy with occu function at unmarked. The problem is that my models doesn't have a good fit (I do the GoF at modavg), all of them results in a high overdispersion (SE = NaN).
+I think the sample size is too small (58 sites x 45 occasions) for the number of covariables I have (9 covariable site and 2 obs covariable).
+
+There is some other occupancy model that my data fitted better?
+
+Am I doing something wrong?
+
+The naive occupancy is 0.72, so I thought that maybe could be a case of heterogeneous detection probability and the RN model could give me a better result. So, I tried to run it in unmarked with occuRN function and in fact I got good models. But this model measure the abundance, not the occupancy, so I want to know if I can use this model with the data I have (camera-traps records) and the species I work (a solitary species with large home range - about 9km² while my study area have 57km²). Maybe, the population there is too small.
+
+To be clear, my question is: Is this model adequate for the data?
+
+From u68a511848eac9f91 at groups.google.com  Tue Apr 14 14:58:02 2020
+From: u68a511848eac9f91 at groups.google.com (=?utf-8?b?QWxlamFuZHJhIE1vcsOhbiBPcmTDs8OxZXo=?=)
+Date: Tue, 14 Apr 2020 14:58:02 +0000
+Subject: Re: forest birds: multi-transect multi-year distance sampling data, 'stacked' data and pseudoreplication
+Message-ID: <BQRlicH1bEg.2clz6RRmAQAJ@unmarked.groups.google.com>
+In-Reply-To: <BQRlicH1bEg.h79m2793AgAJ@unmarked.groups.google.com>
+References: <BQRlicH1bEg.h79m2793AgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/BQRlicH1bEg/m/2clz6RRmAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Mike,
+
+Many many thanks for your quick and thorough reply,
+
+Regarding the forest structure: I don´t think I didn´t explain myself well in my previous post. The forest structure data I have was derived from LIDAR data taken over the whole study area where my sampling transects are scattered (approx. 32,000 km2) between 2002 -2011 (different parts of the region were covered by LIDAR flights over that period but I don´t know exactly when a particular area was flown).  The combination of LIDAR data with ground truth measurements of forest structure from national forest inventory plots was used to generate a set of spatially continuous layers of forest structure indicators over the study area (canopy cover,  basal area, etc.; 20 m resolution). This is the only information available so the only assumption I can make is that the forest structure is constant over 2002-2011.
+
+That´s why I was thinking of making the most of the bird data that matches the time frame the forest structure data was developed (2006 -2011). This will allow capturing temporal abundance fluctuations within a given time window. While, I cannot link those fluctuations to changes in forest management, composition or structure in each transect,  I seek to assess whether differences in abundance over space can be linked to differences in forest properties (taking advantage of having my transects scattered across the entire region: a space for time evaluation).
+
+Does my approach still make sense?
+
+Thanks again,
+
+Alejandra
+
+El lunes, 13 de abril de 2020, 21:13:32 (UTC+2), mike worland escribió:
+> Alejandra,
+>
+> First, I wouldn't dismiss the temporary emigration model.  I think your approach is fine, but you may be more fully taking advantage of your two surveys with gmultmix.
+>
+> Your question on stacking data has been covered a lot in this group.  Last I read, it appeared to be generally acceptable as long as you used the year covariate.
+>
+> To account for spatial autocorrelation, one approach is to add a covariate for densities in adjacent transects or sections (i.e. autologistic regression); see here for more direction: https://groups.google.com/d/msg/unmarked/KYrrgnxVzAg/Srm9UqXkz3QJ.
+>
+> Regarding using one measure of forest structure, 6 years seems like a long time--you'd need to assume that there was no significant disturbance or succession or management. Repeat structure measures from a subset of transects would be useful.  But with the size of your dataset, I wonder if it's necessary to push that assumption, as you'd have good numbers for many bird species in even a single year.  Estimating spatial and temporal trends using data across the full timeframe, regardless of structure/landscape variables, would likely be useful.
+>
+>
+> -Mike Worland
+>
+
+From ue17633730f644051 at groups.google.com  Tue Apr 14 23:07:47 2020
+From: ue17633730f644051 at groups.google.com (=?utf-8?q?Roc=C3=ADo_Seisdedos?=)
+Date: Tue, 14 Apr 2020 23:07:47 +0000
+Subject: Negative AICc and error in detection estimates
+Message-ID: <r34D5_Jh-1c.jqo5YYHWAAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/r34D5_Jh-1c/m/jqo5YYHWAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+I'm doing density estimations for a critically endangered frog. I have two short questions:
+- Some analysis come out right but sometimes the AICc is negative, is this okey?
+- Also, I run the density estimations and they are okey, but sometimes I get an error in the detection estimations
+
+Error in .local(obj, coefficients, ...) :
+  type %in% names(obj) is not TRUE
+
+does this mean that I cannot trust the density estimations, that they are not correct?
+
+Thank you
+
+Rocío
+
+From ufdaa54d30ab7b913 at groups.google.com  Wed Apr 15 00:33:40 2020
+From: ufdaa54d30ab7b913 at groups.google.com (=?utf-8?q?Manuel_Sp=C3=ADnola?=)
+Date: Wed, 15 Apr 2020 00:33:40 +0000
+Subject: Re: [unmarked] Negative AICc and error in detection estimates
+Message-ID: <r34D5_Jh-1c.axRRSTHbAAAJ@unmarked.groups.google.com>
+In-Reply-To: <r34D5_Jh-1c.jqo5YYHWAAAJ@unmarked.groups.google.com>
+References: <r34D5_Jh-1c.jqo5YYHWAAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/r34D5_Jh-1c/m/axRRSTHbAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Rocio,
+
+Yes, you can have negative AIC.
+
+I don´t know what is the error.
+
+Manuel
+
+El mar., 14 abr. 2020 a las 17:07, Rocío Seisdedos (<roc...@gmail.com>) escribió:
+
+> Hi,
+> I'm doing density estimations for a critically endangered frog. I have two short questions:
+> - Some analysis come out right but sometimes the AICc is negative, is this okey?
+> - Also, I run the density estimations and they are okey, but sometimes I get an error in the detection estimations
+>
+> Error in .local(obj, coefficients, ...) :
+>   type %in% names(obj) is not TRUE
+>
+> does this mean that I cannot trust the density estimations, that they are not correct?
+>
+> Thank you
+>
+> Rocío
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/05e92575-907f-4e13-afaf-cc86c566d3b8%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/05e92575-907f-4e13-afaf-cc86c566d3b8%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Manuel Spínola, Ph.D.
+Instituto Internacional en Conservación y Manejo de Vida Silvestre
+Universidad Nacional
+Apartado 1350-3000
+Heredia
+COSTA RICA
+mspi...@una.cr
+mspin...@gmail.com
+Teléfono: (506) 8706 - 4662
+Personal website: Lobito de río <https://sites.google.com/site/lobitoderio/>
+Institutional website: ICOMVIS <http://www.icomvis.una.ac.cr/>
+
+From u0227543d81e2924c at groups.google.com  Wed Apr 15 01:54:35 2020
+From: u0227543d81e2924c at groups.google.com (Evan Cooch)
+Date: Wed, 15 Apr 2020 01:54:35 +0000
+Subject: Re: Negative AICc and error in detection estimates
+Message-ID: <r34D5_Jh-1c.K0Ntw-iJAQAJ@unmarked.groups.google.com>
+In-Reply-To: <r34D5_Jh-1c.jqo5YYHWAAAJ@unmarked.groups.google.com>
+References: <r34D5_Jh-1c.jqo5YYHWAAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/r34D5_Jh-1c/m/K0Ntw-iJAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tuesday, April 14, 2020 at 7:07:47 PM UTC-4, Rocío Seisdedos wrote:
+> Hi,
+> I'm doing density estimations for a critically endangered frog. I have two short questions:
+> - Some analysis come out right but sometimes the AICc is negative, is this okey?
+>
+
+Yes - negative AIC values are legitimate and interpreted in the same way as positive AIC values. The negative AIC arises due to the portion of the multinomial coefficient that is computed. Frequently, for computational efficiency, terms are dropped from the likelihood expression that are not functions of the parameters of interest (usually ugly factyorial terms). This occasionally (often, for some data types)  which results in a negative AIC. .Regardless, the model with the ‘most negative’ AIC, i.e., the one furthest from zero, is the most parsimonious among the models in the candidate model set.
+
+From u0c8e4d9395a2aae5 at groups.google.com  Wed Apr 15 14:51:20 2020
+From: u0c8e4d9395a2aae5 at groups.google.com (mike worland)
+Date: Wed, 15 Apr 2020 14:51:20 +0000
+Subject: Re: forest birds: multi-transect multi-year distance sampling data, 'stacked' data and pseudoreplication
+Message-ID: <BQRlicH1bEg.j0Ee3ku0AQAJ@unmarked.groups.google.com>
+In-Reply-To: <BQRlicH1bEg.h79m2793AgAJ@unmarked.groups.google.com>
+References: <BQRlicH1bEg.h79m2793AgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/BQRlicH1bEg/m/j0Ee3ku0AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Alejandra, your question is more of a forest ecology question than an unmarked question, so certainly worth getting input from others.  I think you can make the case it's an appropriate approach given the generality of your forest measures, again as long as there wasn't a major disturbance in the area (like widespread logging or windthrow).  My guess is if the Lidar didn't capture the forest structure in some spots because of disturbance or whatever, then this would lead to additional error in your associations rather than biased, misleading associations.  I think the analysis would be worthwhile.  Best of luck on this.
+
+Mike Worland
+
+From u0c816872879ca2ea at groups.google.com  Wed Apr 15 18:16:11 2020
+From: u0c816872879ca2ea at groups.google.com (Thais Macedo)
+Date: Wed, 15 Apr 2020 18:16:11 +0000
+Subject: pcountOpen multi-year data with many missing data
+Message-ID: <CqpWfrGX7n4.nwGLbSwVAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/CqpWfrGX7n4/m/nwGLbSwVAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone,
+
+I'm using the pcountOpen to estimate abundance, recruiment and detection of four populations of a crab on isolated oceanic islands.
+My data includes counts from 12 sites (the islands have from one to five sites) from 2002-2020 with unequal intervals between primary occasions. For each primary occasion I have 5 secondary occasions, but almost of the year-site observations are missing values.
+
+I m working with the following scritpts:
+
+obscov1 <- list(area= mat_area[, -1])
+sitecov1 <- data.frame(list( site= dados[ ,1], island= c("RA", "RA", "SPSPA", rep("FN", 4), rep("TRI", 5))))
+
+umf1 <- unmarkedFramePCO(y= mat_dados,
+                         siteCovs = sitecov1,
+                         obsCovs = obscov1,
+                         numPrimary = 22,
+                         primaryPeriod = mat_primperiod)
+
+obsCovs(umf1) <- scale(obsCovs(umf1))
+
+summary(umf1)
+
+12 sites
+Maximum number of observations per site: 110
+Mean number of observations per site: 8.17
+Number of primary survey periods: 22
+Number of secondary survey periods: 5
+Sites with at least one detection: 12
+
+Tabulation of y observations:
+   3    4    6    7    8   10   12   14   15   22   23   24   27   32   43   44   45   46
+   1    1    1    2    3    1    1    1    1    1    2    1    2    2    1    2    1    1
+  49   55   57   59   61   62   66   68   70   72   73   75   77   78   79   80   84   99
+   1    1    1    1    1    1    1    2    2    1    1    1    1    1    1    1    1    1
+ 100  105  108  113  121  128  131  133  138  143  148  156  158  163  174  176  184  190
+   1    1    1    1    1    1    1    2    1    2    1    1    1    1    1    1    1    1
+ 203  204  219  220  228  241  265  279  282  296  341  348  353  357  392  401  409  411
+   1    1    1    1    1    1    1    1    2    1    1    1    1    1    1    1    1    1
+ 460  461  527  551  554  568  582  597  621  664  674  680  698  708 <NA>
+   1    1    1    1    1    1    1    1    1    1    1    1    1    1 1222
+
+Site-level covariates:
+                  site                      island
+ AR_Cemiterio       :1          FN   :4
+ AR_Farol           :1             RA   :2
+ ASPSP_ilha_belmonte:1   SPSPA:1
+ FN_praia_caieira   :1         TRI  :5
+ FN_praia_conceicao :1
+ FN_praia_sancho    :1
+ (Other)            :6
+
+Observation-level covariates:
+      area
+ Min.   :-0.9355
+ 1st Qu.:-0.5874
+ Median :-0.3155
+ Mean   : 0.0000
+ 3rd Qu.: 0.1561
+ Max.   : 4.2494
+ NA's   :1222
+
+When I try to run a null model m.NBin <- pcountOpen(~1,~1,~1,~1, umf1, K=1000, mixture = "NB")
+ it takes forever to run, more than one day without success or error message.
+
+Anyone knows if the problem is the high number of NAs or had the same problem?
+
+Thanks
+
+From u403be63af7ebf220 at groups.google.com  Wed Apr 15 18:24:49 2020
+From: u403be63af7ebf220 at groups.google.com (Richard Chandler)
+Date: Wed, 15 Apr 2020 18:24:49 +0000
+Subject: RE: [unmarked] pcountOpen multi-year data with many missing data
+Message-ID: <CqpWfrGX7n4.vJJOGaUVAQAJ@unmarked.groups.google.com>
+In-Reply-To: <CqpWfrGX7n4.nwGLbSwVAQAJ@unmarked.groups.google.com>
+References: <CqpWfrGX7n4.nwGLbSwVAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/CqpWfrGX7n4/m/vJJOGaUVAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Thais,
+
+With counts as high as yours, it can take a very long time to integrate over all possible values of abundance. MCMC can be more computationally efficient in these cases, especially if you will need the posterior distributions for abundance. That said, you have a lot of heterogeneity in your count data, and many missing values, which will be difficult to model regardless of the approach you use. Sorry, wish I had a better answer for you.
+
+Richard
+
+From: Thais Macedo
+Sent: Wednesday, April 15, 2020 2:16 PM
+To: unmarked
+Subject: [unmarked] pcountOpen multi-year data with many missing data
+
+[EXTERNAL SENDER - PROCEED CAUTIOUSLY]
+
+Hi everyone,
+
+I'm using the pcountOpen to estimate abundance, recruiment and detection of four populations of a crab on isolated oceanic islands.
+
+My data includes counts from 12 sites (the islands have from one to five sites) from 2002-2020 with unequal intervals between primary occasions. For each primary occasion I have 5 secondary occasions, but almost of the year-site observations are missing values.
+
+I m working with the following scritpts:
+
+obscov1 <- list(area= mat_area[, -1])
+
+sitecov1 <- data.frame(list( site= dados[ ,1], island= c("RA", "RA", "SPSPA", rep("FN", 4), rep("TRI", 5))))
+
+umf1 <- unmarkedFramePCO(y= mat_dados,
+
+                         siteCovs = sitecov1,
+
+                         obsCovs = obscov1,
+
+                         numPrimary = 22,
+
+                         primaryPeriod = mat_primperiod)
+
+obsCovs(umf1) <- scale(obsCovs(umf1))
+
+summary(umf1)
+
+12 sites
+
+Maximum number of observations per site: 110
+
+Mean number of observations per site: 8.17
+
+Number of primary survey periods: 22
+
+Number of secondary survey periods: 5
+
+Sites with at least one detection: 12
+
+Tabulation of y observations:
+
+   3    4    6    7    8   10   12   14   15   22   23   24   27   32   43   44   45   46
+
+   1    1    1    2    3    1    1    1    1    1    2    1    2    2    1    2    1    1
+
+  49   55   57   59   61   62   66   68   70   72   73   75   77   78   79   80   84   99
+
+   1    1    1    1    1    1    1    2    2    1    1    1    1    1    1    1    1    1
+
+ 100  105  108  113  121  128  131  133  138  143  148  156  158  163  174  176  184  190
+
+   1    1    1    1    1    1    1    2    1    2    1    1    1    1    1    1    1    1
+
+ 203  204  219  220  228  241  265  279  282  296  341  348  353  357  392  401  409  411
+
+   1    1    1    1    1    1    1    1    2    1    1    1    1    1    1    1    1    1
+
+ 460  461  527  551  554  568  582  597  621  664  674  680  698  708 <NA>
+
+   1    1    1    1    1    1    1    1    1    1    1    1    1    1 1222
+
+Site-level covariates:
+
+                  site                      island
+
+ AR_Cemiterio       :1          FN   :4
+
+ AR_Farol           :1             RA   :2
+
+ ASPSP_ilha_belmonte:1   SPSPA:1
+
+ FN_praia_caieira   :1         TRI  :5
+
+ FN_praia_conceicao :1
+
+ FN_praia_sancho    :1
+
+ (Other)            :6
+
+Observation-level covariates:
+
+      area
+
+ Min.   :-0.9355
+
+ 1st Qu.:-0.5874
+
+ Median :-0.3155
+
+ Mean   : 0.0000
+
+ 3rd Qu.: 0.1561
+
+ Max.   : 4.2494
+
+ NA's   :1222
+
+When I try to run a null model m.NBin <- pcountOpen(~1,~1,~1,~1, umf1, K=1000, mixture = "NB")
+
+ it takes forever to run, more than one day without success or error message.
+
+Anyone knows if the problem is the high number of NAs or had the same problem?
+
+Thanks
+
+--
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/28aeee98-3100-4e22-813c-6bbf803b203c%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/28aeee98-3100-4e22-813c-6bbf803b203c%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ue183a94721e02db4 at groups.google.com  Wed Apr 15 20:38:33 2020
+From: ue183a94721e02db4 at groups.google.com (Vaughn Bodden)
+Date: Wed, 15 Apr 2020 20:38:33 +0000
+Subject: Model fitting function not recognising the unmarkedFrame object
+Message-ID: <6EAgBqwQIlI.wh5qdz7HAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/6EAgBqwQIlI/m/wh5qdz7HAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I am trying to fit a model with repeated counts. I have used unmarked before and have successfully fitted functions in the library in the past but have no clue what is wrong here.
+
+I keep getting the error when I run the code below. any ideas at what is causing this?
+
+"Error in pcount(~1, ~1, occu_umf) :
+  Data is not an unmarkedFramePCount object."
+
+# observation data
+
+R <- 16 # number of sites
+
+J <- 11 # number of visits
+
+y <- matrix(c(
+  1,1,1,0,0,3,1,0,1,0,NA,
+  1,1,2,1,0,1,2,1,1,4,NA,
+  1,0,0,0,2,0,1,1,0,NA,NA,
+  1,0,0,2,1,0,2,1,1,NA,NA,
+  1,1,1,3,1,2,3,2,0,0,NA,
+  0,0,1,0,0,1,0,1,1,1,NA,
+  0,1,0,2,0,1,0,1,0,NA,NA,
+  1,0,0,0,1,1,1,0,1,0,NA,
+  0,2,0,0,0,0,0,0,0,0,1,
+  1,1,0,2,1,1,0,1,1,2,NA,
+  0,0,0,0,0,0,0,1,1,NA,NA,
+  0,0,0,0,0,0,0,0,0,0,0,
+  3,0,1,1,1,0,0,1,0,0,1,
+  0,0,1,2,0,1,1,0,0,0,NA,
+  0,0,1,2,0,1,0,0,0,0,NA,
+  1,0,0,0,0,0,0,0,0,0,0)
+  , nrow=R, ncol=J, byrow=TRUE)
+
+occu_umf<-unmarkedFramePCount(y = y)
+
+test<-pcount(~1,~1,occu_umf)
+
+From u4f80e1927b0757cb at groups.google.com  Wed Apr 15 21:04:50 2020
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Wed, 15 Apr 2020 21:04:50 +0000
+Subject: Re: Model fitting function not recognising the unmarkedFrame object
+Message-ID: <6EAgBqwQIlI.-qQgkK3IAQAJ@unmarked.groups.google.com>
+In-Reply-To: <6EAgBqwQIlI.wh5qdz7HAQAJ@unmarked.groups.google.com>
+References: <6EAgBqwQIlI.wh5qdz7HAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/6EAgBqwQIlI/m/-qQgkK3IAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+The abundance and detection formulas need to be combined into a single double right-hand-side formula, rather than being provided as two arguments. pcount is expecting the second argument to be the data but in your example it's a formula.
+
+This should work:
+
+test<-pcount(~1~1, occu_umf)
+
+Ken
+
+On Wednesday, April 15, 2020 at 4:38:33 PM UTC-4, Vaughn Bodden wrote:
+> Hi all,
+>
+>
+> I am trying to fit a model with repeated counts. I have used unmarked before and have successfully fitted functions in the library in the past but have no clue what is wrong here.
+>
+> I keep getting the error when I run the code below. any ideas at what is causing this?
+>
+> "Error in pcount(~1, ~1, occu_umf) :
+>   Data is not an unmarkedFramePCount object."
+>
+>
+>
+>
+> # observation data
+>
+> R <- 16 # number of sites
+>
+> J <- 11 # number of visits
+>
+> y <- matrix(c(
+>   1,1,1,0,0,3,1,0,1,0,NA,
+>   1,1,2,1,0,1,2,1,1,4,NA,
+>   1,0,0,0,2,0,1,1,0,NA,NA,
+>   1,0,0,2,1,0,2,1,1,NA,NA,
+>   1,1,1,3,1,2,3,2,0,0,NA,
+>   0,0,1,0,0,1,0,1,1,1,NA,
+>   0,1,0,2,0,1,0,1,0,NA,NA,
+>   1,0,0,0,1,1,1,0,1,0,NA,
+>   0,2,0,0,0,0,0,0,0,0,1,
+>   1,1,0,2,1,1,0,1,1,2,NA,
+>   0,0,0,0,0,0,0,1,1,NA,NA,
+>   0,0,0,0,0,0,0,0,0,0,0,
+>   3,0,1,1,1,0,0,1,0,0,1,
+>   0,0,1,2,0,1,1,0,0,0,NA,
+>   0,0,1,2,0,1,0,0,0,0,NA,
+>   1,0,0,0,0,0,0,0,0,0,0)
+>   , nrow=R, ncol=J, byrow=TRUE)
+>
+>
+> occu_umf<-unmarkedFramePCount(y = y)
+>
+> test<-pcount(~1,~1,occu_umf)
+
+From ue183a94721e02db4 at groups.google.com  Thu Apr 16 14:32:22 2020
+From: ue183a94721e02db4 at groups.google.com (Vaughn Bodden)
+Date: Thu, 16 Apr 2020 14:32:22 +0000
+Subject: Re: Model fitting function not recognising the unmarkedFrame object
+Message-ID: <6EAgBqwQIlI.k9n8K38CAAAJ@unmarked.groups.google.com>
+In-Reply-To: <6EAgBqwQIlI.-qQgkK3IAQAJ@unmarked.groups.google.com>
+References: <6EAgBqwQIlI.wh5qdz7HAQAJ@unmarked.groups.google.com> <6EAgBqwQIlI.-qQgkK3IAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/6EAgBqwQIlI/m/k9n8K38CAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Aha, I see... it's always something minor...
+
+Thanks!!!
+
+Vaughn
+
+On Wednesday, April 15, 2020 at 4:04:50 PM UTC-5, Ken Kellner wrote:
+> Hi,
+>
+> The abundance and detection formulas need to be combined into a single double right-hand-side formula, rather than being provided as two arguments. pcount is expecting the second argument to be the data but in your example it's a formula.
+>
+> This should work:
+>
+> test<-pcount(~1~1, occu_umf)
+>
+> Ken
+>
+> On Wednesday, April 15, 2020 at 4:38:33 PM UTC-4, Vaughn Bodden wrote:
+> > Hi all,
+> >
+> >
+> > I am trying to fit a model with repeated counts. I have used unmarked before and have successfully fitted functions in the library in the past but have no clue what is wrong here.
+> >
+> > I keep getting the error when I run the code below. any ideas at what is causing this?
+> >
+> > "Error in pcount(~1, ~1, occu_umf) :
+> >   Data is not an unmarkedFramePCount object."
+> >
+> >
+> >
+> >
+> > # observation data
+> >
+> > R <- 16 # number of sites
+> >
+> > J <- 11 # number of visits
+> >
+> > y <- matrix(c(
+> >   1,1,1,0,0,3,1,0,1,0,NA,
+> >   1,1,2,1,0,1,2,1,1,4,NA,
+> >   1,0,0,0,2,0,1,1,0,NA,NA,
+> >   1,0,0,2,1,0,2,1,1,NA,NA,
+> >   1,1,1,3,1,2,3,2,0,0,NA,
+> >   0,0,1,0,0,1,0,1,1,1,NA,
+> >   0,1,0,2,0,1,0,1,0,NA,NA,
+> >   1,0,0,0,1,1,1,0,1,0,NA,
+> >   0,2,0,0,0,0,0,0,0,0,1,
+> >   1,1,0,2,1,1,0,1,1,2,NA,
+> >   0,0,0,0,0,0,0,1,1,NA,NA,
+> >   0,0,0,0,0,0,0,0,0,0,0,
+> >   3,0,1,1,1,0,0,1,0,0,1,
+> >   0,0,1,2,0,1,1,0,0,0,NA,
+> >   0,0,1,2,0,1,0,0,0,0,NA,
+> >   1,0,0,0,0,0,0,0,0,0,0)
+> >   , nrow=R, ncol=J, byrow=TRUE)
+> >
+> >
+> > occu_umf<-unmarkedFramePCount(y = y)
+> >
+> > test<-pcount(~1,~1,occu_umf)
+
+From uafb61687c14423a1 at groups.google.com  Fri Apr 17 01:59:52 2020
+From: uafb61687c14423a1 at groups.google.com (Jessica Gouvea)
+Date: Fri, 17 Apr 2020 01:59:52 +0000
+Subject: Error in match(x, table, nomatch = 0L) : 'match' requires vector arguments
+Message-ID: <6vdveQFD3zk.FhJ4_RUVAgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/6vdveQFD3zk/m/FhJ4_RUVAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi community!
+
+I'm trying to run the occuMulti script but I think I'm doing something wrong imputting data. This is the script I'm using:
+
+# Import data
+setwd("~/Jéssica/i/Ocupacao/3dias")
+mtridac.data <- read.csv("detec3dias.csv", row.names = 1, header = T, na.strings = "-")
+str(mtridac.data)
+canis.data <- read.csv("canis3dias.csv", row.names = 1, header = T, na.strings = "-")
+str(canis.data)
+
+S <- 2 # number of species
+M <- 58 #number of sites
+J <- 45 #number of occ
+
+y <- list(as.matrix(mtridac.data),
+          as.matrix(canis.data))
+
+names(y) <- c("anteater", "dog")
+
+siteCovs <- read.csv("sitecov500m.csv", row.names = 1, header = T)
+
+obsCovs <- read.csv("obscov3dias.csv", row.names = 1, header = T)
+
+library(unmarked)
+umf <- unmarkedFrameOccuMulti(y=y, siteCovs=siteCovs,
+                              obsCovs=list(temp=obsCovs[,c("temp1", "temp2", "temp3", "temp4", "temp5",
+                                                                "temp6", "temp7", "temp8", "temp9", "temp10",
+                                                                "temp11", "temp12", "temp13", "temp14", "temp15",
+                                                                "temp16", "temp17", "temp18", "temp19", "temp20",
+                                                                "temp21", "temp22", "temp23", "temp24", "temp25",
+                                                                "temp26", "temp27", "temp28", "temp29", "temp30",
+                                                                "temp31", "temp32", "temp33", "temp34", "temp35",
+                                                                "temp36", "temp37", "temp38", "temp39", "temp40",
+                                                                "temp41", "temp42", "temp43", "temp44", "temp45")],
+                                           day=obsCovs[,c("day1", "day2", "day3", "day4", "day5",
+                                                               "day6", "day7", "day8", "day9", "day10",
+                                                               "day11", "day12", "day13", "day14", "day15",
+                                                               "day16", "day17", "day18", "day19", "day20",
+                                                               "day21", "day22", "day23", "day24", "day25",
+                                                               "day26", "day27", "day28", "day29", "day30",
+                                                               "day31", "day32", "day33", "day34", "day35",
+                                                               "day36", "day37", "day38", "day39", "day40",
+                                                               "day41", "day42", "day43", "day44", "day45")]))
+umf                     # look at data
+summary(umf)     # summarize
+plot(umf)               # visualize
+
+Until here I got it without Error. But when I try to fit the models, this Error is showed:
+
+null <- occuMulti(~1, ~1, umf, match() ) # fit a model
+
+Error in match(x, table, nomatch = 0L) :
+  'match' requires vector arguments
+
+What's going on?
+
+Thanks everybody!
+
+From ubd00314644d53a96 at groups.google.com  Fri Apr 17 03:38:23 2020
+From: ubd00314644d53a96 at groups.google.com (Gabriel Patricio Andrade Ponce)
+Date: Fri, 17 Apr 2020 03:38:23 +0000
+Subject: Re: [unmarked] Error in match(x, table, nomatch = 0L) : 'match' requires vector arguments
+Message-ID: <6vdveQFD3zk.P_CTVHYaAgAJ@unmarked.groups.google.com>
+In-Reply-To: <6vdveQFD3zk.FhJ4_RUVAgAJ@unmarked.groups.google.com>
+References: <6vdveQFD3zk.FhJ4_RUVAgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/6vdveQFD3zk/m/P_CTVHYaAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jessica,
+I think it is because you forgot the occuMulti sintaxis, that is a little bit different from occ.
+
+When you fit an occuMulti model you must add the psi (occformulas) and p (detformulas) formulas, which are vectors of what you wish to model.
+The det formulas must be a vector equal to your species number in this case 2: c("~1","~1"), here we state that no covs affect the anteater and doc detections.
+On the other hand occ formulas object is  a vector of the same length as your umf@fDesing (this calls your design matrix) columns, in this case three: 1. Anteater psi, 2. Dog psi and Anteater|dog psi. You can express it like this c("~1", "~1", "~1") in the case you want to model the conditional occupancy.
+
+So you can try this
+
+null <- occuMulti(c("~1","~1"), c("~1", "~1", "0"), umf ) # model without interactions or covs
+
+Hope I have been clear enough to help you, if not I think the package documents can be very useful to get the occuMulti sintaxis.
+
+El jue., 16 abr. 2020 a las 20:59, Jessica Gouvea (<jago...@gmail.com>) escribió:
+
+> Hi community!
+>
+> I'm trying to run the occuMulti script but I think I'm doing something wrong imputting data. This is the script I'm using:
+>
+> # Import data
+> setwd("~/Jéssica/i/Ocupacao/3dias")
+> mtridac.data <- read.csv("detec3dias.csv", row.names = 1, header = T, na.strings = "-")
+> str(mtridac.data)
+> canis.data <- read.csv("canis3dias.csv", row.names = 1, header = T, na.strings = "-")
+> str(canis.data)
+>
+>
+> S <- 2 # number of species
+> M <- 58 #number of sites
+> J <- 45 #number of occ
+>
+> y <- list(as.matrix(mtridac.data),
+>           as.matrix(canis.data))
+>
+> names(y) <- c("anteater", "dog")
+>
+> siteCovs <- read.csv("sitecov500m.csv", row.names = 1, header = T)
+>
+> obsCovs <- read.csv("obscov3dias.csv", row.names = 1, header = T)
+>
+> library(unmarked)
+> umf <- unmarkedFrameOccuMulti(y=y, siteCovs=siteCovs,
+>                               obsCovs=list(temp=obsCovs[,c("temp1", "temp2", "temp3", "temp4", "temp5",
+>                                                                 "temp6", "temp7", "temp8", "temp9", "temp10",
+>                                                                 "temp11", "temp12", "temp13", "temp14", "temp15",
+>                                                                 "temp16", "temp17", "temp18", "temp19", "temp20",
+>                                                                 "temp21", "temp22", "temp23", "temp24", "temp25",
+>                                                                 "temp26", "temp27", "temp28", "temp29", "temp30",
+>                                                                 "temp31", "temp32", "temp33", "temp34", "temp35",
+>                                                                 "temp36", "temp37", "temp38", "temp39", "temp40",
+>                                                                 "temp41", "temp42", "temp43", "temp44", "temp45")],
+>                                            day=obsCovs[,c("day1", "day2", "day3", "day4", "day5",
+>                                                                "day6", "day7", "day8", "day9", "day10",
+>                                                                "day11", "day12", "day13", "day14", "day15",
+>                                                                "day16", "day17", "day18", "day19", "day20",
+>                                                                "day21", "day22", "day23", "day24", "day25",
+>                                                                "day26", "day27", "day28", "day29", "day30",
+>                                                                "day31", "day32", "day33", "day34", "day35",
+>                                                                "day36", "day37", "day38", "day39", "day40",
+>                                                                "day41", "day42", "day43", "day44", "day45")]))
+> umf                     # look at data
+> summary(umf)     # summarize
+> plot(umf)               # visualize
+>
+> Until here I got it without Error. But when I try to fit the models, this Error is showed:
+>
+> null <- occuMulti(~1, ~1, umf, match() ) # fit a model
+>
+> Error in match(x, table, nomatch = 0L) :
+>   'match' requires vector arguments
+>
+> What's going on?
+>
+> Thanks everybody!
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/3c23e2fa-fc82-4abd-9860-da6445ffedd1%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/3c23e2fa-fc82-4abd-9860-da6445ffedd1%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+Gabriel P. Andrade-Ponce
+Biólogo - Universidad Nacional de Colombia
+MSc y Estudiante de Doctorado -Instituto de Ecología A.C.
+Xalapa, Veracruz, México
+E-Mail: gpand...@unal.edu.co; gabriel...@posgrado.ecologia.edu.mx; gpand...@gmail.com
+Twitter <https://twitter.com/Gatorco_AP> •  Google scholar <https://scholar.google.com.mx/citations?user=tu7S2ZAAAAAJ&hl=en&authuser=1> • Researchgate  <https://www.researchgate.net/profile/Gabriel_Andrade-Ponce>• GitHub <https://github.com/gpandradep>
+
+From uafb61687c14423a1 at groups.google.com  Fri Apr 17 12:23:54 2020
+From: uafb61687c14423a1 at groups.google.com (Jessica Gouvea)
+Date: Fri, 17 Apr 2020 12:23:54 +0000
+Subject: Re: [unmarked] Error in match(x, table, nomatch = 0L) : 'match' requires vector arguments
+Message-ID: <6vdveQFD3zk.ieAWkSM3AgAJ@unmarked.groups.google.com>
+In-Reply-To: <6vdveQFD3zk.FhJ4_RUVAgAJ@unmarked.groups.google.com>
+References: <6vdveQFD3zk.FhJ4_RUVAgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/6vdveQFD3zk/m/ieAWkSM3AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Gabriel,
+
+I'm new at occuMulti analysis, and have read the package documents, but this wasn't clear to me. Now I understand how it works.
+Thank you so much!
+
+Em sexta-feira, 17 de abril de 2020 00:38:23 UTC-3, Gabriel Patricio Andrade Ponce escreveu:
+
+> Hi Jessica,
+> I think it is because you forgot the occuMulti sintaxis, that is a little bit different from occ.
+>
+> When you fit an occuMulti model you must add the psi (occformulas) and p (detformulas) formulas, which are vectors of what you wish to model.
+> The det formulas must be a vector equal to your species number in this case 2: c("~1","~1"), here we state that no covs affect the anteater and doc detections.
+> On the other hand occ formulas object is  a vector of the same length as your umf@fDesing (this calls your design matrix) columns, in this case three: 1. Anteater psi, 2. Dog psi and Anteater|dog psi. You can express it like this c("~1", "~1", "~1") in the case you want to model the conditional occupancy.
+>
+> So you can try this
+>
+> null <- occuMulti(c("~1","~1"), c("~1", "~1", "0"), umf ) # model without interactions or covs
+>
+> Hope I have been clear enough to help you, if not I think the package documents can be very useful to get the occuMulti sintaxis.
+>
+>
+
+> El jue., 16 abr. 2020 a las 20:59, Jessica Gouvea (<jago...@gmail.com>) escribió:
+
+> > Hi community!
+> >
+> > I'm trying to run the occuMulti script but I think I'm doing something wrong imputting data. This is the script I'm using:
+> >
+> > # Import data
+> > setwd("~/Jéssica/i/Ocupacao/3dias")
+> > mtridac.data <- read.csv("detec3dias.csv", row.names = 1, header = T, na.strings = "-")
+> > str(mtridac.data)
+> > canis.data <- read.csv("canis3dias.csv", row.names = 1, header = T, na.strings = "-")
+> > str(canis.data)
+> >
+> >
+> > S <- 2 # number of species
+> > M <- 58 #number of sites
+> > J <- 45 #number of occ
+> >
+> > y <- list(as.matrix(mtridac.data),
+> >           as.matrix(canis.data))
+> >
+> > names(y) <- c("anteater", "dog")
+> >
+> > siteCovs <- read.csv("sitecov500m.csv", row.names = 1, header = T)
+> >
+> > obsCovs <- read.csv("obscov3dias.csv", row.names = 1, header = T)
+> >
+> > library(unmarked)
+> > umf <- unmarkedFrameOccuMulti(y=y, siteCovs=siteCovs,
+> >                               obsCovs=list(temp=obsCovs[,c("temp1", "temp2", "temp3", "temp4", "temp5",
+> >                                                                 "temp6", "temp7", "temp8", "temp9", "temp10",
+> >                                                                 "temp11", "temp12", "temp13", "temp14", "temp15",
+> >                                                                 "temp16", "temp17", "temp18", "temp19", "temp20",
+> >                                                                 "temp21", "temp22", "temp23", "temp24", "temp25",
+> >                                                                 "temp26", "temp27", "temp28", "temp29", "temp30",
+> >                                                                 "temp31", "temp32", "temp33", "temp34", "temp35",
+> >                                                                 "temp36", "temp37", "temp38", "temp39", "temp40",
+> >                                                                 "temp41", "temp42", "temp43", "temp44", "temp45")],
+> >                                            day=obsCovs[,c("day1", "day2", "day3", "day4", "day5",
+> >                                                                "day6", "day7", "day8", "day9", "day10",
+> >                                                                "day11", "day12", "day13", "day14", "day15",
+> >                                                                "day16", "day17", "day18", "day19", "day20",
+> >                                                                "day21", "day22", "day23", "day24", "day25",
+> >                                                                "day26", "day27", "day28", "day29", "day30",
+> >                                                                "day31", "day32", "day33", "day34", "day35",
+> >                                                                "day36", "day37", "day38", "day39", "day40",
+> >                                                                "day41", "day42", "day43", "day44", "day45")]))
+> > umf                     # look at data
+> > summary(umf)     # summarize
+> > plot(umf)               # visualize
+> >
+> > Until here I got it without Error. But when I try to fit the models, this Error is showed:
+> >
+> > null <- occuMulti(~1, ~1, umf, match() ) # fit a model
+> >
+> > Error in match(x, table, nomatch = 0L) :
+> >   'match' requires vector arguments
+> >
+> > What's going on?
+> >
+> > Thanks everybody!
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+
+> >
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/3c23e2fa-fc82-4abd-9860-da6445ffedd1%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/3c23e2fa-fc82-4abd-9860-da6445ffedd1%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+>
+> --
+> Gabriel P. Andrade-Ponce
+> Biólogo - Universidad Nacional de Colombia
+> MSc y Estudiante de Doctorado -Instituto de Ecología A.C.
+> Xalapa, Veracruz, México
+> E-Mail: gpand...@unal.edu.co; gabriel...@posgrado.ecologia.edu.mx; gpand...@gmail.com
+> Twitter <https://twitter.com/Gatorco_AP> •  Google scholar <https://scholar.google.com.mx/citations?user=tu7S2ZAAAAAJ&hl=en&authuser=1> • Researchgate  <https://www.researchgate.net/profile/Gabriel_Andrade-Ponce>• GitHub <https://github.com/gpandradep>
+
+From u4aa77f3a79b565ea at groups.google.com  Fri Apr 17 12:44:36 2020
+From: u4aa77f3a79b565ea at groups.google.com (Ian Jenkins)
+Date: Fri, 17 Apr 2020 12:44:36 +0000
+Subject: Re: [unmarked] Error in rowSums: 'x' must be numeric
+Message-ID: <_MhcqIbulu8.rToe5EQ4AgAJ@unmarked.groups.google.com>
+In-Reply-To: <_MhcqIbulu8.Ze4icJp8QhAJ@unmarked.groups.google.com>
+References: <_MhcqIbulu8.waDzdiUd3ykJ@unmarked.groups.google.com> <_MhcqIbulu8.Ze4icJp8QhAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/_MhcqIbulu8/m/rToe5EQ4AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you!! This worked for me. RStudio 'research methods II'
+
+April 2020
+
+On Thursday, November 21, 2013 at 4:29:14 PM UTC-5, Jeffrey Royle wrote:
+
+> hi Hugh,
+>  To test that out, delete the all-NA observations and see what happens, I'm guessing yes.
+>  You shouldn't need to carry around those missing records in the fitting stage of the analysis (but predict() will work on whatever input covariate values you provide).
+> regards
+> andy
+>
+
+> On Thu, Nov 21, 2013 at 4:20 PM, Hugh Robinson <hsrpa...@gmail.com> wrote:
+
+> > Hi,
+> >
+> > I'm trying to run a relatively simple single season occupancy model using occu but get an  "Error in rowSums(y, na.rm = TRUE) : 'x' must be numeric".  My unmarkedFrame seems to be entering properly, summary(x) provides the following.
+> >
+> > 168 sites
+> > Maximum number of observations per site: 76
+> > Mean number of observations per site: 13.54
+> > Sites with at least one detection: 32
+> >
+> > Tabulation of y observations:
+> >     0     1  <NA>
+> >  2195    79 10494
+> >
+> > I have a very unbalanced sample design, and I've included several unsurveyed sites in which I would like to predict occupancy based on covariates.
+> > Could the abundance of NA values in my data be causing the row Sum error?
+> >
+> > Thanks,
+> > HR
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+
+> >
+> > For more options, visit https://groups.google.com/groups/opt_out.
+
+From ue183a94721e02db4 at groups.google.com  Sat Apr 18 18:34:26 2020
+From: ue183a94721e02db4 at groups.google.com (Vaughn Bodden)
+Date: Sat, 18 Apr 2020 18:34:26 +0000
+Subject: Re: [unmarked] Comparing Pcount detection parameter and binomial GLM estimate?
+Message-ID: <cRvCzIWTwlE.LgnIbPCZAgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/cRvCzIWTwlE/m/LgnIbPCZAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I read over the AHM chapters again and realise the error in my comparison.
+
+Best,
+Vaughn
+>
+
+From u530159c437bfc992 at groups.google.com  Mon Apr 20 20:20:10 2020
+From: u530159c437bfc992 at groups.google.com (Chris Paight)
+Date: Mon, 20 Apr 2020 20:20:10 +0000
+Subject: Extract P(>|z|) values from s4 class and write to data.frame
+Message-ID: <Dqf2DvSLdoA.XbU6x948AwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Dqf2DvSLdoA/m/XbU6x948AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello
+I am trying to write p values for my models written to a data.frame.
+
+ark <- unmarkedFrameOccu(y=i, siteCovs = cov)
+
+mbatch1 <- occu(~1 ~1, data=ark)
+
+summary(mbatch1) #gives the following output
+Call:
+occu(formula = ~1 ~ 1, data = ark)
+
+Occupancy (logit-scale):
+ Estimate   SE    z P(>|z|)
+      2.1 1.08 1.95  0.0516
+
+Detection (logit-scale):
+ Estimate    SE    z P(>|z|)
+    0.928 0.359 2.58 0.00982
+
+AIC: 56.65071
+Number of sites: 9
+optim convergence code: 0
+optim iterations: 17
+Bootstrap iterations: 0
+
+str(summary(mbatch)) #gives more detail
+Call:
+occu(formula = ~1 ~ 1, data = ark)
+
+Occupancy (logit-scale):
+ Estimate   SE    z P(>|z|)
+      2.1 1.08 1.95  0.0516
+
+Detection (logit-scale):
+ Estimate    SE    z P(>|z|)
+    0.928 0.359 2.58 0.00982
+
+AIC: 56.65071
+Number of sites: 9
+optim convergence code: 0
+optim iterations: 17
+Bootstrap iterations: 0
+
+List of 2
+ $ state:'data.frame':    1 obs. of  4 variables:
+  ..$ Estimate: num 2.1
+  ..$ SE      : num 1.08
+  ..$ z       : num 1.95
+  ..$ P(>|z|) : num 0.0516
+ $ det  :'data.frame':    1 obs. of  4 variables:
+  ..$ Estimate: num 0.928
+  ..$ SE      : num 0.359
+  ..$ z       : num 2.58
+  ..$ P(>|z|) : num 0.00982
+
+y <- mbatch@estimates[["state"]]#at the moment i just want the state p value
+
+str(summary(y))
+Occupancy (logit-scale):
+ Estimate   SE    z P(>|z|)
+      2.1 1.08 1.95  0.0516
+'data.frame':    1 obs. of  4 variables:
+ $ Estimate: num 2.1
+ $ SE      : num 1.08
+ $ z       : num 1.95
+ $ P(>|z|) : num 0.0516
+
+I have not been able to call $ state:'data.frame': to separate it out into an independent data frame.  The information is there I just can't call it with @ or $.
+Does anyone have in insights into how I would do this I have reached the end of my R knowledge. Thanks in advance.
+Cheers Chris
+
+From u403be63af7ebf220 at groups.google.com  Mon Apr 20 20:24:30 2020
+From: u403be63af7ebf220 at groups.google.com (Richard Chandler)
+Date: Mon, 20 Apr 2020 20:24:30 +0000
+Subject: RE: [unmarked] Extract P(>|z|) values from s4 class and write to data.frame
+Message-ID: <Dqf2DvSLdoA.iK-5VBs9AwAJ@unmarked.groups.google.com>
+In-Reply-To: <Dqf2DvSLdoA.XbU6x948AwAJ@unmarked.groups.google.com>
+References: <Dqf2DvSLdoA.XbU6x948AwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Dqf2DvSLdoA/m/iK-5VBs9AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Chris,
+
+Try this:
+
+s <- summary(mbatch1)
+
+s$state$P
+
+Best,
+
+Richard
+
+--
+
+Richard Chandler
+
+Associate Professor
+
+Wildlife Ecology and Conservation
+
+Warnell School of Forestry and Natural Resources
+
+University of Georgia
+
+706-542-5815
+
+http://chandlerlab.uga.edu/
+
+From: Chris Paight
+Sent: Monday, April 20, 2020 4:20 PM
+To: unmarked
+Subject: [unmarked] Extract P(>|z|) values from s4 class and write to data.frame
+
+[EXTERNAL SENDER - PROCEED CAUTIOUSLY]
+
+Hello
+
+I am trying to write p values for my models written to a data.frame.
+
+ark <- unmarkedFrameOccu(y=i, siteCovs = cov)
+
+mbatch1 <- occu(~1 ~1, data=ark)
+
+summary(mbatch1) #gives the following output
+
+Call:
+occu(formula = ~1 ~ 1, data = ark)
+
+Occupancy (logit-scale):
+ Estimate   SE    z P(>|z|)
+      2.1 1.08 1.95  0.0516
+
+Detection (logit-scale):
+ Estimate    SE    z P(>|z|)
+    0.928 0.359 2.58 0.00982
+
+AIC: 56.65071
+Number of sites: 9
+optim convergence code: 0
+optim iterations: 17
+Bootstrap iterations: 0
+
+str(summary(mbatch)) #gives more detail
+
+Call:
+occu(formula = ~1 ~ 1, data = ark)
+
+Occupancy (logit-scale):
+ Estimate   SE    z P(>|z|)
+      2.1 1.08 1.95  0.0516
+
+Detection (logit-scale):
+ Estimate    SE    z P(>|z|)
+    0.928 0.359 2.58 0.00982
+
+AIC: 56.65071
+Number of sites: 9
+optim convergence code: 0
+optim iterations: 17
+Bootstrap iterations: 0
+
+List of 2
+ $ state:'data.frame':    1 obs. of  4 variables:
+  ..$ Estimate: num 2.1
+  ..$ SE      : num 1.08
+  ..$ z       : num 1.95
+  ..$ P(>|z|) : num 0.0516
+ $ det  :'data.frame':    1 obs. of  4 variables:
+  ..$ Estimate: num 0.928
+  ..$ SE      : num 0.359
+  ..$ z       : num 2.58
+  ..$ P(>|z|) : num 0.00982
+
+y <- mbatch@estimates[["state"]]#at the moment i just want the state p value
+
+str(summary(y))
+
+Occupancy (logit-scale):
+ Estimate   SE    z P(>|z|)
+      2.1 1.08 1.95  0.0516
+'data.frame':    1 obs. of  4 variables:
+ $ Estimate: num 2.1
+ $ SE      : num 1.08
+ $ z       : num 1.95
+ $ P(>|z|) : num 0.0516
+
+I have not been able to call  $ state:'data.frame': to separate it out into an independent data frame.  The information is there I just can't call it with @ or $.
+Does anyone have in insights into how I would do this I have reached the end of my R knowledge. Thanks in advance.
+
+Cheers Chris
+
+--
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/5450131f-ec12-49b6-9d2a-08b88256e276%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/5450131f-ec12-49b6-9d2a-08b88256e276%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u530159c437bfc992 at groups.google.com  Mon Apr 20 20:30:13 2020
+From: u530159c437bfc992 at groups.google.com (Chris Paight)
+Date: Mon, 20 Apr 2020 20:30:13 +0000
+Subject: Re: [unmarked] Extract P(>|z|) values from s4 class and write to data.frame
+Message-ID: <Dqf2DvSLdoA.F4GBmlhQAQAJ@unmarked.groups.google.com>
+In-Reply-To: <Dqf2DvSLdoA.iK-5VBs9AwAJ@unmarked.groups.google.com>
+References: <Dqf2DvSLdoA.XbU6x948AwAJ@unmarked.groups.google.com> <Dqf2DvSLdoA.iK-5VBs9AwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/Dqf2DvSLdoA/m/F4GBmlhQAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Richard
+yup that's it simple, clean, beautiful. Thank you.
+
+On Monday, 20 April 2020 13:24:30 UTC-7, Richard Chandler wrote:
+
+> Hi Chris,
+>
+>
+>
+> Try this:
+>
+>
+>
+> s <- summary(mbatch1)
+>
+> s$state$P
+>
+>
+>
+>
+>
+> Best,
+>
+> Richard
+>
+>
+>
+>
+>
+>
+>
+> --
+>
+> Richard Chandler
+>
+> Associate Professor
+>
+> Wildlife Ecology and Conservation
+>
+> Warnell School of Forestry and Natural Resources
+>
+> University of Georgia
+>
+> 706-542-5815
+>
+> http://chandlerlab.uga.edu/
+>
+>
+>
+> From: Chris Paight
+> Sent: Monday, April 20, 2020 4:20 PM
+> To: unmarked
+> Subject: [unmarked] Extract P(>|z|) values from s4 class and write to data.frame
+>
+>
+>
+> [EXTERNAL SENDER - PROCEED CAUTIOUSLY]
+>
+> Hello
+>
+> I am trying to write p values for my models written to a data.frame.
+>
+>
+>
+> ark <- unmarkedFrameOccu(y=i, siteCovs = cov)
+>
+>
+>
+> mbatch1 <- occu(~1 ~1, data=ark)
+>
+>
+>
+> summary(mbatch1) #gives the following output
+>
+> Call:
+> occu(formula = ~1 ~ 1, data = ark)
+>
+> Occupancy (logit-scale):
+>  Estimate   SE    z P(>|z|)
+>       2.1 1.08 1.95  0.0516
+>
+> Detection (logit-scale):
+>  Estimate    SE    z P(>|z|)
+>     0.928 0.359 2.58 0.00982
+>
+> AIC: 56.65071
+> Number of sites: 9
+> optim convergence code: 0
+> optim iterations: 17
+> Bootstrap iterations: 0
+>
+>
+>
+> str(summary(mbatch)) #gives more detail
+>
+> Call:
+> occu(formula = ~1 ~ 1, data = ark)
+>
+> Occupancy (logit-scale):
+>  Estimate   SE    z P(>|z|)
+>       2.1 1.08 1.95  0.0516
+>
+> Detection (logit-scale):
+>  Estimate    SE    z P(>|z|)
+>     0.928 0.359 2.58 0.00982
+>
+> AIC: 56.65071
+> Number of sites: 9
+> optim convergence code: 0
+> optim iterations: 17
+> Bootstrap iterations: 0
+>
+> List of 2
+>  $ state:'data.frame':    1 obs. of  4 variables:
+>   ..$ Estimate: num 2.1
+>   ..$ SE      : num 1.08
+>   ..$ z       : num 1.95
+>   ..$ P(>|z|) : num 0.0516
+>  $ det  :'data.frame':    1 obs. of  4 variables:
+>   ..$ Estimate: num 0.928
+>   ..$ SE      : num 0.359
+>   ..$ z       : num 2.58
+>   ..$ P(>|z|) : num 0.00982
+>
+>
+>
+> y <- mbatch@estimates[["state"]]#at the moment i just want the state p value
+>
+>
+>
+> str(summary(y))
+>
+> Occupancy (logit-scale):
+>  Estimate   SE    z P(>|z|)
+>       2.1 1.08 1.95  0.0516
+> 'data.frame':    1 obs. of  4 variables:
+>  $ Estimate: num 2.1
+>  $ SE      : num 1.08
+>  $ z       : num 1.95
+>  $ P(>|z|) : num 0.0516
+>
+>
+>
+> I have not been able to call  $ state:'data.frame': to separate it out into an independent data frame.  The information is there I just can't call it with @ or $.
+> Does anyone have in insights into how I would do this I have reached the end of my R knowledge. Thanks in advance.
+>
+> Cheers Chris
+
+> --
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+
+>
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/5450131f-ec12-49b6-9d2a-08b88256e276%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/5450131f-ec12-49b6-9d2a-08b88256e276%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uafb61687c14423a1 at groups.google.com  Tue Apr 21 14:07:27 2020
+From: uafb61687c14423a1 at groups.google.com (Jessica Gouvea)
+Date: Tue, 21 Apr 2020 14:07:27 +0000
+Subject: occuMulti for RN-models
+Message-ID: <hTm2-_hBMuU.QM_T3gmKAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/hTm2-_hBMuU/m/QM_T3gmKAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi community!
+
+I am new here, and have some questions about occuMulti function.
+I modeled giant anteater occupancy with RN-model (occuRN) and now I need to model giant anteater - dog co-occurrence. I read about the occuMulti function be a generalization from Mackenzie single-species occupancy. Can I use this function once I used RN-model for single species? Does it have some other function I can model co-occurrence from RN models?
+
+I tried Mackenzie single-species modelling for giant anteater but I had high overdispersion and poor models.
+
+Thanks all!
+
+From ueac7a87541688ade at groups.google.com  Wed Apr 22 12:09:34 2020
+From: ueac7a87541688ade at groups.google.com (Nicholas Foster)
+Date: Wed, 22 Apr 2020 12:09:34 +0000
+Subject: Trouble adding mean categorical psi covariate to newdata for predict function
+Message-ID: <tCPKWAbEdCw.lInYJkK_AwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/tCPKWAbEdCw/m/lInYJkK_AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I am a new user of unmarked, so I apologise if this is an obvious fix. I've had a good sift through of old topics but cannot find a solution.
+
+I've fit a full with continous and categorical covs of both p and psi = p (effort + camtype + period) psi (elevation + lctype) and using this, I wish to predict occupancy estimates for elevation across averaged values of the other covs. My trouble starts when I include the categorical psi covariate 'lctype'. In the Carly Scott thread ("Predict() with categorical survey-level covariate in top models") the advice was to specify one level of the factors - when I do this, it generates predictions of that specific lctype (landcover type) successfully in a normal looking plot, but when I change this to another lctype factor level, the prediction changes and its clear that its predicting for elevation within that factor level.
+
+My question is: how do I format the newdata so that I am predicting across averaged values of the lctype psi cov?
+
+Here is what I've got so far:
+
+mod2 <- occu(formula = ~effort + camtype + period
+             ~  elevation + lctype,
+             data = umf)
+
+newdata <- data.frame(elevation=seq(500, 2250, length=315),
+                      effort = 0,
+                      period = c('period1',
+                                  'period2',
+                                  'period3'),
+                       camtype = c('Acorn',
+                                   'Browning',
+                                   'Reconyx'),
+                      lctype =c('Alpineherbfield',
+                                'Beechforest',
+                                'Matagourigrassland',
+                                'Lowproducingpasture',
+                                'Rock',
+                                'Subalpineshrub',
+                                'Talltussockgrassland'))
+
+If I try something like
+
+newdata$lctype <- factor(lctype, levels = c('Alpineherbfield', '.......)
+
+I either get " Error in X[i, ] : subscript out of bounds"
+
+or an absolute nightmare of a plot like:
+
+Here are the covs:
+
+Formal class 'unmarkedFrameOccu' [package "unmarked"] with 5 slots
+  ..@ y       : int [1:315, 1:7] 0 1 0 1 0 1 0 0 0 0 ...
+  .. ..- attr(*, "dimnames")=List of 2
+  .. .. ..$ : NULL
+  .. .. ..$ : chr [1:7] "d1" "d2" "d3" "d4" ...
+  ..@ obsCovs :'data.frame': 2205 obs. of  2 variables:
+  .. ..$ effort : num [1:2205] 0.25 0 0 0 0 0.75 0.75 0.75 1 1 ...
+  .. ..$ camtype: Factor w/ 3 levels "Acorn","Browning",..: 2 2 2 2 2 2 2 2 2 2 ...
+  ..@ siteCovs:'data.frame': 315 obs. of  4 variables:
+  .. ..$ elevation: num [1:315] 542 660 674 739 721 838 904 612 934 537 ...
+  .. ..$ lctype   : Factor w/ 7 levels "Alpineherbfield",..: 3 2 4 3 4 7 7 4 4 4 ...
+  .. ..$ biomass  : num [1:315] NA NA NA 0.122 NA ...
+  .. ..$ period   : Factor w/ 3 levels "Period1","Period2",..: 1 1 1 1 1 1 1 1 1 1 ...
+  ..@ mapInfo : NULL
+  ..@ obsToY  : num [1:7, 1:7] 1 0 0 0 0 0 0 0 1 0 ...
+
+Thanks in advance for any advice you may have.
+
+Nick Foster
+
+From u7ad0c15c3067da73 at groups.google.com  Wed Apr 22 17:06:02 2020
+From: u7ad0c15c3067da73 at groups.google.com (Kevin Parker)
+Date: Wed, 22 Apr 2020 17:06:02 +0000
+Subject: Re: [unmarked] Subsetting unmarkedMultFrame to analyze subset of sites
+Message-ID: <QOXQl7DoYrw.yMgR2W_PAwAJ@unmarked.groups.google.com>
+In-Reply-To: <QOXQl7DoYrw.WL_wJfkvCAAJ@unmarked.groups.google.com>
+References: <QOXQl7DoYrw.IBkNF1IgCAAJ@unmarked.groups.google.com> <QOXQl7DoYrw.WL_wJfkvCAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/QOXQl7DoYrw/m/yMgR2W_PAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello unmarked group,
+
+first thanks for all your time answering our questions! This is a wonderful resource. I'm also waiting impatiently for the second applied hierarchical modeling book, great work on the first!
+
+I have a question related to this thread that I have not been able to figure out. I'm hoping there is a simple fix. I would like to subset out a set of years from my unmarked dataframe. It is a 20 year dataset 2000-2019 and I would like to subset out 2010-2019 to work with. The method that worked for the site covs hasn't worked for me with the yearly site covs (though it does work for factors in my unmarked frame).  So far I've tried:
+
+umf_hng[which(yearlySiteCovs(umf_hng)$Year>=2010),]
+
+umf_hng[which(primaryPeriod(umf_hng)>=10),]
+
+#various versions of this
+umf_hng %>%
+  umf_hng@yearlySiteCovs %>%
+   filter(Year>=2010)
+
+subset(umf_hng@yearlySiteCovs,umf_hng@yearlySiteCovs>=2010)
+
+subset(umf_hng,umf_hng@yearlySiteCovs>=2010)
+
+subset(umf_hng,which(umf_hng@yearlySiteCovs>=2010))
+
+None of those worked. I'm hoping to not have to go back and modify the original data if possible.
+Thanks!
+Kevin
+
+On Monday, November 25, 2019 at 12:29:34 PM UTC-8, Richard Chandler wrote:
+
+> Glad to hear it. The first method should have worked, but I guess we never got around to adding a method for logical indices. If someone wants to contribute such a method, they could modify the code here: https://github.com/rbchan/unmarked/blob/master/R/unmarkedFrame.R#L1158
+>
+>
+>
+
+> On Mon, Nov 25, 2019 at 2:05 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+
+> > Oh my gosh that worked!!!!! Thank you SO much! That saves so much time.
+> >
+> > I really appreciate your time and help :)
+> >
+> > Best,
+> > Anna
+> >
+> > On Monday, November 25, 2019 at 1:20:17 PM UTC-5, Richard Chandler wrote:
+> > >
+> > > How about this:
+> > >   umf.pot <- umf[which(siteCovs(umf)$hab_type=="potrero"),]
+> > >
+> > > On Mon, Nov 25, 2019 at 1:01 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+> > > > Hi Richard,
+> > > >
+> > > > Thank you so much for the quick reply!
+> > > >
+> > > > I tried that code and got this error message: "Error in barant1[siteCovs(barant1)$hab_type == "potrero", ] :
+> > > >   object of type 'S4' is not subsettable".
+> > > >
+> > > > I'll keep trying though - there's definitely a way to subset individual components of the umf (which I've named barant1), I just can't figure out how to subset all components (y, obsCovs, siteCovs, yearlySiteCovs) simultaneously and equivalently once they're already in the unmarkedMultFrame.
+> > > >
+> > > > Thank you!
+> > > >
+> > > > Anna
+> > > >
+> > > > On Monday, November 25, 2019 at 12:47:41 PM UTC-5, Richard Chandler wrote:
+> > > > >
+> > > > > Hi Anna,
+> > > > >
+> > > > > Something like this should work:
+> > > > > umf.pot <- umf[siteCovs(umf)$hab_type=="potrero",]
+> > > > >
+> > > > > Richard
+> > > > >
+> > > > > On Mon, Nov 25, 2019 at 12:14 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+> > > > > > Hi,
+> > > > > >
+> > > > > > I am wondering if it is possible to subset an unmarkedMultFrame after the fact (after the object is created) in order to analyze only a subset of sites (for example, I have sites in forest and pasture, and would like to run some analyses on pasture sites only). Until now I have just done this by selecting pasture data only prior to making the unmarkedMultFrame, but I would love to know if there is a (more efficient) way to do this after the unmarkedMultFrame has been put together.
+> > > > > >
+> > > > > > I figured out how to subset part of the unmarkedMultFrame (siteCovs) that contains the variable "hab_type" (pasture vs forest), but I don't know how to get the same subset of points from all the other parts of the unmarkedMultFrame object:
+> > > > > >
+> > > > > > umfs_det_covs$umf[[1]]@siteCovs %>%
+> > > > > >   filter(hab_type == "potrero")
+> > > > > >
+> > > > > > Thank you very much!
+> > > > > >
+> > > > > > Anna Lello-Smith
+> > > > > >
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+> > > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/b09b3f60-139a-4d16-8aa9-28ce91aaf311%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/b09b3f60-139a-4d16-8aa9-28ce91aaf311%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/153aece3-9b1b-45ec-8737-7999bd91e910%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/153aece3-9b1b-45ec-8737-7999bd91e910%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/07165d52-256a-430d-bd2e-56fff49d95b0%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/07165d52-256a-430d-bd2e-56fff49d95b0%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u403be63af7ebf220 at groups.google.com  Wed Apr 22 17:19:46 2020
+From: u403be63af7ebf220 at groups.google.com (Richard Chandler)
+Date: Wed, 22 Apr 2020 17:19:46 +0000
+Subject: RE: [unmarked] Subsetting unmarkedMultFrame to analyze subset of sites
+Message-ID: <QOXQl7DoYrw.ClVGpC_QAwAJ@unmarked.groups.google.com>
+In-Reply-To: <QOXQl7DoYrw.WL_wJfkvCAAJ@unmarked.groups.google.com>
+References: <QOXQl7DoYrw.IBkNF1IgCAAJ@unmarked.groups.google.com> <QOXQl7DoYrw.WL_wJfkvCAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/QOXQl7DoYrw/m/ClVGpC_QAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Kevin,
+
+Something like this should work:
+
+umf_hng2 <- umf_hng[,10:20] ## Drop the first nine years
+
+Richard
+
+From: Kevin Parker
+Sent: Wednesday, April 22, 2020 1:06 PM
+To: unmarked
+Subject: Re: [unmarked] Subsetting unmarkedMultFrame to analyze subset of sites
+
+[EXTERNAL SENDER - PROCEED CAUTIOUSLY]
+
+Hello unmarked group,
+
+first thanks for all your time answering our questions! This is a wonderful resource. I'm also waiting impatiently for the second applied hierarchical modeling book, great work on the first!
+
+I have a question related to this thread that I have not been able to figure out. I'm hoping there is a simple fix. I would like to subset out a set of years from my unmarked dataframe. It is a 20 year dataset 2000-2019 and I would like to subset out 2010-2019 to work with. The method that worked for the site covs hasn't worked for me with the yearly site covs (though it does work for factors in my unmarked frame).  So far I've tried:
+
+umf_hng[which(yearlySiteCovs(umf_hng)$Year>=2010),]
+
+umf_hng[which(primaryPeriod(umf_hng)>=10),]
+
+#various versions of this
+
+umf_hng %>%
+
+  umf_hng@yearlySiteCovs %>%
+
+   filter(Year>=2010)
+
+subset(umf_hng@yearlySiteCovs,umf_hng@yearlySiteCovs>=2010)
+
+subset(umf_hng,umf_hng@yearlySiteCovs>=2010)
+
+subset(umf_hng,which(umf_hng@yearlySiteCovs>=2010))
+
+None of those worked. I'm hoping to not have to go back and modify the original data if possible.
+
+Thanks!
+
+Kevin
+
+On Monday, November 25, 2019 at 12:29:34 PM UTC-8, Richard Chandler wrote:
+>
+> Glad to hear it. The first method should have worked, but I guess we never got around to adding a method for logical indices. If someone wants to contribute such a method, they could modify the code here: https://github.com/rbchan/unmarked/blob/master/R/unmarkedFrame.R#L1158
+>
+>
+>
+>
+>
+>
+>
+> On Mon, Nov 25, 2019 at 2:05 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+> >
+> > Oh my gosh that worked!!!!! Thank you SO much! That saves so much time.
+> >
+> >
+> >
+> > I really appreciate your time and help :)
+> >
+> >
+> >
+> > Best,
+> >
+> > Anna
+> >
+> > On Monday, November 25, 2019 at 1:20:17 PM UTC-5, Richard Chandler wrote:
+> > >
+> > > How about this:
+> > >   umf.pot <- umf[which(siteCovs(umf)$hab_type=="potrero"),]
+> > >
+> > >
+> > >
+> > > On Mon, Nov 25, 2019 at 1:01 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+> > > >
+> > > > Hi Richard,
+> > > >
+> > > >
+> > > >
+> > > > Thank you so much for the quick reply!
+> > > >
+> > > >
+> > > >
+> > > > I tried that code and got this error message: "Error in barant1[siteCovs(barant1)$hab_type == "potrero", ] :
+> > > >
+> > > >   object of type 'S4' is not subsettable".
+> > > >
+> > > >
+> > > >
+> > > > I'll keep trying though - there's definitely a way to subset individual components of the umf (which I've named barant1), I just can't figure out how to subset all components (y, obsCovs, siteCovs, yearlySiteCovs) simultaneously and equivalently once they're already in the unmarkedMultFrame.
+> > > >
+> > > >
+> > > >
+> > > > Thank you!
+> > > >
+> > > >
+> > > >
+> > > > Anna
+> > > >
+> > > >
+> > > > On Monday, November 25, 2019 at 12:47:41 PM UTC-5, Richard Chandler wrote:
+> > > > >
+> > > > > Hi Anna,
+> > > > >
+> > > > > Something like this should work:
+> > > > > umf.pot <- umf[siteCovs(umf)$hab_type=="potrero",]
+> > > > >
+> > > > > Richard
+> > > > >
+> > > > >
+> > > > >
+> > > > > On Mon, Nov 25, 2019 at 12:14 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+> > > > > >
+> > > > > > Hi,
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > I am wondering if it is possible to subset an unmarkedMultFrame after the fact (after the object is created) in order to analyze only a subset of sites (for example, I have sites in forest and pasture, and would like to run some analyses on pasture sites only). Until now I have just done this by selecting pasture data only prior to making the unmarkedMultFrame, but I would love to know if there is a (more efficient) way to do this after the unmarkedMultFrame has been put together.
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > I figured out how to subset part of the unmarkedMultFrame (siteCovs) that contains the variable "hab_type" (pasture vs forest), but I don't know how to get the same subset of points from all the other parts of the unmarkedMultFrame object:
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > umfs_det_covs$umf[[1]]@siteCovs %>%
+> > > > > >
+> > > > > >   filter(hab_type == "potrero")
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > Thank you very much!
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > Anna Lello-Smith
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > --
+> > > > > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+> > > > > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/b09b3f60-139a-4d16-8aa9-28ce91aaf311%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/b09b3f60-139a-4d16-8aa9-28ce91aaf311%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+> > > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/153aece3-9b1b-45ec-8737-7999bd91e910%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/153aece3-9b1b-45ec-8737-7999bd91e910%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+> > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/07165d52-256a-430d-bd2e-56fff49d95b0%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/07165d52-256a-430d-bd2e-56fff49d95b0%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+
+To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/1eb8cdc7-595f-40e8-9608-f29050062ee5%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/1eb8cdc7-595f-40e8-9608-f29050062ee5%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4f80e1927b0757cb at groups.google.com  Wed Apr 22 18:00:31 2020
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Wed, 22 Apr 2020 18:00:31 +0000
+Subject: Re: occuMulti for RN-models
+Message-ID: <hTm2-_hBMuU.cQp0XlblAQAJ@unmarked.groups.google.com>
+In-Reply-To: <hTm2-_hBMuU.QM_T3gmKAQAJ@unmarked.groups.google.com>
+References: <hTm2-_hBMuU.QM_T3gmKAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/hTm2-_hBMuU/m/cQp0XlblAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jessica,
+
+There is no equivalent version of occuMulti for RN models in unmarked. As far as I know no such model exists, more generally.
+
+Ken
+
+On Tuesday, April 21, 2020 at 10:07:27 AM UTC-4, Jessica Gouvea wrote:
+> Hi community!
+>
+> I am new here, and have some questions about occuMulti function.
+> I modeled giant anteater occupancy with RN-model (occuRN) and now I need to model giant anteater - dog co-occurrence. I read about the occuMulti function be a generalization from Mackenzie single-species occupancy. Can I use this function once I used RN-model for single species? Does it have some other function I can model co-occurrence from RN models?
+>
+> I tried Mackenzie single-species modelling for giant anteater but I had high overdispersion and poor models.
+>
+> Thanks all!
+
+From u4f80e1927b0757cb at groups.google.com  Wed Apr 22 18:20:18 2020
+From: u4f80e1927b0757cb at groups.google.com (Ken Kellner)
+Date: Wed, 22 Apr 2020 18:20:18 +0000
+Subject: Re: Trouble adding mean categorical psi covariate to newdata for predict function
+Message-ID: <tCPKWAbEdCw.S8g60mrmAQAJ@unmarked.groups.google.com>
+In-Reply-To: <tCPKWAbEdCw.lInYJkK_AwAJ@unmarked.groups.google.com>
+References: <tCPKWAbEdCw.lInYJkK_AwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/tCPKWAbEdCw/m/S8g60mrmAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Nicholas,
+
+There's no straightforward way to do what you are asking in unmarked. If you provide multiple factor levels in the newdata as you have done in your example, you will get one predicted value for each of these factor levels. These predictions will have the same value for x (elevation) but different values of y, which leads to the ugly plot you are seeing.
+
+Usually for a plot like the one you are making, focused on one continuous covariate, I would just use the baseline/reference levels of each categorical covariate, or plot multiple lines on each plot with each line corresponding to a different factor level. It doesn't really make sense to me conceptually to try to get the "mean" of a categorical variable. If you have elevation measurements of 0 and 100, the mean=50 is generally a possible observed value in the dataset. But "averaging" across land covers is creating a new "category" that doesn't exist in reality.
+
+If you really want this I suppose you could get predicted values for your range of elevations at each individual land cover level, one at a time, and then calculate an average value across all land covers for each elevation value in your sequence.
+
+Ken
+
+On Wednesday, April 22, 2020 at 8:09:34 AM UTC-4, Nicholas Foster wrote:
+> Hi all,
+>
+> I am a new user of unmarked, so I apologise if this is an obvious fix. I've had a good sift through of old topics but cannot find a solution.
+>
+> I've fit a full with continous and categorical covs of both p and psi = p (effort + camtype + period) psi (elevation + lctype) and using this, I wish to predict occupancy estimates for elevation across averaged values of the other covs. My trouble starts when I include the categorical psi covariate 'lctype'. In the Carly Scott thread ("Predict() with categorical survey-level covariate in top models") the advice was to specify one level of the factors - when I do this, it generates predictions of that specific lctype (landcover type) successfully in a normal looking plot, but when I change this to another lctype factor level, the prediction changes and its clear that its predicting for elevation within that factor level.
+>
+> My question is: how do I format the newdata so that I am predicting across averaged values of the lctype psi cov?
+>
+> Here is what I've got so far:
+>
+> mod2 <- occu(formula = ~effort + camtype + period
+>              ~  elevation + lctype,
+>              data = umf)
+>
+> newdata <- data.frame(elevation=seq(500, 2250, length=315),
+>                       effort = 0,
+>                       period = c('period1',
+>                                   'period2',
+>                                   'period3'),
+>                        camtype = c('Acorn',
+>                                    'Browning',
+>                                    'Reconyx'),
+>                       lctype =c('Alpineherbfield',
+>                                 'Beechforest',
+>                                 'Matagourigrassland',
+>                                 'Lowproducingpasture',
+>                                 'Rock',
+>                                 'Subalpineshrub',
+>                                 'Talltussockgrassland'))
+>
+> If I try something like
+>
+> newdata$lctype <- factor(lctype, levels = c('Alpineherbfield', '.......)
+>
+> I either get " Error in X[i, ] : subscript out of bounds"
+>
+> or an absolute nightmare of a plot like:
+>
+>
+>
+>
+> Here are the covs:
+>
+> Formal class 'unmarkedFrameOccu' [package "unmarked"] with 5 slots
+>   ..@ y       : int [1:315, 1:7] 0 1 0 1 0 1 0 0 0 0 ...
+>   .. ..- attr(*, "dimnames")=List of 2
+>   .. .. ..$ : NULL
+>   .. .. ..$ : chr [1:7] "d1" "d2" "d3" "d4" ...
+>   ..@ obsCovs :'data.frame': 2205 obs. of  2 variables:
+>   .. ..$ effort : num [1:2205] 0.25 0 0 0 0 0.75 0.75 0.75 1 1 ...
+>   .. ..$ camtype: Factor w/ 3 levels "Acorn","Browning",..: 2 2 2 2 2 2 2 2 2 2 ...
+>   ..@ siteCovs:'data.frame': 315 obs. of  4 variables:
+>   .. ..$ elevation: num [1:315] 542 660 674 739 721 838 904 612 934 537 ...
+>   .. ..$ lctype   : Factor w/ 7 levels "Alpineherbfield",..: 3 2 4 3 4 7 7 4 4 4 ...
+>   .. ..$ biomass  : num [1:315] NA NA NA 0.122 NA ...
+>   .. ..$ period   : Factor w/ 3 levels "Period1","Period2",..: 1 1 1 1 1 1 1 1 1 1 ...
+>   ..@ mapInfo : NULL
+>   ..@ obsToY  : num [1:7, 1:7] 1 0 0 0 0 0 0 0 1 0 ...
+>
+>
+> Thanks in advance for any advice you may have.
+>
+> Nick Foster
+>
+>
+>
+
+From u7ad0c15c3067da73 at groups.google.com  Wed Apr 22 20:41:18 2020
+From: u7ad0c15c3067da73 at groups.google.com (Kevin Parker)
+Date: Wed, 22 Apr 2020 20:41:18 +0000
+Subject: Re: [unmarked] Subsetting unmarkedMultFrame to analyze subset of sites
+Message-ID: <QOXQl7DoYrw.QnSZZzDPAgAJ@unmarked.groups.google.com>
+In-Reply-To: <QOXQl7DoYrw.ClVGpC_QAwAJ@unmarked.groups.google.com>
+References: <QOXQl7DoYrw.IBkNF1IgCAAJ@unmarked.groups.google.com> <QOXQl7DoYrw.ClVGpC_QAwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/QOXQl7DoYrw/m/QnSZZzDPAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+That worked, thank you Richard!
+Kevin
+
+On Wednesday, April 22, 2020 at 10:19:46 AM UTC-7, Richard Chandler wrote:
+
+> Hi Kevin,
+>
+>
+>
+> Something like this should work:
+>
+>
+>
+> umf_hng2 <- umf_hng[,10:20] ## Drop the first nine years
+>
+>
+>
+>
+>
+> Richard
+>
+>
+>
+>
+>
+> From: Kevin Parker
+> Sent: Wednesday, April 22, 2020 1:06 PM
+> To: unmarked
+> Subject: Re: [unmarked] Subsetting unmarkedMultFrame to analyze subset of sites
+>
+>
+>
+> [EXTERNAL SENDER - PROCEED CAUTIOUSLY]
+>
+> Hello unmarked group,
+>
+>
+>
+> first thanks for all your time answering our questions! This is a wonderful resource. I'm also waiting impatiently for the second applied hierarchical modeling book, great work on the first!
+>
+>
+>
+> I have a question related to this thread that I have not been able to figure out. I'm hoping there is a simple fix. I would like to subset out a set of years from my unmarked dataframe. It is a 20 year dataset 2000-2019 and I would like to subset out 2010-2019 to work with. The method that worked for the site covs hasn't worked for me with the yearly site covs (though it does work for factors in my unmarked frame).  So far I've tried:
+>
+>
+>
+> umf_hng[which(yearlySiteCovs(umf_hng)$Year>=2010),]
+>
+>
+>
+> umf_hng[which(primaryPeriod(umf_hng)>=10),]
+>
+>
+>
+> #various versions of this
+>
+> umf_hng %>%
+>
+>   umf_hng@yearlySiteCovs %>%
+>
+>    filter(Year>=2010)
+>
+>
+>
+> subset(umf_hng@yearlySiteCovs,umf_hng@yearlySiteCovs>=2010)
+>
+>
+>
+> subset(umf_hng,umf_hng@yearlySiteCovs>=2010)
+>
+>
+>
+> subset(umf_hng,which(umf_hng@yearlySiteCovs>=2010))
+>
+>
+>
+>
+>
+> None of those worked. I'm hoping to not have to go back and modify the original data if possible.
+>
+> Thanks!
+>
+> Kevin
+>
+>
+> On Monday, November 25, 2019 at 12:29:34 PM UTC-8, Richard Chandler wrote:
+> >
+> > Glad to hear it. The first method should have worked, but I guess we never got around to adding a method for logical indices. If someone wants to contribute such a method, they could modify the code here: https://github.com/rbchan/unmarked/blob/master/R/unmarkedFrame.R#L1158
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> > On Mon, Nov 25, 2019 at 2:05 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+> > >
+> > > Oh my gosh that worked!!!!! Thank you SO much! That saves so much time.
+> > >
+> > >
+> > >
+> > > I really appreciate your time and help :)
+> > >
+> > >
+> > >
+> > > Best,
+> > >
+> > > Anna
+> > >
+> > > On Monday, November 25, 2019 at 1:20:17 PM UTC-5, Richard Chandler wrote:
+> > > >
+> > > > How about this:
+> > > >   umf.pot <- umf[which(siteCovs(umf)$hab_type=="potrero"),]
+> > > >
+> > > >
+> > > >
+> > > > On Mon, Nov 25, 2019 at 1:01 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+> > > > >
+> > > > > Hi Richard,
+> > > > >
+> > > > >
+> > > > >
+> > > > > Thank you so much for the quick reply!
+> > > > >
+> > > > >
+> > > > >
+> > > > > I tried that code and got this error message: "Error in barant1[siteCovs(barant1)$hab_type == "potrero", ] :
+> > > > >
+> > > > >   object of type 'S4' is not subsettable".
+> > > > >
+> > > > >
+> > > > >
+> > > > > I'll keep trying though - there's definitely a way to subset individual components of the umf (which I've named barant1), I just can't figure out how to subset all components (y, obsCovs, siteCovs, yearlySiteCovs) simultaneously and equivalently once they're already in the unmarkedMultFrame.
+> > > > >
+> > > > >
+> > > > >
+> > > > > Thank you!
+> > > > >
+> > > > >
+> > > > >
+> > > > > Anna
+> > > > >
+> > > > >
+> > > > > On Monday, November 25, 2019 at 12:47:41 PM UTC-5, Richard Chandler wrote:
+> > > > > >
+> > > > > > Hi Anna,
+> > > > > >
+> > > > > > Something like this should work:
+> > > > > > umf.pot <- umf[siteCovs(umf)$hab_type=="potrero",]
+> > > > > >
+> > > > > > Richard
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > On Mon, Nov 25, 2019 at 12:14 PM Anna Lello-Smith <alell...@gmail.com> wrote:
+> > > > > > >
+> > > > > > > Hi,
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > > I am wondering if it is possible to subset an unmarkedMultFrame after the fact (after the object is created) in order to analyze only a subset of sites (for example, I have sites in forest and pasture, and would like to run some analyses on pasture sites only). Until now I have just done this by selecting pasture data only prior to making the unmarkedMultFrame, but I would love to know if there is a (more efficient) way to do this after the unmarkedMultFrame has been put together.
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > > I figured out how to subset part of the unmarkedMultFrame (siteCovs) that contains the variable "hab_type" (pasture vs forest), but I don't know how to get the same subset of points from all the other parts of the unmarkedMultFrame object:
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > > umfs_det_covs$umf[[1]]@siteCovs %>%
+> > > > > > >
+> > > > > > >   filter(hab_type == "potrero")
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > > Thank you very much!
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > > Anna Lello-Smith
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > > --
+> > > > > > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > > > > > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+> > > > > > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/b09b3f60-139a-4d16-8aa9-28ce91aaf311%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/b09b3f60-139a-4d16-8aa9-28ce91aaf311%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+> > > > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/153aece3-9b1b-45ec-8737-7999bd91e910%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/153aece3-9b1b-45ec-8737-7999bd91e910%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "unmarked" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+> > > To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/07165d52-256a-430d-bd2e-56fff49d95b0%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/07165d52-256a-430d-bd2e-56fff49d95b0%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+> --
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unma...@googlegroups.com.
+
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/1eb8cdc7-595f-40e8-9608-f29050062ee5%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/1eb8cdc7-595f-40e8-9608-f29050062ee5%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+
+From ueac7a87541688ade at groups.google.com  Wed Apr 22 20:57:29 2020
+From: ueac7a87541688ade at groups.google.com (Nicholas Foster)
+Date: Wed, 22 Apr 2020 20:57:29 +0000
+Subject: Re: Trouble adding mean categorical psi covariate to newdata for predict function
+Message-ID: <tCPKWAbEdCw.uU8WmhLQAgAJ@unmarked.groups.google.com>
+In-Reply-To: <tCPKWAbEdCw.S8g60mrmAQAJ@unmarked.groups.google.com>
+References: <tCPKWAbEdCw.lInYJkK_AwAJ@unmarked.groups.google.com> <tCPKWAbEdCw.S8g60mrmAQAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/tCPKWAbEdCw/m/uU8WmhLQAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for the quick reply Ken. I can see that the problem lies in my own understanding and not in a complicated solution of creating new categories for mean values.
+
+Could you please give me an example of how both continuous and categorical covariates are entered into the newdata frame to give baseline/reference levels?
+
+Thank you and again I apologise for the menial question.
+Nick
+
+On Thursday, April 23, 2020 at 6:20:18 AM UTC+12, Ken Kellner wrote:
+> Hi Nicholas,
+>
+> There's no straightforward way to do what you are asking in unmarked. If you provide multiple factor levels in the newdata as you have done in your example, you will get one predicted value for each of these factor levels. These predictions will have the same value for x (elevation) but different values of y, which leads to the ugly plot you are seeing.
+>
+> Usually for a plot like the one you are making, focused on one continuous covariate, I would just use the baseline/reference levels of each categorical covariate, or plot multiple lines on each plot with each line corresponding to a different factor level. It doesn't really make sense to me conceptually to try to get the "mean" of a categorical variable. If you have elevation measurements of 0 and 100, the mean=50 is generally a possible observed value in the dataset. But "averaging" across land covers is creating a new "category" that doesn't exist in reality.
+>
+> If you really want this I suppose you could get predicted values for your range of elevations at each individual land cover level, one at a time, and then calculate an average value across all land covers for each elevation value in your sequence.
+>
+> Ken
+>
+> On Wednesday, April 22, 2020 at 8:09:34 AM UTC-4, Nicholas Foster wrote:
+> > Hi all,
+> >
+> > I am a new user of unmarked, so I apologise if this is an obvious fix. I've had a good sift through of old topics but cannot find a solution.
+> >
+> > I've fit a full with continous and categorical covs of both p and psi = p (effort + camtype + period) psi (elevation + lctype) and using this, I wish to predict occupancy estimates for elevation across averaged values of the other covs. My trouble starts when I include the categorical psi covariate 'lctype'. In the Carly Scott thread ("Predict() with categorical survey-level covariate in top models") the advice was to specify one level of the factors - when I do this, it generates predictions of that specific lctype (landcover type) successfully in a normal looking plot, but when I change this to another lctype factor level, the prediction changes and its clear that its predicting for elevation within that factor level.
+> >
+> > My question is: how do I format the newdata so that I am predicting across averaged values of the lctype psi cov?
+> >
+> > Here is what I've got so far:
+> >
+> > mod2 <- occu(formula = ~effort + camtype + period
+> >              ~  elevation + lctype,
+> >              data = umf)
+> >
+> > newdata <- data.frame(elevation=seq(500, 2250, length=315),
+> >                       effort = 0,
+> >                       period = c('period1',
+> >                                   'period2',
+> >                                   'period3'),
+> >                        camtype = c('Acorn',
+> >                                    'Browning',
+> >                                    'Reconyx'),
+> >                       lctype =c('Alpineherbfield',
+> >                                 'Beechforest',
+> >                                 'Matagourigrassland',
+> >                                 'Lowproducingpasture',
+> >                                 'Rock',
+> >                                 'Subalpineshrub',
+> >                                 'Talltussockgrassland'))
+> >
+> > If I try something like
+> >
+> > newdata$lctype <- factor(lctype, levels = c('Alpineherbfield', '.......)
+> >
+> > I either get " Error in X[i, ] : subscript out of bounds"
+> >
+> > or an absolute nightmare of a plot like:
+> >
+> >
+> >
+> >
+> > Here are the covs:
+> >
+> > Formal class 'unmarkedFrameOccu' [package "unmarked"] with 5 slots
+> >   ..@ y       : int [1:315, 1:7] 0 1 0 1 0 1 0 0 0 0 ...
+> >   .. ..- attr(*, "dimnames")=List of 2
+> >   .. .. ..$ : NULL
+> >   .. .. ..$ : chr [1:7] "d1" "d2" "d3" "d4" ...
+> >   ..@ obsCovs :'data.frame': 2205 obs. of  2 variables:
+> >   .. ..$ effort : num [1:2205] 0.25 0 0 0 0 0.75 0.75 0.75 1 1 ...
+> >   .. ..$ camtype: Factor w/ 3 levels "Acorn","Browning",..: 2 2 2 2 2 2 2 2 2 2 ...
+> >   ..@ siteCovs:'data.frame': 315 obs. of  4 variables:
+> >   .. ..$ elevation: num [1:315] 542 660 674 739 721 838 904 612 934 537 ...
+> >   .. ..$ lctype   : Factor w/ 7 levels "Alpineherbfield",..: 3 2 4 3 4 7 7 4 4 4 ...
+> >   .. ..$ biomass  : num [1:315] NA NA NA 0.122 NA ...
+> >   .. ..$ period   : Factor w/ 3 levels "Period1","Period2",..: 1 1 1 1 1 1 1 1 1 1 ...
+> >   ..@ mapInfo : NULL
+> >   ..@ obsToY  : num [1:7, 1:7] 1 0 0 0 0 0 0 0 1 0 ...
+> >
+> >
+> > Thanks in advance for any advice you may have.
+> >
+> > Nick Foster
+> >
+> >
+> >
+
+From u7ad0c15c3067da73 at groups.google.com  Wed Apr 22 21:37:09 2020
+From: u7ad0c15c3067da73 at groups.google.com (Kevin Parker)
+Date: Wed, 22 Apr 2020 21:37:09 +0000
+Subject: Re: Trouble adding mean categorical psi covariate to newdata for predict function
+Message-ID: <tCPKWAbEdCw.aX01tjzSAgAJ@unmarked.groups.google.com>
+In-Reply-To: <tCPKWAbEdCw.uU8WmhLQAgAJ@unmarked.groups.google.com>
+References: <tCPKWAbEdCw.lInYJkK_AwAJ@unmarked.groups.google.com> <tCPKWAbEdCw.uU8WmhLQAgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/tCPKWAbEdCw/m/aX01tjzSAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Nick,
+
+Not exactly an answer to the question you're asking, but I think this might help. If you're interested in seeing the effect of elevation on PSI in the different land cover types you could visualize that by modifying how you're plotting the predicted dataframe (of course this will be the same slope without an interaction term, but as a place to start) . Try plotting with ggplot and use facet_wrap(~lctype). That will give you 7 different panels, with PSI on the y axis, and elevation of the x. If you're not familiar with ggplot that code might look something like this for you:
+
+#make your predicted dataframe
+pred_data<-predict(mod2, type="state", newdata=newdata, appendData=TRUE)
+
+#plot it
+ggplot(pred_data , aes(elevation,Predicted))+
+geom_line()+
+geom_ribbon(aes(ymin =lower, ymax = upper), alpha = 0.3)+
+ylab(expression(italic(psi)))+
+xlab(elevation)+
+facet_wrap(~lctype)
+
+Hope this helps.
+Kevin
+
+On Wednesday, April 22, 2020 at 1:57:29 PM UTC-7, Nicholas Foster wrote:
+> Thanks for the quick reply Ken. I can see that the problem lies in my own understanding and not in a complicated solution of creating new categories for mean values.
+>
+> Could you please give me an example of how both continuous and categorical covariates are entered into the newdata frame to give baseline/reference levels?
+>
+> Thank you and again I apologise for the menial question.
+> Nick
+>
+>
+>
+>
+>
+> On Thursday, April 23, 2020 at 6:20:18 AM UTC+12, Ken Kellner wrote:
+> > Hi Nicholas,
+> >
+> > There's no straightforward way to do what you are asking in unmarked. If you provide multiple factor levels in the newdata as you have done in your example, you will get one predicted value for each of these factor levels. These predictions will have the same value for x (elevation) but different values of y, which leads to the ugly plot you are seeing.
+> >
+> > Usually for a plot like the one you are making, focused on one continuous covariate, I would just use the baseline/reference levels of each categorical covariate, or plot multiple lines on each plot with each line corresponding to a different factor level. It doesn't really make sense to me conceptually to try to get the "mean" of a categorical variable. If you have elevation measurements of 0 and 100, the mean=50 is generally a possible observed value in the dataset. But "averaging" across land covers is creating a new "category" that doesn't exist in reality.
+> >
+> > If you really want this I suppose you could get predicted values for your range of elevations at each individual land cover level, one at a time, and then calculate an average value across all land covers for each elevation value in your sequence.
+> >
+> > Ken
+> >
+> > On Wednesday, April 22, 2020 at 8:09:34 AM UTC-4, Nicholas Foster wrote:
+> > > Hi all,
+> > >
+> > > I am a new user of unmarked, so I apologise if this is an obvious fix. I've had a good sift through of old topics but cannot find a solution.
+> > >
+> > > I've fit a full with continous and categorical covs of both p and psi = p (effort + camtype + period) psi (elevation + lctype) and using this, I wish to predict occupancy estimates for elevation across averaged values of the other covs. My trouble starts when I include the categorical psi covariate 'lctype'. In the Carly Scott thread ("Predict() with categorical survey-level covariate in top models") the advice was to specify one level of the factors - when I do this, it generates predictions of that specific lctype (landcover type) successfully in a normal looking plot, but when I change this to another lctype factor level, the prediction changes and its clear that its predicting for elevation within that factor level.
+> > >
+> > > My question is: how do I format the newdata so that I am predicting across averaged values of the lctype psi cov?
+> > >
+> > > Here is what I've got so far:
+> > >
+> > > mod2 <- occu(formula = ~effort + camtype + period
+> > >              ~  elevation + lctype,
+> > >              data = umf)
+> > >
+> > > newdata <- data.frame(elevation=seq(500, 2250, length=315),
+> > >                       effort = 0,
+> > >                       period = c('period1',
+> > >                                   'period2',
+> > >                                   'period3'),
+> > >                        camtype = c('Acorn',
+> > >                                    'Browning',
+> > >                                    'Reconyx'),
+> > >                       lctype =c('Alpineherbfield',
+> > >                                 'Beechforest',
+> > >                                 'Matagourigrassland',
+> > >                                 'Lowproducingpasture',
+> > >                                 'Rock',
+> > >                                 'Subalpineshrub',
+> > >                                 'Talltussockgrassland'))
+> > >
+> > > If I try something like
+> > >
+> > > newdata$lctype <- factor(lctype, levels = c('Alpineherbfield', '.......)
+> > >
+> > > I either get " Error in X[i, ] : subscript out of bounds"
+> > >
+> > > or an absolute nightmare of a plot like:
+> > >
+> > >
+> > >
+> > >
+> > > Here are the covs:
+> > >
+> > > Formal class 'unmarkedFrameOccu' [package "unmarked"] with 5 slots
+> > >   ..@ y       : int [1:315, 1:7] 0 1 0 1 0 1 0 0 0 0 ...
+> > >   .. ..- attr(*, "dimnames")=List of 2
+> > >   .. .. ..$ : NULL
+> > >   .. .. ..$ : chr [1:7] "d1" "d2" "d3" "d4" ...
+> > >   ..@ obsCovs :'data.frame': 2205 obs. of  2 variables:
+> > >   .. ..$ effort : num [1:2205] 0.25 0 0 0 0 0.75 0.75 0.75 1 1 ...
+> > >   .. ..$ camtype: Factor w/ 3 levels "Acorn","Browning",..: 2 2 2 2 2 2 2 2 2 2 ...
+> > >   ..@ siteCovs:'data.frame': 315 obs. of  4 variables:
+> > >   .. ..$ elevation: num [1:315] 542 660 674 739 721 838 904 612 934 537 ...
+> > >   .. ..$ lctype   : Factor w/ 7 levels "Alpineherbfield",..: 3 2 4 3 4 7 7 4 4 4 ...
+> > >   .. ..$ biomass  : num [1:315] NA NA NA 0.122 NA ...
+> > >   .. ..$ period   : Factor w/ 3 levels "Period1","Period2",..: 1 1 1 1 1 1 1 1 1 1 ...
+> > >   ..@ mapInfo : NULL
+> > >   ..@ obsToY  : num [1:7, 1:7] 1 0 0 0 0 0 0 0 1 0 ...
+> > >
+> > >
+> > > Thanks in advance for any advice you may have.
+> > >
+> > > Nick Foster
+> > >
+> > >
+> > >
+
+From ueac7a87541688ade at groups.google.com  Wed Apr 22 22:17:16 2020
+From: ueac7a87541688ade at groups.google.com (Nicholas Foster)
+Date: Wed, 22 Apr 2020 22:17:16 +0000
+Subject: Re: Trouble adding mean categorical psi covariate to newdata for predict function
+Message-ID: <tCPKWAbEdCw.bSeeEm3UAgAJ@unmarked.groups.google.com>
+In-Reply-To: <tCPKWAbEdCw.aX01tjzSAgAJ@unmarked.groups.google.com>
+References: <tCPKWAbEdCw.lInYJkK_AwAJ@unmarked.groups.google.com> <tCPKWAbEdCw.aX01tjzSAgAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/tCPKWAbEdCw/m/bSeeEm3UAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Kevin,
+
+Thanks for that, that's a really convenient way to explore what is happening within each landcover type. I'll put that my unmarked cookbook.
+
+Nick
+
+On Thursday, April 23, 2020 at 9:37:09 AM UTC+12, Kevin Parker wrote:
+> Hi Nick,
+>
+> Not exactly an answer to the question you're asking, but I think this might help. If you're interested in seeing the effect of elevation on PSI in the different land cover types you could visualize that by modifying how you're plotting the predicted dataframe (of course this will be the same slope without an interaction term, but as a place to start) . Try plotting with ggplot and use facet_wrap(~lctype). That will give you 7 different panels, with PSI on the y axis, and elevation of the x. If you're not familiar with ggplot that code might look something like this for you:
+>
+> #make your predicted dataframe
+> pred_data<-predict(mod2, type="state", newdata=newdata, appendData=TRUE)
+>
+>
+> #plot it
+> ggplot(pred_data , aes(elevation,Predicted))+
+> geom_line()+
+> geom_ribbon(aes(ymin =lower, ymax = upper), alpha = 0.3)+
+> ylab(expression(italic(psi)))+
+> xlab(elevation)+
+> facet_wrap(~lctype)
+>
+> Hope this helps.
+> Kevin
+>
+> On Wednesday, April 22, 2020 at 1:57:29 PM UTC-7, Nicholas Foster wrote:
+> > Thanks for the quick reply Ken. I can see that the problem lies in my own understanding and not in a complicated solution of creating new categories for mean values.
+> >
+> > Could you please give me an example of how both continuous and categorical covariates are entered into the newdata frame to give baseline/reference levels?
+> >
+> > Thank you and again I apologise for the menial question.
+> > Nick
+> >
+> >
+> >
+> >
+> >
+> > On Thursday, April 23, 2020 at 6:20:18 AM UTC+12, Ken Kellner wrote:
+> > > Hi Nicholas,
+> > >
+> > > There's no straightforward way to do what you are asking in unmarked. If you provide multiple factor levels in the newdata as you have done in your example, you will get one predicted value for each of these factor levels. These predictions will have the same value for x (elevation) but different values of y, which leads to the ugly plot you are seeing.
+> > >
+> > > Usually for a plot like the one you are making, focused on one continuous covariate, I would just use the baseline/reference levels of each categorical covariate, or plot multiple lines on each plot with each line corresponding to a different factor level. It doesn't really make sense to me conceptually to try to get the "mean" of a categorical variable. If you have elevation measurements of 0 and 100, the mean=50 is generally a possible observed value in the dataset. But "averaging" across land covers is creating a new "category" that doesn't exist in reality.
+> > >
+> > > If you really want this I suppose you could get predicted values for your range of elevations at each individual land cover level, one at a time, and then calculate an average value across all land covers for each elevation value in your sequence.
+> > >
+> > > Ken
+> > >
+> > > On Wednesday, April 22, 2020 at 8:09:34 AM UTC-4, Nicholas Foster wrote:
+> > > > Hi all,
+> > > >
+> > > > I am a new user of unmarked, so I apologise if this is an obvious fix. I've had a good sift through of old topics but cannot find a solution.
+> > > >
+> > > > I've fit a full with continous and categorical covs of both p and psi = p (effort + camtype + period) psi (elevation + lctype) and using this, I wish to predict occupancy estimates for elevation across averaged values of the other covs. My trouble starts when I include the categorical psi covariate 'lctype'. In the Carly Scott thread ("Predict() with categorical survey-level covariate in top models") the advice was to specify one level of the factors - when I do this, it generates predictions of that specific lctype (landcover type) successfully in a normal looking plot, but when I change this to another lctype factor level, the prediction changes and its clear that its predicting for elevation within that factor level.
+> > > >
+> > > > My question is: how do I format the newdata so that I am predicting across averaged values of the lctype psi cov?
+> > > >
+> > > > Here is what I've got so far:
+> > > >
+> > > > mod2 <- occu(formula = ~effort + camtype + period
+> > > >              ~  elevation + lctype,
+> > > >              data = umf)
+> > > >
+> > > > newdata <- data.frame(elevation=seq(500, 2250, length=315),
+> > > >                       effort = 0,
+> > > >                       period = c('period1',
+> > > >                                   'period2',
+> > > >                                   'period3'),
+> > > >                        camtype = c('Acorn',
+> > > >                                    'Browning',
+> > > >                                    'Reconyx'),
+> > > >                       lctype =c('Alpineherbfield',
+> > > >                                 'Beechforest',
+> > > >                                 'Matagourigrassland',
+> > > >                                 'Lowproducingpasture',
+> > > >                                 'Rock',
+> > > >                                 'Subalpineshrub',
+> > > >                                 'Talltussockgrassland'))
+> > > >
+> > > > If I try something like
+> > > >
+> > > > newdata$lctype <- factor(lctype, levels = c('Alpineherbfield', '.......)
+> > > >
+> > > > I either get " Error in X[i, ] : subscript out of bounds"
+> > > >
+> > > > or an absolute nightmare of a plot like:
+> > > >
+> > > >
+> > > >
+> > > >
+> > > > Here are the covs:
+> > > >
+> > > > Formal class 'unmarkedFrameOccu' [package "unmarked"] with 5 slots
+> > > >   ..@ y       : int [1:315, 1:7] 0 1 0 1 0 1 0 0 0 0 ...
+> > > >   .. ..- attr(*, "dimnames")=List of 2
+> > > >   .. .. ..$ : NULL
+> > > >   .. .. ..$ : chr [1:7] "d1" "d2" "d3" "d4" ...
+> > > >   ..@ obsCovs :'data.frame': 2205 obs. of  2 variables:
+> > > >   .. ..$ effort : num [1:2205] 0.25 0 0 0 0 0.75 0.75 0.75 1 1 ...
+> > > >   .. ..$ camtype: Factor w/ 3 levels "Acorn","Browning",..: 2 2 2 2 2 2 2 2 2 2 ...
+> > > >   ..@ siteCovs:'data.frame': 315 obs. of  4 variables:
+> > > >   .. ..$ elevation: num [1:315] 542 660 674 739 721 838 904 612 934 537 ...
+> > > >   .. ..$ lctype   : Factor w/ 7 levels "Alpineherbfield",..: 3 2 4 3 4 7 7 4 4 4 ...
+> > > >   .. ..$ biomass  : num [1:315] NA NA NA 0.122 NA ...
+> > > >   .. ..$ period   : Factor w/ 3 levels "Period1","Period2",..: 1 1 1 1 1 1 1 1 1 1 ...
+> > > >   ..@ mapInfo : NULL
+> > > >   ..@ obsToY  : num [1:7, 1:7] 1 0 0 0 0 0 0 0 1 0 ...
+> > > >
+> > > >
+> > > > Thanks in advance for any advice you may have.
+> > > >
+> > > > Nick Foster
+> > > >
+> > > >
+> > > >
+
+From u9ca502218c2e2949 at groups.google.com  Thu Apr 23 16:08:13 2020
+From: u9ca502218c2e2949 at groups.google.com (Antonela Marozzi)
+Date: Thu, 23 Apr 2020 16:08:13 +0000
+Subject: sex proportion with imperfect detection
+Message-ID: <8AUj9ueZip4.bimZEN4OAwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/8AUj9ueZip4/m/bimZEN4OAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello dear all, I am trying to estimate the adult sex ratio using distance sampling data. For that, I 've modified the code proposer by Ancona et al. 2017 which is also based in a code proposed in Ch6 of the AHM book. This code was initially written to capture and recapture data, so I 've considered that as a site as each stop that we have done to count and identify animals. Since at each stop, there are adults that are sexed and adults that are not sexed,  there is a probability to identify sex. In my model species, there is no sexual dimorphism, so chances to identify an adult male or female are the same. To do that you need to observe the testes or the vulva.
+When I run the code, I get this warning:
+
+Warning message:
+In sqrt(diag(v)) : NaNs produced
+
+I have read in this group that this might be due to sparse data or small data sets can cause this warning, and a smaller model should be written for this data. But in my case I can't think of a smaller model and I am not sure if calculating sex proportion without tacking account that there is a probability of not identifying sex is a good choice. Any help is really welcome. I paste my code below and attach a data file in case some is interested in have a look to my data.
+
+data10<-read.csv(file="feb2010.csv",header=TRUE,sep=",",dec=".")
+males10<-matrix(data10$machos.id <http://machos.id>)
+females10<-matrix(data10$hembras.id <http://hembras.id>)
+males10_na<-na.omit(males10)
+females10_na<-na.omit(females10)
+sex_prop_trad10<-sum(males10_na)/(sum(males10_na)+sum(females10_na)) #traditional estimation of sex proportions
+sex_prop_trad10
+library(unmarked)
+#males
+umf1 <- unmarkedFramePCount(y = males10_na)   # Create unmarked data frame for males
+summary(umf1)                             # Summarize
+na.omit(umf1)
+(fm1 <- pcount(~1 ~1, data = umf1))       # Fit model: get estimates on link scale
+backTransform(fm1, "state")               # Get estimates on natural scale
+backTransform(fm1, "det")
+
+mean_Nmales <-  backTransform(fm1, "state")@estimate  # mean estimated abundance
+
+#females
+umf2 <- unmarkedFramePCount(y = females10_na)  # Create unmarked data frame for females
+na.omit(umf2)
+summary(umf2)                       # Summarize
+(fm2 <- pcount(~1 ~1, data = umf2)) # Fit model: get estimates on link scale
+backTransform(fm2, "state")         # Get estimates on natural scale
+backTransform(fm2, "det")
+
+mean_Nfemales <-  backTransform(fm2, "state")@estimate  # mean estimated abundance
+
+# Get estimates of male and female abundance for the 4 sites, and the sex ratios for each site:
+est_males_scn1 <- bup(ranef(fm1))
+est_females_scn1 <- bup(ranef(fm2))
+random_est_SR_scn1 <- est_males_scn1/(est_males_scn1+est_females_scn1)
+cbind(males=est_males_scn1,females=est_females_scn1,estimated_SR=round(random_est_SR_scn1,2))
+
+plot(random_est_SR_scn1, ylim=c(0,1),ylab="Estimated ASR - Scenario 1",xlab="Site")
+abline(h= mean(random_est_SR_scn1), col=2)
+# Sex-ratio calculated with the mean estimated abundance of males and females across all 50 sites
+SR_1 <- mean_Nmales/(mean_Nmales+mean_Nfemales)
+
+(cbind(males=mean_Nmales,females=mean_Nfemales,estimated_SR=round(SR_1,2)))
+
+Reagards
+
+Antonela
+
+From u09570c3cdd137595 at groups.google.com  Mon Apr 27 16:24:30 2020
+From: u09570c3cdd137595 at groups.google.com (Lisanne Petracca)
+Date: Mon, 27 Apr 2020 16:24:30 +0000
+Subject: Tricky dataset & whether pcountOpen is appropriate framework
+Message-ID: <VPgJmvFdYBU.O3jltxNKBAAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/VPgJmvFdYBU/m/O3jltxNKBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I am currently working with a bit of a tricky dataset and am wondering more broadly if the open population N-mixture approach (i.e. Dail & Madsen 2011) is the right way to go. I have a lot of experience with occupancy models, but this is my first foray into the N-mixture world.
+
+The dataset comprises three years of nightly acoustic recordings of bats outside a hibernaculum during spring emergence. There are 12 detectors, and the first "hump" of bat calls during emergence takes place over ~12 nights in each year. The goal of this project is to answer "What habitat features are bats using as they emerge from the hibernaculum?" (and, more broadly, how can this information to be used to assist recovery from white-nose syndrome).
+
+The number of bats on the landscape changes daily -- bats emerge from the hibernaculum, use the immediate landscape around the hibernaculum (where the detector array is located), and then disperse to maternity colonies -- so this is clearly an open population. Detection will vary by temperature and, to a lesser extent, other weather-related variables such as relative humidity, wind speed, precipitation, etc. I was planning to apply pcountOpen to each year separately, using 12 replicates (nightly counts over 12 nights) at 12 sites (detectors). I know our sample size is low.
+
+My two questions are:
+
+(1) Will modeling covariates on gamma (ie "immigration," the number of bats entering the landscape daily) be the key to answering our question about what habitat features bats are using? I was thinking (as the number of calls is hump-shaped over time) gamma could be modeled as
+
+julianday + julianday^2 + lidarmeasure1 + lidarmeasure2 + ....
+
+(2) Double-counting of bats is almost certain due to the detectors recording all night long & an inability to identify individual bats on the detectors. I know this is a major assumption of N-mixture models and that traditional GOF models will fail to pick up on even the slightest of violations. A counterargument from my collaborators is that bias on N doesn't matter, as we aren't interested in abundance estimation but rather use of habitat features by incoming bats. How slippery is this slope?
+
+Any advice appreciated from those with more experience with this class of models. My thanks in advance for your time and attention.
+
+Best,
+Lisanne
+
+From u27debeac26f66a0b at groups.google.com  Mon Apr 27 16:52:14 2020
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez Garcia-Herrera)
+Date: Mon, 27 Apr 2020 16:52:14 +0000
+Subject: RE: [unmarked] sex proportion with imperfect detection
+Message-ID: <8AUj9ueZip4.yhT57eLWBQAJ@unmarked.groups.google.com>
+In-Reply-To: <8AUj9ueZip4.bimZEN4OAwAJ@unmarked.groups.google.com>
+References: <8AUj9ueZip4.bimZEN4OAwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/8AUj9ueZip4/m/yhT57eLWBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Antonella,
+
+If  I understood your idea, you are trying to calculate sex ratio in a population using N-mixture models to deal with imperfect detection. But in your data there is only one sampling occasion, instead several of them. Is this correct?
+
+Jose
+
+De: unma...@googlegroups.com [mailto:unma...@googlegroups.com] En nombre de Antonela Marozzi
+Enviado el: jueves, 23 de abril de 2020 18:08
+Para: unmarked <unma...@googlegroups.com>
+Asunto: [unmarked] sex proportion with imperfect detection
+
+Hello dear all, I am trying to estimate the adult sex ratio using distance sampling data. For that, I 've modified the code proposer by Ancona et al. 2017 which is also based in a code proposed in Ch6 of the AHM book. This code was initially written to capture and recapture data, so I 've considered that as a site as each stop that we have done to count and identify animals. Since at each stop, there are adults that are sexed and adults that are not sexed,  there is a probability to identify sex. In my model species, there is no sexual dimorphism, so chances to identify an adult male or female are the same. To do that you need to observe the testes or the vulva.
+
+When I run the code, I get this warning:
+
+Warning message:
+
+In sqrt(diag(v)) : NaNs produced
+
+I have read in this group that this might be due to sparse data or small data sets can cause this warning, and a smaller model should be written for this data. But in my case I can't think of a smaller model and I am not sure if calculating sex proportion without tacking account that there is a probability of not identifying sex is a good choice. Any help is really welcome. I paste my code below and attach a data file in case some is interested in have a look to my data.
+
+data10<-read.csv(file="feb2010.csv",header=TRUE,sep=",",dec=".")
+
+males10<-matrix(data10$machos.id <http://machos.id>)
+
+females10<-matrix(data10$hembras.id <http://hembras.id>)
+
+males10_na<-na.omit(males10)
+
+females10_na<-na.omit(females10)
+
+sex_prop_trad10<-sum(males10_na)/(sum(males10_na)+sum(females10_na)) #traditional estimation of sex proportions
+
+sex_prop_trad10
+
+library(unmarked)
+
+#males
+
+umf1 <- unmarkedFramePCount(y = males10_na)   # Create unmarked data frame for males
+
+summary(umf1)                             # Summarize
+
+na.omit(umf1)
+
+(fm1 <- pcount(~1 ~1, data = umf1))       # Fit model: get estimates on link scale
+
+backTransform(fm1, "state")               # Get estimates on natural scale
+
+backTransform(fm1, "det")
+
+mean_Nmales <-  backTransform(fm1, "state")@estimate  # mean estimated abundance
+
+#females
+
+umf2 <- unmarkedFramePCount(y = females10_na)  # Create unmarked data frame for females
+
+na.omit(umf2)
+
+summary(umf2)                       # Summarize
+
+(fm2 <- pcount(~1 ~1, data = umf2)) # Fit model: get estimates on link scale
+
+backTransform(fm2, "state")         # Get estimates on natural scale
+
+backTransform(fm2, "det")
+
+mean_Nfemales <-  backTransform(fm2, "state")@estimate  # mean estimated abundance
+
+# Get estimates of male and female abundance for the 4 sites, and the sex ratios for each site:
+
+est_males_scn1 <- bup(ranef(fm1))
+
+est_females_scn1 <- bup(ranef(fm2))
+
+random_est_SR_scn1 <- est_males_scn1/(est_males_scn1+est_females_scn1)
+
+cbind(males=est_males_scn1,females=est_females_scn1,estimated_SR=round(random_est_SR_scn1,2))
+
+plot(random_est_SR_scn1, ylim=c(0,1),ylab="Estimated ASR - Scenario 1",xlab="Site")
+
+abline(h= mean(random_est_SR_scn1), col=2)
+
+# Sex-ratio calculated with the mean estimated abundance of males and females across all 50 sites
+
+SR_1 <- mean_Nmales/(mean_Nmales+mean_Nfemales)
+
+(cbind(males=mean_Nmales,females=mean_Nfemales,estimated_SR=round(SR_1,2)))
+
+Reagards
+
+Antonela
+
+--
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/422d83e3-563b-4f14-abd9-ba8c37a8da9f%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/422d83e3-563b-4f14-abd9-ba8c37a8da9f%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u9ca502218c2e2949 at groups.google.com  Mon Apr 27 18:22:49 2020
+From: u9ca502218c2e2949 at groups.google.com (Antonela Marozzi)
+Date: Mon, 27 Apr 2020 18:22:49 +0000
+Subject: Re: [unmarked] sex proportion with imperfect detection
+Message-ID: <8AUj9ueZip4.iTJxYNTbBQAJ@unmarked.groups.google.com>
+In-Reply-To: <8AUj9ueZip4.bimZEN4OAwAJ@unmarked.groups.google.com>
+References: <8AUj9ueZip4.bimZEN4OAwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/8AUj9ueZip4/m/iTJxYNTbBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear José, yes in my sampling data there is only one sampling occasion.
+
+El lun., 27 abr. 2020 a las 13:52, Jose Jimenez Garcia-Herrera (<Jose.J...@uclm.es>) escribió:
+
+> Dear Antonella,
+>
+>
+>
+> If  I understood your idea, you are trying to calculate sex ratio in a population using N-mixture models to deal with imperfect detection. But in your data there is only one sampling occasion, instead several of them. Is this correct?
+>
+>
+>
+> Jose
+>
+>
+>
+> De: unma...@googlegroups.com [mailto:unma...@googlegroups.com] En nombre de Antonela Marozzi
+> Enviado el: jueves, 23 de abril de 2020 18:08
+> Para: unmarked <unma...@googlegroups.com>
+> Asunto: [unmarked] sex proportion with imperfect detection
+>
+>
+>
+> Hello dear all, I am trying to estimate the adult sex ratio using distance sampling data. For that, I 've modified the code proposer by Ancona et al. 2017 which is also based in a code proposed in Ch6 of the AHM book. This code was initially written to capture and recapture data, so I 've considered that as a site as each stop that we have done to count and identify animals. Since at each stop, there are adults that are sexed and adults that are not sexed,  there is a probability to identify sex. In my model species, there is no sexual dimorphism, so chances to identify an adult male or female are the same. To do that you need to observe the testes or the vulva.
+>
+> When I run the code, I get this warning:
+>
+>
+>
+> Warning message:
+>
+> In sqrt(diag(v)) : NaNs produced
+>
+>
+>
+> I have read in this group that this might be due to sparse data or small data sets can cause this warning, and a smaller model should be written for this data. But in my case I can't think of a smaller model and I am not sure if calculating sex proportion without tacking account that there is a probability of not identifying sex is a good choice. Any help is really welcome. I paste my code below and attach a data file in case some is interested in have a look to my data.
+>
+>
+>
+> data10<-read.csv(file="feb2010.csv",header=TRUE,sep=",",dec=".")
+>
+> males10<-matrix(data10$machos.id <http://machos.id>)
+>
+> females10<-matrix(data10$hembras.id <http://hembras.id>)
+>
+> males10_na<-na.omit(males10)
+>
+> females10_na<-na.omit(females10)
+>
+> sex_prop_trad10<-sum(males10_na)/(sum(males10_na)+sum(females10_na)) #traditional estimation of sex proportions
+>
+> sex_prop_trad10
+>
+> library(unmarked)
+>
+> #males
+>
+> umf1 <- unmarkedFramePCount(y = males10_na)   # Create unmarked data frame for males
+>
+> summary(umf1)                             # Summarize
+>
+> na.omit(umf1)
+>
+> (fm1 <- pcount(~1 ~1, data = umf1))       # Fit model: get estimates on link scale
+>
+> backTransform(fm1, "state")               # Get estimates on natural scale
+>
+> backTransform(fm1, "det")
+>
+>
+>
+> mean_Nmales <-  backTransform(fm1, "state")@estimate  # mean estimated abundance
+>
+>
+>
+> #females
+>
+> umf2 <- unmarkedFramePCount(y = females10_na)  # Create unmarked data frame for females
+>
+> na.omit(umf2)
+>
+> summary(umf2)                       # Summarize
+>
+> (fm2 <- pcount(~1 ~1, data = umf2)) # Fit model: get estimates on link scale
+>
+> backTransform(fm2, "state")         # Get estimates on natural scale
+>
+> backTransform(fm2, "det")
+>
+>
+>
+> mean_Nfemales <-  backTransform(fm2, "state")@estimate  # mean estimated abundance
+>
+>
+>
+> # Get estimates of male and female abundance for the 4 sites, and the sex ratios for each site:
+>
+> est_males_scn1 <- bup(ranef(fm1))
+>
+> est_females_scn1 <- bup(ranef(fm2))
+>
+> random_est_SR_scn1 <- est_males_scn1/(est_males_scn1+est_females_scn1)
+>
+> cbind(males=est_males_scn1,females=est_females_scn1,estimated_SR=round(random_est_SR_scn1,2))
+>
+>
+>
+> plot(random_est_SR_scn1, ylim=c(0,1),ylab="Estimated ASR - Scenario 1",xlab="Site")
+>
+> abline(h= mean(random_est_SR_scn1), col=2)
+>
+> # Sex-ratio calculated with the mean estimated abundance of males and females across all 50 sites
+>
+> SR_1 <- mean_Nmales/(mean_Nmales+mean_Nfemales)
+>
+>
+>
+> (cbind(males=mean_Nmales,females=mean_Nfemales,estimated_SR=round(SR_1,2)))
+>
+>
+>
+>
+>
+> Reagards
+>
+>
+>
+> Antonela
+>
+>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/422d83e3-563b-4f14-abd9-ba8c37a8da9f%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/422d83e3-563b-4f14-abd9-ba8c37a8da9f%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+
+> You received this message because you are subscribed to a topic in the Google Groups "unmarked" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/unmarked/8AUj9ueZip4/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/unmarked/VI1PR0101MB2304C511317404BB19DC9CB392AF0%40VI1PR0101MB2304.eurprd01.prod.exchangelabs.com <https://groups.google.com/d/msgid/unmarked/VI1PR0101MB2304C511317404BB19DC9CB392AF0%40VI1PR0101MB2304.eurprd01.prod.exchangelabs.com?utm_medium=email&utm_source=footer>.
+
+From u27debeac26f66a0b at groups.google.com  Mon Apr 27 19:17:57 2020
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez Garcia-Herrera)
+Date: Mon, 27 Apr 2020 19:17:57 +0000
+Subject: RE: [unmarked] sex proportion with imperfect detection
+Message-ID: <8AUj9ueZip4.leQpg9beBQAJ@unmarked.groups.google.com>
+In-Reply-To: <8AUj9ueZip4.bimZEN4OAwAJ@unmarked.groups.google.com>
+References: <8AUj9ueZip4.bimZEN4OAwAJ@unmarked.groups.google.com>
+Archived-At: <https://groups.google.com/g/unmarked/c/8AUj9ueZip4/m/leQpg9beBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+To account for imperfect detection we use N-mixture models, that are based on replicate counts conducted over a short period of time. Replication is required in space and in time. I think maybe you could need another approach.
+
+José
+
+De: unma...@googlegroups.com <unma...@googlegroups.com> En nombre de Antonela Marozzi
+Enviado el: lunes, 27 de abril de 2020 20:23
+Para: unma...@googlegroups.com
+Asunto: Re: [unmarked] sex proportion with imperfect detection
+
+Dear José, yes in my sampling data there is only one sampling occasion.
+
+El lun., 27 abr. 2020 a las 13:52, Jose Jimenez Garcia-Herrera (<Jose.J...@uclm.es>) escribió:
+>
+> Dear Antonella,
+>
+>
+>
+> If  I understood your idea, you are trying to calculate sex ratio in a population using N-mixture models to deal with imperfect detection. But in your data there is only one sampling occasion, instead several of them. Is this correct?
+>
+>
+>
+> Jose
+>
+>
+>
+> De: unma...@googlegroups.com [mailto:unma...@googlegroups.com] En nombre de Antonela Marozzi
+> Enviado el: jueves, 23 de abril de 2020 18:08
+> Para: unmarked <unma...@googlegroups.com>
+> Asunto: [unmarked] sex proportion with imperfect detection
+>
+>
+>
+> Hello dear all, I am trying to estimate the adult sex ratio using distance sampling data. For that, I 've modified the code proposer by Ancona et al. 2017 which is also based in a code proposed in Ch6 of the AHM book. This code was initially written to capture and recapture data, so I 've considered that as a site as each stop that we have done to count and identify animals. Since at each stop, there are adults that are sexed and adults that are not sexed,  there is a probability to identify sex. In my model species, there is no sexual dimorphism, so chances to identify an adult male or female are the same. To do that you need to observe the testes or the vulva.
+>
+> When I run the code, I get this warning:
+>
+>
+>
+> Warning message:
+>
+> In sqrt(diag(v)) : NaNs produced
+>
+>
+>
+> I have read in this group that this might be due to sparse data or small data sets can cause this warning, and a smaller model should be written for this data. But in my case I can't think of a smaller model and I am not sure if calculating sex proportion without tacking account that there is a probability of not identifying sex is a good choice. Any help is really welcome. I paste my code below and attach a data file in case some is interested in have a look to my data.
+>
+>
+>
+> data10<-read.csv(file="feb2010.csv",header=TRUE,sep=",",dec=".")
+>
+> males10<-matrix(data10$machos.id <http://machos.id>)
+>
+> females10<-matrix(data10$hembras.id <http://hembras.id>)
+>
+> males10_na<-na.omit(males10)
+>
+> females10_na<-na.omit(females10)
+>
+> sex_prop_trad10<-sum(males10_na)/(sum(males10_na)+sum(females10_na)) #traditional estimation of sex proportions
+>
+> sex_prop_trad10
+>
+> library(unmarked)
+>
+> #males
+>
+> umf1 <- unmarkedFramePCount(y = males10_na)   # Create unmarked data frame for males
+>
+> summary(umf1)                             # Summarize
+>
+> na.omit(umf1)
+>
+> (fm1 <- pcount(~1 ~1, data = umf1))       # Fit model: get estimates on link scale
+>
+> backTransform(fm1, "state")               # Get estimates on natural scale
+>
+> backTransform(fm1, "det")
+>
+>
+>
+> mean_Nmales <-  backTransform(fm1, "state")@estimate  # mean estimated abundance
+>
+>
+>
+> #females
+>
+> umf2 <- unmarkedFramePCount(y = females10_na)  # Create unmarked data frame for females
+>
+> na.omit(umf2)
+>
+> summary(umf2)                       # Summarize
+>
+> (fm2 <- pcount(~1 ~1, data = umf2)) # Fit model: get estimates on link scale
+>
+> backTransform(fm2, "state")         # Get estimates on natural scale
+>
+> backTransform(fm2, "det")
+>
+>
+>
+> mean_Nfemales <-  backTransform(fm2, "state")@estimate  # mean estimated abundance
+>
+>
+>
+> # Get estimates of male and female abundance for the 4 sites, and the sex ratios for each site:
+>
+> est_males_scn1 <- bup(ranef(fm1))
+>
+> est_females_scn1 <- bup(ranef(fm2))
+>
+> random_est_SR_scn1 <- est_males_scn1/(est_males_scn1+est_females_scn1)
+>
+> cbind(males=est_males_scn1,females=est_females_scn1,estimated_SR=round(random_est_SR_scn1,2))
+>
+>
+>
+> plot(random_est_SR_scn1, ylim=c(0,1),ylab="Estimated ASR - Scenario 1",xlab="Site")
+>
+> abline(h= mean(random_est_SR_scn1), col=2)
+>
+> # Sex-ratio calculated with the mean estimated abundance of males and females across all 50 sites
+>
+> SR_1 <- mean_Nmales/(mean_Nmales+mean_Nfemales)
+>
+>
+>
+> (cbind(males=mean_Nmales,females=mean_Nfemales,estimated_SR=round(SR_1,2)))
+>
+>
+>
+>
+>
+> Reagards
+>
+>
+>
+> Antonela
+>
+>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "unmarked" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/422d83e3-563b-4f14-abd9-ba8c37a8da9f%40googlegroups.com <https://groups.google.com/d/msgid/unmarked/422d83e3-563b-4f14-abd9-ba8c37a8da9f%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "unmarked" group.
+> To unsubscribe from this topic, visit  https://groups.google.com/d/topic/unmarked/8AUj9ueZip4/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to  unmarked+u...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/VI1PR0101MB2304C511317404BB19DC9CB392AF0%40VI1PR0101MB2304.eurprd01.prod.exchangelabs.com <https://groups.google.com/d/msgid/unmarked/VI1PR0101MB2304C511317404BB19DC9CB392AF0%40VI1PR0101MB2304.eurprd01.prod.exchangelabs.com?utm_medium=email&utm_source=footer>.
+
+--
+You received this message because you are subscribed to the Google Groups "unmarked" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to unmarked+u...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/unmarked/CACGmuFo3DKpw5g%2Bi7Cor4SYWUVQwRfqi0-9m44dUCETZ8gcRwQ%40mail.gmail.com <https://groups.google.com/d/msgid/unmarked/CACGmuFo3DKpw5g%2Bi7Cor4SYWUVQwRfqi0-9m44dUCETZ8gcRwQ%40mail.gmail.com?utm_medium=email&utm_source=footer>.
+

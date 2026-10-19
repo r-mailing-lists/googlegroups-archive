@@ -1,0 +1,1615 @@
+From u402856652ba9dda3 at groups.google.com  Mon Mar  2 03:21:01 2020
+From: u402856652ba9dda3 at groups.google.com (Josh)
+Date: Mon, 02 Mar 2020 03:21:01 +0000
+Subject: NA/NaN Function evaluation, seemingly from dnorm
+Message-ID: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rZMfL-UM1Ww/m/CouFBUavAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I'm trying to estimate ∫f(lw)*f(x,y | exp(lw))dw, where f(lw) is an already-estimated mixture model (using mclust).  However, I keep getting "NA/NaN function evaluation" from nlminb and I'm not quite sure exactly why.
+
+R code:
+
+library(TMB)
+library(mclust)
+dw <- densityMclust(log(w_o))
+
+parameters <- list(
+lw = rep(0, length(y)),
+gamma_wy = -0.7,
+gamma_wxy = -0.7,
+gamma_wx = -0.7,
+lsigma_y = -0.7,
+lsigma_x = -0.7,
+mu_y = 0,
+mu_x = 0,
+b = 0
+)
+
+data <- list(
+x = x,
+y = y,
+dw_mean = dw$parameters$mean,
+dw_prop = dw$parameters$pro,
+dw_sigma = sqrt(dw$parameters$variance$sigmasq)
+)
+
+compile("file.cpp")
+dyn.load(dynlib("file"))
+obj <- MakeADFun(
+data=data, parameters=parameters,
+DLL="file",
+random=c("lw")
+)
+
+opt <- nlminb(obj$par, obj$fn, obj$gr)
+
+Then, in C++/TMB:
+
+#include <TMB.hpp>
+
+template<class Type>
+vector<Type> dw(vector<Type> lw, vector<Type> means, vector<Type> prop, vector<Type> sigma)
+{
+vector<Type> res(lw.size());
+
+for (int i = 0; i < lw.size(); i++)
+{
+res(i) = 0;
+for (int j = 0; j < means.size(); j++)
+{
+res(i) += prop(j)*dnorm(lw(i), means(j), sigma(j), false);
+}
+}
+
+return log(res);
+}
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+DATA_VECTOR(x);
+DATA_VECTOR(y);
+DATA_VECTOR(dw_mean);
+DATA_VECTOR(dw_prop);
+DATA_VECTOR(dw_sigma);
+PARAMETER_VECTOR(lw);
+PARAMETER(gamma_wy);
+PARAMETER(gamma_wxy);
+PARAMETER(gamma_wx);
+PARAMETER(lsigma_y);
+PARAMETER(lsigma_x);
+PARAMETER(mu_y);
+PARAMETER(mu_x);
+PARAMETER(b);
+vector<Type> w = exp(lw);
+
+Type nll = -dw(lw, dw_mean, dw_prop, dw_sigma).sum();
+
+nll -= dnorm(y,
+              mu_y + b*x + gamma_wy*w + gamma_wxy*w*x,
+              exp(lsigma_y), true).sum();
+nll -= dnorm(x,
+              mu_x + gamma_wx*w,
+              exp(lsigma_x), true).sum();
+return nll;
+}
+
+The original w_o are distributed as Beta(2,5), and the prop values sum to 1.  The issue doesn't seem to be in dw or exp(lw), as removing them doesn't stop the problem.  It actually seems to be in the dnorm call for x, as the issue does go away when it's removed, but I can't figure out why.  Dropping lsigma_x (and relevant parameter stuff) and just using 1 for the variance gives the same issue, but so does dropping mu_x + gamma_wx*w (and relevant parameter stuff) and replacing it with 0.  Even dropping both yields the same, so it's got to be x itself.  x doesn't have any NA values though (values: https://pastebin.com/vv50R82R), and R's dnorm works fine on it.  It would be great if someone could help me out here.
+
+Thank you,
+Josh.
+
+From u02e03030784aa6a7 at groups.google.com  Mon Mar  2 09:52:01 2020
+From: u02e03030784aa6a7 at groups.google.com (H. Skaug)
+Date: Mon, 02 Mar 2020 09:52:01 +0000
+Subject: Re: [TMB users] NA/NaN Function evaluation, seemingly from dnorm
+Message-ID: <rZMfL-UM1Ww.rPWCbttIAQAJ@tmb-users.groups.google.com>
+In-Reply-To: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com>
+References: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rZMfL-UM1Ww/m/rPWCbttIAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, I cannot make your example run:
+
+> dw <- densityMclust(log(w_o))
+Error in is.data.frame(frame) : object 'w_o' not found
+
+Hans
+
+On Mon, Mar 2, 2020 at 4:21 AM 'Josh' via TMB Users <tmb-...@googlegroups.com> wrote:
+
+> Hello,
+>
+> I'm trying to estimate ∫f(lw)*f(x,y | exp(lw))dw, where f(lw) is an already-estimated mixture model (using mclust).  However, I keep getting "NA/NaN function evaluation" from nlminb and I'm not quite sure exactly why.
+>
+> R code:
+>
+> library(TMB)
+> library(mclust)
+> dw <- densityMclust(log(w_o))
+>
+>
+> parameters <- list(
+> lw = rep(0, length(y)),
+> gamma_wy = -0.7,
+> gamma_wxy = -0.7,
+> gamma_wx = -0.7,
+> lsigma_y = -0.7,
+> lsigma_x = -0.7,
+> mu_y = 0,
+> mu_x = 0,
+> b = 0
+> )
+>
+> data <- list(
+> x = x,
+> y = y,
+> dw_mean = dw$parameters$mean,
+> dw_prop = dw$parameters$pro,
+> dw_sigma = sqrt(dw$parameters$variance$sigmasq)
+> )
+>
+> compile("file.cpp")
+> dyn.load(dynlib("file"))
+> obj <- MakeADFun(
+> data=data, parameters=parameters,
+> DLL="file",
+> random=c("lw")
+> )
+>
+> opt <- nlminb(obj$par, obj$fn, obj$gr)
+>
+> Then, in C++/TMB:
+>
+> #include <TMB.hpp>
+>
+> template<class Type>
+> vector<Type> dw(vector<Type> lw, vector<Type> means, vector<Type> prop, vector<Type> sigma)
+> {
+> vector<Type> res(lw.size());
+>
+> for (int i = 0; i < lw.size(); i++)
+> {
+> res(i) = 0;
+> for (int j = 0; j < means.size(); j++)
+> {
+> res(i) += prop(j)*dnorm(lw(i), means(j), sigma(j), false);
+> }
+> }
+>
+> return log(res);
+> }
+>
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+> DATA_VECTOR(x);
+> DATA_VECTOR(y);
+> DATA_VECTOR(dw_mean);
+> DATA_VECTOR(dw_prop);
+> DATA_VECTOR(dw_sigma);
+> PARAMETER_VECTOR(lw);
+> PARAMETER(gamma_wy);
+> PARAMETER(gamma_wxy);
+> PARAMETER(gamma_wx);
+> PARAMETER(lsigma_y);
+> PARAMETER(lsigma_x);
+> PARAMETER(mu_y);
+> PARAMETER(mu_x);
+> PARAMETER(b);
+> vector<Type> w = exp(lw);
+>
+> Type nll = -dw(lw, dw_mean, dw_prop, dw_sigma).sum();
+>
+> nll -= dnorm(y,
+>               mu_y + b*x + gamma_wy*w + gamma_wxy*w*x,
+>               exp(lsigma_y), true).sum();
+> nll -= dnorm(x,
+>               mu_x + gamma_wx*w,
+>               exp(lsigma_x), true).sum();
+> return nll;
+> }
+>
+>
+> The original w_o are distributed as Beta(2,5), and the prop values sum to 1.  The issue doesn't seem to be in dw or exp(lw), as removing them doesn't stop the problem.  It actually seems to be in the dnorm call for x, as the issue does go away when it's removed, but I can't figure out why.  Dropping lsigma_x (and relevant parameter stuff) and just using 1 for the variance gives the same issue, but so does dropping mu_x + gamma_wx*w (and relevant parameter stuff) and replacing it with 0.  Even dropping both yields the same, so it's got to be x itself.  x doesn't have any NA values though (values: https://pastebin.com/vv50R82R), and R's dnorm works fine on it.  It would be great if someone could help me out here.
+>
+> Thank you,
+> Josh.
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/82377798-72bd-462b-9cd9-a3d1e9bfd772%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/82377798-72bd-462b-9cd9-a3d1e9bfd772%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u402856652ba9dda3 at groups.google.com  Mon Mar  2 09:55:07 2020
+From: u402856652ba9dda3 at groups.google.com (Josh)
+Date: Mon, 02 Mar 2020 09:55:07 +0000
+Subject: Re: [TMB users] NA/NaN Function evaluation, seemingly from dnorm
+Message-ID: <rZMfL-UM1Ww.GI8VjcfEAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com>
+References: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rZMfL-UM1Ww/m/GI8VjcfEAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, here's the full R code with the data generation:
+
+set.seed(123)
+library(TMB)
+library(mclust)
+
+w <- 1/rbeta(10000, 2, 5)
+x <- rnorm(10000)
+y <- 5 + 0.3*x - 0.5*x*w + rnorm(10000)
+
+pop_df <- data.frame(x=x, y=y, w_o=w)
+df <- pop_df[sample(10000, 500, prob = w),]
+
+dw <- densityMclust(log(df$w_o))
+
+parameters <- list(
+lw = rep(0, nrow(df)),
+
+gamma_wy = -0.7,
+gamma_wxy = -0.7,
+gamma_wx = -0.7,
+lsigma_y = -0.7,
+lsigma_x = -0.7,
+mu_y = 0,
+mu_x = 0,
+b = 0
+)
+
+data <- list(
+
+x = df$x,
+y = df$y,
+
+dw_mean = dw$parameters$mean,
+dw_prop = dw$parameters$pro,
+dw_sigma = sqrt(dw$parameters$variance$sigmasq)
+)
+
+compile("file.cpp")
+dyn.load(dynlib("file"))
+obj <- MakeADFun(
+data=data, parameters=parameters,
+DLL="file",
+random=c("lw")
+)
+
+system.time(opt <- nlminb(obj$par, obj$fn, obj$gr))
+
+On Monday, March 2, 2020 at 1:52:01 AM UTC-8, Hans Skaug wrote:
+
+> Hi, I cannot make your example run:
+>
+> > dw <- densityMclust(log(w_o))
+> Error in is.data.frame(frame) : object 'w_o' not found
+>
+> Hans
+>
+
+> On Mon, Mar 2, 2020 at 4:21 AM 'Josh' via TMB Users <tmb-...@googlegroups.com> wrote:
+
+> > Hello,
+> >
+> > I'm trying to estimate ∫f(lw)*f(x,y | exp(lw))dw, where f(lw) is an already-estimated mixture model (using mclust).  However, I keep getting "NA/NaN function evaluation" from nlminb and I'm not quite sure exactly why.
+> >
+> > R code:
+> >
+> > library(TMB)
+> > library(mclust)
+> > dw <- densityMclust(log(w_o))
+> >
+> >
+> > parameters <- list(
+> > lw = rep(0, length(y)),
+> > gamma_wy = -0.7,
+> > gamma_wxy = -0.7,
+> > gamma_wx = -0.7,
+> > lsigma_y = -0.7,
+> > lsigma_x = -0.7,
+> > mu_y = 0,
+> > mu_x = 0,
+> > b = 0
+> > )
+> >
+> > data <- list(
+> > x = x,
+> > y = y,
+> > dw_mean = dw$parameters$mean,
+> > dw_prop = dw$parameters$pro,
+> > dw_sigma = sqrt(dw$parameters$variance$sigmasq)
+> > )
+> >
+> > compile("file.cpp")
+> > dyn.load(dynlib("file"))
+> > obj <- MakeADFun(
+> > data=data, parameters=parameters,
+> > DLL="file",
+> > random=c("lw")
+> > )
+> >
+> > opt <- nlminb(obj$par, obj$fn, obj$gr)
+> >
+> > Then, in C++/TMB:
+> >
+> > #include <TMB.hpp>
+> >
+> > template<class Type>
+> > vector<Type> dw(vector<Type> lw, vector<Type> means, vector<Type> prop, vector<Type> sigma)
+> > {
+> > vector<Type> res(lw.size());
+> >
+> > for (int i = 0; i < lw.size(); i++)
+> > {
+> > res(i) = 0;
+> > for (int j = 0; j < means.size(); j++)
+> > {
+> > res(i) += prop(j)*dnorm(lw(i), means(j), sigma(j), false);
+> > }
+> > }
+> >
+> > return log(res);
+> > }
+> >
+> > template<class Type>
+> > Type objective_function<Type>::operator() ()
+> > {
+> > DATA_VECTOR(x);
+> > DATA_VECTOR(y);
+> > DATA_VECTOR(dw_mean);
+> > DATA_VECTOR(dw_prop);
+> > DATA_VECTOR(dw_sigma);
+> > PARAMETER_VECTOR(lw);
+> > PARAMETER(gamma_wy);
+> > PARAMETER(gamma_wxy);
+> > PARAMETER(gamma_wx);
+> > PARAMETER(lsigma_y);
+> > PARAMETER(lsigma_x);
+> > PARAMETER(mu_y);
+> > PARAMETER(mu_x);
+> > PARAMETER(b);
+> > vector<Type> w = exp(lw);
+> >
+> > Type nll = -dw(lw, dw_mean, dw_prop, dw_sigma).sum();
+> >
+> > nll -= dnorm(y,
+> >               mu_y + b*x + gamma_wy*w + gamma_wxy*w*x,
+> >               exp(lsigma_y), true).sum();
+> > nll -= dnorm(x,
+> >               mu_x + gamma_wx*w,
+> >               exp(lsigma_x), true).sum();
+> > return nll;
+> > }
+> >
+> >
+> > The original w_o are distributed as Beta(2,5), and the prop values sum to 1.  The issue doesn't seem to be in dw or exp(lw), as removing them doesn't stop the problem.  It actually seems to be in the dnorm call for x, as the issue does go away when it's removed, but I can't figure out why.  Dropping lsigma_x (and relevant parameter stuff) and just using 1 for the variance gives the same issue, but so does dropping mu_x + gamma_wx*w (and relevant parameter stuff) and replacing it with 0.  Even dropping both yields the same, so it's got to be x itself.  x doesn't have any NA values though (values: https://pastebin.com/vv50R82R), and R's dnorm works fine on it.  It would be great if someone could help me out here.
+> >
+> > Thank you,
+> > Josh.
+> >
+> > --
+> > To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> > ---
+> > You received this message because you are subscribed to the Google Groups "TMB Users" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to tmb-...@googlegroups.com.
+
+> >
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/82377798-72bd-462b-9cd9-a3d1e9bfd772%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/82377798-72bd-462b-9cd9-a3d1e9bfd772%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u02e03030784aa6a7 at groups.google.com  Mon Mar  2 10:08:31 2020
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Mon, 02 Mar 2020 10:08:31 +0000
+Subject: Re: [TMB users] NA/NaN Function evaluation, seemingly from dnorm
+Message-ID: <rZMfL-UM1Ww.EnKOv4LFAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com>
+References: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rZMfL-UM1Ww/m/EnKOv4LFAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The Laplace approximation that is used for intergration does not work well with a mixture prior on the latent variable (needs to be Gaussian).
+
+If you want to do this in TMB you are probably better off using numerical quadrature:
+
+http://kaskr.github.io/adcomp/namespaceromberg.html#a980bb141c963b1cf20da450063c5c7d1
+
+From u402856652ba9dda3 at groups.google.com  Mon Mar  2 19:26:37 2020
+From: u402856652ba9dda3 at groups.google.com (Josh)
+Date: Mon, 02 Mar 2020 19:26:37 +0000
+Subject: Re: [TMB users] NA/NaN Function evaluation, seemingly from dnorm
+Message-ID: <rZMfL-UM1Ww.smktS_fjAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <rZMfL-UM1Ww.EnKOv4LFAgAJ@tmb-users.groups.google.com>
+References: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com> <rZMfL-UM1Ww.EnKOv4LFAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rZMfL-UM1Ww/m/smktS_fjAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm aware of that, but as mentioned above that doesn't appear to be what is causing the issue here.  The issue instead appears to arise from the call to dnorm for x.
+
+On Monday, March 2, 2020 at 2:08:31 AM UTC-8, Hans Skaug wrote:
+> The Laplace approximation that is used for intergration does not work well with a mixture prior on the latent variable (needs to be Gaussian).
+>
+> If you want to do this in TMB you are probably better off using numerical quadrature:
+>
+> http://kaskr.github.io/adcomp/namespaceromberg.html#a980bb141c963b1cf20da450063c5c7d1
+
+From u0965a429193e691b at groups.google.com  Thu Mar 12 02:23:53 2020
+From: u0965a429193e691b at groups.google.com (Daniel McGuire)
+Date: Thu, 12 Mar 2020 02:23:53 +0000
+Subject: TMB::normalize question with reproducible example.
+Message-ID: <jJrJmFQk2t4.tEraIDksAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/jJrJmFQk2t4/m/tEraIDksAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I was hoping I could get a better understanding of the syntax for using TMB::normalize.  I have data simulated here where two random effects vectors are distributed from GMRF.
+
+The first model does not use TMB::normalize(), and fits correctly.
+The second one (multiple_gmrf_random_effects_unnormalized.cpp) tries to use flags and TMB::normalize(), and does not seem to converge correctly.
+Does anyone have an idea?
+
+Thanks,
+Dan
+
+library(Matrix)
+library(TMB)
+
+compile("multiple_gmrf_random_effects.cpp")
+compile("multiple_gmrf_random_effects_unnormalized.cpp")
+dyn.load(dynlib("multiple_gmrf_random_effects"))
+dyn.load(dynlib("multiple_gmrf_random_effects_unnormalized"))
+
+n<-50000
+k<-10
+X<-cbind(rep(1, n), matrix(runif(n*k),ncol=k))
+beta<-rnorm(k+1)
+sd_a<-.3
+sd_b<-.1
+
+### GMRF #1 (sparse block diagonal covariance for groups )
+Ga1<-matrix(.5, 4, 4)  ## covariance within a group
+diag(Ga1)<-1
+grp<-rep(1:(n/4), each=4)
+Qa<-as(chol2inv(chol(.bdiag(rep(list(Ga1),times=n/4)))), "dgTMatrix")
+
+ua<-as.vector(t(chol(chol2inv(chol(Qa))))%*%matrix(rnorm(n, 0, sd_a), ncol=1))
+
+### GMRF #2 (sparse block diagonal covariance for groups )
+Gb1<-matrix(.25, 8, 8)  ## covariance within a group
+diag(Gb1)<-1
+Qb<-as(chol2inv(chol(.bdiag(rep(list(Gb1),times=n/8)))), "dgTMatrix")
+
+ub<-as.vector(t(chol(chol2inv(chol(Qb))))%*%matrix(rnorm(n, 0, sd_b), ncol=1))
+
+sd(ua); sd(ub)
+
+y<-as.vector(X%*%beta + ua + ub + rnorm(n))
+
+dl<-list(y=y,
+     X=X,
+     Qa=Qa,
+     Qb=Qb,
+         flaga=1,
+         flagb=1)
+
+parameters <- list(
+                   log_sdres = 0,
+                   log_sd_a = 0,
+                   log_sd_b = 0,
+                   a            = rep(0.0, n),
+                   b            = rep(0.0, n),
+                   beta          = rep(0, ncol(X))
+                  )
+
+obj <- MakeADFun(dl, parameters, random=c("a", "b"), DLL="multiple_gmrf_random_effects")
+opt <- nlminb(obj$par, obj$fn, obj$gr)
+### works
+
+dl<-list(y=y,
+     X=X,
+     Qa=Qa,
+     Qb=Qb,
+         flaga=0,
+         flagb=0)
+
+obj2 <- MakeADFun(dl, parameters, random=c("a", "b"), DLL="multiple_gmrf_random_effects_unnormalized")
+obj2<-TMB::normalize(obj2,flag=c("flaga", "flagb"))
+opt2 <- nlminb(obj2$par, obj2$fn, obj2$gr)
+### doesn't work
+
+From u0965a429193e691b at groups.google.com  Thu Mar 12 13:49:38 2020
+From: u0965a429193e691b at groups.google.com (Daniel McGuire)
+Date: Thu, 12 Mar 2020 13:49:38 +0000
+Subject: Re: TMB::normalize question with reproducible example.
+Message-ID: <jJrJmFQk2t4.lNwZFaVRAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <jJrJmFQk2t4.tEraIDksAgAJ@tmb-users.groups.google.com>
+References: <jJrJmFQk2t4.tEraIDksAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/jJrJmFQk2t4/m/lNwZFaVRAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Sorry for this, I accidentally added one file twice.  Here is the cpp template that works correctly
+
+On Wednesday, March 11, 2020 at 10:23:53 PM UTC-4, Daniel McGuire wrote:
+> Hello,
+>
+> I was hoping I could get a better understanding of the syntax for using TMB::normalize.  I have data simulated here where two random effects vectors are distributed from GMRF.
+>
+> The first model does not use TMB::normalize(), and fits correctly.
+> The second one (multiple_gmrf_random_effects_unnormalized.cpp) tries to use flags and TMB::normalize(), and does not seem to converge correctly.
+> Does anyone have an idea?
+>
+>
+> Thanks,
+> Dan
+>
+> library(Matrix)
+> library(TMB)
+>
+> compile("multiple_gmrf_random_effects.cpp")
+> compile("multiple_gmrf_random_effects_unnormalized.cpp")
+> dyn.load(dynlib("multiple_gmrf_random_effects"))
+> dyn.load(dynlib("multiple_gmrf_random_effects_unnormalized"))
+>
+> n<-50000
+> k<-10
+> X<-cbind(rep(1, n), matrix(runif(n*k),ncol=k))
+> beta<-rnorm(k+1)
+> sd_a<-.3
+> sd_b<-.1
+>
+>
+> ### GMRF #1 (sparse block diagonal covariance for groups )
+> Ga1<-matrix(.5, 4, 4)  ## covariance within a group
+> diag(Ga1)<-1
+> grp<-rep(1:(n/4), each=4)
+> Qa<-as(chol2inv(chol(.bdiag(rep(list(Ga1),times=n/4)))), "dgTMatrix")
+>
+> ua<-as.vector(t(chol(chol2inv(chol(Qa))))%*%matrix(rnorm(n, 0, sd_a), ncol=1))
+>
+>
+> ### GMRF #2 (sparse block diagonal covariance for groups )
+> Gb1<-matrix(.25, 8, 8)  ## covariance within a group
+> diag(Gb1)<-1
+> Qb<-as(chol2inv(chol(.bdiag(rep(list(Gb1),times=n/8)))), "dgTMatrix")
+>
+> ub<-as.vector(t(chol(chol2inv(chol(Qb))))%*%matrix(rnorm(n, 0, sd_b), ncol=1))
+>
+> sd(ua); sd(ub)
+>
+> y<-as.vector(X%*%beta + ua + ub + rnorm(n))
+>
+> dl<-list(y=y,
+>      X=X,
+>      Qa=Qa,
+>      Qb=Qb,
+>          flaga=1,
+>          flagb=1)
+>
+> parameters <- list(
+>                    log_sdres = 0,
+>                    log_sd_a = 0,
+>                    log_sd_b = 0,
+>                    a            = rep(0.0, n),
+>                    b            = rep(0.0, n),
+>                    beta          = rep(0, ncol(X))
+>                   )
+>
+> obj <- MakeADFun(dl, parameters, random=c("a", "b"), DLL="multiple_gmrf_random_effects")
+> opt <- nlminb(obj$par, obj$fn, obj$gr)
+> ### works
+>
+> dl<-list(y=y,
+>      X=X,
+>      Qa=Qa,
+>      Qb=Qb,
+>          flaga=0,
+>          flagb=0)
+>
+> obj2 <- MakeADFun(dl, parameters, random=c("a", "b"), DLL="multiple_gmrf_random_effects_unnormalized")
+> obj2<-TMB::normalize(obj2,flag=c("flaga", "flagb"))
+> opt2 <- nlminb(obj2$par, obj2$fn, obj2$gr)
+> ### doesn't work
+>
+>
+
+From u90b303eef43fd993 at groups.google.com  Thu Mar 12 15:02:03 2020
+From: u90b303eef43fd993 at groups.google.com (Kasper Kristensen)
+Date: Thu, 12 Mar 2020 15:02:03 +0000
+Subject: Re: [TMB users] Re: TMB::normalize question with reproducible example.
+Message-ID: <jJrJmFQk2t4.mQCHiPQrBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <jJrJmFQk2t4.lNwZFaVRAgAJ@tmb-users.groups.google.com>
+References: <jJrJmFQk2t4.tEraIDksAgAJ@tmb-users.groups.google.com> <jJrJmFQk2t4.lNwZFaVRAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/jJrJmFQk2t4/m/mQCHiPQrBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+>From ?normalize:
+
+"In order for this to work, the model must include a flag that disables the data term so that the un-normalized random effect (negative log) density is returned from the model template."
+
+Example:
+
+https://github.com/kaskr/adcomp/blob/master/tmb_examples/spde_aniso_speedup.cpp
+
+You only need one flag. Why do you have two?
+The template should look something like the following (flag==0 disables the data term as required by the documentation):
+
+  nll += GMRF(Qa, false)(a);
+  nll += GMRF(Qb, false)(b);
+  if(flag == 0) return nll; // Return without data term
+  for( int j=0; j<X.rows(); j++){
+    nll -= dnorm( y(j) , eta(j), exp(log_sdres), true );
+  }
+  return nll;
+
+From: tmb-...@googlegroups.com <tmb-...@googlegroups.com> on behalf of Daniel McGuire <dan11m...@gmail.com>
+Sent: Thursday, March 12, 2020 2:49:38 PM
+To: TMB Users
+Subject: [TMB users] Re: TMB::normalize question with reproducible example.
+
+Sorry for this, I accidentally added one file twice.  Here is the cpp template that works correctly
+
+On Wednesday, March 11, 2020 at 10:23:53 PM UTC-4, Daniel McGuire wrote:
+> Hello,
+>
+> I was hoping I could get a better understanding of the syntax for using TMB::normalize.  I have data simulated here where two random effects vectors are distributed from GMRF.
+>
+> The first model does not use TMB::normalize(), and fits correctly.
+> The second one (multiple_gmrf_random_effects_unnormalized.cpp) tries to use flags and TMB::normalize(), and does not seem to converge correctly.
+> Does anyone have an idea?
+>
+>
+> Thanks,
+> Dan
+>
+> library(Matrix)
+> library(TMB)
+>
+> compile("multiple_gmrf_random_effects.cpp")
+> compile("multiple_gmrf_random_effects_unnormalized.cpp")
+> dyn.load(dynlib("multiple_gmrf_random_effects"))
+> dyn.load(dynlib("multiple_gmrf_random_effects_unnormalized"))
+>
+> n<-50000
+> k<-10
+> X<-cbind(rep(1, n), matrix(runif(n*k),ncol=k))
+> beta<-rnorm(k+1)
+> sd_a<-.3
+> sd_b<-.1
+>
+>
+> ### GMRF #1 (sparse block diagonal covariance for groups )
+> Ga1<-matrix(.5, 4, 4)  ## covariance within a group
+> diag(Ga1)<-1
+> grp<-rep(1:(n/4), each=4)
+> Qa<-as(chol2inv(chol(.bdiag(rep(list(Ga1),times=n/4)))), "dgTMatrix")
+>
+> ua<-as.vector(t(chol(chol2inv(chol(Qa))))%*%matrix(rnorm(n, 0, sd_a), ncol=1))
+>
+>
+> ### GMRF #2 (sparse block diagonal covariance for groups )
+> Gb1<-matrix(.25, 8, 8)  ## covariance within a group
+> diag(Gb1)<-1
+> Qb<-as(chol2inv(chol(.bdiag(rep(list(Gb1),times=n/8)))), "dgTMatrix")
+>
+> ub<-as.vector(t(chol(chol2inv(chol(Qb))))%*%matrix(rnorm(n, 0, sd_b), ncol=1))
+>
+> sd(ua); sd(ub)
+>
+> y<-as.vector(X%*%beta + ua + ub + rnorm(n))
+>
+> dl<-list(y=y,
+>      X=X,
+>      Qa=Qa,
+>      Qb=Qb,
+>          flaga=1,
+>          flagb=1)
+>
+> parameters <- list(
+>                    log_sdres = 0,
+>                    log_sd_a = 0,
+>                    log_sd_b = 0,
+>                    a            = rep(0.0, n),
+>                    b            = rep(0.0, n),
+>                    beta          = rep(0, ncol(X))
+>                   )
+>
+> obj <- MakeADFun(dl, parameters, random=c("a", "b"), DLL="multiple_gmrf_random_effects")
+> opt <- nlminb(obj$par, obj$fn, obj$gr)
+> ### works
+>
+> dl<-list(y=y,
+>      X=X,
+>      Qa=Qa,
+>      Qb=Qb,
+>          flaga=0,
+>          flagb=0)
+>
+> obj2 <- MakeADFun(dl, parameters, random=c("a", "b"), DLL="multiple_gmrf_random_effects_unnormalized")
+> obj2<-TMB::normalize(obj2,flag=c("flaga", "flagb"))
+> opt2 <- nlminb(obj2$par, obj2$fn, obj2$gr)
+> ### doesn't work
+>
+>
+
+--
+To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+---
+You received this message because you are subscribed to the Google Groups "TMB Users" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/tmb-users/66b92814-9ded-411f-9759-d44da8c778c6%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/66b92814-9ded-411f-9759-d44da8c778c6%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u258b98968d0ad8b9 at groups.google.com  Thu Mar 12 15:17:54 2020
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Thu, 12 Mar 2020 15:17:54 +0000
+Subject: Re: [TMB users] NA/NaN Function evaluation, seemingly from dnorm
+Message-ID: <rZMfL-UM1Ww.miv3E3ZWAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <rZMfL-UM1Ww.smktS_fjAgAJ@tmb-users.groups.google.com>
+References: <rZMfL-UM1Ww.CouFBUavAgAJ@tmb-users.groups.google.com> <rZMfL-UM1Ww.smktS_fjAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/rZMfL-UM1Ww/m/miv3E3ZWAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I did not try your example, but I see a potential numerical issue here:
+
+res(i) = 0;
+for (int j = 0; j < means.size(); j++)
+{
+  res(i) += prop(j)*dnorm(lw(i), means(j), sigma(j), false);
+}
+
+You might consider doing the accumulation in log-space:
+
+logres(i) = -INFINITY;
+
+for (int j = 0; j < means.size(); j++) {
+
+  Type log_increment = log(prop(j)) + dnorm(lw(i), means(j), sigma(j), true);
+  logres(i) = logspace_add(logres(i), log_increment);
+
+}
+
+On Monday, March 2, 2020 at 8:26:37 PM UTC+1, Josh wrote:
+> I'm aware of that, but as mentioned above that doesn't appear to be what is causing the issue here.  The issue instead appears to arise from the call to dnorm for x.
+>
+> On Monday, March 2, 2020 at 2:08:31 AM UTC-8, Hans Skaug wrote:
+> > The Laplace approximation that is used for intergration does not work well with a mixture prior on the latent variable (needs to be Gaussian).
+> >
+> > If you want to do this in TMB you are probably better off using numerical quadrature:
+> >
+> > http://kaskr.github.io/adcomp/namespaceromberg.html#a980bb141c963b1cf20da450063c5c7d1
+
+From u0965a429193e691b at groups.google.com  Thu Mar 12 16:06:09 2020
+From: u0965a429193e691b at groups.google.com (Daniel McGuire)
+Date: Thu, 12 Mar 2020 16:06:09 +0000
+Subject: Re: TMB::normalize question with reproducible example.
+Message-ID: <jJrJmFQk2t4.F5rPKhhZAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <jJrJmFQk2t4.lNwZFaVRAgAJ@tmb-users.groups.google.com>
+References: <jJrJmFQk2t4.tEraIDksAgAJ@tmb-users.groups.google.com> <jJrJmFQk2t4.lNwZFaVRAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/jJrJmFQk2t4/m/F5rPKhhZAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you!
+
+I got it work correctly following your suggestion.  I had thought that I might need a separate flag for each unnormalized random effect density.
+One observation is that it seems that the version using TMB::normalize() is slower than the unnomralized, at least on this toy example.
+Is there any intuition behind this?  Does it depend on the sparsity of the GMRF?
+Here is modified R code and templates, comparing the time to fit.
+
+(Also wondering, what is the best way to pass a boolean data term to a template?)
+
+Thanks,
+Dan
+
+On Wednesday, March 11, 2020 at 10:23:53 PM UTC-4, Daniel McGuire wrote:
+
+> Hello,
+>
+> I was hoping I could get a better understanding of the syntax for using TMB::normalize.  I have data simulated here where two random effects vectors are distributed from GMRF.
+>
+> The first model does not use TMB::normalize(), and fits correctly.
+> The second one (multiple_gmrf_random_effects_unnormalized.cpp) tries to use flags and TMB::normalize(), and does not seem to converge correctly.
+> Does anyone have an idea?
+>
+>
+> Thanks,
+> Dan
+>
+> library(Matrix)
+> library(TMB)
+>
+> compile("multiple_gmrf_random_effects.cpp")
+> compile("multiple_gmrf_random_effects_unnormalized.cpp")
+> dyn.load(dynlib("multiple_gmrf_random_effects"))
+> dyn.load(dynlib("multiple_gmrf_random_effects_unnormalized"))
+>
+> n<-50000
+> k<-10
+> X<-cbind(rep(1, n), matrix(runif(n*k),ncol=k))
+> beta<-rnorm(k+1)
+> sd_a<-.3
+> sd_b<-.1
+>
+>
+> ### GMRF #1 (sparse block diagonal covariance for groups )
+> Ga1<-matrix(.5, 4, 4)  ## covariance within a group
+> diag(Ga1)<-1
+> grp<-rep(1:(n/4), each=4)
+> Qa<-as(chol2inv(chol(.bdiag(rep(list(Ga1),times=n/4)))), "dgTMatrix")
+>
+> ua<-as.vector(t(chol(chol2inv(chol(Qa))))%*%matrix(rnorm(n, 0, sd_a), ncol=1))
+>
+>
+> ### GMRF #2 (sparse block diagonal covariance for groups )
+> Gb1<-matrix(.25, 8, 8)  ## covariance within a group
+> diag(Gb1)<-1
+> Qb<-as(chol2inv(chol(.bdiag(rep(list(Gb1),times=n/8)))), "dgTMatrix")
+>
+> ub<-as.vector(t(chol(chol2inv(chol(Qb))))%*%matrix(rnorm(n, 0, sd_b), ncol=1))
+>
+> sd(ua); sd(ub)
+>
+> y<-as.vector(X%*%beta + ua + ub + rnorm(n))
+>
+> dl<-list(y=y,
+>      X=X,
+>      Qa=Qa,
+>      Qb=Qb,
+>          flaga=1,
+>          flagb=1)
+>
+> parameters <- list(
+>                    log_sdres = 0,
+>                    log_sd_a = 0,
+>                    log_sd_b = 0,
+>                    a            = rep(0.0, n),
+>                    b            = rep(0.0, n),
+>                    beta          = rep(0, ncol(X))
+>                   )
+>
+> obj <- MakeADFun(dl, parameters, random=c("a", "b"), DLL="multiple_gmrf_random_effects")
+> opt <- nlminb(obj$par, obj$fn, obj$gr)
+> ### works
+>
+> dl<-list(y=y,
+>      X=X,
+>      Qa=Qa,
+>      Qb=Qb,
+>          flaga=0,
+>          flagb=0)
+>
+> obj2 <- MakeADFun(dl, parameters, random=c("a", "b"), DLL="multiple_gmrf_random_effects_unnormalized")
+> obj2<-TMB::normalize(obj2,flag=c("flaga", "flagb"))
+> opt2 <- nlminb(obj2$par, obj2$fn, obj2$gr)
+> ### doesn't work
+>
+>
+
+From uef8e4d99c49af174 at groups.google.com  Sat Mar 14 14:07:57 2020
+From: uef8e4d99c49af174 at groups.google.com (Tore Wentzel-Larsen)
+Date: Sat, 14 Mar 2020 14:07:57 +0000
+Subject: k-truncated negative binomial model
+Message-ID: <6Igy45mmCho.LEF-A87vAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6Igy45mmCho/m/LEF-A87vAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Is it possible to estimate a model for a dependent variable that is k-truncated with k>0, in glmmTMB? I am working with a data set with a count variable for which the exact value is not known if it is 4 or below. The reason for this is protection of privacy, the data set is aggregated from data on individuals that are considered at risk of identification if there are few individuals within one specific institution one particular year. Apart from this the data set is suitable for analysis with glmmTMB, there are a number of institutions and observations for multiple years within each institution. Since this is a question of whether it is possible to estimate a specific type of model I do not included a data set here, but if preferable I may prepare an example where the problem is "solved" by a not particularly satisfactory ad hoc procedure by setting all such values equal to 2.
+
+From ufd4f3538f907404b at groups.google.com  Sat Mar 14 15:16:15 2020
+From: ufd4f3538f907404b at groups.google.com (Ben Bolker)
+Date: Sat, 14 Mar 2020 15:16:15 +0000
+Subject: Re: [TMB users] k-truncated negative binomial model
+Message-ID: <6Igy45mmCho.yt1lHOTJBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <6Igy45mmCho.LEF-A87vAgAJ@tmb-users.groups.google.com>
+References: <6Igy45mmCho.LEF-A87vAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/6Igy45mmCho/m/yt1lHOTJBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+  To be precise this is a k-censored distribution rather than
+k-truncated; events with k<4 aren't excluded from the data set,
+they're just reported as k=4.
+
+  A crude way to do this would be something like
+
+  if (x[i]==4) {
+     cumprob=0;
+     for (s=0; s<=4; s++) {
+       cumprob += dnbinom2(s, mu, var, 0);
+     }
+     nll -= log(cumprob);
+  } else {
+     nll -= dnbinom2(x[i], mu, var, 1);
+ }
+
+It would be more efficient if there were a pnbinom2 function for the
+(log) cumulative probability.
+
+  Corrections welcome (I'm not fluent in TMB ...)
+
+On Sat, Mar 14, 2020 at 10:08 AM Tore Wentzel-Larsen
+<tore.went...@gmail.com> wrote:
+>
+> Is it possible to estimate a model for a dependent variable that is k-truncated with k>0, in glmmTMB? I am working with a data set with a count variable for which the exact value is not known if it is 4 or below. The reason for this is protection of privacy, the data set is aggregated from data on individuals that are considered at risk of identification if there are few individuals within one specific institution one particular year. Apart from this the data set is suitable for analysis with glmmTMB, there are a number of institutions and observations for multiple years within each institution. Since this is a question of whether it is possible to estimate a specific type of model I do not included a data set here, but if preferable I may prepare an example where the problem is "solved" by a not particularly satisfactory ad hoc procedure by setting all such values equal to 2.
+>
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/46338756-f469-4ef3-a433-b8f169d65040%40googlegroups.com.
+
+From u02e03030784aa6a7 at groups.google.com  Mon Mar 16 11:03:48 2020
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Mon, 16 Mar 2020 11:03:48 +0000
+Subject: Parallelization; the R side
+Message-ID: <GrasnaF_Vik.Y5x9luqCAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/GrasnaF_Vik/m/Y5x9luqCAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I am looking at the example linreg_parallel.R for how to make the code run on multiple cores,
+but the number of cores is not set explicitly.
+
+Question: do I set the number of cores to be used with:
+
+openmp(4)
+
+For my own code, running on a multicore linux server, this does not seem to give me access to 4 cpu's.
+
+Hans
+
+From u02e03030784aa6a7 at groups.google.com  Mon Mar 16 11:20:23 2020
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Mon, 16 Mar 2020 11:20:23 +0000
+Subject: Re: Parallelization; the R side
+Message-ID: <GrasnaF_Vik.vurjVtKDAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <GrasnaF_Vik.Y5x9luqCAwAJ@tmb-users.groups.google.com>
+References: <GrasnaF_Vik.Y5x9luqCAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/GrasnaF_Vik/m/vurjVtKDAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+.... it seems that I indeed are getting 4 cores, so I answered the question myself.
+
+On Monday, March 16, 2020 at 12:03:48 PM UTC+1, Hans Skaug wrote:
+> Hi,
+>
+> I am looking at the example linreg_parallel.R for how to make the code run on multiple cores,
+> but the number of cores is not set explicitly.
+>
+> Question: do I set the number of cores to be used with:
+>
+> openmp(4)
+>
+> For my own code, running on a multicore linux server, this does not seem to give me access to 4 cpu's.
+>
+> Hans
+>
+>
+
+From uf82eb6cf01e30a21 at groups.google.com  Tue Mar 17 06:14:05 2020
+From: uf82eb6cf01e30a21 at groups.google.com (Aaron Greenberg)
+Date: Tue, 17 Mar 2020 06:14:05 +0000
+Subject: Re: [TMB users] Re: Parallelization; the R side
+Message-ID: <GrasnaF_Vik.h5RqK96gAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <GrasnaF_Vik.vurjVtKDAwAJ@tmb-users.groups.google.com>
+References: <GrasnaF_Vik.Y5x9luqCAwAJ@tmb-users.groups.google.com> <GrasnaF_Vik.vurjVtKDAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/GrasnaF_Vik/m/h5RqK96gAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am pretty sure that all the magic happens in the parallel accumulator.
+Am I wrong?  You can use things like library(parallel) in R.
+Aaron
+
+On Mon, Mar 16, 2020 at 4:20 AM Hans Skaug <hsk...@gmail.com> wrote:
+
+> .... it seems that I indeed are getting 4 cores, so I answered the question myself.
+>
+> On Monday, March 16, 2020 at 12:03:48 PM UTC+1, Hans Skaug wrote:
+> > Hi,
+> >
+> > I am looking at the example linreg_parallel.R for how to make the code run on multiple cores,
+> > but the number of cores is not set explicitly.
+> >
+> > Question: do I set the number of cores to be used with:
+> >
+> > openmp(4)
+> >
+> > For my own code, running on a multicore linux server, this does not seem to give me access to 4 cpu's.
+> >
+> > Hans
+> >
+> >
+
+> --
+> To post to this group, send email to us...@tmb-project.org. Before posting, please check the wiki and issuetracker at https://github.com/kaskr/adcomp/. Please try to create a simple repeatable example to go with your question (e.g issues 154, 134, 51). Use the issuetracker to report bugs.
+> ---
+> You received this message because you are subscribed to the Google Groups "TMB Users" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to tmb-users+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/tmb-users/c505bdb4-cd54-4b99-87c6-c07e304fc61c%40googlegroups.com <https://groups.google.com/d/msgid/tmb-users/c505bdb4-cd54-4b99-87c6-c07e304fc61c%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u361e593259030741 at groups.google.com  Wed Mar 18 05:05:21 2020
+From: u361e593259030741 at groups.google.com (Saang-Yoon Hyun)
+Date: Wed, 18 Mar 2020 05:05:21 +0000
+Subject: Contradictory messages
+Message-ID: <McRx0Dz_lF4.GRDOk7LrAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/McRx0Dz_lF4/m/GRDOk7LrAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear TMB developers.
+
+I would like to report our findings, which might help to improve TMB.  While we have run an inference in TMB (i.e., the set of MakeADFun and nlmin) using simulated data, we found that, despite the
+
+warning message, “Hessian of fixed effects was not positive definite”, other output elements misled us by showing successful convergence (e.g., $convergence of 0), the presence of the covariance matrix
+
+of estimates (e.g., from sdreport(model)$cov, or sdreport(model)$cov.fixed), and the presence of the standard errors of estimates, etc.  I am saying the contradiction between the warning message vs. those
+
+output elements that imply successful inferences.  Estimates of *the standard errors* of parameters (fixed effects) in this case were very unreasonable (yes, it makes sense thanks to the warning message),
+
+when being compared with the (known) true values of parameters (fixed effects), from which data had been simulated.
+
+Please see the example of our findings below.
+
+(1)   Note the warning message below in red.
+
+> sdreport(xxx$model);
+
+sdreport(.) result
+
+               Estimate      Std. Error
+
+loga       0.5260281   0.4325290
+
+logb       0.4163987 218.1806116
+
+logsig_p  -2.1019463   0.3286204
+
+logK      17.2359107 218.1826011
+
+logq     -19.4894820   3.7650666
+
+logr     -14.0591460 274.7474254
+
+Warning:
+
+          Hessian of fixed effects was not positive definite.
+
+Maximum gradient component: 4.912905e-05
+
+(2)   But the covariance matrix of estimates was generated
+
+      > sdreport(xxx$model)$cov.fixed;
+
+                   loga          logb    logsig_p          logK       logq          logr
+
+       loga      0.18708133 -1.569927e-02 -0.13404870 -2.011561e-01  0.2060882 -5.704039e-02
+
+       logb     -0.01569927  4.760278e+04  0.01386906 -4.759614e+04 -6.5953252 -7.548696e+04
+
+       logsig_p -0.13404870  1.386906e-02  0.10799136  1.642217e-01 -0.1704407  4.821895e-02
+
+       logK     -0.20115615 -4.759614e+04  0.16422169  4.760365e+04 -7.5518510  7.547677e+04
+
+       logq      0.20608823 -6.595325e+00 -0.17044069 -7.551851e+00 14.1757265  1.014200e+01
+
+       logr     -0.05704039 -7.548696e+04  0.04821895  7.547677e+04 10.1420020  7.548615e+04
+
+Suggestion:   If you think our findings are valid, then it may be a good idea to follow the custom of ADMB.  For instance, if Hessian matrix is not positive definite, COR file is not generated under ADMB.
+
+A user *immediately* gets a sense by finding the absence of COR file that the corresponding numerical optimization is not reliable .  On the other hand, a user would be tricked under TMB unless he/she
+
+carefully searches the warning message.   Especially when a user runs an inference in TMB, using thousands of sets of simulated data, he/she would have to manually find the warning message per run; nobody
+
+would want to do so thousand times.   If Hessian matrix is not positive definite, your setting the convergence flag to be 1 (Failure) not 0 (Success), or your replacing the covariance matrix of
+
+estimates by NA under TMB would be consistent, more importantly helping a user to quickly discard such unreliable inferences.
+
+Thank you very much for your great development of TMB, and also thank you in advance for your reading this email.
+
+Saang-Yoon Hyun, and Kyuhan Kim
+
+From u361e593259030741 at groups.google.com  Fri Mar 20 11:44:05 2020
+From: u361e593259030741 at groups.google.com (Saang-Yoon Hyun)
+Date: Fri, 20 Mar 2020 11:44:05 +0000
+Subject: Re: Contradictory messages
+Message-ID: <McRx0Dz_lF4.S6VhmzLwBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <McRx0Dz_lF4.GRDOk7LrAgAJ@tmb-users.groups.google.com>
+References: <McRx0Dz_lF4.GRDOk7LrAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/McRx0Dz_lF4/m/S6VhmzLwBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi.
+Now I find that  "sdreport( ... $model)$pdHess" indicates whether the uncertainty of estimates is reliable or not.   When there is the warning message ("Warning: Hessian of fixed effects was not positive definite"), "sdreport( ... $model)$pdHess" returns FALSE, and, as expected, estimates of the standard errors of some parameter estimates were extremely unreasonable.  Again, under such cases, it might be a good idea to discard uncertainty values (e.g., SE, covariance matrix, etc.) or to replace them by NA.   Thank you,
+Saang-Yoon
+
+On Wed, Mar 18, 2020 at 2:05 PM Saang-Yoon Hyun <shy...@gmail.com> wrote:
+>
+> Dear TMB developers.
+>
+>
+> I would like to report our findings, which might help to improve TMB.  While we have run an inference in TMB (i.e., the set of MakeADFun and nlmin) using simulated data, we found that, despite the
+>
+> warning message, “Hessian of fixed effects was not positive definite”, other output elements misled us by showing successful convergence (e.g., $convergence of 0), the presence of the covariance matrix
+>
+> of estimates (e.g., from sdreport(model)$cov, or sdreport(model)$cov.fixed), and the presence of the standard errors of estimates, etc.  I am saying the contradiction between the warning message vs. those
+>
+> output elements that imply successful inferences.  Estimates of *the standard errors* of parameters (fixed effects) in this case were very unreasonable (yes, it makes sense thanks to the warning message),
+>
+> when being compared with the (known) true values of parameters (fixed effects), from which data had been simulated.
+>
+>
+>
+> Please see the example of our findings below.
+>
+> (1)   Note the warning message below in red.
+>
+> > sdreport(xxx$model);
+>
+> sdreport(.) result
+>
+>                Estimate      Std. Error
+>
+> loga       0.5260281   0.4325290
+>
+> logb       0.4163987 218.1806116
+>
+> logsig_p  -2.1019463   0.3286204
+>
+> logK      17.2359107 218.1826011
+>
+> logq     -19.4894820   3.7650666
+>
+> logr     -14.0591460 274.7474254
+>
+>
+> Warning:
+>
+>
+>
+>           Hessian of fixed effects was not positive definite.
+>
+>
+> Maximum gradient component: 4.912905e-05
+>
+>
+>
+>
+> (2)   But the covariance matrix of estimates was generated
+>
+>       > sdreport(xxx$model)$cov.fixed;
+>
+>                    loga          logb    logsig_p          logK       logq          logr
+>
+>        loga      0.18708133 -1.569927e-02 -0.13404870 -2.011561e-01  0.2060882 -5.704039e-02
+>
+>        logb     -0.01569927  4.760278e+04  0.01386906 -4.759614e+04 -6.5953252 -7.548696e+04
+>
+>        logsig_p -0.13404870  1.386906e-02  0.10799136  1.642217e-01 -0.1704407  4.821895e-02
+>
+>        logK     -0.20115615 -4.759614e+04  0.16422169  4.760365e+04 -7.5518510  7.547677e+04
+>
+>        logq      0.20608823 -6.595325e+00 -0.17044069 -7.551851e+00 14.1757265  1.014200e+01
+>
+>        logr     -0.05704039 -7.548696e+04  0.04821895  7.547677e+04 10.1420020  7.548615e+04
+>
+>
+>
+> Suggestion:   If you think our findings are valid, then it may be a good idea to follow the custom of ADMB.  For instance, if Hessian matrix is not positive definite, COR file is not generated under ADMB.
+>
+> A user *immediately* gets a sense by finding the absence of COR file that the corresponding numerical optimization is not reliable .  On the other hand, a user would be tricked under TMB unless he/she
+>
+> carefully searches the warning message.   Especially when a user runs an inference in TMB, using thousands of sets of simulated data, he/she would have to manually find the warning message per run; nobody
+>
+> would want to do so thousand times.   If Hessian matrix is not positive definite, your setting the convergence flag to be 1 (Failure) not 0 (Success), or your replacing the covariance matrix of
+>
+> estimates by NA under TMB would be consistent, more importantly helping a user to quickly discard such unreliable inferences.
+>
+>
+> Thank you very much for your great development of TMB, and also thank you in advance for your reading this email.
+>
+>
+> Saang-Yoon Hyun, and Kyuhan Kim
+
+From ue5c7e56038437512 at groups.google.com  Sat Mar 21 22:30:55 2020
+From: ue5c7e56038437512 at groups.google.com (CavieresJJ)
+Date: Sat, 21 Mar 2020 22:30:55 +0000
+Subject: Alternative parameterization for SPDE method
+Message-ID: <ghjLAseG8lU.3CymoRRyAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ghjLAseG8lU/m/3CymoRRyAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+I hope all you are well in this complex situation (COVID 19)
+I have been having problems to obtain good posterior estimations for the hyperparameters related with SPDE method.
+I know that the SPDE method use 'ln_tau' and 'ln_kappa' to obtain a Q matrix but the interpretability of this parameters are very complex because in INLA these are 'internal' parameters of this method and with a normal prior distribution. I was reading the paper of Lindgren and Rue, 2015 and they propose use the 'practical_range' (rho) and 'marginal_variance' (sigma) to parameterize the SPDE.
+Someone have any idea for this?
+
+This is an example of my code in TMB
+
+// Hyperpriors
+   Type tau     = exp(ln_tau);
+   Type kappa = exp(ln_kappa);
+
+   nlp -= dnorm(tau,           Type(0.0),   Type(2.0), true);
+   nlp -= dnorm(kappa,      Type(12.0), Type(2.0), true);
+
+and this is the values in the 'data' parameters in R
+             ln_tau      = spde$param.inla$theta.initial[1],
+             ln_kappa = spde$param.inla$theta.initial[2]
+
+beforehand thank you very much
+Regards
+
+From u0965a429193e691b at groups.google.com  Thu Mar 26 13:44:02 2020
+From: u0965a429193e691b at groups.google.com (Daniel McGuire)
+Date: Thu, 26 Mar 2020 13:44:02 +0000
+Subject: Re: Alternative parameterization for SPDE method
+Message-ID: <ghjLAseG8lU.6zsL7zreBAAJ@tmb-users.groups.google.com>
+In-Reply-To: <ghjLAseG8lU.3CymoRRyAwAJ@tmb-users.groups.google.com>
+References: <ghjLAseG8lU.3CymoRRyAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ghjLAseG8lU/m/6zsL7zreBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+If you're looking at this paper https://www.stat.washington.edu/peter/591/Lindgren.pdf the marginal variance is described in equation 2 , and  rho can be inferred from equation 5 in terms of kappa.  you could code them to be output like this:
+
+Type range = sqrt(8)/kappa;   //Distance at which correlation has dropped to 0.1
+Type  marginal_variance = pow(exp(.5*log(Type(1.0)/(Type(4.0)*M_PI)) - ln_kappa - ln_tau),2);
+
+Assuming alpha=2, and your spatial data is 2-d (d=2).
+
+On Saturday, March 21, 2020 at 6:30:55 PM UTC-4, CavieresJJ wrote:
+> Hi!
+>
+> I hope all you are well in this complex situation (COVID 19)
+> I have been having problems to obtain good posterior estimations for the hyperparameters related with SPDE method.
+> I know that the SPDE method use 'ln_tau' and 'ln_kappa' to obtain a Q matrix but the interpretability of this parameters are very complex because in INLA these are 'internal' parameters of this method and with a normal prior distribution. I was reading the paper of Lindgren and Rue, 2015 and they propose use the 'practical_range' (rho) and 'marginal_variance' (sigma) to parameterize the SPDE.
+> Someone have any idea for this?
+>
+> This is an example of my code in TMB
+>
+> // Hyperpriors
+>    Type tau     = exp(ln_tau);
+>    Type kappa = exp(ln_kappa);
+>
+>    nlp -= dnorm(tau,           Type(0.0),   Type(2.0), true);
+>    nlp -= dnorm(kappa,      Type(12.0), Type(2.0), true);
+>
+> and this is the values in the 'data' parameters in R
+>              ln_tau      = spde$param.inla$theta.initial[1],
+>              ln_kappa = spde$param.inla$theta.initial[2]
+>
+> beforehand thank you very much
+> Regards
+>
+
+From u0965a429193e691b at groups.google.com  Thu Mar 26 17:20:48 2020
+From: u0965a429193e691b at groups.google.com (Daniel McGuire)
+Date: Thu, 26 Mar 2020 17:20:48 +0000
+Subject: jacobian of random effect vector w.r.t. fixed effect vector. Approximating covariance matrix of a single random effect vector.
+Message-ID: <NLk0MPtg97U.tTeFRg_qBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/NLk0MPtg97U/m/tTeFRg_qBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I'm interested in the most efficient way to get an approximation of the covariance matrix of a random effect vector.
+
+Say I have several random effect vectors in a model
+
+  PARAMETER_VECTOR( ua );
+  PARAMETER_VECTOR( ub );
+  PARAMETER_VECTOR( uc );
+
+and a fixed effect vector "theta".
+
+And I'm interested in particular in getting the variance covariance matrix for one of these, say
+
+"ua"
+
+Looking at the documentation of sdreport(), I see
+
+So what I'd like is the upper left block matrix of the above.
+
+I believe I can get the first component by using
+
+sdreport(obj, getJointPrecision=TRUE)
+
+and taking the inverse of the JointPrecision matrix for the submatrix containing "ua".
+
+For the second component , is there a way to extract or output the jacobian of "ua" with respect to fixed effects "theta"  in the second part?
+
+Thanks in advance for any help,
+Dan
+
+From ue5c7e56038437512 at groups.google.com  Thu Mar 26 20:40:53 2020
+From: ue5c7e56038437512 at groups.google.com (CavieresJJ)
+Date: Thu, 26 Mar 2020 20:40:53 +0000
+Subject: Re: Alternative parameterization for SPDE method
+Message-ID: <ghjLAseG8lU.DoB1ZPr0BAAJ@tmb-users.groups.google.com>
+In-Reply-To: <ghjLAseG8lU.3CymoRRyAwAJ@tmb-users.groups.google.com>
+References: <ghjLAseG8lU.3CymoRRyAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ghjLAseG8lU/m/DoB1ZPr0BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+Thanks!, This is helpful for me! Is not precisely my idea but after to see the equations I can accommodate these in my template.
+
+Best regards
+
+El jueves, 26 de marzo de 2020, 10:44:02 (UTC-3), Daniel McGuire escribió:
+>
+> Hi,
+> If you're looking at this paper https://www.stat.washington.edu/peter/591/Lindgren.pdf the marginal variance is described in equation 2 , and  rho can be inferred from equation 5 in terms of kappa.  you could code them to be output like this:
+>
+>
+> Type range = sqrt(8)/kappa;   //Distance at which correlation has dropped to 0.1
+> Type  marginal_variance = pow(exp(.5*log(Type(1.0)/(Type(4.0)*M_PI)) - ln_kappa - ln_tau),2);
+>
+>
+> Assuming alpha=2, and your spatial data is 2-d (d=2).
+>
+> On Saturday, March 21, 2020 at 6:30:55 PM UTC-4, CavieresJJ wrote:
+> > Hi!
+> >
+> > I hope all you are well in this complex situation (COVID 19)
+> > I have been having problems to obtain good posterior estimations for the hyperparameters related with SPDE method.
+> > I know that the SPDE method use 'ln_tau' and 'ln_kappa' to obtain a Q matrix but the interpretability of this parameters are very complex because in INLA these are 'internal' parameters of this method and with a normal prior distribution. I was reading the paper of Lindgren and Rue, 2015 and they propose use the 'practical_range' (rho) and 'marginal_variance' (sigma) to parameterize the SPDE.
+> > Someone have any idea for this?
+> >
+> > This is an example of my code in TMB
+> >
+> > // Hyperpriors
+> >    Type tau     = exp(ln_tau);
+> >    Type kappa = exp(ln_kappa);
+> >
+> >    nlp -= dnorm(tau,           Type(0.0),   Type(2.0), true);
+> >    nlp -= dnorm(kappa,      Type(12.0), Type(2.0), true);
+> >
+> > and this is the values in the 'data' parameters in R
+> >              ln_tau      = spde$param.inla$theta.initial[1],
+> >              ln_kappa = spde$param.inla$theta.initial[2]
+> >
+> > beforehand thank you very much
+> > Regards
+> >
+
+From u02e03030784aa6a7 at groups.google.com  Fri Mar 27 08:00:11 2020
+From: u02e03030784aa6a7 at groups.google.com (Hans Skaug)
+Date: Fri, 27 Mar 2020 08:00:11 +0000
+Subject: Re: jacobian of random effect vector w.r.t. fixed effect vector. Approximating covariance matrix of a single random effect vector.
+Message-ID: <NLk0MPtg97U.Jk6mg3wIAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <NLk0MPtg97U.tTeFRg_qBAAJ@tmb-users.groups.google.com>
+References: <NLk0MPtg97U.tTeFRg_qBAAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/NLk0MPtg97U/m/Jk6mg3wIAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I am not sure understand completely, because sdreport() would give you the covariance matrix for random effects vectors (standard deviations
+for sure, but I suspect that it must be possible to extract the full covariance matrix).
+
+However, I you want to do it "by hand", there is a closed form formula for J that involves only what you get out of model$he(), when you
+turn "ua" into a fixed effect.
+
+Hans
+
+On Thursday, March 26, 2020 at 6:20:48 PM UTC+1, Daniel McGuire wrote:
+> Hello,
+>
+> I'm interested in the most efficient way to get an approximation of the covariance matrix of a random effect vector.
+>
+> Say I have several random effect vectors in a model
+>
+>   PARAMETER_VECTOR( ua );
+>   PARAMETER_VECTOR( ub );
+>   PARAMETER_VECTOR( uc );
+>
+> and a fixed effect vector "theta".
+>
+> And I'm interested in particular in getting the variance covariance matrix for one of these, say
+>
+> "ua"
+>
+> Looking at the documentation of sdreport(), I see
+>
+>
+>
+> So what I'd like is the upper left block matrix of the above.
+>
+> I believe I can get the first component by using
+>
+> sdreport(obj, getJointPrecision=TRUE)
+>
+> and taking the inverse of the JointPrecision matrix for the submatrix containing "ua".
+>
+> For the second component , is there a way to extract or output the jacobian of "ua" with respect to fixed effects "theta"  in the second part?
+>
+>
+>
+> Thanks in advance for any help,
+> Dan
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+
+From u0965a429193e691b at groups.google.com  Fri Mar 27 16:51:47 2020
+From: u0965a429193e691b at groups.google.com (Daniel McGuire)
+Date: Fri, 27 Mar 2020 16:51:47 +0000
+Subject: Re: jacobian of random effect vector w.r.t. fixed effect vector. Approximating covariance matrix of a single random effect vector.
+Message-ID: <NLk0MPtg97U.JFcM3H4lAgAJ@tmb-users.groups.google.com>
+In-Reply-To: <NLk0MPtg97U.Jk6mg3wIAgAJ@tmb-users.groups.google.com>
+References: <NLk0MPtg97U.tTeFRg_qBAAJ@tmb-users.groups.google.com> <NLk0MPtg97U.Jk6mg3wIAgAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/NLk0MPtg97U/m/JFcM3H4lAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks for your reply,
+
+and apologies for the confusion which is probably due to my limited understanding.
+
+I am aware that sdreport() gives me the standard errors, but I was interested in the full covariance matrix because I have some correlation structure modeled in the random effects, and so am thinking that the covariances may be non-negligible.
+
+say
+jp<-sdreport(obj,getJointPrecision=TRUE)$jointPrecision
+
+and
+
+solve(jp)
+
+or
+
+Matrix::chol2inv(Matrix::chol(jp))
+  Cholmod error 'problem too large' at file ../Core/cholmod_dense.c, line 105
+
+are too large of a problem, because for example "ub", and "uc" may be 100 times longer vectors than "ua", and "ua" is my primary interest.
+
+Solving the submatrix of jp
+corresponding to random effect vector "ua" is really not correct, and underestimates the standard errors by a factor.
+
+summary(sqrt(diag(solve(jp[rownames(jp)=="ua",rownames(jp)=="ua"]))) / mysdsummary[param=="ua",`Std. Error`])
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+ 0.3049  0.6619  0.7745  0.7424  0.8370  0.9319
+
+ cor(sqrt(diag(solve(jp[rownames(jp)=="ua",rownames(jp)=="ua"]))),mysdsummary[param=="ua",`Std. Error`])
+[1] 0.9590948
+
+So, I'm wondering what the best approximation / easiest workaround might be.  It seems that internally the calculation has already been made by sdreport(), otherwise I wouldn't have the standard errors.
+
+Do you think the best workaround may involve using model$he(), and calling "ua" a fixed effect, ?
+
+Or is there another way to output this report, without requiring a full covariance matrix for all random effects, i.e. "ub", "uc", ...?
+
+Thanks very much,
+Dan
+
+On Friday, March 27, 2020 at 4:00:11 AM UTC-4, Hans Skaug wrote:
+> Hi,
+>
+> I am not sure understand completely, because sdreport() would give you the covariance matrix for random effects vectors (standard deviations
+> for sure, but I suspect that it must be possible to extract the full covariance matrix).
+>
+> However, I you want to do it "by hand", there is a closed form formula for J that involves only what you get out of model$he(), when you
+> turn "ua" into a fixed effect.
+>
+> Hans
+>
+> On Thursday, March 26, 2020 at 6:20:48 PM UTC+1, Daniel McGuire wrote:
+> > Hello,
+> >
+> > I'm interested in the most efficient way to get an approximation of the covariance matrix of a random effect vector.
+> >
+> > Say I have several random effect vectors in a model
+> >
+> >   PARAMETER_VECTOR( ua );
+> >   PARAMETER_VECTOR( ub );
+> >   PARAMETER_VECTOR( uc );
+> >
+> > and a fixed effect vector "theta".
+> >
+> > And I'm interested in particular in getting the variance covariance matrix for one of these, say
+> >
+> > "ua"
+> >
+> > Looking at the documentation of sdreport(), I see
+> >
+> >
+> >
+> > So what I'd like is the upper left block matrix of the above.
+> >
+> > I believe I can get the first component by using
+> >
+> > sdreport(obj, getJointPrecision=TRUE)
+> >
+> > and taking the inverse of the JointPrecision matrix for the submatrix containing "ua".
+> >
+> > For the second component , is there a way to extract or output the jacobian of "ua" with respect to fixed effects "theta"  in the second part?
+> >
+> >
+> >
+> > Thanks in advance for any help,
+> > Dan
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+

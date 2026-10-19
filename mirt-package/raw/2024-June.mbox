@@ -1,0 +1,404 @@
+From u60c243aa093f0143 at groups.google.com  Thu Jun  6 17:57:21 2024
+From: u60c243aa093f0143 at groups.google.com (Youngjin Kim)
+Date: Thu, 06 Jun 2024 17:57:21 +0000
+Subject: mirtCAT: estimation theta with using prior distribution
+Message-ID: <VekTWXCANA0.rkVcBjahEwAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/VekTWXCANA0/m/rkVcBjahEwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Phil and all,
+
+I'm working on integrating prior information about a tester into a CAT system.
+
+I believe that using custom_den and customUpdate_Thetas to (1) specify the prior distribution of the tester as N(0, 1) and estimate the EAP(corresponds to 'test1' in the attached R), and (2) estimating without specifying the prior distribution(corresponds to 'test2' in the attached R), should give the same result. This is because the latter method assumes that the tester follows a standard normal distribution by default. However, as shown in the attached R file, the RMSE of the two results differs. If you check the log of the estimated theta, it appears that the estimation methods are different.
+
+If you have any good ideas on this issue, please let me know.
+
+Thanks.
+
+Also, I'm new to using this feature of Google, so I don't know if I'm communicating properly. Please bear with me.
+----------------------------------------------------------------------------------------------------
+If the file does not open, please refer to the code below.
+
+library(mirtCAT)
+library(truncnorm)
+library(tictoc)
+library(SimDesign)
+
+true_theta_temp <- matrix(rnorm(100, 0, 1))
+reg_theta_temp <- true_theta_temp + runif(100, -0.5, 0.5)
+RMSE(true_theta_temp, reg_theta_temp)
+
+n_person <- nrow(true_theta_temp)
+n_items <- 300
+itemnames <- paste0("Item.", 1:n_items)
+
+# Item parameter
+a <- matrix(rlnorm(n_items, 0.3, 0.1), n_items)
+b <- rtruncnorm(n_items, a=-4, b=4, mean = 0, sd = 1)
+d <- -a * b
+pars <- data.frame(a1 = a, d = d)
+
+# Fit model
+mod <- generate.mirt_object(pars, '2PL')
+pat <- generate_pattern(mo = mod, Theta = true_theta_temp)
+
+## Prior distribution ##
+# Custom
+custom_den <- function(Theta, prior_mean, ...){
+  dnorm(Theta, mean = prior_mean, sd = prior_sd)
+}
+
+customUpdate_Thetas <- function(design, person, test){
+  mo  <- extract.mirtCAT(test, 'mo')
+  responses <- extract.mirtCAT(person, 'responses')
+
+  # Person specific means
+  pp <- extract.mirtCAT(design, 'person_properties')
+  ID <- extract.mirtCAT(person, "ID")
+  prior_mean <- pp[ID,]
+
+  # Estimate theta using prior custom density
+  tmp         <- fscores(mo, response.pattern = responses,
+                         custom_den = custom_den,
+                         prior_mean = prior_mean,
+                         prior_sd = prior_sd,
+                         method = 'EAP')
+
+  # Update theta estimate and SE
+  person$Update_thetas(tmp[,'F1'],
+                       tmp[,'SE_F1', drop=FALSE])
+  invisible()
+}
+
+start_item_list <- sapply(reg_theta_temp, function(x) which.min(abs(b - x)))
+
+# EAP with N(0, 1) specify
+person_prior <- data.frame(prior_mean = cbind(rep(0, n_person)))
+theta_start_base <- matrix(person_prior$prior_mean,
+                           nrow = n_person, ncol = 1)
+prior_sd <- 1
+
+test1 <- mirtCAT(mo = mod, method = 'EAP',
+                 criteria = 'MI',
+                 start_item = start_item_list,
+                 local_pattern = pat,
+                 design = list(min_SEM = 0.0001,
+                               max_items = 10,
+                               thetas.start = theta_start_base,
+                               customUpdateThetas = customUpdate_Thetas,
+                               person_properties = person_prior))
+
+# EAP with default
+test2 <- mirtCAT(mo = mod, method = 'EAP',
+                 criteria = 'MI',
+                 start_item = start_item_list,
+                 local_pattern = pat,
+                 design = list(min_SEM = 0.0001,
+                               max_items = 10))
+
+# EAP with empirical priors
+person_prior <- data.frame(prior_mean = cbind(reg_theta_temp))
+theta_start_base <- matrix(person_prior$prior_mean,
+                           nrow = n_person, ncol = 1)
+prior_sd <- sd(reg_theta_temp)
+test3 <- mirtCAT(mo = mod, method = 'EAP',
+                 criteria = 'MI',
+                 start_item = start_item_list,
+                 local_pattern = pat,
+                 design = list(min_SEM = 0.0001,
+                               max_items = 10,
+                               thetas.start = theta_start_base,
+                               customUpdateThetas = customUpdate_Thetas,
+                               person_properties = person_prior))
+
+result1 <- round(RMSE(true_theta_temp, sapply(1:100, function(i) test1[[i]][["thetas"]])), 3)
+result2 <- round(RMSE(true_theta_temp, sapply(1:100, function(i) test2[[i]][["thetas"]])), 3)
+result3 <- round(RMSE(true_theta_temp, sapply(1:100, function(i) test3[[i]][["thetas"]])), 3)
+
+From ue5ff62f07434a294 at groups.google.com  Fri Jun 14 22:32:00 2024
+From: ue5ff62f07434a294 at groups.google.com (Jason D. Yeatman)
+Date: Fri, 14 Jun 2024 22:32:00 +0000
+Subject: NaN for infit statistics with missing values
+Message-ID: <wdqbcUSe0yc.2DlLWqtMAgAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/wdqbcUSe0yc/m/2DlLWqtMAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm using mirt version 1.41 and when I try to calculate 'infit' statistics with
+itemfit(x, fit_stats = 'infit')
+I get all NaNs for any item that has even a single NaN. Does anyone else have this issue and can offer a solution?
+
+From ucb6997e259fb4cb8 at groups.google.com  Sat Jun 15 20:28:27 2024
+From: ucb6997e259fb4cb8 at groups.google.com (Mike Imanaga II)
+Date: Sat, 15 Jun 2024 20:28:27 +0000
+Subject: multiple group bfactor - focal group hyperparameters for G
+Message-ID: <B7a_4h3h-IQ.nTlFDYKUAgAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/B7a_4h3h-IQ/m/nTlFDYKUAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, I am not sure if this behavior is expected with the bfactor function when performing multiple groups analysis. I am finding that only the mean -- not the variance -- of the general factor in the focal group is being estimated. I was expecting both of these hyperparameters to be freed. Reprex shown below, based on some of the example code from ?bfactor.
+
+Thanks
+
+``` r
+library(mirt)
+#> Loading required package: stats4
+#> Loading required package: lattice
+
+### load SAT12 and compute bifactor model with 3 specific factors
+data(SAT12)
+data <- key2binary(SAT12,
+                   key = c(1,4,5,2,3,1,2,1,3,1,2,4,2,1,5,3,4,4,1,4,3,3,4,1,3,5,1,3,1,5,4,5))
+specific <- c(2,3,2,3,3,2,1,2,1,1,1,3,1,3,1,2,1,1,3,3,1,1,3,1,3,3,1,3,2,3,1,2)
+set.seed(456)
+group <- sample(c("G1", "G2"), nrow(data), replace = TRUE)
+data <- data.frame(data)
+mod1 <- bfactor(data, specific,
+                group = group,
+                invariance = c("free_means", "free_vars", names(data)),
+                technical = list(NCYCLES = 5000),
+                verbose = FALSE)
+sapply(coef(mod1, printSE = TRUE), "[", "GroupPars")
+#> $G1.GroupPars
+#>     MEAN_1 MEAN_2 MEAN_3 MEAN_4 COV_11 COV_21 COV_31 COV_41 COV_22 COV_32
+#> par      0      0      0      0      1      0      0      0      1      0
+#>     COV_42 COV_33 COV_43 COV_44
+#> par      0      1      0      1
+#>
+#> $G2.GroupPars
+#>         MEAN_1 MEAN_2 MEAN_3 MEAN_4 COV_11 COV_21 COV_31 COV_41 COV_22 COV_32
+#> par 0.08768718      0      0      0      1      0      0      0      1      0
+#>     COV_42 COV_33 COV_43 COV_44
+#> par      0      1      0      1
+```
+
+<sup>Created on 2024-06-15 with [reprex v2.1.0](https://reprex.tidyverse.org)</sup>
+
+From u6b0cfc3998e81e8e at groups.google.com  Mon Jun 17 00:49:39 2024
+From: u6b0cfc3998e81e8e at groups.google.com (Amirreza Mehrabi)
+Date: Mon, 17 Jun 2024 00:49:39 +0000
+Subject: How to find files?
+Message-ID: <4hgcx4WsACs.lnK0iVfxAgAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/4hgcx4WsACs/m/lnK0iVfxAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Dr. Phil Chalmes,
+I am currently studying Multidimensional Computerized Adaptive Testing with mirtCAT (philchalmers.github.io) <https://philchalmers.github.io/mirtCAT/jena-workshop/mirtCAT-Workshop-2017.pdf>. I have noticed that many examples referenced are not included in the primary documentation file. Could you please provide access to these additional example files? They are essential for my research.
+
+Sincerely,
+Amirreza Mehrabi
+
+From ucc6f459bb9b0129f at groups.google.com  Tue Jun 18 01:50:04 2024
+From: ucc6f459bb9b0129f at groups.google.com (Cathy Labrish)
+Date: Tue, 18 Jun 2024 01:50:04 +0000
+Subject: confidence intervals around expected total scores from multi-group analysis
+Message-ID: <2X9PRBlz6jY.8JLsEjhDAwAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/2X9PRBlz6jY/m/8JLsEjhDAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Phil,
+
+Hope this finds you well.  Am trying to get a plot of expected total scores with 95% confidence from a multigroup analysis using the mirt plot method.  Confidence intervals are not appearing.  Can you suggest what I am going incorrectly.  I am conducting a DIF/DTF analysis on a measure of 23 items, and setting anchors as the items listed in invar.final.set1.
+
+Here is the code:
+
+group <- pooledat$group
+itcol <- colnames(pooledat)[-24]
+invar.final.set1 <- itcol[c(2,8,13,14,16,18,20,22,23)]
+dif.final.set1 <- c(1,3:7,9:12,15,17,19,21)
+
+remove(modMG_final.set1)
+modMG_final.set1 <- multipleGroup(pooledat[itcol], 1, group, SE=T,
+                 invariance = c(invar.final.set1,
+                                           'free_mean',
+                                           'free_var'),
+                            technical = list(NCYCLES = 2000))
+plot(modMG_final.set1,MI=2000)
+
+data is attached.
+
+From ua29b76a7fee2ac43 at groups.google.com  Thu Jun 20 00:43:16 2024
+From: ua29b76a7fee2ac43 at groups.google.com (zha...@gmail.com)
+Date: Thu, 20 Jun 2024 00:43:16 +0000
+Subject: Approach to cross-validate a mirt model
+Message-ID: <9OD2Zn4SYAQ.SSwwXehmAgAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/9OD2Zn4SYAQ/m/SSwwXehmAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I am using the following approach for a cross-validation test (and check the prediction) for my mirt model and wonder if someone who has experience in performing similar tests can comment on whether it is valid:
+
+1) The mirt model MIRT_A was constructed based on Data_A.
+2) The cross-validated dataset is called Data_B. A separate mirt model MIRT_B (with the same expression/factor structure as MIRT_A) was constructed based on Data_B.
+3) I generate fscores(MIRT_A) using the response.pattern of Data_B.
+4) I generate fscores(MIRT_B)
+5) Both 3 and 4 had the same number of rows (same participants now),
+6) Next, I calculate the RMSE ability score differences between 3 and 4 (square root of the mean differences between each ability).
+7) If RMSE is low, say <=0.5, then it is considered acceptable prediction model?
+
+What do you think?
+
+From u9c0f2ddb2d5f8a80 at groups.google.com  Thu Jun 20 19:17:23 2024
+From: u9c0f2ddb2d5f8a80 at groups.google.com (George Kachergis)
+Date: Thu, 20 Jun 2024 19:17:23 +0000
+Subject: Re: NaN for infit statistics with missing values
+Message-ID: <wdqbcUSe0yc.71EWZbSjAgAJ@mirt-package.groups.google.com>
+In-Reply-To: <wdqbcUSe0yc.2DlLWqtMAgAJ@mirt-package.groups.google.com>
+References: <wdqbcUSe0yc.2DlLWqtMAgAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/wdqbcUSe0yc/m/71EWZbSjAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+yes, would be great to have a solution other than removing all data with any missing cells! (I think in principle infit should allow for missing data?)
+
+On Friday, June 14, 2024 at 3:32:00 PM UTC-7 Jason D. Yeatman wrote:
+> I'm using mirt version 1.41 and when I try to calculate 'infit' statistics with
+> itemfit(x, fit_stats = 'infit')
+> I get all NaNs for any item that has even a single NaN. Does anyone else have this issue and can offer a solution?
+
+From ub330c2028fed415b at groups.google.com  Fri Jun 21 19:00:04 2024
+From: ub330c2028fed415b at groups.google.com (Phil Chalmers)
+Date: Fri, 21 Jun 2024 19:00:04 +0000
+Subject: Re: NaN for infit statistics with missing values
+Message-ID: <wdqbcUSe0yc.-RJtzoFgCAAJ@mirt-package.groups.google.com>
+In-Reply-To: <wdqbcUSe0yc.71EWZbSjAgAJ@mirt-package.groups.google.com>
+References: <wdqbcUSe0yc.2DlLWqtMAgAJ@mirt-package.groups.google.com> <wdqbcUSe0yc.71EWZbSjAgAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/wdqbcUSe0yc/m/-RJtzoFgCAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Indeed, infit/outfit should have worked with missing data, however there were a few areas in the code that needed na.rm=TRUE flags to make this work correctly. The dev now works more naturally with missing data (see example below)
+
+devtools::install_github('philchalmers/mirt')
+library(mirt)
+P <- function(Theta){exp(Theta^2 * 1.2 - 1) / (1 + exp(Theta^2 * 1.2 - 1))}
+
+set.seed(1234)
+a <- matrix(rlnorm(20, meanlog=0, sdlog = .1),ncol=1)
+d <- matrix(rnorm(20),ncol=1)
+Theta <- matrix(rnorm(2000))
+items <- rep('2PL', 20)
+ps <- P(Theta)
+baditem <- numeric(2000)
+for(i in 1:2000)
+    baditem[i] <- sample(c(0,1), 1, prob = c(1-ps[i], ps[i]))
+data <- cbind(simdata(a,d, 2000, items, Theta=Theta), baditem=baditem)
+
+datmiss <- data
+datmiss[sample(1:length(data), 50)] <- NA
+
+raschfit <- mirt(data, 1, itemtype='Rasch')
+raschfit_miss <- mirt(datmiss, 1, itemtype='Rasch')
+
+itemfit(raschfit)
+itemfit(raschfit, fit_stats = 'infit', method='ML')
+
+itemfit(raschfit_miss)   # fails
+itemfit(raschfit_miss, na.rm = TRUE)  # missing removed
+itemfit(raschfit_miss, fit_stats = 'infit', method='ML')  # missing left but infit/outfit still computed
+
+On Thu, Jun 20, 2024 at 3:17 PM George Kachergis <george.k...@gmail.com> wrote:
+
+> yes, would be great to have a solution other than removing all data with any missing cells! (I think in principle infit should allow for missing data?)
+>
+> On Friday, June 14, 2024 at 3:32:00 PM UTC-7 Jason D. Yeatman wrote:
+> > I'm using mirt version 1.41 and when I try to calculate 'infit' statistics with
+> > itemfit(x, fit_stats = 'infit')
+> > I get all NaNs for any item that has even a single NaN. Does anyone else have this issue and can offer a solution?
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "mirt-package" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to mirt-package...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/mirt-package/b3ca85d8-6a0e-4e31-8ac1-22a40216aa13n%40googlegroups.com <https://groups.google.com/d/msgid/mirt-package/b3ca85d8-6a0e-4e31-8ac1-22a40216aa13n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ua29b76a7fee2ac43 at groups.google.com  Thu Jun 27 08:53:27 2024
+From: ua29b76a7fee2ac43 at groups.google.com (zha...@gmail.com)
+Date: Thu, 27 Jun 2024 08:53:27 +0000
+Subject: Re: How to find files?
+Message-ID: <4hgcx4WsACs.D2TTRzhHAQAJ@mirt-package.groups.google.com>
+In-Reply-To: <4hgcx4WsACs.lnK0iVfxAgAJ@mirt-package.groups.google.com>
+References: <4hgcx4WsACs.lnK0iVfxAgAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/4hgcx4WsACs/m/D2TTRzhHAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I encountered similar problems too (not sure whether it is the same as yours Amirreza). Specifically, clicking on the examples and exercises links for the Jena 2017 workshop at https://github.com/philchalmers/mirtCAT/wiki - nothing happened when I clicked on those links.
+
+Further investigation revealed that the browser (Chrome in this case) appeared to block the traffic because of mixture between secure (https) and non-secure (http) traffic. Here is a screenshot of the console:
+
+So, to download those examples and exercises, I right-clicked the link and choose "Save Link as ..." or copy the address of those links and paste it into another browser tab to download. The browser (Chrome) might still warn you about the downloads but you can choose "Keep" the files.
+
+Hope it helps.
+
+Regards,
+Zhao
+
+On Monday, June 17, 2024 at 10:49:39 AM UTC+10 a.mehr...@gmail.com wrote:
+> Dear Dr. Phil Chalmes,
+> I am currently studying Multidimensional Computerized Adaptive Testing with mirtCAT (philchalmers.github.io) <https://philchalmers.github.io/mirtCAT/jena-workshop/mirtCAT-Workshop-2017.pdf>. I have noticed that many examples referenced are not included in the primary documentation file. Could you please provide access to these additional example files? They are essential for my research.
+>
+> Sincerely,
+> Amirreza Mehrabi
+
+From ub330c2028fed415b at groups.google.com  Thu Jun 27 16:07:10 2024
+From: ub330c2028fed415b at groups.google.com (Phil Chalmers)
+Date: Thu, 27 Jun 2024 16:07:10 +0000
+Subject: Re: How to find files?
+Message-ID: <4hgcx4WsACs.B0ZwjONeAQAJ@mirt-package.groups.google.com>
+In-Reply-To: <4hgcx4WsACs.D2TTRzhHAQAJ@mirt-package.groups.google.com>
+References: <4hgcx4WsACs.lnK0iVfxAgAJ@mirt-package.groups.google.com> <4hgcx4WsACs.D2TTRzhHAQAJ@mirt-package.groups.google.com>
+Archived-At: <https://groups.google.com/g/mirt-package/c/4hgcx4WsACs/m/B0ZwjONeAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Looks to have been a dead github link. Should be patched now.
+
+Phil
+
+On Thu, Jun 27, 2024 at 4:53 AM zha...@gmail.com <zhao...@gmail.com> wrote:
+
+> I encountered similar problems too (not sure whether it is the same as yours Amirreza). Specifically, clicking on the examples and exercises links for the Jena 2017 workshop at https://github.com/philchalmers/mirtCAT/wiki - nothing happened when I clicked on those links.
+>
+> Further investigation revealed that the browser (Chrome in this case) appeared to block the traffic because of mixture between secure (https) and non-secure (http) traffic. Here is a screenshot of the console:
+>
+>
+> So, to download those examples and exercises, I right-clicked the link and choose "Save Link as ..." or copy the address of those links and paste it into another browser tab to download. The browser (Chrome) might still warn you about the downloads but you can choose "Keep" the files.
+>
+> Hope it helps.
+>
+> Regards,
+> Zhao
+>
+>
+>
+> On Monday, June 17, 2024 at 10:49:39 AM UTC+10 a.mehr...@gmail.com wrote:
+> > Dear Dr. Phil Chalmes,
+> > I am currently studying Multidimensional Computerized Adaptive Testing with mirtCAT (philchalmers.github.io) <https://philchalmers.github.io/mirtCAT/jena-workshop/mirtCAT-Workshop-2017.pdf>. I have noticed that many examples referenced are not included in the primary documentation file. Could you please provide access to these additional example files? They are essential for my research.
+> >
+> > Sincerely,
+> > Amirreza Mehrabi
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "mirt-package" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to mirt-package...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/mirt-package/e991ae10-d13e-4df4-bca8-080844720ea2n%40googlegroups.com <https://groups.google.com/d/msgid/mirt-package/e991ae10-d13e-4df4-bca8-080844720ea2n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+

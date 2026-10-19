@@ -1,0 +1,350 @@
+From ue7a8779ef7a944e5 at groups.google.com  Mon Jan 12 16:00:47 2026
+From: ue7a8779ef7a944e5 at groups.google.com (James Thorson)
+Date: Mon, 12 Jan 2026 16:00:47 +0000
+Subject: Memory REPORTing
+Message-ID: <ciVngUczdcE.hqhO_7ORCQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ciVngUczdcE/m/hqhO_7ORCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Has anyone played around with REPORTing the memory (or displaying to terminal) using a CPP edit (see below)?
+
+Specifically, the snippet appears to match the Windows-OS Task Manager reporting for Process Memory prior to `gc()` but:
+I haven't tried testing on other OSes;
+I haven't tried checking whether it passes CRAN checks;
+I haven't tested whether the memory reporting is too context-dependent to be useful for tracking memory across different model decisions?
+The topic of tracing memory use has come up many times ... my hope is that it would:
+For developers:  provide a simple way to compare memory use when comparing different model implementations;
+For users:  provide a useful way to track maximum memory use, e.g., when deciding how much memory is needed on a virtual machine;
+I'd welcome any thoughts before spending too much time exploring :0
+
+Jim
+
+```c++
+#include <TMB.hpp>
+
+#ifdef _WIN32
+  #include <windows.h>
+  #include <psapi.h>
+#else
+  #include <sys/resource.h>
+  #include <unistd.h>
+#endif
+
+// Helper function to cout current memory usage in MB
+void log_memory(std::string label) {
+    #ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS_EX pmc;
+    GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc));
+    SIZE_T physMemUsedByMe = pmc.WorkingSetSize;
+    Rcout << label << ": " << physMemUsedByMe / 1024.0 / 1024.0 << " MB" << std::endl;
+    #endif
+}
+
+// Helper function to REPORT current memory usage in MB
+double get_memory_MB() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS_EX pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+        return (double)pmc.WorkingSetSize / 1024.0 / 1024.0;
+    }
+#elif defined(__linux__)
+    // Linux-specific: Read from /proc/self/statm
+    // Returns (size resident share text lib data dirty) in pages
+    long pages = sysconf(_SC_PAGESIZE);
+    FILE* fp = fopen("/proc/self/statm", "r");
+    long rss = 0;
+    if (fp) {
+        if (fscanf(fp, "%*s%ld", &rss) == 1) { // Second value is RSS
+            fclose(fp);
+            return (double)rss * pages / 1024.0 / 1024.0;
+        }
+        fclose(fp);
+    }
+#elif defined(__APPLE__)
+    // macOS-specific
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+        // ru_maxrss is in bytes on macOS
+        return (double)usage.ru_maxrss / 1024.0 / 1024.0;
+    }
+#endif
+    return 0.0;
+}
+```
+
+and then the standard template
+
+```cpp
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  log_memory("Start of Template");
+  double memory_start_MB = get_memory_MB();
+  REPORT(memory_start_MB);
+  using namespace density;
+
+  [...]
+}
+```
+
+From u258b98968d0ad8b9 at groups.google.com  Tue Jan 13 11:43:56 2026
+From: u258b98968d0ad8b9 at groups.google.com (Kasper Kristensen)
+Date: Tue, 13 Jan 2026 11:43:56 +0000
+Subject: Re: Memory REPORTing
+Message-ID: <ciVngUczdcE.GT-da9sWAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <ciVngUczdcE.hqhO_7ORCQAJ@tmb-users.groups.google.com>
+References: <ciVngUczdcE.hqhO_7ORCQAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/ciVngUczdcE/m/GT-da9sWAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Jim, even if you could in principle make this work, it might not be very useful. Let me explain...
+
+Only the first level of AD calls 'objective_function<Type>::operator()' so you could indeed get some useful information about the memory usage for the 'ADFun' tape.
+However, usually memory issues occur later on when constructing 'ADGrad' from 'ADFun' or 'ADHess' from 'ADGrad'. These transformations do not call 'objective_function<Type>::operator()' at all, so the corresponding memory consumption would be invisible to the memory logger.
+
+On Monday, January 12, 2026 at 5:00:47 PM UTC+1 james...@gmail.com wrote:
+> Has anyone played around with REPORTing the memory (or displaying to terminal) using a CPP edit (see below)?
+>
+> Specifically, the snippet appears to match the Windows-OS Task Manager reporting for Process Memory prior to `gc()` but:
+> I haven't tried testing on other OSes;
+> I haven't tried checking whether it passes CRAN checks;
+> I haven't tested whether the memory reporting is too context-dependent to be useful for tracking memory across different model decisions?
+> The topic of tracing memory use has come up many times ... my hope is that it would:
+> For developers:  provide a simple way to compare memory use when comparing different model implementations;
+> For users:  provide a useful way to track maximum memory use, e.g., when deciding how much memory is needed on a virtual machine;
+> I'd welcome any thoughts before spending too much time exploring :0
+>
+> Jim
+>
+>
+>
+> ```c++
+> #include <TMB.hpp>
+>
+> #ifdef _WIN32
+>   #include <windows.h>
+>   #include <psapi.h>
+> #else
+>   #include <sys/resource.h>
+>   #include <unistd.h>
+> #endif
+>
+> // Helper function to cout current memory usage in MB
+> void log_memory(std::string label) {
+>     #ifdef _WIN32
+>     PROCESS_MEMORY_COUNTERS_EX pmc;
+>     GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc));
+>     SIZE_T physMemUsedByMe = pmc.WorkingSetSize;
+>     Rcout << label << ": " << physMemUsedByMe / 1024.0 / 1024.0 << " MB" << std::endl;
+>     #endif
+> }
+>
+> // Helper function to REPORT current memory usage in MB
+> double get_memory_MB() {
+> #ifdef _WIN32
+>     PROCESS_MEMORY_COUNTERS_EX pmc;
+>     if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+>         return (double)pmc.WorkingSetSize / 1024.0 / 1024.0;
+>     }
+> #elif defined(__linux__)
+>     // Linux-specific: Read from /proc/self/statm
+>     // Returns (size resident share text lib data dirty) in pages
+>     long pages = sysconf(_SC_PAGESIZE);
+>     FILE* fp = fopen("/proc/self/statm", "r");
+>     long rss = 0;
+>     if (fp) {
+>         if (fscanf(fp, "%*s%ld", &rss) == 1) { // Second value is RSS
+>             fclose(fp);
+>             return (double)rss * pages / 1024.0 / 1024.0;
+>         }
+>         fclose(fp);
+>     }
+> #elif defined(__APPLE__)
+>     // macOS-specific
+>     struct rusage usage;
+>     if (getrusage(RUSAGE_SELF, &usage) == 0) {
+>         // ru_maxrss is in bytes on macOS
+>         return (double)usage.ru_maxrss / 1024.0 / 1024.0;
+>     }
+> #endif
+>     return 0.0;
+> }
+> ```
+>
+> and then the standard template
+>
+> ```cpp
+> template<class Type>
+> Type objective_function<Type>::operator() ()
+> {
+>   log_memory("Start of Template");
+>   double memory_start_MB = get_memory_MB();
+>   REPORT(memory_start_MB);
+>   using namespace density;
+>
+>   [...]
+> }
+> ```
+
+From u39971e2c19b8ec70 at groups.google.com  Fri Jan 23 16:12:32 2026
+From: u39971e2c19b8ec70 at groups.google.com (Tomas T.)
+Date: Fri, 23 Jan 2026 16:12:32 +0000
+Subject: Error: '*this' is not a valid 'advector' (constructed using illegal operation?)
+Message-ID: <XSESFz2oYEs.YhObTSIDAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/XSESFz2oYEs/m/YhObTSIDAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I can't get rid of this error:
+
+Error: '*this' is not a valid 'advector' (constructed using illegal operation?)
+
+The error is probably caused by this indexing:  sum(log(s[NDFirstRow[i]:NDLastSurvivedRow[i]])) . Can't seem to find anything relevant for this in Ben's tips <https://github.com/bbolker/rtmb_tips>. I found this issue, but this should have been fixed since v 1.7: https://github.com/kaskr/RTMB/issues/33
+
+I would appreciate help with this!
+
+I am using RTMB v 1.8. This is my NLL function:
+
+nest_surv_nll <- function(par, data) {
+getAll(data, par, warn=FALSE)
+
+# "[<-" <- ADoverload("[<-")
+#ADREPORT(beta)
+
+s <- plogis(x %*% beta)[,1] # s = daily survival rate
+
+ll <- 0
+for (i in 1:nrow(nests)) {
+ll <- ll + sum(log(s[NDFirstRow[i]:NDLastSurvivedRow[i]]))
+if (!is.na <http://is.na>(Fate[i]) && Fate[i] == 0) { # we know this nest failed
+stopifnot(!is.na <http://is.na>(NDFirstNotSurvivedRow[i]))
+ll <- ll + log(1 - prod(s[NDFirstNotSurvivedRow[i]:NDLastRow[i]]))
+}
+}
+-ll
+}
+
+cmb <- function(f, d) function(p) f(p, d)
+
+obj <- MakeADFun(cmb(nest_surv_nll, data), par)
+
+Here is how the data looks like:
+
+> str(data)
+List of 6
+ $ NDFirstRow           : int [1:1052] 1309 1323 124 143 1 28 51 54 77 85 ...
+ $ NDLastRow            : int [1:1052] 1322 1328 142 160 27 50 53 76 84 92 ...
+ $ NDLastSurvivedRow    : int [1:1052] 1322 1323 142 156 27 50 53 76 79 92 ...
+ $ NDFirstNotSurvivedRow: int [1:1052] NA 1324 NA 157 NA NA NA NA 80 NA ...
+ $ Fate                 : num [1:1052] 1 0 1 0 NA 1 NA 1 0 NA ...
+ $ x                    : num [1:15165, 1:57] 1 1 1 1 1 1 1 1 1 1 ...
+  ..- attr(*, "dimnames")=List of 2
+  .. ..$ : chr [1:15165] "1" "2" "3" "4" ...
+  .. ..$ : chr [1:57] "(Intercept)" "Habitatjetel" "Habitatkukurice" "Habitatlouka" ...
+  ..- attr(*, "assign")= int [1:57] 0 1 1 1 1 1 1 1 1 1 ...
+  ..- attr(*, "contrasts")=List of 4
+  .. ..$ Habitat          : chr "contr.treatment"
+  .. ..$ klimaticky_region: chr "contr.treatment"
+  .. ..$ teply_region_flag: chr "contr.treatment"
+  .. ..$ slope_cat_txt    : chr "contr.treatment"
+
+> str(par)
+List of 1
+ $ beta: Named num [1:57] 0 0 0 0 0 0 0 0 0 0 ...
+  ..- attr(*, "names")= chr [1:57] "(Intercept)" "Habitatjetel" "Habitatkukuric
+
+Thanks!
+
+Tomas
+
+From u39971e2c19b8ec70 at groups.google.com  Fri Jan 23 17:40:04 2026
+From: u39971e2c19b8ec70 at groups.google.com (Tomas T.)
+Date: Fri, 23 Jan 2026 17:40:04 +0000
+Subject: Re: Error: '*this' is not a valid 'advector' (constructed using illegal operation?)
+Message-ID: <XSESFz2oYEs.RsmcLOkHAwAJ@tmb-users.groups.google.com>
+In-Reply-To: <XSESFz2oYEs.YhObTSIDAwAJ@tmb-users.groups.google.com>
+References: <XSESFz2oYEs.YhObTSIDAwAJ@tmb-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/tmb-users/c/XSESFz2oYEs/m/RsmcLOkHAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am sorry, please ignore the previous email, this is not an RTMB issue. It was caused by bad indices -  NDLastSurvivedRow[i] pointing to non-existing rows. (I am using model.matrix() to construct x and I didn't notice it is just deleting my rows without any warning!!! Rows with some predictors being NA, but still, I would prefer to keep them or at least give a warning....)
+
+Cheers to you all!
+
+Tomas
+
+On Friday, January 23, 2026 at 5:12:32 PM UTC+1 Tomas T. wrote:
+> Hello,
+>
+> I can't get rid of this error:
+>
+> Error: '*this' is not a valid 'advector' (constructed using illegal operation?)
+>
+> The error is probably caused by this indexing:  sum(log(s[NDFirstRow[i]:NDLastSurvivedRow[i]])) . Can't seem to find anything relevant for this in Ben's tips <https://github.com/bbolker/rtmb_tips>. I found this issue, but this should have been fixed since v 1.7: https://github.com/kaskr/RTMB/issues/33
+>
+> I would appreciate help with this!
+>
+> I am using RTMB v 1.8. This is my NLL function:
+>
+> nest_surv_nll <- function(par, data) {
+> getAll(data, par, warn=FALSE)
+>
+> # "[<-" <- ADoverload("[<-")
+> #ADREPORT(beta)
+>
+> s <- plogis(x %*% beta)[,1] # s = daily survival rate
+>
+> ll <- 0
+> for (i in 1:nrow(nests)) {
+> ll <- ll + sum(log(s[NDFirstRow[i]:NDLastSurvivedRow[i]]))
+> if (!is.na <http://is.na>(Fate[i]) && Fate[i] == 0) { # we know this nest failed
+> stopifnot(!is.na <http://is.na>(NDFirstNotSurvivedRow[i]))
+> ll <- ll + log(1 - prod(s[NDFirstNotSurvivedRow[i]:NDLastRow[i]]))
+> }
+> }
+> -ll
+> }
+>
+> cmb <- function(f, d) function(p) f(p, d)
+>
+> obj <- MakeADFun(cmb(nest_surv_nll, data), par)
+>
+> Here is how the data looks like:
+>
+> > str(data)
+> List of 6
+>  $ NDFirstRow           : int [1:1052] 1309 1323 124 143 1 28 51 54 77 85 ...
+>  $ NDLastRow            : int [1:1052] 1322 1328 142 160 27 50 53 76 84 92 ...
+>  $ NDLastSurvivedRow    : int [1:1052] 1322 1323 142 156 27 50 53 76 79 92 ...
+>  $ NDFirstNotSurvivedRow: int [1:1052] NA 1324 NA 157 NA NA NA NA 80 NA ...
+>  $ Fate                 : num [1:1052] 1 0 1 0 NA 1 NA 1 0 NA ...
+>  $ x                    : num [1:15165, 1:57] 1 1 1 1 1 1 1 1 1 1 ...
+>   ..- attr(*, "dimnames")=List of 2
+>   .. ..$ : chr [1:15165] "1" "2" "3" "4" ...
+>   .. ..$ : chr [1:57] "(Intercept)" "Habitatjetel" "Habitatkukurice" "Habitatlouka" ...
+>   ..- attr(*, "assign")= int [1:57] 0 1 1 1 1 1 1 1 1 1 ...
+>   ..- attr(*, "contrasts")=List of 4
+>   .. ..$ Habitat          : chr "contr.treatment"
+>   .. ..$ klimaticky_region: chr "contr.treatment"
+>   .. ..$ teply_region_flag: chr "contr.treatment"
+>   .. ..$ slope_cat_txt    : chr "contr.treatment"
+>
+> > str(par)
+> List of 1
+>  $ beta: Named num [1:57] 0 0 0 0 0 0 0 0 0 0 ...
+>   ..- attr(*, "names")= chr [1:57] "(Intercept)" "Habitatjetel" "Habitatkukuric
+>
+>
+> Thanks!
+>
+> Tomas
+
