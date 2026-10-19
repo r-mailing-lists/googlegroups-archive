@@ -1,0 +1,476 @@
+{
+ "thread": "UHZJFUFH188",
+ "subject": "GREP application on Hadoop using RHIPE",
+ "messages_listed": 20,
+ "last_activity": "2010-12-22T18:15:12Z",
+ "messages": [
+  {
+   "id": "K-NYujGIaD8J",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-20T11:21:27Z",
+   "subject": "GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Hi.\r<br>i am trying to build GREP application on hadoop using rhipe. For this\r<br>i have a text file where each line consist of words. This file resided\r<br>on Hadoop distributed file system.\r<br>\r<br>For this i have created a mapper function whose responsibility is to\r<br>1. Sequence along the characters from &quot;a&quot; to &quot;z&quot;,which are my keys.\r<br>2. For each character grep all the words in which the character is\r<br>appearing. For this i am using R grep() function. These vector of\r<br>words would be my &quot;values&quot; to the keys.\r<br>\r<br>For example:\r<br> for key &quot;a&quot; the values could be &quot;and&quot;, &quot;bad&quot;, &quot;amazon&quot; etc\r<br>for key &quot;b&quot; the values could be &quot;bad&quot;, &quot;boss&quot; etc.. (Note there would\r<br>be duplication of words)\r<br>\r<br>i am using rhlapply function for running the map-reduce job. But\r<br>1. i dont know how to write the function which will read the input\r<br>file from the  HDFS.\r<br>\r<br>2. MoreOver it throws error saying that &quot;in.txt&quot; is not a sequential\r<br>file, i tried giving the directory but it gives me the same error.\r<br>After studying i found RHIPE expects the data to be in key value\r<br>pairs. so i need to perform the same operation as the mapper function\r<br>before only.\r<br>\r<br>\r<br>createRhipeList&lt;-function(x)\r<br>{\r<br>        for(i in 1:26)\r<br>        d1&lt;-list(k=letters[i],v=grep(letters[i],myData,value=TRUE))\r<br>\r<br>}\r<br>\r<br>jobObject&lt;-rhlapply(fun=createRhipeList,ifolder=&quot;/testGrep/input/\r<br>in.txt&quot;,ofolder=&quot;/test_som/job&quot;,N=20)\r<br>rhex(jobObject)\r<br>\r<br>\r<br>Can you please help me on the same.\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Lx3PrDd7FuMJ",
+   "from": "Saptarshi Guha",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-20T17:07:34Z",
+   "subject": "Re: [rhipe] GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Hi,<br>First of , don&#39;t use rhlapply. It has been removed and was the distributed<br>version of lapply - so it did not take any input folder (as far as i recall), if<br>it did it would only take sequence file input format not text file.<p>For your problem below, use rhmr, specifying the input folder with text files<br>and use text/sequence output format.<p></p></p>"
+    ],
+    [
+     2,
+     "<p><p>&gt; 1. Sequence along the characters from &quot;a&quot; to &quot;z&quot;,which are my keys.<br>&gt; 2. For each character grep all the words in which the character is<br>&gt; appearing. For this i am using R grep() function. These vector of<br>&gt; words would be my &quot;values&quot; to the keys.<br>&gt; For example:<br>&gt;  for key &quot;a&quot; the values could be &quot;and&quot;, &quot;bad&quot;, &quot;amazon&quot; etc<br>&gt; for key &quot;b&quot; the values could be &quot;bad&quot;, &quot;boss&quot; etc.. (Note there would<br>&gt; be duplication of words)<br>&gt;</p></p>"
+    ],
+    [
+     1,
+     "<p><p><p>So your map would look like<p>map &lt;- expression({<br>  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))<br>  counts &lt;- sapply(letters,function(alpha){<br>    value &lt;- lines.of.text[grep(alpha, lines.of.text)]<br>    if(length(value)==0) value &lt;- &#39;&#39;<br>    rhcollect(alpha,value)<br>  })<br>})<p>mapred &lt;- list(mapred.reduce.tasks=0, mapred.field.separator=&quot;<br>&quot;,mapred.job.tracker=&#39;local&#39;)<br>z &lt;- rhmr(map=map, ifolder=path-to-input,ofolder=&quot;/tmp/job&quot;,<br>     inout=c(&quot;text&quot;,&quot;text&quot;),mapred=mapred)<br>rhex(z)<p>(You need the if(length(value)==0 bit, for text output. RHIPE throws an<br>indexoutofbounds  exception when trying to strinfigy a vector of length  0. For<br>sequence file output, it is not needed, the return value be an empty<br>character vector)<p>Hope this helps<p>Saptarshi<br></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "4q94L_99_WQJ",
+   "from": "Saptarshi Guha",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-20T18:06:25Z",
+   "subject": "Re: [rhipe] GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "I should also point out that those values (vectors) could potentially<br>be very large!<p>Since you already have a case where you might get multiple lines for<br>the same key( since each<br>map task will potentially write a value for the key &#39;a&#39; and there is<br>no reducer), you<br>might as well split long values and write them out as multiple lines.<br>RHIPE has a cap on value length i think its 128MB or 256MB.<p>The following code doesn&#39;t do that. It instead, partitions by key<br>(values for same letter in one file) and sorts within part file (by<br>key)<p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p>map &lt;- expression({<br>  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))<br>  counts &lt;- sapply(letters,function(alpha){<br>    value &lt;- lines.of.text[grep(alpha, lines.of.text)]<br>    if(length(value)==0) value &lt;- &#39;&#39;<br>    rhcollect(alpha,value)<br>  })<br>})<br></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p>reduce &lt;- expression(<br>    reduce = { lapply(reduce.values,function(r) rhcollect(reduce.key,r)) }<br>    )<p>mapred &lt;- list(mapred.field.separator=&quot; &quot;)<br>z &lt;- rhmr(map=map,reduce=reduce, ifolder=filename,ofolder=&quot;/tmp/job&quot;,<br>     inout=c(&quot;text&quot;,&quot;text&quot;),orderby=&quot;char&quot;,mapred=mapred,part=list(lims=1,type=&#39;string&#39;))<br>rhex(z)<p>This can take time, e.g. for 2.8GB data read (100MM records, 5 words<br>per line), 14GB was written (867,984 records)<br>and it took 13 minutes (72 cores, 8 computers, 5 TB of space)<p>BTW, the reducer is an identity reducer, but if you use the &#39;orderby&#39;<br>parameter, you *have* to provide an R reducer.<br>Saptarshi</p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><br>On Mon, Dec 20, 2010 at 9:07 AM, Saptarshi Guha<br>&lt;<a href data-email-masked rel=\"nofollow\">saptars...@gmail.com</a>&gt; wrote:<br>&gt; Hi,<br>&gt; First of , don&#39;t use rhlapply. It has been removed and was the distributed<br>&gt; version of lapply - so it did not take any input folder (as far as i recall), if<br>&gt; it did it would only take sequence file input format not text file.<br>&gt;<br>&gt; For your problem below, use rhmr, specifying the input folder with text files<br>&gt; and use text/sequence output format.<br>&gt;<br>&gt;&gt; 1. Sequence along the characters from &quot;a&quot; to &quot;z&quot;,which are my keys.<br>&gt;&gt; 2. For each character grep all the words in which the character is<br>&gt;&gt; appearing. For this i am using R grep() function. These vector of<br>&gt;&gt; words would be my &quot;values&quot; to the keys.<br>&gt;&gt; For example:<br>&gt;&gt;  for key &quot;a&quot; the values could be &quot;and&quot;, &quot;bad&quot;, &quot;amazon&quot; etc<br>&gt;&gt; for key &quot;b&quot; the values could be &quot;bad&quot;, &quot;boss&quot; etc.. (Note there would<br>&gt;&gt; be duplication of words)<br>&gt;&gt;<br>&gt;<br>&gt; So your map would look like<br>&gt;<br>&gt; map &lt;- expression({<br>&gt;  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))<br>&gt;  counts &lt;- sapply(letters,function(alpha){<br>&gt;    value &lt;- lines.of.text[grep(alpha, lines.of.text)]<br>&gt;    if(length(value)==0) value &lt;- &#39;&#39;<br>&gt;    rhcollect(alpha,value)<br>&gt;  })<br>&gt; })<br>&gt;<br>&gt; mapred &lt;- list(mapred.reduce.tasks=0, mapred.field.separator=&quot;<br>&gt; &quot;,mapred.job.tracker=&#39;local&#39;)<br>&gt; z &lt;- rhmr(map=map, ifolder=path-to-input,ofolder=&quot;/tmp/job&quot;,<br>&gt;     inout=c(&quot;text&quot;,&quot;text&quot;),mapred=mapred)<br>&gt; rhex(z)<br>&gt;<br>&gt; (You need the if(length(value)==0 bit, for text output. RHIPE throws an<br>&gt; indexoutofbounds  exception when trying to strinfigy a vector of length  0. For<br>&gt; sequence file output, it is not needed, the return value be an empty<br>&gt; character vector)<br>&gt;<br>&gt; Hope this helps<br>&gt;<br>&gt; Saptarshi<br>&gt;<br></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "5Y_6FAtTrp4J",
+   "from": "Saptarshi Guha",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-20T18:27:39Z",
+   "subject": "Re: [rhipe] GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "One more thing,<p>For this example, you don&#39;t need the orderby. Byte ordering for single<br>characters is the same as letter ordering (and faster - i think).<br>If you don&#39;t use orderby, you can skip the reducer code.<p>Saptarshi<p><br>On Mon, Dec 20, 2010 at 10:06 AM, Saptarshi Guha</p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><br>&lt;<a href data-email-masked rel=\"nofollow\">saptars...@gmail.com</a>&gt; wrote:<br>&gt; I should also point out that those values (vectors) could potentially<br>&gt; be very large!<br>&gt;<br>&gt; Since you already have a case where you might get multiple lines for<br>&gt; the same key( since each<br>&gt; map task will potentially write a value for the key &#39;a&#39; and there is<br>&gt; no reducer), you<br>&gt; might as well split long values and write them out as multiple lines.<br>&gt; RHIPE has a cap on value length i think its 128MB or 256MB.<br>&gt;<br>&gt; The following code doesn&#39;t do that. It instead, partitions by key<br>&gt; (values for same letter in one file) and sorts within part file (by<br>&gt; key)<br>&gt;<br>&gt; map &lt;- expression({<br>&gt;  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))<br>&gt;  counts &lt;- sapply(letters,function(alpha){<br>&gt;    value &lt;- lines.of.text[grep(alpha, lines.of.text)]<br>&gt;    if(length(value)==0) value &lt;- &#39;&#39;<br>&gt;    rhcollect(alpha,value)<br>&gt;  })<br>&gt; })<br>&gt; reduce &lt;- expression(<br>&gt;    reduce = { lapply(reduce.values,function(r) rhcollect(reduce.key,r)) }<br>&gt;    )<br>&gt;<br>&gt; mapred &lt;- list(mapred.field.separator=&quot; &quot;)<br>&gt; z &lt;- rhmr(map=map,reduce=reduce, ifolder=filename,ofolder=&quot;/tmp/job&quot;,<br>&gt;     inout=c(&quot;text&quot;,&quot;text&quot;),orderby=&quot;char&quot;,mapred=mapred,part=list(lims=1,type=&#39;string&#39;))<br>&gt; rhex(z)<br>&gt;<br>&gt; This can take time, e.g. for 2.8GB data read (100MM records, 5 words<br>&gt; per line), 14GB was written (867,984 records)<br>&gt; and it took 13 minutes (72 cores, 8 computers, 5 TB of space)<br>&gt;<br>&gt; BTW, the reducer is an identity reducer, but if you use the &#39;orderby&#39;<br>&gt; parameter, you *have* to provide an R reducer.<br>&gt; Saptarshi<br>&gt;<br>&gt;<br>&gt; On Mon, Dec 20, 2010 at 9:07 AM, Saptarshi Guha<br>&gt; &lt;<a href data-email-masked rel=\"nofollow\">saptars...@gmail.com</a>&gt; wrote:<br>&gt;&gt; Hi,<br>&gt;&gt; First of , don&#39;t use rhlapply. It has been removed and was the distributed<br>&gt;&gt; version of lapply - so it did not take any input folder (as far as i recall), if<br>&gt;&gt; it did it would only take sequence file input format not text file.<br>&gt;&gt;<br>&gt;&gt; For your problem below, use rhmr, specifying the input folder with text files<br>&gt;&gt; and use text/sequence output format.<br>&gt;&gt;<br>&gt;&gt;&gt; 1. Sequence along the characters from &quot;a&quot; to &quot;z&quot;,which are my keys.<br>&gt;&gt;&gt; 2. For each character grep all the words in which the character is<br>&gt;&gt;&gt; appearing. For this i am using R grep() function. These vector of<br>&gt;&gt;&gt; words would be my &quot;values&quot; to the keys.<br>&gt;&gt;&gt; For example:<br>&gt;&gt;&gt;  for key &quot;a&quot; the values could be &quot;and&quot;, &quot;bad&quot;, &quot;amazon&quot; etc<br>&gt;&gt;&gt; for key &quot;b&quot; the values could be &quot;bad&quot;, &quot;boss&quot; etc.. (Note there would<br>&gt;&gt;&gt; be duplication of words)<br>&gt;&gt;&gt;<br>&gt;&gt;<br>&gt;&gt; So your map would look like<br>&gt;&gt;<br>&gt;&gt; map &lt;- expression({<br>&gt;&gt;  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))<br>&gt;&gt;  counts &lt;- sapply(letters,function(alpha){<br>&gt;&gt;    value &lt;- lines.of.text[grep(alpha, lines.of.text)]<br>&gt;&gt;    if(length(value)==0) value &lt;- &#39;&#39;<br>&gt;&gt;    rhcollect(alpha,value)<br>&gt;&gt;  })<br>&gt;&gt; })<br>&gt;&gt;<br>&gt;&gt; mapred &lt;- list(mapred.reduce.tasks=0, mapred.field.separator=&quot;<br>&gt;&gt; &quot;,mapred.job.tracker=&#39;local&#39;)<br>&gt;&gt; z &lt;- rhmr(map=map, ifolder=path-to-input,ofolder=&quot;/tmp/job&quot;,<br>&gt;&gt;     inout=c(&quot;text&quot;,&quot;text&quot;),mapred=mapred)<br>&gt;&gt; rhex(z)<br>&gt;&gt;<br>&gt;&gt; (You need the if(length(value)==0 bit, for text output. RHIPE throws an<br>&gt;&gt; indexoutofbounds  exception when trying to strinfigy a vector of length  0. For<br>&gt;&gt; sequence file output, it is not needed, the return value be an empty<br>&gt;&gt; character vector)<br>&gt;&gt;<br>&gt;&gt; Hope this helps<br>&gt;&gt;<br>&gt;&gt; Saptarshi<br>&gt;&gt;<br>&gt;<br></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "nS_ENxeI3OUJ",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-21T05:27:19Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "GoodMorning Saptarshi,\r<br>Thanks for the quick reply. After doing some research and studying\r<br>your material i tried using rhmr function where i found that the input\r<br>file must resides on HDFS, right?\r<br>I placed a sample text on the HDFS and written the following script\r<br>\r<br>library(Rhipe)\r<br>rhinit()\r<br>m&lt;-expression({\r<br>"
+    ],
+    [
+     2,
+     "        for(i in 1:26)\r<br>        {\r<br>                d1&lt;-\r<br>"
+    ],
+    [
+     1,
+     "list(k=letters[i],v=grep(letters[i],map.values,value=TRUE))\r<br>                rhcollect(d1,T)\r<br>        }\r<br>})\r<br>\r<br>jobobject&lt;-rhmr(map=m,inout=c(&quot;text&quot;,&quot;sequence&quot;),ifolder=&quot;/temp/\r<br>sample_data.txt&quot;,ofolder=&quot;/temp/job&quot;)\r<br>rhex(jobobject)\r<br>\r<br>After running the job i could see that the key value pairs has been\r<br>generated in the file.\r<br>Following is the sample output\r<br>\r<br>temp&lt;-rhread(&quot;/temp/job/part-r-00000&quot;)\r<br>RHIPE: Cleaning up  associated server (PID=26429)\r<br>RHIPE: Read 26 pairs occupying 1.831 KB, deserializing\r<br>Warning message:\r<br>In Rhipe:::send.cmd(rhoptions()$child$handle, list(&quot;rhls&quot;, folder,  :\r<br>  RHIPE: Creating a new RHIPE connection object, previous one died!\r<br>&gt; temp[[1]]\r<br>[[1]]\r<br>[[1]]$k\r<br>[1] &quot;a&quot;\r<br>\r<br>[[1]]$v\r<br>[1] &quot;aa&quot;      &quot;aadfdf&quot;  &quot;aadfu&quot;   &quot;aea&quot;     &quot;asdf&quot;    &quot;raja&quot;\r<br>&quot;bhaiya&quot;\r<br>[8] &quot;shekhar&quot; &quot;sharma&quot;\r<br>\r<br>\r<br>[[2]]\r<br>[1] TRUE\r<br>\r<br>&gt; temp[[1]][[1]]$k\r<br>[1] &quot;a&quot;\r<br>&gt;temp[[1]][[1]]$v\r<br>[1] &quot;aa&quot;      &quot;aadfdf&quot;  &quot;aadfu&quot;   &quot;aea&quot;     &quot;asdf&quot;    &quot;raja&quot;\r<br>&quot;bhaiya&quot;\r<br>\r<br>\r<br>Now inorder to use the function rhgetkey i need to convert the\r<br>sequence file which is generated by the map function to map file. So i\r<br>changed the option &quot;inout&quot; in the rhmr function to inout =\r<br>list(&quot;text&quot;,&quot;map&quot;) and executed the job. when i am using the rhget key\r<br>function\r<br>\r<br>rhgetkey(list(&quot;a&quot;),&quot;/som/testing_0000/part-r-00000&quot;)\r<br>RHIPE: Read 0 pair occupying 0 bytes, deserializing\r<br>list()\r<br>\r<br>it is showing me the list as empty. is there something wrong i am\r<br>doing?\r<br>\r<br>Regards,\r<br>Shekhar\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "gc5dH-mxDaQJ",
+   "from": "Saptarshi Guha",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-21T05:58:47Z",
+   "subject": "Re: [rhipe] Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "I think you&#39;re using the rhcollect in a manner different from what you intended.<p>rhgetkey is used as:<p>rhgetkey(list(key1,key2,...)),...)<p>so key is equal to something like this (the way you&#39;ve used  it)<p></p></p></p></p>"
+    ],
+    [
+     2,
+     "<p><p><p><p> list(k=letters[i],v=grep(letters[i],map.values,value=TRUE))</p></p></p></p>"
+    ],
+    [
+     1,
+     "<p><p><p><p><p>for some i, and so on.<p>Maybe you want :<p>rhcollect(letters[i], grep(letters[i],map.values,value=TRUE))<p>then you can do rhgetkey(list(&quot;a&quot;), ....)<p>Saptarshi</p></p></p></p></p></p></p></p></p>"
+    ],
+    [
+     3,
+     "<p><p><p><p><p><p><p><p><p><p><br>On Mon, Dec 20, 2010 at 9:27 PM, Shekhar &lt;<a href data-email-masked rel=\"nofollow\">shekh...@gmail.com</a>&gt; wrote:<br>&gt; GoodMorning Saptarshi,<br>&gt; Thanks for the quick reply. After doing some research and studying<br>&gt; your material i tried using rhmr function where i found that the input<br>&gt; file must resides on HDFS, right?<br>&gt; I placed a sample text on the HDFS and written the following script<br>&gt;<br>&gt; library(Rhipe)<br>&gt; rhinit()<br>&gt; m&lt;-expression({<br>&gt;        for(i in 1:26)<br>&gt;        {<br>&gt;                d1&lt;-<br>&gt; list(k=letters[i],v=grep(letters[i],map.values,value=TRUE))<br>&gt;                rhcollect(d1,T)<br>&gt;        }<br>&gt; })<br>&gt;<br>&gt; jobobject&lt;-rhmr(map=m,inout=c(&quot;text&quot;,&quot;sequence&quot;),ifolder=&quot;/temp/<br>&gt; sample_data.txt&quot;,ofolder=&quot;/temp/job&quot;)<br>&gt; rhex(jobobject)<br>&gt;<br>&gt; After running the job i could see that the key value pairs has been<br>&gt; generated in the file.<br>&gt; Following is the sample output<br>&gt;<br>&gt; temp&lt;-rhread(&quot;/temp/job/part-r-00000&quot;)<br>&gt; RHIPE: Cleaning up  associated server (PID=26429)<br>&gt; RHIPE: Read 26 pairs occupying 1.831 KB, deserializing<br>&gt; Warning message:<br>&gt; In Rhipe:::send.cmd(rhoptions()$child$handle, list(&quot;rhls&quot;, folder,  :<br>&gt;  RHIPE: Creating a new RHIPE connection object, previous one died!<br>&gt;&gt; temp[[1]]<br>&gt; [[1]]<br>&gt; [[1]]$k<br>&gt; [1] &quot;a&quot;<br>&gt;<br>&gt; [[1]]$v<br>&gt; [1] &quot;aa&quot;      &quot;aadfdf&quot;  &quot;aadfu&quot;   &quot;aea&quot;     &quot;asdf&quot;    &quot;raja&quot;<br>&gt; &quot;bhaiya&quot;<br>&gt; [8] &quot;shekhar&quot; &quot;sharma&quot;<br>&gt;<br>&gt;<br>&gt; [[2]]<br>&gt; [1] TRUE<br>&gt;<br>&gt;&gt; temp[[1]][[1]]$k<br>&gt; [1] &quot;a&quot;<br>&gt;&gt;temp[[1]][[1]]$v<br>&gt; [1] &quot;aa&quot;      &quot;aadfdf&quot;  &quot;aadfu&quot;   &quot;aea&quot;     &quot;asdf&quot;    &quot;raja&quot;<br>&gt; &quot;bhaiya&quot;<br>&gt;<br>&gt;<br>&gt; Now inorder to use the function rhgetkey i need to convert the<br>&gt; sequence file which is generated by the map function to map file. So i<br>&gt; changed the option &quot;inout&quot; in the rhmr function to inout =<br>&gt; list(&quot;text&quot;,&quot;map&quot;) and executed the job. when i am using the rhget key<br>&gt; function<br>&gt;<br>&gt; rhgetkey(list(&quot;a&quot;),&quot;/som/testing_0000/part-r-00000&quot;)<br>&gt; RHIPE: Read 0 pair occupying 0 bytes, deserializing<br>&gt; list()<br>&gt;<br>&gt; it is showing me the list as empty. is there something wrong i am<br>&gt; doing?<br>&gt;<br>&gt; Regards,<br>&gt; Shekhar<br>&gt;<br></p></p></p></p></p></p></p></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "cODQC190FkwJ",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-21T06:31:25Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Hi,\r<br>I have gone through the code and i found that the output which i am\r<br>getting is not as expected and the error is in rhcollect(d1,T)...\r<br>"
+    ],
+    [
+     2,
+     "\r<br>\r<br>m&lt;-expression({\r<br>        for(i in 1:26)\r<br>        {\r<br>                d1&lt;-\r<br>list(k=letters[i],v=grep(letters[i],map.values,value=TRUE))\r<br>                rhcollect(d1,T)\r<br>        }\r<br>\r<br>\r<br>\r<br>"
+    ],
+    [
+     1,
+     "I am collecting the list as full one key and the value is become true.\r<br>Thanks for the help but one thing i need to understand how to use\r<br>rhgetkey function. I tried converting the sequence file to map file\r<br>(You mentioned in Rhipe documentation but that is not working and\r<br>rhS2M function is not recognized function) but i am getting the\r<br>error.\r<br>\r<br>One more thing i would like to know how should we determine that how\r<br>many output file should be generated, is it done automatically by the\r<br>hadooop or by the R or do we need to specify that this many output\r<br>files needs to be generated. Reason being lets say i have peta bytes\r<br>of file (total size) in a directory and i am writing application with\r<br>the above  approach only, so i cant have one output file for such big\r<br>data. How should we determine then how many output files needs to\r<br>generated?\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "058XMTcMxEQJ",
+   "from": "Saptarshi Guha",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-21T06:41:31Z",
+   "subject": "Re: [rhipe] Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     2,
+     "&gt; rhgetkey function. I tried converting the sequence file to map file<br>&gt; (You mentioned in Rhipe documentation but that is not working and<br>&gt; rhS2M function is not recognized function) but i am getting the<br>&gt; error."
+    ],
+    [
+     1,
+     "<p>There isn&#39;t an rhS2M function. You are reading an old help manual. See 0.65.2.<p>Q1: What the is output of rhread(..., max=1) ( specify the input<br>folder for the sequence file output, not the map file output).<br>I would like to see your keys.<p><br>If you have a reducer, the number of output files is the number of<br>reduce tasks. If you do not have a reducer<br>the number of output files is the number of map tasks.<br>The number of map tasks depends on the size of your file(s). The<br>number of reduce tasks can be specified by you.<br>But for 26 keys, it&#39;s not going to more than 26.<br></p></p></p>"
+    ]
+   ]
+  },
+  {
+   "id": "uBzoNRJ2gGMJ",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-21T12:01:42Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Hi Saptarshi,\r<br>\r<br>Well I am able to use rhread and rhgetkey function. For this I have\r<br>specified  the option as inout=(&quot;text&quot;,&quot;map&quot;) in the rhmr function.\r<br>Then i am using rhread as rhread(&quot;/test/part-r-00000&quot;).\r<br>\r<br>This is working fine in the small data set.\r<br>\r<br>I tried with bigger dataset which consist of more than 13000 words.\r<br>There i have used rhgetkey to see the values for particular key. The\r<br>output is something like this:\r<br>\r<br>rhgetkey(list(&quot;x&quot;),&quot;/usr/job/part-r-00000&quot;)\r<br>[[1]]\r<br>[[1]][[1]]\r<br>[1] &quot;x&quot;\r<br>\r<br>[[1]][[2]]\r<br> [1] &quot;karyorrhexis&quot;      &quot;kataplexy&quot;         &quot;kenotoxin&quot;\r<br> [4] &quot;keratonyxis&quot;       &quot;keratorrhexis&quot;     &quot;kerflummox&quot;\r<br> [7] &quot;keryx&quot;             &quot;ketohexose&quot;        &quot;ketoxime&quot;\r<br>[10] &quot;kex&quot;               &quot;kexy&quot;              &quot;kinepox&quot;\r<br>[13] &quot;kitkahaxki&quot;        &quot;kluxer&quot;            &quot;knisteneaux&quot;\r<br>[16] &quot;knoxian&quot;           &quot;knoxvillite&quot;       &quot;kosotoxin&quot;\r<br>[19] &quot;kristinaux&quot;        &quot;kylix&quot;             &quot;lacroixite&quot;\r<br>[22] &quot;lactotoxin&quot;        &quot;lagothrix&quot;         &quot;lanx&quot;\r<br>[25] &quot;laparohysteropexy&quot; &quot;larix&quot;             &quot;larixin&quot;\r<br>[28] &quot;larnax&quot;            &quot;laryngemphraxis&quot;\r<br>\r<br>&gt; rhgetkey(list(&quot;k&quot;),&quot;/usr/job/part-r-00000&quot;)\r<br>RHIPE: Read 1 pair occupying 812 bytes, deserializing\r<br>[[1]]\r<br>[[1]][[1]]\r<br>[1] &quot;k&quot;\r<br>\r<br>[[1]][[2]]\r<br> [1] &quot;nocake&quot;            &quot;nock&quot;              &quot;nocket&quot;\r<br> [4] &quot;nocktat&quot;           &quot;nodiak&quot;            &quot;nohuntsik&quot;\r<br> [7] &quot;noisemaker&quot;        &quot;noisemaking&quot;       &quot;nokta&quot;\r<br>[10] &quot;nonacknowledgment&quot; &quot;nonalkaloidal&quot;     &quot;nonbankable&quot;\r<br>[13] &quot;nonblack&quot;          &quot;nonblockaded&quot;      &quot;nonblocking&quot;\r<br>[16] &quot;nonbookish&quot;        &quot;nonbreakable&quot;      &quot;nonbulkhead&quot;\r<br>[19] &quot;noncaking&quot;         &quot;nonchalky&quot;         &quot;nonchokable&quot;\r<br>[22] &quot;nonchokebore&quot;      &quot;noncock&quot;           &quot;noncoking&quot;\r<br>[25] &quot;noncranking&quot;       &quot;nondrinking&quot;       &quot;nonembarkation&quot;\r<br>[28] &quot;nonflaky&quot;          &quot;nonforeknowledge&quot;  &quot;nonhousekeeping&quot;\r<br>[31] &quot;nonknowledge&quot;      &quot;nonkosher&quot;         &quot;nonleaking&quot;\r<br>[34] &quot;nonlicking&quot;        &quot;nonmarket&quot;         &quot;nonpeak&quot;\r<br>[37] &quot;nonpeaked&quot;         &quot;nonpickable&quot;       &quot;nonshrinkable&quot;\r<br>[40] &quot;nonshrinking&quot;      &quot;nonsinkable&quot;       &quot;nonskeptical&quot;\r<br>[43] &quot;nonskid&quot;           &quot;nonskidding&quot;       &quot;nonskipping&quot;\r<br>[46] &quot;nonsmoker&quot;         &quot;nonsmoking&quot;        &quot;nonsparking&quot;\r<br>[49] &quot;nonspeaker&quot;        &quot;nonspeaking&quot;       &quot;nonsticky&quot;\r<br>[52] &quot;nonstock&quot;          &quot;nonstriker&quot;        &quot;nonstriking&quot;\r<br>[55] &quot;nonthinker&quot;        &quot;nonthinking&quot;       &quot;nontrunked&quot;\r<br>\r<br>As you can see that for the key &quot;x&quot; i am getting some words which\r<br>consist of alphabet &quot;k&quot; which i assume that these words must also be\r<br>present in the key &quot;k&quot;, but when i query for the key &quot;k&quot; i didn&#39;t get\r<br>those words at all.\r<br>\r<br>My idea is that user will give words,it can be regular expression or\r<br>the exact words and i will take the first character of the word\r<br>entered which will serve as key and with that key i will get the\r<br>values and then i will do grep with the pattern the user has specified\r<br>with the values which i have got.\r<br>\r<br>I have tried with the code you have provided:\r<br>library(Rhipe)\r<br>rhinit()\r<br>"
+    ],
+    [
+     2,
+     "map &lt;- expression({\r<br>  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))\r<br>  counts &lt;- sapply(letters,function(alpha){\r<br>    value &lt;- lines.of.text[grep(alpha, lines.of.text)]\r<br>    if(length(value)==0) value &lt;- &#39;&#39;\r<br>    rhcollect(alpha,value)\r<br>  })\r<br>\r<br>\r<br>})\r<br>\r<br>"
+    ],
+    [
+     1,
+     "removing the reduce operation\r<br>"
+    ],
+    [
+     2,
+     "reduce &lt;- expression(\r<br>    reduce = { lapply(reduce.values,function(r)\r<br>rhcollect(reduce.key,r)) }\r<br>    )\r<br>\r<br>mapred &lt;- list(mapred.field.separator=&quot; &quot;)\r<br>"
+    ],
+    [
+     1,
+     "z &lt;- rhmr(map=map, ifolder=&quot;/testGrep/input/in.txt&quot;,ofolder=&quot;/som/\r<br>testing_0009&quot;,\r<br> \r<br>inout=c(&quot;text&quot;,&quot;map&quot;),orderby=&quot;char&quot;,mapred=mapred,part=list(lims=1,type=&#39;string&#39;))\r<br>rhex(z)\r<br>\r<br>I have used exactly the same code.\r<br>\r<br>Thanks and Regards,\r<br>Shekhar\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "pNDB1ZwI-7sJ",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-21T12:06:25Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Sorry &quot;Report discussion as spam&quot; was by mistake clicked.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "PcBsi_PX0eoJ",
+   "from": "Fishtank",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-21T17:38:00Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "<div>Hello,</div><div><br></div><div>Not surprising. The map potentially emits multiple records for a given letter of</div><div>the alphabet (key). So your part files have multiple records for a key.</div><div><br></div><div>Using map file output format won&#39;t help you in this case (you&#39;ll only get the</div><div>first).</div><div><br></div><div>1. Compute a count of the number of records for a given letter of the alphabet.</div><div> <font face=\"&#39;courier new&#39;, monospace\">  map --&gt; (letter[i], 1)</font></div><div><font face=\"&#39;courier new&#39;, monospace\">   reduce ---&gt; expression(</font></div><div><font face=\"&#39;courier new&#39;, monospace\">         pre = { total &lt;- 0 },</font></div><div><font face=\"&#39;courier new&#39;, monospace\">         reduce = { total &lt;- total+ sum(unlist(reduce.values)) },</font></div><div><font face=\"&#39;courier new&#39;, monospace\">         post = { rhcollect(reduce.key, total) }</font></div><div><font face=\"&#39;courier new&#39;, monospace\">    )</font></div><div><br></div><div>2. Also, using partitioner=list(lims=1, type=&#39;string&#39;) and</div><div>   mapred.reduce.tasks=27 will create 27 part files, each key (letter of the</div><div>   alphabet) being places in its own table.</div><div><br></div><div><br></div><div>Saptarshi</div><div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "qWFdYxZF6QYJ",
+   "from": "Fishtank",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-21T17:40:02Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Remove the orderby portion in rhmr. If you use it you need to provide the reducer.<div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "IrPelaJ3LokJ",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-22T09:30:09Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Hi,\r<br>I have few doubts.\r<br>1. When i am running the script from the R environmen i am getting the\r<br>following ouput on the R console\r<br>&gt; source(&quot;/usr/GrepApplications/grep_map.R&quot;)\r<br>----------------------------------------\r<br>Running:  $HADOOP/bin/hadoop jar /usr/lib64/R/library/Rhipe/java/\r<br>Rhipe.jar org.godhuli.rhipe.RHMR /tmp/RtmpE2PaO4/rhipe7bec1d72\r<br>----------------------------------------\r<br>result:256\r<br>&gt;\r<br>\r<br>what is the significance of this result:256. The sample examples which\r<br>i wrote i used to get the full thing like how much map reduce\r<br>percentage has completed. Is it because i used to give the rhex()\r<br>command in the R console.\r<br>\r<br>2. How do i need to find the job id from the job token which the rhex\r<br>returns.\r<br>The following is the result of the job token when i print in the R\r<br>console\r<br>$counters\r<br>$counters$FileSystemCounters\r<br>   FILE_BYTES_READ FILE_BYTES_WRITTEN    HDFS_BYTES_READ\r<br>HDFS_BYTES_WRITTEN\r<br>           7163317           14327058            2526212\r<br>23839174\r<br>\r<br>$counters$`Job Counters `\r<br> Data-local map tasks  Rack-local map tasks    Launched map tasks\r<br>                    1                     1                     2\r<br>Launched reduce tasks\r<br>                   75\r<br>\r<br>$counters$`Map-Reduce Framework`\r<br> Combine input records Combine output records      Map input records\r<br>                     0                      0                 213561\r<br>      Map output bytes     Map output records    Reduce input groups\r<br>              23785646                   1872                     26\r<br>  Reduce input records  Reduce output records   Reduce shuffle bytes\r<br>                  1872                   1872                1254926\r<br>       Spilled Records\r<br>                  3744\r<br>\r<br>$counters$job_time\r<br>[1] 170.751\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "rS_swysmt3kJ",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-22T09:38:17Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "\r<br>Hi,\r<br>I have followed the code and the changes are as follows:\r<br>"
+    ],
+    [
+     2,
+     "\r<br>library(Rhipe)\r<br>rhinit()\r<br>map &lt;- expression({\r<br>  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))\r<br>  counts &lt;- sapply(letters,function(alpha){\r<br>    value &lt;- lines.of.text[grep(alpha, lines.of.text)]\r<br>    if(length(value)==0) value &lt;- &#39;&#39;\r<br>    rhcollect(alpha,value)\r<br>  })\r<br>\r<br>\r<br>\r<br>})\r<br>\r<br>\r<br>"
+    ],
+    [
+     1,
+     "mapred &lt;- list(mapred.reduce.tasks=26)\r<br>"
+    ],
+    [
+     2,
+     "\r<br>reduce &lt;- expression(\r<br>    reduce = { lapply(reduce.values,function(r)\r<br>rhcollect(reduce.key,r)) }\r<br>    )\r<br>\r<br>"
+    ],
+    [
+     1,
+     "z &lt;- rhmr(map=map,reduce=reduce,ifolder=&quot;/testGrep/input/\r<br>in.txt&quot;,ofolder=&quot;/usr/test7&quot;,\r<br>inout=c(&quot;text&quot;,&quot;map&quot;),mapred=mapred,part=list(lims=1,type=&#39;string&#39;))\r<br>j&lt;-rhex(z)\r<br>\r<br>\r<br>Now i can see that there 26 files generated in the output folder.\r<br>\r<br>1. I am using rhgetkey function rhgetkey(list(&quot;x&quot;),&quot;/usr/test7/part*&quot;)\r<br>   I am getting the following\r<br>"
+    ],
+    [
+     2,
+     "    RHIPE: Read 0 pair occupying 0 bytes, deserializing\r<br>    list()\r<br>"
+    ],
+    [
+     1,
+     "2. I am using rhread to read some of the file\r<br>   rhread(&quot;/usr/test7/part-r-00000&quot;)\r<br>Error in Rhipe:::rbstream(rhoptions()$child$handle, size, mc, asraw,\r<br>quiet) :\r<br>  java.io.IOException: wrong value class: &quot;moistish&quot; &quot;moistishness&quot;\r<br>&quot;mokihana&quot; &quot;moksha&quot; &quot;molehead&quot; &quot;moleheap&quot; &quot;molehillish&quot; &quot;molehilly&quot;\r<br>&quot;mollichop&quot; &quot;mollicrush&quot; &quot;mollyhawk&quot; &quot;molochize&quot; &quot;molochship&quot;\r<br>&quot;molothrus&quot; &quot;moluche&quot; &quot;molybdophyllite&quot; &quot;monacanthid&quot; &quot;monacanthidae&quot;\r<br>&quot;monacanthine&quot; &quot;monacanthous&quot; &quot;monacha&quot; &quot;monachal&quot; &quot;monachate&quot;\r<br>&quot;monachi&quot; &quot;monachism&quot; &quot;monachist&quot; &quot;monachization&quot; &quot;monachize&quot;\r<br>&quot;monadelph&quot; &quot;monadelphia&quot; &quot;monadelphian&quot; &quot;monadelphous&quot; &quot;monanthous&quot;\r<br>&quot;monarchal&quot; &quot;monarchally&quot; &quot;monarchess&quot; &quot;monarchial&quot; &quot;monarchian&quot;\r<br>&quot;monarchianism\r<br>\r<br>Now previously i can see that the output were actually coming in key\r<br>value pairs, if you see the above posts. I am lost and i dont know\r<br>where i am going wrong."
+    ]
+   ]
+  },
+  {
+   "id": "ulwhbV0_IVsJ",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-22T11:34:17Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Hi,\r<br>i have modified the script told by u like as follows:\r<br>"
+    ],
+    [
+     2,
+     "library(Rhipe)\r<br>rhinit()\r<br>map &lt;- expression({\r<br>  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))\r<br>  counts &lt;- sapply(letters,function(alpha){\r<br>    value &lt;- lines.of.text[grep(alpha, lines.of.text)]\r<br>    if(length(value)==0) value &lt;- &#39;&#39;\r<br>    rhcollect(alpha,value)\r<br>  })\r<br>\r<br>\r<br>})\r<br>\r<br>\r<br>"
+    ],
+    [
+     1,
+     "reduce&lt;- expression(\r<br>"
+    ],
+    [
+     2,
+     "         pre = { total &lt;- 0 },\r<br>         reduce = { total &lt;- total+ sum(unlist(reduce.values)) },\r<br>         post = { rhcollect(reduce.key, total) }\r<br>    )\r<br>\r<br>\r<br>\r<br>"
+    ],
+    [
+     1,
+     "mapred &lt;- list(mapred.field.seperator=&quot; &quot;)\r<br>z &lt;- rhmr(map=map,reduce=reduce, ifolder=&quot;/testGrep/input/\r<br>in.txt&quot;,ofolder=&quot;/s/testing22/&quot;,\r<br>"
+    ],
+    [
+     2,
+     " \r<br>inout=c(&quot;text&quot;,&quot;map&quot;),mapred=mapred,part=list(lims=1,type=&#39;string&#39;))\r<br>j&lt;-rhex(z)\r<br>\r<br>"
+    ],
+    [
+     1,
+     "Now when i run this script it is throwing me error that Error in\r<br>readBin(f1, &quot;raw&quot;, f2) : invalid &#39;n&#39; argument\r<br>\r<br>As i have seen similar post that this error got fixed when set\r<br>mapred.job.tracker=&#39;local&#39;, but i have seen the rhmr code where it is\r<br>written that if we dont provide this value then by default it takes\r<br>the value as local.\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "5ZK7HoajO9YJ",
+   "from": "Shekhar",
+   "author": "c604b89d9c6ef07d",
+   "date": "2010-12-22T12:50:20Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     1,
+     "Hi,\r<br>I understood that the map function will emit large number of value/\r<br>words. And when i see the data file inside the part-r-***** directory\r<br>i can see all the values for a corrosponding key, but the rhget key\r<br>function gets the first part itself.\r<br>\r<br>Now having same multiple keys means that reducer function is not\r<br>working,or it is unable to reduce the keys properly?\r<br>\r<br>I would like to know\r<br>1.the rhgetkey function stops as soon as the first key, is there\r<br>anyother way to tell the rhgetkey function that given all the files\r<br>search for the key and collect all the values and put it into a\r<br>vector.\r<br>\r<br>2. If this the thing, is there anyother way that i can display the\r<br>full records for a particulare key?\r<br>\r<br>3. Can i do something like this, putting all the data and index file\r<br>together, what i am thinking is that it might be possible that keys\r<br>might be scattered into different data files.??\r<br>\r<br>Please help me to understand these things.\r<br>\r<br>Regards,\r<br>Som Shekhar\r<br>\r<br>"
+    ]
+   ]
+  },
+  {
+   "id": "Tz67Om83CAYJ",
+   "from": "Fishtank",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-22T17:31:26Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     2,
+     "<div><br></div><br>On Wednesday, December 22, 2010 1:30:09 AM UTC-8, Shekhar wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Hi,\n<br>I have few doubts.\n<br>1. When i am running the script from the R environmen i am getting the\n<br>following ouput on the R console\n<br>&gt; source(&quot;/usr/GrepApplications/grep_map.R&quot;)\n<br>----------------------------------------\n<br>Running:  $HADOOP/bin/hadoop jar /usr/lib64/R/library/Rhipe/java/\n<br>Rhipe.jar org.godhuli.rhipe.RHMR /tmp/RtmpE2PaO4/rhipe7bec1d72\n<br>----------------------------------------\n<br>result:256\n<br>&gt;\n<br>\n<br>what is the significance of this result:256. The sample examples which\n<br>i wrote i used to get the full thing like how much map reduce\n<br>percentage has completed. Is it because i used to give the rhex()\n<br>command in the R console.\n<br>\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>1. The 256 only means the job worked. It is for my benefit which i never got around to removing.<br></div><div> Try running it as</div><div><br></div><div>zrun &lt;-  rhex(z, async=TRUE)</div><div>result &lt;- rhstatus(zrun, mon.sec=5)</div>"
+    ],
+    [
+     2,
+     "<div><br></div><div><br></div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">2. How do i need to find the job id from the job token which the rhex\n<br>returns.\n<br>The following is the result of the job token when i print in the R\n<br>console\n<br><br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>I presume you have run</div><div><br></div><div>zrun &lt;- rhex(z)</div><div>(and zrun is the job token).</div><div><br></div><div>and want the job id from zrun? </div><div>Ans: You can&#39;t.</div><div><br></div><div>Workaround: WHat the PDF *didn&#39;t mention* is that rhex *only* returns a jobtoken when called as</div><div><br></div><div>rhex(z,async=TRUE)</div><div><br></div><div>so you could try doing this</div><div><br></div><div>zrun &lt;- rhex(z,async=TRUE)</div><div>result &lt;- rhstatus(zrun, mon.sec=5) # 5 seconds</div><div><br></div><div>(you can press control - C to stop and run the last line again to pick up from where you left of)</div><div><br></div><div>and, zrun[[1]][&#39;<a href=\"http://job.id\" target=\"_blank\" rel=\"nofollow\" data-saferedirecturl=\"https://www.google.com/url?hl=en-US&amp;q=http://job.id&amp;source=gmail&amp;ust=1792496861360000&amp;usg=AOvVaw2mqVC1vHCvmkSAMQ5sh3V8\">job.id</a>&#39;] gives what you need. ( see zrun[[1]] for more info)</div><div><br></div><div><br></div><div><br></div><div>Saptarshi</div><div><br></div><div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "fpKNWTvDiHgJ",
+   "from": "Fishtank",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-22T17:59:30Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">library(Rhipe)\r\n<br>rhinit()\r\n<br>map &lt;- expression({\r\n<br>  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))\r\n<br>  counts &lt;- sapply(letters,function(alpha){\r\n<br>    value &lt;- lines.of.text[grep(alpha, lines.of.text)]\r\n<br>    if(length(value)==0) value &lt;- &#39;&#39;\r\n<br>    rhcollect(alpha,value)\r\n<br>  })\r\n<br>\r\n\r\n\r\n})\r\n<br>\r\n<br></blockquote><div> <br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">\r\n<br>mapred &lt;- list(mapred.reduce.tasks=26)\r\n<br>\r\n<br>reduce &lt;- expression(\r\n<br>    reduce = { lapply(reduce.values,function(r)\r\n<br>rhcollect(reduce.key,r)) }\r\n<br>    )\r\n<br>\r\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Why are you writing your own identity reducer? It is only required (identity) when using</div><div>the orderby parameter. If no reducer is specified, RHIPE does an identity reducer in Java.</div>"
+    ],
+    [
+     2,
+     "<div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">z &lt;- rhmr(map=map,reduce=reduce,ifolder=&quot;/testGrep/input/\r\n<br>in.txt&quot;,ofolder=&quot;/usr/test7&quot;,\r\n<br>inout=c(&quot;text&quot;,&quot;map&quot;),mapred=mapred,part=list(lims=1,type=&#39;string&#39;))\r\n<br>j&lt;-rhex(z)\r\n<br>\r\n<br>\r\n<br></blockquote><div> <br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Now i can see that there 26 files generated in the output folder.\r\n<br>\r\n<br>1. I am using rhgetkey function rhgetkey(list(&quot;x&quot;),&quot;/usr/test7/part*&quot;)\r\n<br>   I am getting the following\r\n<br>    RHIPE: Read 0 pair occupying 0 bytes, deserializing\r\n<br>    list()\r\n<br></blockquote><div><br></div><div><br></div>"
+    ],
+    [
+     1,
+     "<div>You will get 26 files,  but the map outputformat does not work with either of</div><div><br></div><div>a) orderby</div><div>b) parts</div><div><br></div><div>Reason: </div><div>a) orderby changes the ordering of the output data. Information regarding this new ordering is</div><div>not made available to the MapFileI.Reader thingummy. Wont work. No plans of making it work.</div><div>b) parts: Parts uses a different hashcode generating algorithm which is not exposed to the MapFile.Reader</div><div>Both of these change how the keys are sorted and partitioned. But the final data set does not contain information</div><div>about these different sorting/partitioning schemes and uses the default one (which wont work).</div><div><br></div><div>No plan of changing this.</div><div><br></div><div><br></div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"></blockquote>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">2. I am using rhread to read some of the file\r\n<br>   rhread(&quot;/usr/test7/part-r-00000&quot;)\r\n<br>Error in Rhipe:::rbstream(rhoptions()$child$handle, size, mc, asraw,\r\n<br>quiet) :\r\n<br>  java.io.IOException: wrong value class: &quot;moistish&quot; &quot;moistishness&quot;\r\n<br>&quot;mokihana&quot; &quot;moksha&quot; &quot;molehead&quot; &quot;moleheap&quot; &quot;molehillish&quot; &quot;molehilly&quot;\r\n<br></blockquote>"
+    ],
+    [
+     1,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">....</blockquote>"
+    ],
+    [
+     2,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"><br>Now previously i can see that the output were actually coming in key\r\n<br>value pairs, if you see the above posts. I am lost and i dont know\r\n<br>where i am going wrong.</blockquote>"
+    ],
+    [
+     1,
+     "<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\"></blockquote><div><br></div><div>rhread by default expects SequenceFiles. Are you trying to read a Map output? Try</div><div><br></div><div> rhread(&quot;/usr/test7/part-r-00000&quot;,type=&#39;map&#39;) </div><div><br></div><div>Saptarshi</div><div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "cHOtwR2Vj28J",
+   "from": "Fishtank",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-22T18:03:57Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     2,
+     "<br><br>On Wednesday, December 22, 2010 3:34:17 AM UTC-8, Shekhar wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Hi,\n<br>i have modified the script told by u like as follows:\n<br>library(Rhipe)\n<br>rhinit()\n<br>map &lt;- expression({\n<br>  lines.of.text &lt;- unlist(strsplit(unlist(map.values),&quot;[[:space:]]+&quot;))\n<br>  counts &lt;- sapply(letters,function(alpha){\n<br>    value &lt;- lines.of.text[grep(alpha, lines.of.text)]\n<br>    if(length(value)==0) value &lt;- &#39;&#39;\n<br>    rhcollect(alpha,value)\n<br>  })\n<br>\n<br>\n<br>})\n<br>\n<br>\n<br>reduce&lt;- expression(\n<br>         pre = { total &lt;- 0 },\n<br>         reduce = { total &lt;- total+ sum(unlist(reduce.values)) },\n<br>         post = { rhcollect(reduce.key, total) }\n<br>    )\n<br>\n<br>\n<br>\n<br>mapred &lt;- list(mapred.field.seperator=&quot; &quot;)\n<br></blockquote><div><br></div><div><br></div>"
+    ],
+    [
+     1,
+     "<div>You don&#39;t need this (mapred.field.seperator=&quot; &quot;)  for map output. It is only for text output.</div>"
+    ],
+    [
+     2,
+     "<div><br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">z &lt;- rhmr(map=map,reduce=reduce, ifolder=&quot;/testGrep/input/\nin.txt&quot;,ofolder=&quot;/s/testing22/&quot;,\n<br>    inout=c(&quot;text&quot;,&quot;map&quot;),mapred=mapred,part=list(lims=1,type=&#39;string&#39;))\n<br>j&lt;-rhex(z)\n<br>\n<br>Now when i run this script it is throwing me error that Error in\n<br>readBin(f1, &quot;raw&quot;, f2) : invalid &#39;n&#39; argument\n<br>\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>There must be more errors? Try rhinit(TRUE,TRUE, buglevel=2000)</div><div>and re do this.</div><div><br></div><div>Also, i recommend you read the manual. For the above which is a summing job, you want combiner=TRUE</div><div>else it will be much slower. Also, do you really need part=list(lims=1,type=&#39;string&#39;)? It adds no benefit and it will prevent your map</div><div>output intention from working.</div><div><br></div><div>z &lt;- rhmr(map=map,reduce=reduce, combiner=TRUE,ifolder=&quot;/testGrep/input/ in.txt&quot;,ofolder=&quot;/s/testing22/&quot;, <br>    inout=c(&quot;text&quot;,&quot;map&quot;),mapred=mapred)<br>j&lt;-rhex(z) <br></div>"
+    ],
+    [
+     2,
+     "<div><br></div><div><br></div><div> </div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">As i have seen similar post that this error got fixed when set\n<br>mapred.job.tracker=&#39;local&#39;, but i have seen the rhmr code where it is\n<br>written that if we dont provide this value then by default it takes\n<br>the value as local.\n<br>\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>Didn&#39;t understand. </div><div><br></div><div><br></div><div>Saptarshi</div><div><br></div>"
+    ]
+   ]
+  },
+  {
+   "id": "ileoSjA4Dk0J",
+   "from": "Fishtank",
+   "author": "5b0c9158bfa781ba",
+   "date": "2010-12-22T18:15:12Z",
+   "subject": "Re: GREP application on Hadoop using RHIPE",
+   "parts": [
+    [
+     2,
+     "<br><br>On Wednesday, December 22, 2010 4:50:20 AM UTC-8, Shekhar wrote:<blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">Hi,\n<br>I understood that the map function will emit large number of value/\n<br>words. And when i see the data file inside the part-r-***** directory\n<br>i can see all the values for a corrosponding key, but the rhget key\n<br>function gets the first part itself.\n<br>\n<br>Now having same multiple keys means that reducer function is not\n<br>working,or it is unable to reduce the keys properly?\n<br>\n<br></blockquote><div><br></div><div><br></div>"
+    ],
+    [
+     1,
+     "<div>To be correct, you have multiple pairs(records) for the same keys i.e. duplicate keys.</div><div>No, the reducer is working properly. If you don&#39;t do anything in the reducer, the values won&#39;t be aggregated.</div><div>Each(potentially) map is emitting values for the same key e.g. &#39;h&#39;. In your reducer you have to </div><div>aggregate them in the reduce$reduce bit.</div>"
+    ],
+    [
+     2,
+     "<div><br></div><div><br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">I would like to know\n<br>1.the rhgetkey function stops as soon as the first key, is there\n<br>anyother way to tell the rhgetkey function that given all the files\n<br>search for the key and collect all the values and put it into a\n<br>vector.\n<br>\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>No. Write a map reduce job to extract all values for that one key.</div>"
+    ],
+    [
+     2,
+     "<div><br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">2. If this the thing, is there anyother way that i can display the\n<br>full records for a particulare key?\n<br>\n<br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div><div>Write a map reduce job to extract all values for that one key.</div></div>"
+    ],
+    [
+     2,
+     "<div><br></div><div> <br></div><blockquote class=\"gmail_quote\" style=\"margin:0;margin-left:0.8ex;border-left:1px #ccc solid;padding-left:1ex\">3. Can i do something like this, putting all the data and index file\n<br>together, what i am thinking is that it might be possible that keys\n<br>might be scattered into different data files.??\n<br>\n<br><br></blockquote><div><br></div>"
+    ],
+    [
+     1,
+     "<div>I interpret this as &quot;different values for same key scattered across multiple files&quot;</div><div>By design, all values for a key are sent to one part file (Hadoop MapReduce design),</div><div>so no, they are not scattered across multiple part files. </div><div><br></div><div>Saptarshi</div><div><br></div>"
+    ]
+   ]
+  }
+ ]
+}
