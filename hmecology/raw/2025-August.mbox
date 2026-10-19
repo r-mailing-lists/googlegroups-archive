@@ -1,0 +1,306 @@
+From u312eda23f89ab6c6 at groups.google.com  Thu Aug 14 14:59:24 2025
+From: u312eda23f89ab6c6 at groups.google.com (Michael Schaub)
+Date: Thu, 14 Aug 2025 14:59:24 +0000
+Subject: Cautionary note for using categorical or multinomial distributions
+Message-ID: <cbMdsIc-Vc8.rTbdNk75AgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/cbMdsIc-Vc8/m/rTbdNk75AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I have always believed, perhaps naively, that the categorical and multinomial distributions in Nimble and JAGS do not work when the cell probabilities do not sum to one. However, this is not the case; they also work in this instance, but the estimated parameters differ from those obtained when the cell probabilities sum to one. I have summarised these findings in the attached cautionary note. Many of you are probably already aware of this issue, in which case you can ignore this post. However, for those who are unfamiliar with this issue, the findings may be useful.
+
+Kind regards
+
+Michael
+
+PD Dr. Michael Schaub
+Leiter Bereich "Populationsbiologie"
+Dozent | Lecturer Universität Bern
+Tel. ++41 41 462 97 66
+michael...@vogelwarte.ch
+www.vogelwarte.ch <http://www.vogelwarte.ch/>
+
+Check out our new book about ‘Integrated Population Models’ at www.vogelwarte.ch/ipm <http://www.vogelwarte.ch/ipm>
+
+Schweizerische Vogelwarte | Seerose 1 | CH-6204 Sempach | Schweiz
+Station ornithologique suisse | Seerose 1 | CH-6204 Sempach | Suisse
+Stazione ornitologica svizzera | Seerose 1 | CH-6204 Sempach | Svizzera
+Swiss Ornithological Institute | Seerose 1 | CH-6204 Sempach | Switzerland
+
+Willkommen im neuen Besuchszentrum in Sempach! http://www.vogelwarte.ch/de/besuch/
+Bienvenue au nouveau centre de visite à Sempach! http://www.vogelwarte.ch/fr/visite/
+
+From udd632bd3bbcdd7e9 at groups.google.com  Thu Aug 14 18:43:10 2025
+From: udd632bd3bbcdd7e9 at groups.google.com (Perry de Valpine)
+Date: Thu, 14 Aug 2025 18:43:10 +0000
+Subject: Re: Cautionary note for using categorical or multinomial distributions
+Message-ID: <cbMdsIc-Vc8.ZJiXMoQFAwAJ@hmecology.groups.google.com>
+In-Reply-To: <cbMdsIc-Vc8.rTbdNk75AgAJ@hmecology.groups.google.com>
+References: <cbMdsIc-Vc8.rTbdNk75AgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/cbMdsIc-Vc8/m/ZJiXMoQFAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Michael,
+
+Thanks for sharing this. It is quite interesting. As you explain at the end, nimble (and I assume JAGS) are working correctly and as documented, and the issues you raise are rather more about different ways to parameterize models and set up priors (sometimes unintentionally ending up with informative priors on the parameters of interest). I would like to add a few comments in case it helps.
+
+The first case where you illustrate perhaps surprising results is when you have three parameters, p[1], p[2], p[3], each with a prior dunif(0,1), and you get surprising estimates of p[1], p[2], p[3] given data. However, when you post-process the posterior you obtain better results. This makes a lot of sense. One way to probe this is to simulate from the prior and look at the induced prior on the parameters of interest.
+# Simulate from the prior
+p1 <- runif(10000, 0, 1)
+p2 <- runif(10000, 0, 1)
+p3 <- runif(10000, 0, 1)
+# look at the induced prior of the parameter of interest
+hist(p1 / (p1+p2+p3))
+# Clearly this is a weird and informative prior.
+In your case the results after transforming the posterior to the parameters of interest (e.g. p1/(p1+p2+p3) ) looked more reasonable (outweighing the informative prior with lots of data), but my point is that seeing how a prior on the parameters in the model induces a quite different prior on parameter(s) of interest can be a flag to be careful, and one can do this before looking at posteriors.
+
+There are really only two free parameters among the three proportions (in compositional data analysis they say the parameters "live on the simplex", meaning the constraint to sum to 1).
+
+I also just wanted to note (since you pointed out that it may not be clear whether nimble and/or JAGS normalize the probabilities) that with nimble if one is not sure what is being calculated, one can check in several ways. To check if dmulti normalizes the probabilities to sum to 1, one can do:
+
+pA <- c(.1, .3, .6)
+pB <- c(10, 30, 60)
+x <- c(2, 5, 5)
+n <- 12
+# 1. Call function directly
+nimble::dmulti(x, size=n, prob = pA, log=TRUE)
+nimble::dmulti(x, size=n, prob = pB, log=TRUE)
+Generally nimble's distribution calls from R will use the same internal code as the compiled model. The same value returned from these shows that pB is being normalized.
+
+#2. Put it in an uncompiled model and call it
+m <- nimbleModel(nimbleCode({x[1:3] ~ dmulti(size=n, prob=p[1:3])}))
+m$x <- x
+m$n <- n
+m$p <- pA
+m$calculate("x")
+m$p <- pB
+m$calculate("x")
+
+#3. Put it in a compiled model and call it
+cm <- compileNimble(m)
+cm$p <- pA
+cm$calculate("x")
+cm$p <- pB
+cm$calculate("x")
+
+One reason the normalization is helpful is that one can end up with numerical glitches otherwise. Another is that one can parameterize more flexibly (as you've done) and then post-process to parameters of interest. However, if one wants it to work differently, one can write a new version of dmulti (e.g. taking only length(p)-1 parameters and computing the last one) as a nimbleFunction.
+
+By the way, negative values will not be valid because even when normalized one will have the log of a negative number:
+pC <- c(-1, 30, 60)
+nimble::dmulti(x, size=n, prob = pC, log=TRUE) # returns NaN from log of a negative
+
+Thanks again for raising this issue.
+
+Best wishes,
+Perry
+
+On Thu, Aug 14, 2025 at 4:59 PM Michael Schaub <michael...@vogelwarte.ch> wrote:
+
+> Hi all,
+>
+>
+>
+> I have always believed, perhaps naively, that the categorical and multinomial distributions in Nimble and JAGS do not work when the cell probabilities do not sum to one. However, this is not the case; they also work in this instance, but the estimated parameters differ from those obtained when the cell probabilities sum to one. I have summarised these findings in the attached cautionary note. Many of you are probably already aware of this issue, in which case you can ignore this post. However, for those who are unfamiliar with this issue, the findings may be useful.
+>
+>
+>
+> Kind regards
+>
+>
+>
+> Michael
+>
+>
+>
+>
+>
+> PD Dr. Michael Schaub
+> Leiter Bereich "Populationsbiologie"
+> Dozent | Lecturer Universität Bern
+> Tel. ++41 41 462 97 66
+> michael...@vogelwarte.ch
+> www.vogelwarte.ch <http://www.vogelwarte.ch/>
+>
+> Check out our new book about ‘Integrated Population Models’ at www.vogelwarte.ch/ipm <http://www.vogelwarte.ch/ipm>
+>
+>
+>
+>
+> Schweizerische Vogelwarte | Seerose 1 | CH-6204 Sempach | Schweiz
+> Station ornithologique suisse | Seerose 1 | CH-6204 Sempach | Suisse
+> Stazione ornitologica svizzera | Seerose 1 | CH-6204 Sempach | Svizzera
+> Swiss Ornithological Institute | Seerose 1 | CH-6204 Sempach | Switzerland
+>
+>
+> Willkommen im neuen Besuchszentrum in Sempach! http://www.vogelwarte.ch/de/besuch/
+> Bienvenue au nouveau centre de visite à Sempach! http://www.vogelwarte.ch/fr/visite/
+>
+>
+>
+
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/hmecology/GV0P278MB078242BE8E43606BC232A2639A35A%40GV0P278MB0782.CHEP278.PROD.OUTLOOK.COM <https://groups.google.com/d/msgid/hmecology/GV0P278MB078242BE8E43606BC232A2639A35A%40GV0P278MB0782.CHEP278.PROD.OUTLOOK.COM?utm_medium=email&utm_source=footer>.
+
+From u00ebeb6e0521112d at groups.google.com  Thu Aug 14 20:35:26 2025
+From: u00ebeb6e0521112d at groups.google.com (Marc Kery)
+Date: Thu, 14 Aug 2025 20:35:26 +0000
+Subject: Fw: Statistical Scientist / Research Associate position at the Cornell Lab of Ornithology
+Message-ID: <kSUsgA_uhAw.Sx1wdqQLAwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/kSUsgA_uhAw/m/Sx1wdqQLAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Perhaps of interest to some on this list.
+
+Best regards  --- Marc
+
+From: Daniel Fink <danie...@cornell.edu>
+Sent: Thursday, August 14, 2025 19:38
+To: euri...@lists.cornell.edu <euri...@lists.cornell.edu>
+Subject: EURING-L message | Statistical Scientist / Research Associate position at the Cornell Lab of Ornithology
+
+We are seeking candidates for a Statistical Scientist / Research Associate position at the Cornell Lab of Ornithology.
+Please see the announcement  https://academicjobsonline.org/ajo/jobs/30112
+and feel free to send any questions to me (danie...@cornell.edu)
+
+Best,
+Daniel
+
+Daniel Fink, PhD
+
+eBird Status and Trends <https://science.ebird.org/en/status-and-trends>
+
+Center for Avian Population Studies <https://www.birds.cornell.edu/home/center-for-avian-population-studies/>
+
+Cornell Lab of Ornithology <https://www.birds.cornell.edu/>
+
+danie...@cornell.edu
+
+From u00ebeb6e0521112d at groups.google.com  Tue Aug 19 13:05:38 2025
+From: u00ebeb6e0521112d at groups.google.com (Marc Kery)
+Date: Tue, 19 Aug 2025 13:05:38 +0000
+Subject: Bayesian Population Analysis with NIMBLE
+Message-ID: <mn8aJNsRA10.f1Lko3QlAwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/mn8aJNsRA10/m/f1Lko3QlAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+We are currently working on a 2nd edition of the BPA book from back in 2012, which will be entitled 'Bayesian population analysis using NIMBLE and JAGS'. As part of that project, we have translated into NIMBLE all the BPA code of the 1st edition. You can download it here: https://www.vogelwarte.ch/en/research/population-biology/book-bpa/
+Since default NIMBLE output is extremely basic, we are very grateful to Ken Kellner who wrote for us an R function called 'nimbleSummary'. It produces output with very similar format as when you run JAGS by 'jagsUI'. This function is contained in the beta version of our 'BPAbook' R package, which you can also download along with the 'BPA with NIMBLE' code.
+Best regards  --- Marc & Michael
+
+From uf183c12af85dda7f at groups.google.com  Mon Aug 25 15:58:09 2025
+From: uf183c12af85dda7f at groups.google.com (Mathilde)
+Date: Mon, 25 Aug 2025 15:58:09 +0000
+Subject: Question on variable significance in dynamic occupancy model (unmarked)
+Message-ID: <K_O1A9N3qh0.CSHNHcmrBAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/K_O1A9N3qh0/m/CSHNHcmrBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I am currently investigating how pond characteristics influence newt's breeding pond selection. To account for two sampling periods, I use dynamic occupancy modelling with colext in unmarked.
+
+My dataset includes 53 ponds sampled over 6 visits. The newt species was observed in 15 ponds. One of my site covariates, “Fish” (presence/absence of predatory fish), has a very strong effect: among the 17 ponds with fish, none had detections of the newt species.
+
+However, in the model output the p-value associated with “Fish” is not significant, although its relative importance (AICc weights) is 1.00 (i.e. always included in the best models). I tested both the simplest model possible :
+
+mod1 <- colext(psiformula = ~ Fish, gammaformula = ~1, epsilonformula = ~1,
+               pformula = ~1, data = umf)
+
+> summary(mod1)  Call: colext(psiformula = ~Fish, gammaformula = ~1, epsilonformula = ~1, pformula = ~1, data = umf_TC) Initial (logit-scale): Estimate SE z P(>|z|) (Intercept) -0.101 0.394 -0.257 0.798 Fish1 -9.554 31.809 -0.300 0.764
+
+as well as more complex models including other site-specific and visit-specific variables. The issue remains in all cases.
+
+My questions are:
+
+Why would a covariate with such a strong exclusionary effect (complete separation: no overlap between fish and newt presence) show a non-significant p-value?
+
+Is this expected behavior due to the way colext estimates parameters, or is it related to the data structure (complete separation, small sample size)?
+
+How should I interpret this result in practice — should relative importance be given more weight than the p-value in this case?
+
+Any guidance or references would be very helpful.
+
+Best regards,
+Mathilde
+
+From u4a15de51da4445ae at groups.google.com  Mon Aug 25 16:06:00 2025
+From: u4a15de51da4445ae at groups.google.com (Jeffrey Royle)
+Date: Mon, 25 Aug 2025 16:06:00 +0000
+Subject: Re: Question on variable significance in dynamic occupancy model (unmarked)
+Message-ID: <K_O1A9N3qh0.-Ps39TasBAAJ@hmecology.groups.google.com>
+In-Reply-To: <K_O1A9N3qh0.CSHNHcmrBAAJ@hmecology.groups.google.com>
+References: <K_O1A9N3qh0.CSHNHcmrBAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/K_O1A9N3qh0/m/-Ps39TasBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+hi Mathilde,
+ Unfortunately you're out of luck in this situation -- complete separation means that effect is not identifiable and so you cannot make an inference about that using likelihood methods.   The non-identifiability is suggested in these results by the effect being essentially 0 (if you inverse-logit -9.55 == 0 roughly) and the extremely large SE.
+ There may be suggestions in the literature for dealing with this situation and I don't want to recommend a specific course of action. That said, what I would do is use a Bayesian analysis of the model and put a uniform prior on psi for both groups and then compute the posterior distribution of psi[1] - psi[2].
+ I don't know what a frequentist would do.
+regards
+andy
+
+On Mon, Aug 25, 2025 at 11:58 AM Mathilde <mathilde.f...@gmail.com> wrote:
+
+> Hello,
+>
+> I am currently investigating how pond characteristics influence newt's breeding pond selection. To account for two sampling periods, I use dynamic occupancy modelling with colext in unmarked.
+>
+> My dataset includes 53 ponds sampled over 6 visits. The newt species was observed in 15 ponds. One of my site covariates, “Fish” (presence/absence of predatory fish), has a very strong effect: among the 17 ponds with fish, none had detections of the newt species.
+>
+> However, in the model output the p-value associated with “Fish” is not significant, although its relative importance (AICc weights) is 1.00 (i.e. always included in the best models). I tested both the simplest model possible :
+>
+> mod1 <- colext(psiformula = ~ Fish, gammaformula = ~1, epsilonformula = ~1,
+>                pformula = ~1, data = umf)
+>
+> > summary(mod1)  Call: colext(psiformula = ~Fish, gammaformula = ~1, epsilonformula = ~1, pformula = ~1, data = umf_TC) Initial (logit-scale): Estimate SE z P(>|z|) (Intercept) -0.101 0.394 -0.257 0.798 Fish1 -9.554 31.809 -0.300 0.764
+>
+>
+> as well as more complex models including other site-specific and visit-specific variables. The issue remains in all cases.
+>
+>
+> My questions are:
+>
+> Why would a covariate with such a strong exclusionary effect (complete separation: no overlap between fish and newt presence) show a non-significant p-value?
+>
+> Is this expected behavior due to the way colext estimates parameters, or is it related to the data structure (complete separation, small sample size)?
+>
+> How should I interpret this result in practice — should relative importance be given more weight than the p-value in this case?
+>
+> Any guidance or references would be very helpful.
+>
+> Best regards,
+> Mathilde
+>
+
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2021) and Schaub & Kéry (2022)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+> To view this discussion visit https://groups.google.com/d/msgid/hmecology/72529b82-5f28-4385-8520-d1de6354952en%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/72529b82-5f28-4385-8520-d1de6354952en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+

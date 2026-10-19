@@ -1,0 +1,1906 @@
+From u312eda23f89ab6c6 at groups.google.com  Tue Sep  1 06:31:33 2020
+From: u312eda23f89ab6c6 at groups.google.com (Schaub Michael)
+Date: Tue, 01 Sep 2020 06:31:33 +0000
+Subject: AW: estimation issues with multistate m-array in jags
+Message-ID: <QlY50OKMvRk.aO-5ykbTAgAJ@hmecology.groups.google.com>
+In-Reply-To: <QlY50OKMvRk.StFdy219AQAJ@hmecology.groups.google.com>
+References: <QlY50OKMvRk.StFdy219AQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/QlY50OKMvRk/m/aO-5ykbTAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Kylee,
+
+When you formulate a multistate model that jointly analyses live recaptures and dead recoveries, you need to include 2 death states (recently dead and long-time dead). The latter is absorbing and non-observable. It is needed, because otherwise a dead individual can be repeatedly be recovered. See Chapter 9.5 in the BPA book.
+
+Best wishes
+
+Michael
+
+Von: hmec...@googlegroups.com [hmec...@googlegroups.com]" im Auftrag von "Kylee Dunham [kdu...@ualberta.ca]
+Gesendet: Freitag, 28. August 2020 00:07
+An: hmecology: Hierarchical Modeling in Ecology
+Betreff: estimation issues with multistate m-array in jags
+
+Hello,
+
+I am having some trouble with a joint analysis of live recapture and dead recovery data using a multi-state m-array format in JAGs. I am running simulations based on an “ideal” data set that includes CMR and recoveries every year – and in this case the code works without a problem and the posteriors include truth. Therefore, I know this code is working. However, I am trying to fit the model based on data similar to data scenario which includes 3 years of CMR+recoveries followed by 9 years with recoveries only followed by 2 years of CMR+recoveries (i.e., dead recoveries are recorded in every year of the study but capture-mark-recapture surveys only occur in the first 3 years and the last 2 years of the study). I can fit these data in JAGs using the state-space format and the estimates are fine. But when I try to fit these data in JAGs using the m-array format the estimates are biased (high or low depends on the parameter). This leads me to believe there is something about the code within JAGs that is causing this issue, but I am not certain.
+
+Has anyone else run into this problem before? I have included my code and would appreciate any help you can provide!
+
+# -----------------------------------------------------------------------------------
+
+# Multi-state joint live-dead m-array model
+
+# -----------------------------------------------------------------------------------
+
+n.occasions <- 14
+
+n.states <- 3
+
+n.obs <- 3
+
+S <- 0.9
+
+p <- matrix(0.3,1,n.occasions-1)
+
+p[3] <- p[4] <- p[5] <- p[6] <- p[7] <- p[8] <- p[9]<- p[10] <- p[11]  <- 0 # no recaptures in these years
+
+r <- 0.2
+
+marked <- matrix(0, ncol = n.states, nrow = n.occasions)
+
+for(t in 1:n.occasions){
+
+  marked[t,1] <- 100
+
+}
+
+marked[4:12,1] <- 0 # no individuals released or recaptured in these years
+
+totrel <- sum(marked) * (n.occasions-1)
+
+PSI.STATE <- array(NA, dim=c(n.states,n.states,totrel,n.occasions-1))
+
+for (i in 1:totrel){
+
+  for (t in 1:(n.occasions-1)){
+
+    PSI.STATE[,,i,t] <- matrix(c(
+
+      S, 1-S, 0,
+
+      0, 0, 1,
+
+      0, 0, 1
+
+    ), nrow=n.states, byrow=T)
+
+  } #t
+
+} #i
+
+PSI.OBS <- array(NA, dim=c(n.states,n.obs,totrel,n.occasions-1))
+
+for (i in 1:totrel){
+
+  for (t in 1:(n.occasions-1)){
+
+    PSI.OBS[,,i,t] <- matrix(c(
+
+      p[t], 0, 1-p[t],
+
+      0, r, 1-r,
+
+      0, 0, 1
+
+    ), nrow=n.states, byrow=T)
+
+  } #t
+
+} #i
+
+# Define function to simulate multistate capture-recapture data
+
+simul.ms <http://simul.ms> <- function(PSI.STATE, PSI.OBS, marked, unobservable = NA){
+
+  # Unobservable: number of state that is unobservable
+
+  n.occasions <- dim(PSI.STATE)[4] + 1
+
+  CH <- CH.TRUE <- matrix(NA, ncol = n.occasions, nrow = sum(marked))
+
+  # Define a vector with the occasion of marking
+
+  mark.occ <- matrix(0, ncol = dim(PSI.STATE)[1], nrow = sum(marked))
+
+  g <- colSums(marked)
+
+  for (s in 1:dim(PSI.STATE)[1]){
+
+    if (g[s]==0) next  # To avoid error message if nothing to replace
+
+    mark.occ[(cumsum(g[1:s])-g[s]+1)[s]:cumsum(g[1:s])[s],s] <-
+
+      rep(1:n.occasions, marked[1:n.occasions,s])
+
+  } #s
+
+  for (i in 1:sum(marked)){
+
+    for (s in 1:dim(PSI.STATE)[1]){
+
+      if (mark.occ[i,s]==0) next
+
+      first <- mark.occ[i,s]
+
+      CH[i,first] <- s
+
+      CH.TRUE[i,first] <- s
+
+    } #s
+
+    for (t in (first+1):n.occasions){
+
+      # Multinomial trials for state transitions
+
+      if (first==n.occasions) next
+
+      state <- which(rmultinom(1, 1, PSI.STATE[CH.TRUE[i,t-1],,i,t-1])==1)
+
+      CH.TRUE[i,t] <- state
+
+      # Multinomial trials for observation process
+
+      event <- which(rmultinom(1, 1, PSI.OBS[CH.TRUE[i,t],,i,t-1])==1)
+
+      CH[i,t] <- event
+
+    } #t
+
+  } #i
+
+  # Replace the NA and the highest state number (dead) in the file by 0
+
+  CH[is.na <http://is.na>(CH)] <- 0
+
+  CH[CH==dim(PSI.STATE)[1]] <- 0
+
+  CH[CH==unobservable] <- 0
+
+  id <- numeric(0)
+
+  for (i in 1:dim(CH)[1]){
+
+    z <- min(which(CH[i,]!=0))
+
+    ifelse(z==dim(CH)[2], id <- c(id,i), id <- c(id))
+
+  }
+
+  return(list(CH=CH[-id,], CH.TRUE=CH.TRUE[-id,]))
+
+  # CH: capture histories to be used
+
+  # CH.TRUE: capture histories with perfect observation
+
+}
+
+# Execute function
+
+sim <- simul.ms <http://simul.ms>(PSI.STATE, PSI.OBS, marked)
+
+CH <- sim$CH
+
+# Define function to create a multistate m-array from capture history data
+
+marray <- function(ch, unobs = 0){
+
+  ns <- length(table(ch)) - 1 + unobs
+
+  no <- ncol(ch)
+
+  out <- matrix(0, ncol = ns*(no-1)+1, nrow = ns*(no-1))
+
+  # Remove capture histories of individuals that are marked at last occasion
+
+  get.first <- function(x) min(which(x!=0))
+
+  first <- apply(ch, 1, get.first)
+
+  last.only <- which(first==no)
+
+  if (length(last.only) > 0) ch <- ch[-last.only,]
+
+  # Compute m-array
+
+  for (i in 1:nrow(ch)){
+
+    cap.occ <- which(ch[i,]!=0)
+
+    state <- ch[i,cap.occ]
+
+    if (length(state) == 1) {
+
+      out[state[1]+ns*(cap.occ[1]-1), ns*(no-1)+1] <- out[state[1]+
+
+                                                            ns*(cap.occ[1]-1), ns*(no-1)+1] + 1
+
+    }
+
+    if (length(state) > 1) {
+
+      for (t in 2:length(cap.occ)){
+
+        out[(cap.occ[t-1]-1)*ns+state[t-1], (cap.occ[t]-2)*
+
+              ns+state[t]] <- out[(cap.occ[t-1]-1)*ns+state[t-1], (cap.occ[t]-2)*
+
+                                    ns+state[t]] + 1
+
+      } # t
+
+      if (max(cap.occ) < no){
+
+        out[(cap.occ[t]-1)*ns+state[t], ns*(no-1)+1] <- out[(cap.occ[t]-1)*
+
+                                                              ns+state[t], ns*(no-1)+1] + 1
+
+      } # i
+
+    } # if
+
+  } # i
+
+  return(out)
+
+}
+
+# Excecute function to create m-array from capture history data
+
+marr <- marray(CH)
+
+# ------------------------------------------------------------------------------------#
+
+# Analysis in JAGS
+
+# ------------------------------------------------------------------------------------#
+
+sink("marray.jags")
+
+cat("
+
+model {
+
+for (t in 1:(n.occasions-1)){
+
+    S[t] <- muS
+
+    r[t] <- mur
+
+}
+
+p[1] <- mup
+
+p[2] <- mup
+
+for (t in 3:11){
+
+  p[t] <- 0
+
+}
+
+p[12] <- mup
+
+p[13] <- mup
+
+muS ~ dunif(0.0001, 0.999)
+
+mur ~ dunif(0.0001, 0.999)
+
+mup ~ dunif(0.0001, 0.999)
+
+# Define state-transition and observation matrices:
+
+# Define probabilities of state S(t+1) given S(t)
+
+for (t in 1:(n.occasions-1)){
+
+  psm[1,t,1] <- S[t]     # Survive and remain alive
+
+  psm[1,t,2] <- 1 - S[t] # Alive to recently dead transition
+
+  psm[2,t,1] <- 0
+
+  psm[2,t,2] <- 0
+
+}
+
+# Define probabilities of observation at t given state at (t)
+
+for (t in 1:(n.occasions-1)){
+
+  pom[1,t] <- p[t]
+
+  pom[2,t] <- r[t]
+
+  # Calculate probability of non-observation (dqm) and reshape the
+
+  # array for the observation probabilities
+
+  for (s in 1:mns){
+
+    dpm[s,t,s] <- pom[s,t]
+
+    dqm[s,t,s] <- 1-pom[s,t]
+
+  } # s
+
+  for (s in 1:(mns-1)){
+
+    for (m in (s+1):mns){
+
+      dpm[s,t,m] <- 0
+
+      dqm[s,t,m] <- 0
+
+    } # m
+
+  } # s
+
+  for (s in 2:mns){
+
+    for (m in 1:(s-1)){
+
+      dpm[s,t,m] <- 0
+
+      dqm[s,t,m] <- 0
+
+    } # m
+
+  } # s
+
+} # t
+
+# Define the multinomial likelihood for all released
+
+for (t in 1:((n.occasions-1)*mns)){
+
+  marr[t,1:(n.occasions*mns-(mns-1))] ~ dmulti(prm[t,], relm[t])
+
+}
+
+# Define cell probabilities of the multistate m-array
+
+# Define matrix U: product of probabilities of state-transition and
+
+# non-encounter
+
+for (t in 1:(n.occasions-2)){
+
+  Um[(t-1)*mns+(1:mns), (t-1)*mns+(1:mns)] <- onesm
+
+  for (j in (t+1):(n.occasions-1)){
+
+    Um[(t-1)*mns+(1:mns), (j-1)*mns+(1:mns)] <- Um[(t-1)*mns+(1:mns),
+
+    (j-2)*mns+(1:mns)] %*% psm[,t,] %*% dqm[,t,]
+
+  } #j
+
+} #t
+
+Um[(n.occasions-2)*mns+(1:mns), (n.occasions-2)*mns+(1:mns)] <- onesm
+
+# Diagonal
+
+for (t in 1:(n.occasions-2)){
+
+  prm[(t-1)*mns+(1:mns),(t-1)*mns+(1:mns)] <-
+
+   Um[(t-1)*mns+(1:mns),(t-1)*mns+(1:mns)] %*% psm[,t,] %*% dpm[,t,]
+
+  # Above main diagonal
+
+  for (j in (t+1):(n.occasions-1)){
+
+    prm[(t-1)*mns+(1:mns), (j-1)*mns+(1:mns)] <- Um[(t-1)*mns+(1:mns),
+
+     (j-1)*mns+(1:mns)] %*% psm[,j,] %*% dpm[,j,]
+
+  } #j
+
+} #t
+
+# Last Diagonal
+
+prm[(n.occasions-2)*mns+(1:mns), (n.occasions-2)*mns+(1:mns)] <-
+
+ psm[,n.occasions-1,] %*% dpm[,n.occasions-1,]
+
+# Below main diagonal
+
+for (t in 2:(n.occasions-1)){
+
+  for (j in 1:(t-1)){
+
+    prm[(t-1)*mns+(1:mns),(j-1)*mns+(1:mns)] <- zerom
+
+  } #j
+
+} #t
+
+# Last column: probability of non-recapture
+
+for (t in 1:((n.occasions-1)*mns)){
+
+  prm[t,(n.occasions*mns-(mns-1))] <- 1-sum(prm[t,1:((n.occasions-1)*mns)])
+
+} #t
+
+}
+
+",fill = TRUE)
+
+sink()
+
+mns <- 2
+
+jags.data <- list(marr = marr,
+
+                  n.occasions = 14, relm = rowSums(marr),
+
+                  mns = mns, zerom = matrix(0, ncol = mns, nrow = mns),
+
+                  onesm = diag(mns))
+
+inits <- function(){list(muS = runif(1,0.0001,0.999), mur = runif(1,0.0001,0.999),
+
+                         mup = runif(1,0.0001,0.999))}
+
+parameters <- c("muS","mur","mup", "S", "p", "r")
+
+ni <- 15000; nt <- 5; na <- 10000; nb <- 5000; nc <- 3
+
+set.seed(runif(1,1,999))
+
+ms_sim <- jags(jags.data, inits=inits, parameters, "marray.jags",
+
+               n.chains = nc, n.iter = ni, n.burnin = nb,
+
+               n.adapt = na, n.thin = nt, parallel = F)
+
+print(ms_sim, digits = 3)
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/64ec45ad-38a1-46aa-bf6a-36674de46678n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/64ec45ad-38a1-46aa-bf6a-36674de46678n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u0c6a7a3cad7e0b17 at groups.google.com  Tue Sep  1 18:48:14 2020
+From: u0c6a7a3cad7e0b17 at groups.google.com (Kylee Dunham)
+Date: Tue, 01 Sep 2020 18:48:14 +0000
+Subject: Re: estimation issues with multistate m-array in jags
+Message-ID: <QlY50OKMvRk.l0Ep9Hn7AgAJ@hmecology.groups.google.com>
+In-Reply-To: <QlY50OKMvRk.aO-5ykbTAgAJ@hmecology.groups.google.com>
+References: <QlY50OKMvRk.StFdy219AQAJ@hmecology.groups.google.com> <QlY50OKMvRk.aO-5ykbTAgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/QlY50OKMvRk/m/l0Ep9Hn7AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Michael, thank you for your quick response. I have run this model with and without the 'dead absorbing' state in the m-array format and the results are the same. I tested that again this morning by running the model with and without the dead absorbing state with CMRR data for all years and there were no estimation issues in either example. However, when there are only recoveries for a period of time between CMR surveys the estimation issue (bias in recovery probability + survival) remains regardless of the additional dead state. This issue does not occur when running the same data through the state-space format.
+
+I am wondering if anyone else has experience running CMRR models when there are some years with CMR and years with recoveries only but analyzed in the m-array format. Or, if anyone knows whether the m-array code needs to be adapted within jags to deal with such a scenario. I have two projects that would greatly benefit from the time saved using the m-array over the state-space format so I would love to figure this out! Thank you!
+
+On Tuesday, September 1, 2020 at 12:31:33 AM UTC-6 Schaub Michael wrote:
+> Hi Kylee,
+>
+> When you formulate a multistate model that jointly analyses live recaptures and dead recoveries, you need to include 2 death states (recently dead and long-time dead). The latter is absorbing and non-observable. It is needed, because otherwise a dead individual can be repeatedly be recovered. See Chapter 9.5 in the BPA book.
+>
+> Best wishes
+>
+> Michael
+>
+> Von: hmec...@googlegroups.com [hmec...@googlegroups.com]" im Auftrag von "Kylee Dunham [kdu...@ualberta.ca]
+> Gesendet: Freitag, 28. August 2020 00:07
+> An: hmecology: Hierarchical Modeling in Ecology
+> Betreff: estimation issues with multistate m-array in jags
+>
+> Hello,
+>
+> I am having some trouble with a joint analysis of live recapture and dead recovery data using a multi-state m-array format in JAGs. I am running simulations based on an “ideal” data set that includes CMR and recoveries every year – and in this case the code works without a problem and the posteriors include truth. Therefore, I know this code is working. However, I am trying to fit the model based on data similar to data scenario which includes 3 years of CMR+recoveries followed by 9 years with recoveries only followed by 2 years of CMR+recoveries (i.e., dead recoveries are recorded in every year of the study but capture-mark-recapture surveys only occur in the first 3 years and the last 2 years of the study). I can fit these data in JAGs using the state-space format and the estimates are fine. But when I try to fit these data in JAGs using the m-array format the estimates are biased (high or low depends on the parameter). This leads me to believe there is something about the code within JAGs that is causing this issue, but I am not certain.
+>
+>
+>
+> Has anyone else run into this problem before? I have included my code and would appreciate any help you can provide!
+>
+> # -----------------------------------------------------------------------------------
+>
+> # Multi-state joint live-dead m-array model
+>
+> # -----------------------------------------------------------------------------------
+>
+> n.occasions <- 14
+>
+> n.states <- 3
+>
+> n.obs <- 3
+>
+>
+> S <- 0.9
+>
+> p <- matrix(0.3,1,n.occasions-1)
+>
+> p[3] <- p[4] <- p[5] <- p[6] <- p[7] <- p[8] <- p[9]<- p[10] <- p[11]  <- 0 # no recaptures in these years
+>
+> r <- 0.2
+>
+> marked <- matrix(0, ncol = n.states, nrow = n.occasions)
+>
+> for(t in 1:n.occasions){
+>
+>   marked[t,1] <- 100
+>
+> }
+>
+> marked[4:12,1] <- 0 # no individuals released or recaptured in these years
+>
+>
+> totrel <- sum(marked) * (n.occasions-1)
+>
+>
+> PSI.STATE <- array(NA, dim=c(n.states,n.states,totrel,n.occasions-1))
+>
+> for (i in 1:totrel){
+>
+>   for (t in 1:(n.occasions-1)){
+>
+>     PSI.STATE[,,i,t] <- matrix(c(
+>
+>       S, 1-S, 0,
+>
+>       0, 0, 1,
+>
+>       0, 0, 1
+>
+>     ), nrow=n.states, byrow=T)
+>
+>   } #t
+>
+> } #i
+>
+> PSI.OBS <- array(NA, dim=c(n.states,n.obs,totrel,n.occasions-1))
+>
+> for (i in 1:totrel){
+>
+>   for (t in 1:(n.occasions-1)){
+>
+>     PSI.OBS[,,i,t] <- matrix(c(
+>
+>       p[t], 0, 1-p[t],
+>
+>       0, r, 1-r,
+>
+>       0, 0, 1
+>
+>     ), nrow=n.states, byrow=T)
+>
+>   } #t
+>
+> } #i
+>
+>
+> # Define function to simulate multistate capture-recapture data
+>
+> simul.ms <http://simul.ms> <- function(PSI.STATE, PSI.OBS, marked, unobservable = NA){
+>
+>   # Unobservable: number of state that is unobservable
+>
+>   n.occasions <- dim(PSI.STATE)[4] + 1
+>
+>   CH <- CH.TRUE <- matrix(NA, ncol = n.occasions, nrow = sum(marked))
+>
+>   # Define a vector with the occasion of marking
+>
+>   mark.occ <- matrix(0, ncol = dim(PSI.STATE)[1], nrow = sum(marked))
+>
+>   g <- colSums(marked)
+>
+>   for (s in 1:dim(PSI.STATE)[1]){
+>
+>     if (g[s]==0) next  # To avoid error message if nothing to replace
+>
+>     mark.occ[(cumsum(g[1:s])-g[s]+1)[s]:cumsum(g[1:s])[s],s] <-
+>
+>       rep(1:n.occasions, marked[1:n.occasions,s])
+>
+>   } #s
+>
+>   for (i in 1:sum(marked)){
+>
+>     for (s in 1:dim(PSI.STATE)[1]){
+>
+>       if (mark.occ[i,s]==0) next
+>
+>       first <- mark.occ[i,s]
+>
+>       CH[i,first] <- s
+>
+>       CH.TRUE[i,first] <- s
+>
+>     } #s
+>
+>     for (t in (first+1):n.occasions){
+>
+>       # Multinomial trials for state transitions
+>
+>       if (first==n.occasions) next
+>
+>       state <- which(rmultinom(1, 1, PSI.STATE[CH.TRUE[i,t-1],,i,t-1])==1)
+>
+>       CH.TRUE[i,t] <- state
+>
+>       # Multinomial trials for observation process
+>
+>       event <- which(rmultinom(1, 1, PSI.OBS[CH.TRUE[i,t],,i,t-1])==1)
+>
+>       CH[i,t] <- event
+>
+>     } #t
+>
+>   } #i
+>
+>   # Replace the NA and the highest state number (dead) in the file by 0
+>
+>   CH[is.na <http://is.na>(CH)] <- 0
+>
+>   CH[CH==dim(PSI.STATE)[1]] <- 0
+>
+>   CH[CH==unobservable] <- 0
+>
+>   id <- numeric(0)
+>
+>   for (i in 1:dim(CH)[1]){
+>
+>     z <- min(which(CH[i,]!=0))
+>
+>     ifelse(z==dim(CH)[2], id <- c(id,i), id <- c(id))
+>
+>   }
+>
+>   return(list(CH=CH[-id,], CH.TRUE=CH.TRUE[-id,]))
+>
+>   # CH: capture histories to be used
+>
+>   # CH.TRUE: capture histories with perfect observation
+>
+> }
+>
+> # Execute function
+>
+> sim <- simul.ms <http://simul.ms>(PSI.STATE, PSI.OBS, marked)
+>
+> CH <- sim$CH
+>
+>
+> # Define function to create a multistate m-array from capture history data
+>
+> marray <- function(ch, unobs = 0){
+>
+>   ns <- length(table(ch)) - 1 + unobs
+>
+>   no <- ncol(ch)
+>
+>   out <- matrix(0, ncol = ns*(no-1)+1, nrow = ns*(no-1))
+>
+>   # Remove capture histories of individuals that are marked at last occasion
+>
+>   get.first <- function(x) min(which(x!=0))
+>
+>   first <- apply(ch, 1, get.first)
+>
+>   last.only <- which(first==no)
+>
+>   if (length(last.only) > 0) ch <- ch[-last.only,]
+>
+>   # Compute m-array
+>
+>   for (i in 1:nrow(ch)){
+>
+>     cap.occ <- which(ch[i,]!=0)
+>
+>     state <- ch[i,cap.occ]
+>
+>     if (length(state) == 1) {
+>
+>       out[state[1]+ns*(cap.occ[1]-1), ns*(no-1)+1] <- out[state[1]+
+>
+>                                                             ns*(cap.occ[1]-1), ns*(no-1)+1] + 1
+>
+>     }
+>
+>     if (length(state) > 1) {
+>
+>       for (t in 2:length(cap.occ)){
+>
+>         out[(cap.occ[t-1]-1)*ns+state[t-1], (cap.occ[t]-2)*
+>
+>               ns+state[t]] <- out[(cap.occ[t-1]-1)*ns+state[t-1], (cap.occ[t]-2)*
+>
+>                                     ns+state[t]] + 1
+>
+>       } # t
+>
+>       if (max(cap.occ) < no){
+>
+>         out[(cap.occ[t]-1)*ns+state[t], ns*(no-1)+1] <- out[(cap.occ[t]-1)*
+>
+>                                                               ns+state[t], ns*(no-1)+1] + 1
+>
+>       } # i
+>
+>     } # if
+>
+>   } # i
+>
+>   return(out)
+>
+> }
+>
+> # Excecute function to create m-array from capture history data
+>
+> marr <- marray(CH)
+>
+>
+> # ------------------------------------------------------------------------------------#
+>
+> # Analysis in JAGS
+>
+> # ------------------------------------------------------------------------------------#
+>
+> sink("marray.jags")
+>
+> cat("
+>
+> model {
+>
+>
+> for (t in 1:(n.occasions-1)){
+>
+>     S[t] <- muS
+>
+>     r[t] <- mur
+>
+> }
+>
+> p[1] <- mup
+>
+> p[2] <- mup
+>
+> for (t in 3:11){
+>
+>   p[t] <- 0
+>
+> }
+>
+> p[12] <- mup
+>
+> p[13] <- mup
+>
+>
+> muS ~ dunif(0.0001, 0.999)
+>
+> mur ~ dunif(0.0001, 0.999)
+>
+> mup ~ dunif(0.0001, 0.999)
+>
+>
+> # Define state-transition and observation matrices:
+>
+> # Define probabilities of state S(t+1) given S(t)
+>
+> for (t in 1:(n.occasions-1)){
+>
+>   psm[1,t,1] <- S[t]     # Survive and remain alive
+>
+>   psm[1,t,2] <- 1 - S[t] # Alive to recently dead transition
+>
+>
+>   psm[2,t,1] <- 0
+>
+>   psm[2,t,2] <- 0
+>
+> }
+>
+>
+> # Define probabilities of observation at t given state at (t)
+>
+> for (t in 1:(n.occasions-1)){
+>
+>   pom[1,t] <- p[t]
+>
+>   pom[2,t] <- r[t]
+>
+>
+>
+>   # Calculate probability of non-observation (dqm) and reshape the
+>
+>   # array for the observation probabilities
+>
+>   for (s in 1:mns){
+>
+>     dpm[s,t,s] <- pom[s,t]
+>
+>     dqm[s,t,s] <- 1-pom[s,t]
+>
+>   } # s
+>
+>   for (s in 1:(mns-1)){
+>
+>     for (m in (s+1):mns){
+>
+>       dpm[s,t,m] <- 0
+>
+>       dqm[s,t,m] <- 0
+>
+>     } # m
+>
+>   } # s
+>
+>   for (s in 2:mns){
+>
+>     for (m in 1:(s-1)){
+>
+>       dpm[s,t,m] <- 0
+>
+>       dqm[s,t,m] <- 0
+>
+>     } # m
+>
+>   } # s
+>
+> } # t
+>
+>
+> # Define the multinomial likelihood for all released
+>
+> for (t in 1:((n.occasions-1)*mns)){
+>
+>   marr[t,1:(n.occasions*mns-(mns-1))] ~ dmulti(prm[t,], relm[t])
+>
+> }
+>
+>
+> # Define cell probabilities of the multistate m-array
+>
+> # Define matrix U: product of probabilities of state-transition and
+>
+> # non-encounter
+>
+> for (t in 1:(n.occasions-2)){
+>
+>   Um[(t-1)*mns+(1:mns), (t-1)*mns+(1:mns)] <- onesm
+>
+>   for (j in (t+1):(n.occasions-1)){
+>
+>     Um[(t-1)*mns+(1:mns), (j-1)*mns+(1:mns)] <- Um[(t-1)*mns+(1:mns),
+>
+>     (j-2)*mns+(1:mns)] %*% psm[,t,] %*% dqm[,t,]
+>
+>   } #j
+>
+> } #t
+>
+> Um[(n.occasions-2)*mns+(1:mns), (n.occasions-2)*mns+(1:mns)] <- onesm
+>
+>
+> # Diagonal
+>
+> for (t in 1:(n.occasions-2)){
+>
+>   prm[(t-1)*mns+(1:mns),(t-1)*mns+(1:mns)] <-
+>
+>    Um[(t-1)*mns+(1:mns),(t-1)*mns+(1:mns)] %*% psm[,t,] %*% dpm[,t,]
+>
+>   # Above main diagonal
+>
+>   for (j in (t+1):(n.occasions-1)){
+>
+>     prm[(t-1)*mns+(1:mns), (j-1)*mns+(1:mns)] <- Um[(t-1)*mns+(1:mns),
+>
+>      (j-1)*mns+(1:mns)] %*% psm[,j,] %*% dpm[,j,]
+>
+>   } #j
+>
+> } #t
+>
+>
+> # Last Diagonal
+>
+> prm[(n.occasions-2)*mns+(1:mns), (n.occasions-2)*mns+(1:mns)] <-
+>
+>  psm[,n.occasions-1,] %*% dpm[,n.occasions-1,]
+>
+> # Below main diagonal
+>
+> for (t in 2:(n.occasions-1)){
+>
+>   for (j in 1:(t-1)){
+>
+>     prm[(t-1)*mns+(1:mns),(j-1)*mns+(1:mns)] <- zerom
+>
+>   } #j
+>
+> } #t
+>
+>
+> # Last column: probability of non-recapture
+>
+> for (t in 1:((n.occasions-1)*mns)){
+>
+>   prm[t,(n.occasions*mns-(mns-1))] <- 1-sum(prm[t,1:((n.occasions-1)*mns)])
+>
+> } #t
+>
+>
+> }
+>
+> ",fill = TRUE)
+>
+> sink()
+>
+>
+> mns <- 2
+>
+> jags.data <- list(marr = marr,
+>
+>                   n.occasions = 14, relm = rowSums(marr),
+>
+>                   mns = mns, zerom = matrix(0, ncol = mns, nrow = mns),
+>
+>                   onesm = diag(mns))
+>
+> inits <- function(){list(muS = runif(1,0.0001,0.999), mur = runif(1,0.0001,0.999),
+>
+>                          mup = runif(1,0.0001,0.999))}
+>
+> parameters <- c("muS","mur","mup", "S", "p", "r")
+>
+>
+> ni <- 15000; nt <- 5; na <- 10000; nb <- 5000; nc <- 3
+>
+> set.seed(runif(1,1,999))
+>
+> ms_sim <- jags(jags.data, inits=inits, parameters, "marray.jags",
+>
+>                n.chains = nc, n.iter = ni, n.burnin = nb,
+>
+>                n.adapt = na, n.thin = nt, parallel = F)
+>
+> print(ms_sim, digits = 3)
+>
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to  hmecology+...@googlegroups.com.
+> To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/64ec45ad-38a1-46aa-bf6a-36674de46678n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/64ec45ad-38a1-46aa-bf6a-36674de46678n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From ude4fed42a1368605 at groups.google.com  Wed Sep  2 17:08:51 2020
+From: ude4fed42a1368605 at groups.google.com (matt.e...@gmail.com)
+Date: Wed, 02 Sep 2020 17:08:51 +0000
+Subject: Re: Dail-Madsen w Gompertz Dynamics Model Statement in JAGS
+Message-ID: <xJ0RDmqzrcI.8rbtJKJEAwAJ@hmecology.groups.google.com>
+In-Reply-To: <xJ0RDmqzrcI.wpLN12nzBwAJ@hmecology.groups.google.com>
+References: <xJ0RDmqzrcI.6HzguzDgBAAJ@hmecology.groups.google.com> <xJ0RDmqzrcI.wpLN12nzBwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/xJ0RDmqzrcI/m/8rbtJKJEAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Again,
+
+Thanks for all the comments that helped me get my model up and running. After some trial and error with priors and initial values, I have managed to produce what seems like reasonable estimates. However, I am hoping for some clarification on interpretation and extending the model. I have not provided any indexing on K, r, or p for my previous model. Therefore, should I interpret these parameters as mean estimates for the entire population of plots and not as per plot estimates? If I am correct, I would like to extend the model by adding some covariates on at least K and p for plot specific estimates, which I am also hoping will improve the precision of those estimates.
+
+Unfortunately, I seem to be struggling to get that model to run with parent node inconsistency errors. Below is my model call to JAGS and init value specifications. Any tips or further thoughts on getting this model up and running. I have read that it can be challenging to specify these initial values and fit these models. Do I just need more trial and error?
+
+Thanks,
+
+Matt
+
+str(abdu_data <- list(y = data_matrix, nsites = nrow(data_matrix),
+                  nyears = ncol(data_matrix), phen=phen, lakea=lakea)) # note length added
+
+# Specify model in BUGS language
+
+sink("gompertz_p_covs")
+cat("
+model {
+# Priors
+lambda ~ dunif(0,100) # Abundance
+K0 ~ dnorm(0, 0.01) # Carrying Capacity
+K1 ~ dnorm(0,0.01)
+r0 ~ dnorm(0,0.01)
+p0 ~ dnorm(0, 0.01)
+p1 ~ dnorm(0, 0.01)
+iota ~ dunif(0,25) #Immigration
+#p ~ dunif(0.05,0.95)
+
+# Likelihood
+for(i in 1:nsites){
+   # State process: initial condition
+   N[i,1] ~ dpois(lambda)
+
+   # State process: transition model
+   for(t in 1:(nyears-1)){
+
+      r[i,t] <- exp(r0)
+
+      K[i,t] <- exp(K0 + K1*lakea[i,t])
+
+      muN[i,t] <- N[i,t] * exp(r[i,t] * (1 - log(N[i,t] + 1) / log(K[i,t] + 1))) + iota
+
+      N[i,t+1] ~ dpois(muN[i,t])
+
+   }
+
+   # Observation process
+   for(t in 1:nyears){
+
+      logit(p[i,t]) <- p0 + p1*phen[i,t]
+      y[i,t] ~ dbin(p[i,t], N[i,t])
+      }
+}
+
+# Derived quantities
+
+}
+")
+sink()
+
+#Starting N
+Nst <- array(NA, dim = dim(data_matrix))
+
+tmp <- apply(data_matrix, 1, max, na.rm = TRUE)
+tmp[tmp == '-Inf'] <- 2
+Nst[,1] <- tmp
+
+# Initial values
+inits2 <- function(){list(N=Nst+25, r0 = rnorm(1), lambda=runif(1, 5, 20),
+                          K0=rnorm(1), K1=rnorm(1), iota=rnorm(1),
+                          p0=rnorm(1), p1=rnorm(1))}
+
+# Parameters monitored
+params2 <-c("K", "N", "r", "p")
+
+# MCMC settings
+na <- 10 ; ni <- 1000 ; nt <- 10 ; nb <- 100 ; nc <- 3 #reduced just to get model running
+
+# try different seeds in hopes of getting one that runs
+set.seed(299, kind = "Mersenne-Twister")
+
+gomp_jags_covs <- jags(abdu_data, inits2, params2, "gompertz_p_covs",
+
+                  n.adapt = na, n.chains = nc,
+                  n.thin = nt, n.iter = ni, n.burnin = nb, parallel = TRUE)
+
+print(gomp_jags_covs)
+traceplot(gomp_jags_covs)
+
+On Thursday, 20 August 2020 at 15:05:40 UTC-4 matt.e...@gmail.com wrote:
+> ...yep. Thanks John. Funny how the code will do exactly what you tell it to do :).
+>
+> Appreciate the keen eye. Will report back if I encounter further errors. Hopefully this sets me straight.
+>
+> On Thursday, 20 August 2020 at 14:58:42 UTC-4 John C wrote:
+> > Huh. I dunno about the model construction being off or not, but it looks like the model is sampling the prior. Might be missing something, but the quantiles look like the prior quantiles(?) and it appears to have taken 3 minutes to rip through 100,000 samples? Maybe bdata contains a C (from the earlier go-round) but not a y?
+> >
+> > John
+
+From u6ad895aa93bfdc63 at groups.google.com  Wed Sep  2 17:27:05 2020
+From: u6ad895aa93bfdc63 at groups.google.com (John C)
+Date: Wed, 02 Sep 2020 17:27:05 +0000
+Subject: Re: Dail-Madsen w Gompertz Dynamics Model Statement in JAGS
+Message-ID: <xJ0RDmqzrcI.srhQ7X0ZAAAJ@hmecology.groups.google.com>
+In-Reply-To: <xJ0RDmqzrcI.6HzguzDgBAAJ@hmecology.groups.google.com>
+References: <xJ0RDmqzrcI.6HzguzDgBAAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/xJ0RDmqzrcI/m/srhQ7X0ZAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Matt,
+
+ This seems like one issue?
+
+> iota ~ dunif(0,25) #Immigration
+>
+> # Initial values
+> inits2 <- function(){list(...iota=rnorm(1),
+>                           ...)}
+
+Might check the Nst part, too. If I'm following the code correctly (which is always uncertain), this:
+
+> Nst <- array(NA, dim = dim(data_matrix))
+> tmp <- apply(data_matrix, 1, max, na.rm = TRUE)
+> tmp[tmp == '-Inf'] <- 2
+> Nst[,1] <- tmp
+>
+> # Initial values
+> inits2 <- function(){list(N=Nst+25
+
+makes the initial values for N[, 1] some positive number, but the otherwise, the starting value is NA+25?
+
+I guess just as a general reference, Brian Reich provides a nice overview of JAGS errors and what they mean here <https://www4.stat.ncsu.edu/~bjreich/BSMdata/errors.html>.
+
+JC
+
+From ubfa4a88c8a5bc54e at groups.google.com  Wed Sep  2 23:35:00 2020
+From: ubfa4a88c8a5bc54e at groups.google.com (Matthijs Hollanders)
+Date: Wed, 02 Sep 2020 23:35:00 +0000
+Subject: Error when running multistate Jolly-Seber model from BPA
+Message-ID: <S4HO-tnzep8.fkH_xggTCQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/S4HO-tnzep8/m/fkH_xggTCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I'm trying to run a multistate Jolly-Seber model in JAGS using Kéry & Schaub BPA. To start, I simply copied the BPA JAGS code <https://www.vogelwarte.ch/assets/files/publications/BPA/BPA%20with%20JAGS.txt>, specifically 1) the model under section 10.3.2, 2) the data generation code under section 10.4, and 3) the code to run the model under 10.4.2.
+
+When I run this code, I get the following error after running JAGS:
+
+"Error in setParameters(init.values[[i]], i) : Error in node po[1,1,1,2]
+Cannot set value of non-variable node"
+
+FYI, when I do the same for the restricted occupancy and superpopulation parameterisations, the models run just fine. I do actually need to use the multistate formulation because the model will later be expanded to include multiple disease states. Can anyone clarify what's going on?
+
+Looking forward to your answers. :)
+
+Kind regards,
+Matt Hollanders
+
+From ubfa4a88c8a5bc54e at groups.google.com  Wed Sep  2 23:36:14 2020
+From: ubfa4a88c8a5bc54e at groups.google.com (Matthijs Hollanders)
+Date: Wed, 02 Sep 2020 23:36:14 +0000
+Subject: Re: Error when running multistate Jolly-Seber model from BPA
+Message-ID: <S4HO-tnzep8.g_c99hkTCQAJ@hmecology.groups.google.com>
+In-Reply-To: <S4HO-tnzep8.fkH_xggTCQAJ@hmecology.groups.google.com>
+References: <S4HO-tnzep8.fkH_xggTCQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/S4HO-tnzep8/m/g_c99hkTCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Since it's not letting me attach the script, here's the code I've used copied:
+
+library(jagsUI)
+# 10.3.2. The JS model as a multistate model
+# Specify model in BUGS language
+sink("js-ms.jags")
+cat("
+model {
+
+#--------------------------------------
+# Parameters:
+# phi: survival probability
+# gamma: removal entry probability
+# p: capture probability
+#--------------------------------------
+# States (S):
+# 1 not yet entered
+# 2 alive
+# 3 dead
+# Observations (O):
+# 1 seen
+# 2 not seen
+#--------------------------------------
+
+# Priors and constraints
+for (t in 1:(n.occasions-1)){
+   phi[t] <- mean.phi
+   gamma[t] ~ dunif(0, 1) # Prior for entry probabilities
+   p[t] <- mean.p
+   }
+
+mean.phi ~ dunif(0, 1)    # Prior for mean survival
+mean.p ~ dunif(0, 1)      # Prior for mean capture
+
+# Define state-transition and observation matrices
+for (i in 1:M){
+   # Define probabilities of state S(t+1) given S(t)
+   for (t in 1:(n.occasions-1)){
+      ps[1,i,t,1] <- 1-gamma[t]
+      ps[1,i,t,2] <- gamma[t]
+      ps[1,i,t,3] <- 0
+      ps[2,i,t,1] <- 0
+      ps[2,i,t,2] <- phi[t]
+      ps[2,i,t,3] <- 1-phi[t]
+      ps[3,i,t,1] <- 0
+      ps[3,i,t,2] <- 0
+      ps[3,i,t,3] <- 1
+
+      # Define probabilities of O(t) given S(t)
+      po[1,i,t,1] <- 0
+      po[1,i,t,2] <- 1
+      po[2,i,t,1] <- p[t]
+      po[2,i,t,2] <- 1-p[t]
+      po[3,i,t,1] <- 0
+      po[3,i,t,2] <- 1
+      } #t
+   } #i
+
+# Likelihood
+for (i in 1:M){
+   # Define latent state at first occasion
+   z[i,1] <- 1   # Make sure that all M individuals are in state 1 at t=1
+   for (t in 2:n.occasions){
+      # State process: draw S(t) given S(t-1)
+      z[i,t] ~ dcat(ps[z[i,t-1], i, t-1,])
+      # Observation process: draw O(t) given S(t)
+      y[i,t] ~ dcat(po[z[i,t], i, t-1,])
+      } #t
+   } #i
+
+# Calculate derived population parameters
+for (t in 1:(n.occasions-1)){
+   qgamma[t] <- 1-gamma[t]
+   }
+cprob[1] <- gamma[1]
+for (t in 2:(n.occasions-1)){
+   cprob[t] <- gamma[t] * prod(qgamma[1:(t-1)])
+   } #t
+psi <- sum(cprob[])            # Inclusion probability
+for (t in 1:(n.occasions-1)){
+   b[t] <- cprob[t] / psi      # Entry probability
+   } #t
+
+for (i in 1:M){
+   for (t in 2:n.occasions){
+      al[i,t-1] <- equals(z[i,t], 2)
+      } #t
+   for (t in 1:(n.occasions-1)){
+      d[i,t] <- equals(z[i,t]-al[i,t],0)
+      } #t
+   alive[i] <- sum(al[i,])
+   } #i
+
+for (t in 1:(n.occasions-1)){
+   N[t] <- sum(al[,t])        # Actual population size
+   B[t] <- sum(d[,t])         # Number of entries
+   } #t
+for (i in 1:M){
+   w[i] <- 1-equals(alive[i],0)
+   } #i
+Nsuper <- sum(w[])            # Superpopulation size
+}
+",fill = TRUE)
+sink()
+
+# 10.4. Models with constant survival and time-dependent entry
+# Define parameter values
+n.occasions <- 7                         # Number of capture occasions
+N <- 400                                 # Superpopulation size
+phi <- rep(0.7, n.occasions-1)           # Survival probabilities
+b <- c(0.34, rep(0.11, n.occasions-1))   # Entry probabilities
+p <- rep(0.5, n.occasions)               # Capture probabilities
+
+PHI <- matrix(rep(phi, (n.occasions-1)*N), ncol = n.occasions-1, nrow = N, byrow = T)
+P <- matrix(rep(p, n.occasions*N), ncol = n.occasions, nrow = N, byrow = T)
+
+# Function to simulate capture-recapture data under the JS model
+simul.js <- function(PHI, P, b, N){
+  B <- rmultinom(1, N, b) # Generate no. of entering ind. per occasion
+  n.occasions <- dim(PHI)[2] + 1
+  CH.sur <- CH.p <- matrix(0, ncol = n.occasions, nrow = N)
+  # Define a vector with the occasion of entering the population
+  ent.occ <- numeric()
+  for (t in 1:n.occasions){
+    ent.occ <- c(ent.occ, rep(t, B[t]))
+  }
+  # Simulating survival
+  for (i in 1:N){
+    CH.sur[i, ent.occ[i]] <- 1   # Write 1 when ind. enters the pop.
+    if (ent.occ[i] == n.occasions) next
+    for (t in (ent.occ[i]+1):n.occasions){
+      # Bernoulli trial: has individual survived occasion?
+      sur <- rbinom(1, 1, PHI[i,t-1])
+      ifelse (sur==1, CH.sur[i,t] <- 1, break)
+    } #t
+  } #i
+  # Simulating capture
+  for (i in 1:N){
+    CH.p[i,] <- rbinom(n.occasions, 1, P[i,])
+  } #i
+  # Full capture-recapture matrix
+  CH <- CH.sur * CH.p
+
+  # Remove individuals never captured
+  cap.sum <- rowSums(CH)
+  never <- which(cap.sum == 0)
+  CH <- CH[-never,]
+  Nt <- colSums(CH.sur)    # Actual population size
+  return(list(CH=CH, B=B, N=Nt))
+}
+
+# Execute simulation function
+sim <- simul.js(PHI, P, b, N)
+CH <- sim$CH
+
+# 10.4.2 Analysis of the JS model as a multistate model
+# Add dummy occasion
+CH.du <- cbind(rep(0, dim(CH)[1]), CH)
+
+# Augment data
+nz <- 500
+CH.ms <- rbind(CH.du, matrix(0, ncol = dim(CH.du)[2], nrow = nz))
+
+# Recode CH matrix: a 0 is not allowed in WinBUGS!
+CH.ms[CH.ms==0] <- 2                     # Not seen = 2, seen = 1
+
+# Bundle data
+jags.data <- list(y = CH.ms, n.occasions = dim(CH.ms)[2], M = dim(CH.ms)[1])
+
+# Initial values
+# As always in JAGS, good initial values need to be specified for the latent state z. They need to correspond to the true state, which is not the same as the observed state. Thus, we have given initial values of "1" for the latend state at all places before an individual was observed, an initial value of "2" at all places when the individual was observed alive or known to be alive and an initial value of "3" at all places after the last observation. The folllowing function creates the initial values.
+
+js.multistate.init <- function(ch, nz){
+  ch[ch==2] <- NA
+  state <- ch
+  for (i in 1:nrow(ch)){
+    n1 <- min(which(ch[i,]==1))
+    n2 <- max(which(ch[i,]==1))
+    state[i,n1:n2] <- 2
+  }
+  state[state==0] <- NA
+  get.first <- function(x) min(which(!is.na <http://is.na>(x)))
+  get.last <- function(x) max(which(!is.na <http://is.na>(x)))
+  f <- apply(state, 1, get.first)
+  l <- apply(state, 1, get.last)
+  for (i in 1:nrow(ch)){
+    state[i,1:f[i]] <- 1
+    if(l[i]!=ncol(ch)) state[i, (l[i]+1):ncol(ch)] <- 3
+    state[i, f[i]] <- 2
+  }
+  state <- rbind(state, matrix(1, ncol = ncol(ch), nrow = nz))
+  return(state)
+}
+
+inits <- function(){list(mean.phi = runif(1, 0, 1), mean.p = runif(1, 0, 1), z = js.multistate.init(CH.du, nz))}
+
+# Parameters monitored
+parameters <- c("mean.p", "mean.phi", "b", "Nsuper", "N", "B")
+
+# MCMC settings
+ni <- 20000
+nt <- 3
+nb <- 5000
+nc <- 3
+
+# Call JAGS from R (BRT 32 min)
+js.ms <http://js.ms> <- jags(jags.data, inits, parameters, "js-ms.jags", n.chains = nc, n.thin = nt, n.iter = ni, n.burnin = nb)
+
+On Thursday, September 3, 2020 at 9:35:00 AM UTC+10 Matthijs Hollanders wrote:
+> Hi all,
+>
+> I'm trying to run a multistate Jolly-Seber model in JAGS using Kéry & Schaub BPA. To start, I simply copied the BPA JAGS code <https://www.vogelwarte.ch/assets/files/publications/BPA/BPA%20with%20JAGS.txt>, specifically 1) the model under section 10.3.2, 2) the data generation code under section 10.4, and 3) the code to run the model under 10.4.2.
+>
+> When I run this code, I get the following error after running JAGS:
+>
+> "Error in setParameters(init.values[[i]], i) : Error in node po[1,1,1,2]
+> Cannot set value of non-variable node"
+>
+> FYI, when I do the same for the restricted occupancy and superpopulation parameterisations, the models run just fine. I do actually need to use the multistate formulation because the model will later be expanded to include multiple disease states. Can anyone clarify what's going on?
+>
+> Looking forward to your answers. :)
+>
+> Kind regards,
+> Matt Hollanders
+
+From u5ff906c2720491d5 at groups.google.com  Fri Sep  4 08:27:32 2020
+From: u5ff906c2720491d5 at groups.google.com (Dilsad Dagtekin)
+Date: Fri, 04 Sep 2020 08:27:32 +0000
+Subject: A question on predator-prey interactions from multi-species occupancy models
+Message-ID: <YTQ4yNfmiyo.BLkzz6x-CQAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/YTQ4yNfmiyo/m/BLkzz6x-CQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all!
+
+I hope you are all doing healthy and safe!
+
+I applied single-season, multi-species models to different pairs of predator-prey species detected in our camera-trapping surveys in northwestern Anatolia. I am trying to find out co-occurrence patterns and seasonality effects on them. I used Richmond-Waddle parametrization which is putting the true occupancy of a species as a covariate on the other one, so you will see the effects of presence/absence of one species to another. According to the terminology we define prey species as dominant and predator species as subordinate. I modeled the effects of prey species' presence/absence on the predator.
+
+For the lynx (Lynx lynx) Eurasian hare (Lepus europaeus) pair, I got a bit confused from my results. Here you see the number of sites with each state of the pair, 0 means not occupied (absent) and 1 means occupied (present), so for example Hare(1)_Lynx(0) is the number of sites where hare is present, lynx is absent.
+
+When I look here I see the highest number of sites are when both species are absent, followed by hare present lynx absent and both species are present.
+To me, this is a strong indication for lynx being dependent on hare.
+
+However, I also calculated Species Interaction Factor (SIF), formula taken from Richmond et al., 2010, and I am struggling to interpret that since we modeled the effects of prey presence/absence on predator (so reminder, dominant species would be prey and subordinate would be predator). According to SIF value, if SIF = 1 species co-occurrence is independent from each other, if SIF < 1 subordinate species is less likely to co-occur with dominant species, and if SIF > 1 subordinate species is more likely to co-occur with dominant species. Here is my SIF result on lynx-hare pair:
+
+It looks like SIF values are distributed mainly around 0.5 in both seasons, which means predator species (lynx) is less likely to co-occur with prey species (hare).
+I am struggling to interpret that, because does this mean lynx avoids hare? Or can I say from here hare avoids lynx or is it too much speculation?
+Another thing is from my dataset lynx detections are super-low anyway because the population is not so big and they are pretty shy. So maybe because their occupancy would be low anyway due to my spare data on them, is that what I am seeing here?
+Or overall am I missing something?
+
+Sorry for the long post, but any help would be appreciated!
+I tried to explain things clearly but if something is confusing please ask.
+Looking forward to your comments!
+Thank you so much!
+
+Best,
+Dilsad
+
+--
+A. Dilsad Dagtekin
+PhD Student at Population Ecology Research Group
+University of Zurich, Department of Evolutionary Biology and Environmental Studies
+dilsad....@ieu.uzh.ch | www.popecol.org <http://www.popecol.org>
+Ecology and Evol. Biology Society of Turkey: www.ekoevo.org <http://www.ekoevo.org>
+ITU Alumni '16 & '18 | AFS Alumni '12
+
+From u00ebeb6e0521112d at groups.google.com  Mon Sep  7 12:29:19 2020
+From: u00ebeb6e0521112d at groups.google.com (Kery Marc)
+Date: Mon, 07 Sep 2020 12:29:19 +0000
+Subject: AHM2 out very soon now !
+Message-ID: <_-W0nEeyavk.7GmpCmG-AgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/_-W0nEeyavk/m/7GmpCmG-AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear all,
+
+it's with huge pleasure and no small relief that we can finally announce the imminent publication of AHM2 (Applied hierarchical modeling in ecology, volume 2); see the front and back covers of the book in the attachment. This book, along with volume 1 (AHM1 published in 2016), is intended to be a gentle and applied introduction to, and a comprehensive overview of, most of the types of models that we are talking about in the HMecology and the unmarked lists. In particular, both the AHM1 and the AHM2 book are sort of like the official books on population and species distribution modeling using unmarked. We hope that both books have been, and will be, useful.
+
+Best regards  -- Marc & Andy
+
+From udf74d6fccec2ff7e at groups.google.com  Mon Sep  7 12:59:00 2020
+From: udf74d6fccec2ff7e at groups.google.com (Richard Chandler)
+Date: Mon, 07 Sep 2020 12:59:00 +0000
+Subject: Re: AHM2 out very soon now !
+Message-ID: <_-W0nEeyavk.1hpgnf-_AgAJ@hmecology.groups.google.com>
+In-Reply-To: <_-W0nEeyavk.7GmpCmG-AgAJ@hmecology.groups.google.com>
+References: <_-W0nEeyavk.7GmpCmG-AgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/_-W0nEeyavk/m/1hpgnf-_AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Congratulations guys! Can't wait to get a copy.
+
+On Mon, Sep 7, 2020 at 8:29 AM Kery Marc <marc...@vogelwarte.ch> wrote:
+
+> Dear all,
+>
+> it's with huge pleasure and no small relief that we can finally announce the imminent publication of AHM2 (Applied hierarchical modeling in ecology, volume 2); see the front and back covers of the book in the attachment. This book, along with volume 1 (AHM1 published in 2016), is intended to be a gentle and applied introduction to, and a comprehensive overview of, most of the types of models that we are talking about in the HMecology and the unmarked lists. In particular, both the AHM1 and the AHM2 book are sort of like the official books on population and species distribution modeling using unmarked. We hope that both books have been, and will be, useful.
+>
+> Best regards  -- Marc & Andy
+>
+
+> --
+> *** Three hierarchical modeling email lists ***
+> (1) unmarked: for questions specific to the R package unmarked
+> (2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+> (3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+> ---
+> You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/hmecology/F801018864E940468323F405DF95D2DD760E7DCB%40MailNT.vogelwarte.ch <https://groups.google.com/d/msgid/hmecology/F801018864E940468323F405DF95D2DD760E7DCB%40MailNT.vogelwarte.ch?utm_medium=email&utm_source=footer>.
+
+From u27debeac26f66a0b at groups.google.com  Mon Sep  7 19:22:50 2020
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez Garcia-Herrera)
+Date: Mon, 07 Sep 2020 19:22:50 +0000
+Subject: RE: AHM2 out very soon now !
+Message-ID: <_-W0nEeyavk.ZCAzwPHUAgAJ@hmecology.groups.google.com>
+In-Reply-To: <_-W0nEeyavk.7GmpCmG-AgAJ@hmecology.groups.google.com>
+References: <_-W0nEeyavk.7GmpCmG-AgAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/_-W0nEeyavk/m/ZCAzwPHUAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Marc! Great news for everyone. I hope to start reading it soon.
+
+De: hmec...@googlegroups.com <hmec...@googlegroups.com> En nombre de Kery Marc
+Enviado el: lunes, 7 de septiembre de 2020 14:29
+Para: hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>; unma...@googlegroups.com
+Asunto: AHM2 out very soon now !
+
+Dear all,
+
+it's with huge pleasure and no small relief that we can finally announce the imminent publication of AHM2 (Applied hierarchical modeling in ecology, volume 2); see the front and back covers of the book in the attachment. This book, along with volume 1 (AHM1 published in 2016), is intended to be a gentle and applied introduction to, and a comprehensive overview of, most of the types of models that we are talking about in the HMecology and the unmarked lists. In particular, both the AHM1 and the AHM2 book are sort of like the official books on population and species distribution modeling using unmarked. We hope that both books have been, and will be, useful.
+
+Best regards  -- Marc & Andy
+
+--
+
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/F801018864E940468323F405DF95D2DD760E7DCB%40MailNT.vogelwarte.ch <https://groups.google.com/d/msgid/hmecology/F801018864E940468323F405DF95D2DD760E7DCB%40MailNT.vogelwarte.ch?utm_medium=email&utm_source=footer>.
+
+From u3942ffcc17f7925f at groups.google.com  Fri Sep 11 03:36:00 2020
+From: u3942ffcc17f7925f at groups.google.com (sbuitr...@gmail.com)
+Date: Fri, 11 Sep 2020 03:36:00 +0000
+Subject: Non-nested sampling design in multi-scale occupancy model (?)
+Message-ID: <fFoRxkH5m3o.L6yz_kz2AwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/fFoRxkH5m3o/m/L6yz_kz2AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone:
+
+I am a little bit new with hierarchical models and I have a special interest with multi-scale occupancy models. I have a question that I hope some of you could help me to answer. Can I use a multi-scale occupancy model even though my data is not nested?
+
+I am doing this question because I have data of covariates collected at different spatial scales and when I define the area of my "sites" I am obligated to dicard some of these covariates. For example, one of my variables was canopy closure calculated in a 10m area surrounding a camera trap, if a define my "site" as a 250m grid around the camera trap, I will not be able to use canopy closure as a covariate. I do not know if is possible that I can use a multi-scale occupancy model to estimte the probability of occurrence at a scale of 10m around camera traps, and the prob of occurrence in grids of 250m (using other covariates) without having nested data.
+
+Unfortunately multi-scale occupancy models haven´t been very widespread in the literature and I haven´t been able to find an answer to this question. I would appreciate if any of you could give me an answer or some advice.
+
+Thank you so much and I apologize in advance if my english is not the best.
+
+From ucace6af052eb850a at groups.google.com  Sun Sep 27 14:02:44 2020
+From: ucace6af052eb850a at groups.google.com (john.hu...@gmail.com)
+Date: Sun, 27 Sep 2020 14:02:44 +0000
+Subject: Errors in R and JAGS
+Message-ID: <2ZrhLxGwVXE.DPdyacBeBwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/2ZrhLxGwVXE/m/DPdyacBeBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi All,
+I am fairly new with working in JAGS and R, and especially with hierarchical models. I have been trying to implement an example I obtained from the Kery and Schaub (2012) to my own data, but I keep getting this error:
+
+"Error in jags.model(file = model.file, data = data, inits = inits, n.chains = n.chains, : RUNTIME ERROR: Compilation error on line 63. Index out of range taking subset of y"
+
+Can anyone help me with this? Any suggestions would be appreciated.
+
+The JAGS code:
+# Specify model in BUGS language
+sink("ipm-prod.jags")
+cat("
+model {
+#-------------------------------------------------
+#  Integrated population model
+#  - Age structured model with 2 age classes:
+#        1-year old and adult (at least 2 years old)
+#  - Age at first breeding = 1 year
+#  - Prebreeding census, female-based
+#  - All vital rates assumed to be constant
+#-------------------------------------------------
+
+#-------------------------------------------------
+# 1. Define the priors for the parameters
+#-------------------------------------------------
+# Observation error
+tauy <- pow(sigma.y, -2)
+sigma.y ~ dunif(0, 50)
+sigma2.y <- pow(sigma.y, 2)
+
+# Initial population sizes
+n1 ~ dnorm(25, tauy)T(0,)     # 1-year
+nad ~ dnorm(25, tauy)T(0,)    # Adults
+N1[1] <- round(n1)
+Nad[1] <- round(nad)
+
+# Survival and recapture probabilities, as well as productivity
+for (t in 1:(nyears-1)){
+   sjuv[t] <- mean.sjuv
+   sad[t] <- mean.sad
+   p[t] <- mean.p
+   f[t] <- mean.fec
+   }
+
+mean.sjuv ~ dunif(0, 1)
+mean.sad ~ dunif(0, 1)
+mean.p ~ dunif(0, 1)
+mean.fec ~ dunif(0, 20)
+
+#-------------------------------------------------
+# 2. Derived parameters
+#-------------------------------------------------
+# Population growth rate
+for (t in 1:(nyears-1)){
+   lambda[t] <- Ntot[t+1] / Ntot[t]
+   }
+
+#-------------------------------------------------
+# 3. The likelihoods of the single data sets
+#-------------------------------------------------
+# 3.1. Likelihood for population population count data (state-space model)
+   # 3.1.1 System process
+   for (t in 2:nyears){
+      mean1[t] <- f[t-1] / 2 * sjuv[t-1] * Ntot[t-1]
+      N1[t] ~ dpois(mean1[t])
+      Nad[t] ~ dbin(sad[t-1], Ntot[t-1])
+      }
+   for (t in 1:nyears){
+      Ntot[t] <- Nad[t] + N1[t]
+      }
+
+   # 3.1.2 Observation process
+   for (t in 1:nyears){
+      y[t] ~ dnorm(Ntot[t], tauy)
+      }
+
+# 3.2 Likelihood for capture-recapture data: CJS model (2 age classes)
+# Multinomial likelihood
+for (t in 1:2*(nyears-1)){
+   m[t,1:nyears] ~ dmulti(pr[t,], r[t])
+   }
+
+# m-array cell probabilities for juveniles
+for (t in 1:(nyears-1)){
+   # Main diagonal
+   q[t] <- 1-p[t]
+   pr[t,t] <- sjuv[t] * p[t]
+   # Above main diagonal
+   for (j in (t+1):(nyears-1)){
+      pr[t,j] <- sjuv[t]*prod(sad[(t+1):j])*prod(q[t:(j-1)])*p[j]
+      } #j
+   # Below main diagonal
+   for (j in 1:(t-1)){
+      pr[t,j] <- 0
+      } #j
+   # Last column: probability of non-recapture
+   pr[t,nyears] <- 1-sum(pr[t,1:(nyears-1)])
+   } #t
+
+# m-array cell probabilities for adults
+for (t in 1:(nyears-1)){
+   # Main diagonal
+   pr[t+nyears-1,t] <- sad[t] * p[t]
+   # Above main diagonal
+   for (j in (t+1):(nyears-1)){
+      pr[t+nyears-1,j] <- prod(sad[t:j])*prod(q[t:(j-1)])*p[j]
+      } #j
+   # Below main diagonal
+   for (j in 1:(t-1)){
+      pr[t+nyears-1,j] <- 0
+      } #j
+   # Last column
+   pr[t+nyears-1,nyears] <- 1 - sum(pr[t+nyears-1,1:(nyears-1)])
+   } #t
+}
+",fill = TRUE)
+sink()
+
+My  R code:
+#Population Counts (2016, 2017, 2019)
+y <- c(27, 36, 32)
+
+m <- matrix(c(9,0,0,7,
+              0,11,0,10,
+              0,0,9,1,
+              18,0,0,14,
+              0,25,0,21,
+              0,0,23,4), ncol = 4,
+            byrow = TRUE)
+
+# Bundle data
+jags.data <- list(m = m, y = y, nyears = dim(m)[2], r = rowSums(m))
+
+# Initial values
+inits <- function(){list(mean.sjuv= runif(1, 0, 1), mean.sad = runif(1, 0, 1), mean.p = runif(1, 0, 1), mean.fec = runif(1, 0, 10), n1 = rpois(1, 30), nad = rpois(1, 30), sigma.y = runif(1, 0, 10))}
+
+# Parameters monitored
+parameters <- c("mean.sjuv", "mean.sad", "mean.p", "mean.fec", "N1", "Nad", "Ntot", "sigma2.y", "lambda")
+
+# MCMC settings
+ni <- 20000
+nt <- 6
+nb <- 5000
+nc <- 3
+
+# Call JAGS from R (BRT 1 min)
+ipm.prod <- jags(jags.data, inits, parameters, "ipm-prod.jags", n.chains = nc, n.thin = nt, n.iter = ni, n.burnin = nb)
+
+# Summarize posteriors
+print(ipm.prod, digits = 3)
+
+From u27debeac26f66a0b at groups.google.com  Sun Sep 27 16:21:20 2020
+From: u27debeac26f66a0b at groups.google.com (Jose Jimenez Garcia-Herrera)
+Date: Sun, 27 Sep 2020 16:21:20 +0000
+Subject: RE: Errors in R and JAGS
+Message-ID: <2ZrhLxGwVXE.NBdgnVBmBwAJ@hmecology.groups.google.com>
+In-Reply-To: <2ZrhLxGwVXE.DPdyacBeBwAJ@hmecology.groups.google.com>
+References: <2ZrhLxGwVXE.DPdyacBeBwAJ@hmecology.groups.google.com>
+Archived-At: <https://groups.google.com/g/hmecology/c/2ZrhLxGwVXE/m/NBdgnVBmBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi John,
+
+What is your population count in 2018? This is the error you have. If you have no counts this year, try using NA.
+
+Regards,
+
+Jose
+
+De: hmec...@googlegroups.com <hmec...@googlegroups.com> En nombre de john.hu...@gmail.com
+Enviado el: domingo, 27 de septiembre de 2020 16:03
+Para: hmecology: Hierarchical Modeling in Ecology <hmec...@googlegroups.com>
+Asunto: Errors in R and JAGS
+
+Hi All,
+
+I am fairly new with working in JAGS and R, and especially with hierarchical models. I have been trying to implement an example I obtained from the Kery and Schaub (2012) to my own data, but I keep getting this error:
+
+"Error in jags.model(file = model.file, data = data, inits = inits, n.chains = n.chains, : RUNTIME ERROR: Compilation error on line 63. Index out of range taking subset of y"
+
+Can anyone help me with this? Any suggestions would be appreciated.
+
+The JAGS code:
+
+# Specify model in BUGS language
+sink("ipm-prod.jags")
+cat("
+model {
+#-------------------------------------------------
+#  Integrated population model
+#  - Age structured model with 2 age classes:
+#        1-year old and adult (at least 2 years old)
+#  - Age at first breeding = 1 year
+#  - Prebreeding census, female-based
+#  - All vital rates assumed to be constant
+#-------------------------------------------------
+
+#-------------------------------------------------
+# 1. Define the priors for the parameters
+#-------------------------------------------------
+# Observation error
+tauy <- pow(sigma.y, -2)
+sigma.y ~ dunif(0, 50)
+sigma2.y <- pow(sigma.y, 2)
+
+# Initial population sizes
+n1 ~ dnorm(25, tauy)T(0,)     # 1-year
+nad ~ dnorm(25, tauy)T(0,)    # Adults
+N1[1] <- round(n1)
+Nad[1] <- round(nad)
+
+# Survival and recapture probabilities, as well as productivity
+for (t in 1:(nyears-1)){
+   sjuv[t] <- mean.sjuv
+   sad[t] <- mean.sad
+   p[t] <- mean.p
+   f[t] <- mean.fec
+   }
+
+mean.sjuv ~ dunif(0, 1)
+mean.sad ~ dunif(0, 1)
+mean.p ~ dunif(0, 1)
+mean.fec ~ dunif(0, 20)
+
+#-------------------------------------------------
+# 2. Derived parameters
+#-------------------------------------------------
+# Population growth rate
+for (t in 1:(nyears-1)){
+   lambda[t] <- Ntot[t+1] / Ntot[t]
+   }
+
+#-------------------------------------------------
+# 3. The likelihoods of the single data sets
+#-------------------------------------------------
+# 3.1. Likelihood for population population count data (state-space model)
+   # 3.1.1 System process
+   for (t in 2:nyears){
+      mean1[t] <- f[t-1] / 2 * sjuv[t-1] * Ntot[t-1]
+      N1[t] ~ dpois(mean1[t])
+      Nad[t] ~ dbin(sad[t-1], Ntot[t-1])
+      }
+   for (t in 1:nyears){
+      Ntot[t] <- Nad[t] + N1[t]
+      }
+
+   # 3.1.2 Observation process
+   for (t in 1:nyears){
+      y[t] ~ dnorm(Ntot[t], tauy)
+      }
+
+# 3.2 Likelihood for capture-recapture data: CJS model (2 age classes)
+# Multinomial likelihood
+for (t in 1:2*(nyears-1)){
+   m[t,1:nyears] ~ dmulti(pr[t,], r[t])
+   }
+
+# m-array cell probabilities for juveniles
+for (t in 1:(nyears-1)){
+   # Main diagonal
+   q[t] <- 1-p[t]
+   pr[t,t] <- sjuv[t] * p[t]
+   # Above main diagonal
+   for (j in (t+1):(nyears-1)){
+      pr[t,j] <- sjuv[t]*prod(sad[(t+1):j])*prod(q[t:(j-1)])*p[j]
+      } #j
+   # Below main diagonal
+   for (j in 1:(t-1)){
+      pr[t,j] <- 0
+      } #j
+   # Last column: probability of non-recapture
+   pr[t,nyears] <- 1-sum(pr[t,1:(nyears-1)])
+   } #t
+
+# m-array cell probabilities for adults
+for (t in 1:(nyears-1)){
+   # Main diagonal
+   pr[t+nyears-1,t] <- sad[t] * p[t]
+   # Above main diagonal
+   for (j in (t+1):(nyears-1)){
+      pr[t+nyears-1,j] <- prod(sad[t:j])*prod(q[t:(j-1)])*p[j]
+      } #j
+   # Below main diagonal
+   for (j in 1:(t-1)){
+      pr[t+nyears-1,j] <- 0
+      } #j
+   # Last column
+   pr[t+nyears-1,nyears] <- 1 - sum(pr[t+nyears-1,1:(nyears-1)])
+   } #t
+}
+",fill = TRUE)
+sink()
+
+My  R code:
+#Population Counts (2016, 2017, 2019)
+y <- c(27, 36, 32)
+
+m <- matrix(c(9,0,0,7,
+              0,11,0,10,
+              0,0,9,1,
+              18,0,0,14,
+              0,25,0,21,
+              0,0,23,4), ncol = 4,
+            byrow = TRUE)
+
+# Bundle data
+jags.data <- list(m = m, y = y, nyears = dim(m)[2], r = rowSums(m))
+
+# Initial values
+inits <- function(){list(mean.sjuv= runif(1, 0, 1), mean.sad = runif(1, 0, 1), mean.p = runif(1, 0, 1), mean.fec = runif(1, 0, 10), n1 = rpois(1, 30), nad = rpois(1, 30), sigma.y = runif(1, 0, 10))}
+
+# Parameters monitored
+parameters <- c("mean.sjuv", "mean.sad", "mean.p", "mean.fec", "N1", "Nad", "Ntot", "sigma2.y", "lambda")
+
+# MCMC settings
+ni <- 20000
+nt <- 6
+nb <- 5000
+nc <- 3
+
+# Call JAGS from R (BRT 1 min)
+ipm.prod <- jags(jags.data, inits, parameters, "ipm-prod.jags", n.chains = nc, n.thin = nt, n.iter = ni, n.burnin = nb)
+
+# Summarize posteriors
+print(ipm.prod, digits = 3)
+
+--
+*** Three hierarchical modeling email lists ***
+(1) unmarked: for questions specific to the R package unmarked
+(2) SCR: for design and Bayesian or non-bayesian analysis of spatial capture-recapture
+(3) HMecology (this list): for everything else, especially material covered in the books by Royle & Dorazio (2008), Kéry & Schaub (2012), Kéry & Royle (2016, 2020)
+---
+You received this message because you are subscribed to the Google Groups "hmecology: Hierarchical Modeling in Ecology" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hmecology+...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hmecology/ace25ad4-c358-433f-93d5-df039cddc2d8n%40googlegroups.com <https://groups.google.com/d/msgid/hmecology/ace25ad4-c358-433f-93d5-df039cddc2d8n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
