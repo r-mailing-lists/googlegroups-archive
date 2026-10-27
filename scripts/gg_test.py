@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import re
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -171,6 +172,68 @@ class Mbox(unittest.TestCase):
         self.assertIn("In-Reply-To: <T1.M2@grp.groups.google.com>\n", e)
         self.assertIn("References: <T1.M1@grp.groups.google.com> <T1.M2@grp.groups.google.com>\n", e)
         self.assertIn("agreed\n\nOn Sun, Bea wrote:\n> ok", e)
+
+    def thread(self):
+        """Bea writes twice; a later reply quotes her first message, not her latest."""
+        line = lambda words: f"<div>{words} and then some more words to make it long</div>"
+        return [
+            {"id": "M1", "from": "Al", "author": "a", "date": "2020-09-13T12:00:00Z", "subject": "Q",
+             "parts": [[1, line("the model does not converge") + line("here is my lme4 call")]]},
+            {"id": "M2", "from": "Bea", "author": "b", "date": "2020-09-13T13:00:00Z", "subject": "Re: Q",
+             "parts": [[1, line("try scaling the predictors") + line("or another optimizer")]]},
+            {"id": "M3", "from": "Cy", "author": "c", "date": "2020-09-13T14:00:00Z", "subject": "Re: Q",
+             "parts": [[1, line("scaling did not help me")],
+                       [3, "<div>On Sun, Bea wrote:<blockquote>" + line("try scaling the predictors")
+                        + line("or another optimizer") + "</blockquote></div>"]]},
+            {"id": "M4", "from": "Bea", "author": "b", "date": "2020-09-13T15:00:00Z", "subject": "Re: Q",
+             "parts": [[1, line("then send a reproducible example")]]},
+        ]
+
+    def parent_of(self, record, i):
+        _, e = gg.mbox_entry("grp", "T1", record, i)
+        return re.search(r"In-Reply-To: <T1\.(\w+)@", e).group(1)
+
+    def test_a_reply_answers_the_message_it_quotes_though_its_sender_wrote_later(self):
+        r = self.thread()
+        r.append({"id": "M5", "from": "Al", "author": "a", "date": "2020-09-13T16:00:00Z", "subject": "Re: Q",
+                  "parts": [[1, "<div>thanks</div>"],
+                            [3, "<div>On Sun, Bea wrote:<blockquote><div>try scaling the predictors and then some more"
+                                " words to make it long</div><div>or another optimizer and then some more words to"
+                                " make it long</div></blockquote></div>"]]})
+        self.assertEqual("M2", self.parent_of(r, 4))
+
+    def test_a_quote_under_a_header_in_another_language_finds_its_message(self):
+        r = self.thread()
+        r[2]["parts"][1][1] = r[2]["parts"][1][1].replace("On Sun, Bea wrote:", "Am So. schrieb Bea:")
+        self.assertEqual("M2", self.parent_of(r, 2))
+
+    def test_a_reply_answers_the_message_it_quotes_and_not_what_that_one_quoted(self):
+        r = self.thread()
+        r.append({"id": "M5", "from": "Dee", "author": "d", "date": "2020-09-13T16:00:00Z", "subject": "Re: Q",
+                  "parts": [[1, "<div>same here</div>"],
+                            [3, "<div><blockquote><div>scaling did not help me and then some more"
+                                " words to make it long</div><div>(nothing else)</div><blockquote>"
+                                "<div>try scaling the predictors and then some more words to make it long</div>"
+                                "<div>or another optimizer and then some more words to make it long</div>"
+                                "<div>a third line of hers, and then some more words</div>"
+                                "</blockquote></blockquote></div>"]]})
+        self.assertEqual("M1", self.parent_of(r, 4), "one line of Cy's is too few, and Bea's quoted twice do not count")
+        r[4]["parts"][1][1] = r[4]["parts"][1][1].replace("<div>(nothing else)</div>",
+            "<div>my data has many zeros, and then some more words</div>")
+        r[2]["parts"][0][1] += "<div>my data has many zeros, and then some more words</div>"
+        self.assertEqual("M3", self.parent_of(r, 4), "two of Cy's own lines, quoted once: Cy's message")
+
+    def test_a_quote_too_short_to_tell_leaves_the_header_to_decide(self):
+        self.assertEqual("M2", self.parent_of(self.record(), 2))
+
+    def test_two_messages_quoted_alike_go_to_the_sender_the_header_names(self):
+        r = self.thread()
+        r[3]["parts"] = r[1]["parts"]
+        r.append({"id": "M5", "from": "Al", "author": "a", "date": "2020-09-13T16:00:00Z", "subject": "Re: Q",
+                  "parts": [[1, "<div>thanks</div>"], [3, r[2]["parts"][1][1]]]})
+        self.assertEqual("M4", self.parent_of(r, 4), "Bea wrote both; the latest of hers, as before")
+        r[3]["from"] = "Eve"
+        self.assertEqual("M2", self.parent_of(r, 4), "the header names Bea, not Eve")
 
     def test_addresses_google_left_whole_are_cut_like_the_rest(self):
         r = self.record()
