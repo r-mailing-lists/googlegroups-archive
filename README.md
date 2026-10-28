@@ -12,76 +12,139 @@ Some of R's busiest help forums of the 2010s were Google Groups rather than R's 
 | `manipulatr` | Data manipulation with plyr and reshape | sent to RStudio Community |
 | `knitr` | The knitr package | no longer active |
 | `gsoc-r` | The R Project in Google Summer of Code, since 2010 | active, updated daily |
+| `aroma-affymetrix` | The aroma.affymetrix R package for analyzing large Affymetrix microarray data sets | last post February 2021 |
 | `bioc-ggtree` | The ggtree package suite for phylogenetic trees | active, updated daily |
+| `bioconductor-teaching` | Bioconductor's teaching committee | active, updated daily |
 | `biogeobears` | Help for the BioGeoBEARS package | active, updated daily |
 | `blavaan` | The blavaan package for Bayesian structural equation models | active, updated daily |
 | `braingraph-help` | Help for the brainGraph package | active, updated daily |
+| `breedr` | The breedR package, statistical methods for forest genetics | last post November 2024 |
 | `brms-users` | brms, Bayesian regression models with Stan | last post June 2018 |
+| `brumail` | Bangalore R Users | active, updated daily |
 | `camtrapr` | camtrapR, camera trap data management | active, updated daily |
 | `canopy-phylogeny` | The Canopy package | last post September 2023 |
+| `cardinalmsi` | Help with Cardinal, the Bioconductor package for mass spectrometry imaging | last post March 2025 |
+| `cellnet-r` | The CellNet package for assessing engineered cells | last post November 2018 |
+| `codex2` | The CODEX2 package for detecting copy number variation in sequencing data | last post January 2025 |
+| `comparegroupsforum` | The compareGroups package for descriptive tables | last post December 2021 |
 | `corpling-with-r` | Corpus linguistics with R | last post July 2024 |
+| `cranvas` | cranvas, interactive statistical graphics for R | last post December 2015 |
 | `ctmm-user` | ctmm, continuous-time movement modeling | active, updated daily |
 | `dartr` | dartR, genetic analysis for conservation, ecology and agriculture | active, updated daily |
 | `davis-rug` | The Davis R Users' Group | active, updated daily |
 | `deducer` | The Deducer package | last post May 2022 |
 | `distance-sampling` | Estimating wildlife abundance with distance sampling | active, updated daily |
+| `dublin-r` | Dublin R user group | active, updated daily |
 | `dynr` | The dynr package | active, updated daily |
 | `ez4r` | The ez package | last post February 2023 |
+| `fieldimager` | The FIELDimageR package for analyzing images of field trials | active, updated daily |
+| `garnett-users` | Garnett, a cell type classifier for single-cell data | active, updated daily |
+| `gbm-dev` | Development of the gbm package for generalized boosted models | last post February 2020 |
+| `genomic-sem-users` | Users of the GenomicSEM package for genomic structural equation modeling | active, updated daily |
 | `geomorph-r-package` | geomorph, geometric morphometrics of landmark data | active, updated daily |
+| `ggplot2-dev` | Development of ggplot2 | last post March 2017 |
 | `ggvis` | The ggvis package | last post June 2024 |
+| `gur-ugr` | R users' group of the University of Granada, in Spanish | last post April 2020 |
+| `hbayesdm-users` | Users of hBayesDM, hierarchical Bayesian modeling of decision-making tasks | active, updated daily |
+| `hkrug` | Hong Kong R user group | last post March 2015 |
 | `hmecology` | Hierarchical modeling in ecology | active, updated daily |
+| `houston-r` | Houston R users | last post February 2012 |
+| `ib-usp-r-users` | R users at the Institute of Biosciences, University of São Paulo, in Portuguese | last post June 2020 |
 | `immcantation-news` | Release news from the Immcantation team | active, updated daily |
 | `irace-package` | irace, iterated racing for algorithm configuration | active, updated daily |
 | `isorix` | The IsoriX package | active, updated daily |
 | `israel-r-user-group` | The Israel R User Group | last post March 2021 |
+| `jiebar` | The jiebaR package for Chinese text segmentation | active, updated daily |
+| `konfound-it` | The konfound package and app for sensitivity analysis of causal inferences | active, updated daily |
 | `lavaan` | lavaan, latent variable analysis and structural equation modeling | active, updated daily |
+| `linguagem-r-ufba` | An R course group at the Federal University of Bahia, in Portuguese | last post December 2017 |
+| `lubridate` | Help with the R package lubridate | last post January 2023 |
+| `maaslin-users` | Support for MaAsLin, multivariate association with linear models for microbial community data | last post January 2020 |
+| `maduser` | MadUseR, the Madison R users' group | last post April 2014 |
+| `mapfastr` | The MAPfastR package for QTL mapping | last post April 2020 |
+| `matr-forum` | matR, MG-RAST tools for R | last post February 2016 |
 | `metacoder-discussions` | The metacoder package | active, updated daily |
+| `methylkit` | Announcements for the methylKit R package | last post January 2014 |
+| `methylkit-discussion` | Questions about the methylKit package for DNA methylation analysis, answered with its developers | active, updated daily |
 | `mirt-package` | mirt, multidimensional item response theory | active, updated daily |
 | `mixvir` | MixviR, microbial mixtures | active, updated daily |
+| `monterey-grumps` | Group of R Users of the Monterey Peninsula | last post June 2019 |
+| `mosaics-user-group` | Users of MOSAiCS, a statistical framework for the analysis of ChIP-seq data | last post January 2024 |
 | `mplusautomation` | The MplusAutomation package | active, updated daily |
+| `msstats` | For users of the MSstats packages for quantitative mass spectrometry proteomics | active, updated daily |
+| `mxmaps` | The mxmaps package for maps of Mexico | last post January 2025 |
 | `nat-user` | The NeuroAnatomy Toolbox (natverse) | active, updated daily |
 | `netlogor` | The NetLogoR package | last post August 2023 |
+| `nichemapr` | The NicheMapR package for microclimate and biophysical ecology modeling | active, updated daily |
+| `nimble-announce` | Announcements for the NIMBLE package | active, updated daily |
 | `nimble-users` | NIMBLE, hierarchical models and MCMC | active, updated daily |
 | `nlsy-links` | NlsyLinks, behavior genetics with the NLSY samples | last post March 2022 |
 | `oscr-package` | oSCR, open spatial capture-recapture | active, updated daily |
+| `packrat-discuss` | The packrat package for project-local package libraries | last post June 2021 |
 | `pez-users` | The pez package | last post January 2018 |
 | `phylogram` | The phylogram package | last post September 2022 |
 | `piecepackr` | The piecepackr package | last post August 2024 |
 | `poppr` | The poppr package | active, updated daily |
 | `qcawithr` | Qualitative Comparative Analysis with R | active, updated daily |
 | `r-and-cpp` | R and C++ | last post May 2024 |
+| `r-ecologia` | R for ecology and evolution, in Portuguese | last post June 2017 |
+| `r-forum` | A Chinese-language R community | last post September 2013 |
 | `r-hiphop` | The hiphop package | last post October 2023 |
 | `r-inla-discussion-group` | R-INLA, Bayesian inference with integrated nested Laplace approximations | active, updated daily |
 | `r-package-xlsx` | Development of the xlsx package | last post November 2021 |
+| `r-study-tokyo` | Tokyo.R, the Tokyo R study group, in Japanese | active, updated daily |
+| `r-swat` | R-SWAT, an R and Shiny tool for calibrating SWAT models | active, updated daily |
+| `rapache` | rApache, R embedded in the Apache web server | last post August 2019 |
 | `rattle-users` | The Rattle data mining package | last post August 2024 |
+| `rbigdataprogramming` | pbdR, Programming with Big Data in R | last post June 2020 |
+| `rcytoscape` | The RCytoscape Bioconductor package, linking R and Cytoscape | last post March 2019 |
 | `rdevtools` | devtools, testthat, roxygen2 and profr | last post January 2023 |
+| `red-r` | Red-R, visual programming for R | last post December 2010 |
 | `rhadoop` | RHadoop, Hadoop with R | last post May 2016 |
 | `rhipe` | RHIPE, the R and Hadoop Processing Environment | last post May 2016 |
 | `right-user` | RIGHT, interactive graphics via HTML | last post February 2015 |
+| `rkoholiki` | Anonimni Rkoholiki, the Slovenian R users' group, in Slovenian and English | active, updated daily |
 | `ropengov-forum` | The rOpenGov project | last post March 2019 |
 | `rpackageggir` | The GGIR package | moved to GitHub Discussions |
 | `rqtl-announce` | Announcements about R/qtl | active, updated daily |
 | `rqtl-disc` | R/qtl, QTL mapping | active, updated daily |
 | `rqtl2-disc` | R/qtl2, QTL mapping | active, updated daily |
+| `rrook` | The Rook package, a web server interface for R | last post August 2015 |
+| `rropen` | Revolution R Open and Microsoft R Open, the enhanced R distribution | last post May 2016 |
 | `rsnns` | RSNNS, neural networks | active, updated daily |
+| `rugbcn` | R User Group Barcelona, in Catalan, Spanish and English | last post July 2020 |
 | `rworldmap` | The rworldmap package | last post December 2023 |
 | `secrgroup` | secr, spatially explicit capture-recapture | active, updated daily |
 | `seewave` | seewave, sound analysis | active, updated daily |
+| `segoptim-user-group` | The SegOptim package for image segmentation and classification | last post January 2025 |
 | `sequenza-user-group` | The Sequenza package | active, updated daily |
+| `sevillarusers` | Sevilla R users' group, in Spanish | last post July 2019 |
+| `siamcat-users` | Users of SIAMCAT, statistical inference of associations between microbial communities and host phenotypes | last post November 2020 |
 | `simmer-devel` | simmer, discrete-event simulation | last post September 2024 |
 | `simplephenotypes` | The simplePHENOTYPES package | last post June 2021 |
 | `spades-users` | The SpaDES packages | last post November 2020 |
+| `sparkr-dev` | Development of SparkR, the R front end to Apache Spark | last post September 2019 |
 | `spocc-spabund-users` | The spOccupancy and spAbundance packages | active, updated daily |
 | `sqldf` | The sqldf package | last post February 2021 |
 | `stan-dev` | Development of Stan | moved to the Stan Forums |
 | `stan-users` | Help with Stan | moved to the Stan Forums in 2017 |
+| `statforling-with-r` | Statistics for linguistics with R | last post August 2024 |
+| `statistics-and-r-community` | Statistics in R, a former Google+ community | last post February 2025 |
+| `stitch-imputation` | The STITCH package for imputation from low-coverage sequencing | active, updated daily |
+| `subread` | The Subread aligner and its R package, Rsubread | last post April 2021 |
+| `taiwanruser` | Taiwan R users' forum, in Chinese | active, updated daily |
+| `tessera-users` | Tessera, the datadr and trelliscope packages for large data | last post June 2016 |
 | `tidylpa` | The tidyLPA package | active, updated daily |
+| `tinn-r` | Tinn-R, an editor for R on Windows | last post October 2021 |
+| `titancna` | Questions, answers and bug reports from users of the TitanCNA package | last post November 2023 |
 | `tmb-users` | TMB, Template Model Builder | active, updated daily |
 | `trophicposition-support` | The tRophicPosition package | active, updated daily |
+| `tropical-r` | R users at James Cook University | last post May 2016 |
 | `tsdyn` | tsDyn, nonlinear time series models | last post February 2024 |
 | `unmarked` | The unmarked package | active, updated daily |
 | `vim-r-plugin` | Nvim-R, R in Vim and Neovim | last post March 2024 |
 | `wallaceecomod` | Wallace, the ecological modeling app | active, updated daily |
+| `workflowr-announce` | Announcements for the workflowr package | last post August 2023 |
 
 See [`lists.tsv`](lists.tsv) for message counts and date ranges. A group with only a `config.json` and `mail/` is still being collected and joins the table once all its conversations are in.
 
