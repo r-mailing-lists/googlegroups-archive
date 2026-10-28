@@ -1,0 +1,1562 @@
+From u2bde96eb78567e9f at groups.google.com  Wed Jul  1 02:57:03 2015
+From: u2bde96eb78567e9f at groups.google.com (Wei-Chen Chen)
+Date: Wed, 01 Jul 2015 02:57:03 +0000
+Subject: Re: problem with distributing a 50k x 50k matrix
+Message-ID: <B_kkYzGUaG4.wfCUmy34UkgJ@rbigdataprogramming.groups.google.com>
+In-Reply-To: <B_kkYzGUaG4.8-fesA3UJQgJ@rbigdataprogramming.groups.google.com>
+References: <B_kkYzGUaG4.Zrm8bOKiDyMJ@rbigdataprogramming.groups.google.com> <B_kkYzGUaG4.8-fesA3UJQgJ@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/B_kkYzGUaG4/m/wfCUmy34UkgJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Christ,
+
+No, it will be more than 18GB for the head core. I will say even double the 18GB may not be sufficient to make it works since hidden buffer of R and MPI can even triple the requirements. Change from
+1.
+    A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+to
+2.
+    A <- rnorm(M * N, mean = 100, sd = 10)
+    dim(A) <- c(M, N)
+may cut you a half of memory.
+
+No, I believe SGE vmem will make it works if you can set it to 36GB or higher. I am not rich as before, so the followings are some poor tests. I have a maximum 24GB per node, so I use vmem=24GB. It means I use 64 nodes for this and 1 core per node. I can have 10K*10K, 20K*20K, 30K*30K, and 40K*40K work, but 50K*50K will return two different fail messages. 1 returns "can not allocate 18GB", 2 returns fails at "xxmr2d:out of memory". This hints me the head core definitely need more memory than others. Because 24GB is not enough to make copies for 1 before sending the MPI buffers and is not enough for 2 to send the MPI buffers. (At least 3 times larger than18GB could be safe.)
+
+I am not sure what row block means by Drew (it can be ddmatrix or my gbd). If ddmatrix, then it may still have the same problem because 8*8 grid will have 8 core (first column) hold all data and rest 56 cores hold nothing. If my gbd, then it is possible, but need more works because I need to manually distribute the single matrix to a gbd, balance it as block cyclic, then convert the gbd to the desired ddmatrix (grid, block size, or ICTXT set by you).
+
+The next code is taken from DMAT and DEMO example and works for me, but no guarantee get the right distributed data. It needs more memory to check ... Note that I use pbdMPI_0.2-6, pbdSLAP_0.2-0, pbdBASE_0.4-2, pbdDMAT_0.3-3, and pbdDEMO_0.3-0. (Some DEMO functions need to be renamed to fit new BASE and DMAT when both are ready.)
+
+#####################################
+suppressPackageStartupMessages(library(pbdDEMO, quietly = TRUE))
+
+init.grid(8, 8)
+
+set.seed(25)
+M <- N <- 50000
+BL <- 100
+
+{
+  if (comm.rank()==0)
+  {
+    # A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+    A <- rnorm(M * N, mean = 100, sd = 10)
+    dim(A) <- c(M, N)
+  }
+  else
+    A <- NULL
+}
+
+# dA <- as.ddmatrix(A, bldim=BL) # distribute
+A.gbd <- comm.as.gbd(A, balance.method = "block.cyclic")
+dmat.reblock <- pbdDMAT::reblock
+dA <- gbd2dmat(A.gbd, bldim = BL)
+
+print(dA)
+
+if(comm.rank() == 0){
+  print(proc.time())
+}
+finalize()
+#####################################
+
+Then, I get this for returns which I assume theoretically correct, but I can not verify them.
+
+#####################################
+Using 8x8 for the default grid size
+
+DENSE DISTRIBUTED MATRIX
+---------------------------
+@Data:                  9.18e+01, 9.92e+01, 1.04e+02, 1.05e+02, ...
+Process grid:           8x8
+Global dimension:       50000x50000
+(max) Local dimension:  6300x6300
+Blocking:               100x100
+BLACS ICTXT:            0
+#####################################
+
+Sincerely,
+Wei-Chen Chen
+
+On Tuesday, June 30, 2015 at 11:27:25 AM UTC-4, Christopher Paciorek wrote:
+> I'm having difficulty understanding your comments. I agree the single
+> matrix is generated and held in comm.rank=0, but that would only take
+> up 18 GB of the 256 GB on the machine and nothing stops that single
+> core from using more than 8 GB, as far as I know. Viewing the job on
+> 'top' shows memory use for  the comm.rank=0 process gradually growing
+> to ~18GB of RAM, presumably as the data is read from disk, before the
+> failure occurs.
+>
+> I don't think SGE has anything to do with this - I can run the same
+> test job directly via mpirun without involving SGE and the same issue
+> occurs
+>
+> On Monday, June 29, 2015 at 7:34:01 PM UTC-7, Wei-Chen Chen wrote:
+> > Dear Crist,
+> >
+> > If I understood correctly, 256 GB in 32 cores were about 8 GB per core. 50K * 50K is about 18GB according to memuse::howbig(). The single matrix is generated and held in comm.rank = 0 before it is distributed. If I were still as rich as before, I might at less add the next to the SGE job script
+> >
+> > #$ -l h_vmem=20G
+> >
+> > to make sure each core has 20GB. At least, comm.rank = 0 needs that much. Then, wait for several minutes if it runs because data are sent across network when cores per node are reduced ...
+> >
+> > No matter which ICTXT is used, the row block will still have the same problem if a single reader is used.
+> >
+> > Sincerely,
+> > Wei-Chen Chen
+> >
+> >
+> > On Monday, June 29, 2015 at 9:00:01 AM UTC-4, Drew Schmidt wrote:
+> > > Hi Chris,
+> > >
+> > > Thanks so much for the report.  We ran into this at one point, and I thought we actually patched it ourselves, but maybe we abandoned that; it's been a while so I'm fuzzy on details.  Looking at recent ScaLAPACK release notes, it doesn't look like it's been fixed, but I would say an update is in order regardless.
+> > >
+> > > In the interim, you can use the strategy that's in a few pieces of pbdDEMO, where a matrix is distributed by row and then redistributed in the block-cyclic fashion.  It's maybe not ideal if you only have one reader, but it should get around this until we can fix it.
+> > >
+> > > Thanks
+> > > -Drew
+> > >
+> > > On Friday, June 26, 2015 at 7:19:46 PM UTC-4, Christopher Paciorek wrote:
+> > > > I'm getting an out of memory error as follows. This is on a cluster of 8 Linux nodes, each with 256 Gb RAM, 32 cores, and running Ubuntu 14.04.  I'm using 64 cores for the job and have approximately 32 workers on each of 2 nodes when I start the job via SGE (this varies depending on how SGE decides to allocate cores to the job). The grid size is 8x8 and the block dimension is 100x100.
+> > > >
+> > > > I'm using pbdSLAP version 0.2-0 and  pbdBASE and pbdDMAT versions 0.2-3
+> > > >
+> > > > I create the matrix on a single worker and then distribute as:
+> > > > dx <- as.ddmatrix(mat, bldim = rep(bldim, 2))
+> > > >
+> > > > I get this error message:
+> > > > xxmr2d:out of memory
+> > > > Error in base.rpdgemr2d(x = dx@Data, descx = descx, descy = descy) :
+> > > >   exit mr2d_malloc
+> > > > Calls: as.ddmatrix ... base.distribute -> dmat.reblock -> base.rpdgemr2d -> .Call
+> > > > Execution halted
+> > > > -------------------------------------------------------
+> > > > Primary job  terminated normally, but 1 process returned
+> > > > a non-zero exit code.. Per user-direction, the job has been aborted.
+> > > > -------------------------------------------------------
+> > > >
+> > > > There shouldn't be a memory issue given the amount of memory each node has, unless the redistribution in ScaLapack is somehow asking for as much memory on each of the workers as is needed for the full matrix.
+> > > >
+> > > > I probed a bit into the mr2d_malloc call and the error seems to occur when the 'n' argument is negative, in particular it is -1474836480, but I haven't traced back further to see why this is being passed in.
+> > > >
+> > > > There are some indications in various mailing lists that this might be a ScaLapack issue, though many of the threads are old (see below). That said, it looks like you are using ScaLapack code from v 1.7 so perhaps this is a bug that has gotten fixed in more recent ScaLapack versions.
+> > > >
+> > > > https://icl.cs.utk.edu/lapack-forum/viewtopic.php?t=465
+> > > > https://software.intel.com/en-us/forums/topic/509048
+> > > >
+> > > > Any thoughts?
+> > > > thanks,
+> > > > Chris
+
+From u2bde96eb78567e9f at groups.google.com  Thu Jul  2 00:13:14 2015
+From: u2bde96eb78567e9f at groups.google.com (Wei-Chen Chen)
+Date: Thu, 02 Jul 2015 00:13:14 +0000
+Subject: Re: pbdSLAP problem installing
+Message-ID: <wuinigKbxg4.4VxjkSNiKf4J@rbigdataprogramming.groups.google.com>
+In-Reply-To: <wuinigKbxg4.OgJWeTO1W20J@rbigdataprogramming.groups.google.com>
+References: <wuinigKbxg4.OgJWeTO1W20J@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/wuinigKbxg4/m/4VxjkSNiKf4J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear Sylvia,
+
+Your R did not give you right ${R_HOME} at installing time.
+
+R CMD INSTALL pbdMPI*.tar.gz --configure-vars="-I/path_to_your_R_include_directory"
+
+Sincerely,
+Wei-Chen Chen
+
+On Tuesday, June 30, 2015 at 1:45:54 PM UTC-4, Sylvia Wilkerson wrote:
+> Hi,
+>
+> I'm trying to install the pdb R packages in R 3.2.0 on Linux x64, but receive the following error when installing pbdSLAP:
+>
+> <command-line>: error: macro names must be identifiers
+> In file included from BI_HypBS.c:1:
+> Bdef.h:2:15: error: R.h: No such file or directory
+> Bdef.h:3:24: error: Rinternals.h: No such file or directory
+> make[1]: *** [BI_HypBS.fo] Error 1
+> make[1]: Leaving directory `/tmp/RtmpEHdEMn/R.INSTALL55427eabf5c9/pbdSLAP/src/BLACS'
+> make: *** [libslap.a] Error 2
+> ERROR: compilation failed for package 'pbdSLAP'
+> * removing '/usr/local/apps/R/gcc_4.4.7/3.2.0/lib64/R/library/pbdSLAP'
+>
+> What environment variable needs to be set for the R include folder?
+>
+> Sylvia
+> Helix Systems Staff
+
+From ufb4bc482eb0dc5fe at groups.google.com  Thu Jul  2 15:43:53 2015
+From: ufb4bc482eb0dc5fe at groups.google.com (Sylvia Wilkerson)
+Date: Thu, 02 Jul 2015 15:43:53 +0000
+Subject: Re: pbdSLAP problem installing
+Message-ID: <wuinigKbxg4.e2VZJhal5AUJ@rbigdataprogramming.groups.google.com>
+In-Reply-To: <wuinigKbxg4.4VxjkSNiKf4J@rbigdataprogramming.groups.google.com>
+References: <wuinigKbxg4.OgJWeTO1W20J@rbigdataprogramming.groups.google.com> <wuinigKbxg4.4VxjkSNiKf4J@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/wuinigKbxg4/m/e2VZJhal5AUJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Wei-Chen!!
+
+On Wednesday, July 1, 2015 at 8:13:14 PM UTC-4, Wei-Chen Chen wrote:
+> Dear Sylvia,
+>
+> Your R did not give you right ${R_HOME} at installing time.
+>
+> R CMD INSTALL pbdMPI*.tar.gz --configure-vars="-I/path_to_your_R_include_directory"
+>
+> Sincerely,
+> Wei-Chen Chen
+>
+>
+> On Tuesday, June 30, 2015 at 1:45:54 PM UTC-4, Sylvia Wilkerson wrote:
+> > Hi,
+> >
+> > I'm trying to install the pdb R packages in R 3.2.0 on Linux x64, but receive the following error when installing pbdSLAP:
+> >
+> > <command-line>: error: macro names must be identifiers
+> > In file included from BI_HypBS.c:1:
+> > Bdef.h:2:15: error: R.h: No such file or directory
+> > Bdef.h:3:24: error: Rinternals.h: No such file or directory
+> > make[1]: *** [BI_HypBS.fo] Error 1
+> > make[1]: Leaving directory `/tmp/RtmpEHdEMn/R.INSTALL55427eabf5c9/pbdSLAP/src/BLACS'
+> > make: *** [libslap.a] Error 2
+> > ERROR: compilation failed for package 'pbdSLAP'
+> > * removing '/usr/local/apps/R/gcc_4.4.7/3.2.0/lib64/R/library/pbdSLAP'
+> >
+> > What environment variable needs to be set for the R include folder?
+> >
+> > Sylvia
+> > Helix Systems Staff
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Jul 10 22:18:38 2015
+From: u5fa2a363d4ddd1d1 at groups.google.com (Christopher Paciorek)
+Date: Fri, 10 Jul 2015 22:18:38 +0000
+Subject: Re: problem with distributing a 50k x 50k matrix
+Message-ID: <B_kkYzGUaG4.3mHIFBkQaq8J@rbigdataprogramming.groups.google.com>
+In-Reply-To: <B_kkYzGUaG4.wfCUmy34UkgJ@rbigdataprogramming.groups.google.com>
+References: <B_kkYzGUaG4.Zrm8bOKiDyMJ@rbigdataprogramming.groups.google.com> <B_kkYzGUaG4.wfCUmy34UkgJ@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/B_kkYzGUaG4/m/3mHIFBkQaq8J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Wei-Chen,
+
+I do have 256 GB for the head core, so even with double or triple the 18 GB, it should not be a problem. A few more comments:
+
+1) In terms of reducing additional copies by using dim(A) <- c(M,N), I don't think that is related to the problem. In reality what I have been doing (but didn't specify in my original post) is creating the matrix in a separate R session and saving to a .RData file and then loading to the 0th process using load(), so there shouldn't be any additional copying.
+
+2) I tried your syntax of using gbd2dmat. This seemed to work and I was able to get a distributed ddmatrix across the various processes. And confirming your comment about hidden memory use, the usage on process 0 did get to be rather bigger than 18GB (I think it max'ed out around 40-50 GB as the pieces of the matrix were getting distributed before dropping back to about 20 GB)
+
+I did need to make a small change to specify
+dmat.reblock <- pbdDMAT:::reblock
+using three ::: as reblock does not seem to be exported
+
+3) With regard to SGE vmem, I am NOT using SGE -- I'm just directly running mpirun with a hostfile pointing to the relevant nodes, so that suggestion is not relevant for my problem.
+
+In any event, the use of gbd2dmat seems like a work-around and presumably as.ddmatrix should work here.
+Drew, did you get a chance to try to reproduce the problem? If you do get a chance to take a look, let me know the outcome. Thanks!
+
+Chris
+
+On Tuesday, June 30, 2015 at 7:57:03 PM UTC-7, Wei-Chen Chen wrote:
+> Dear Christ,
+>
+> No, it will be more than 18GB for the head core. I will say even double the 18GB may not be sufficient to make it works since hidden buffer of R and MPI can even triple the requirements. Change from
+> 1.
+>     A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> to
+> 2.
+>     A <- rnorm(M * N, mean = 100, sd = 10)
+>     dim(A) <- c(M, N)
+> may cut you a half of memory.
+>
+> No, I believe SGE vmem will make it works if you can set it to 36GB or higher. I am not rich as before, so the followings are some poor tests. I have a maximum 24GB per node, so I use vmem=24GB. It means I use 64 nodes for this and 1 core per node. I can have 10K*10K, 20K*20K, 30K*30K, and 40K*40K work, but 50K*50K will return two different fail messages. 1 returns "can not allocate 18GB", 2 returns fails at "xxmr2d:out of memory". This hints me the head core definitely need more memory than others. Because 24GB is not enough to make copies for 1 before sending the MPI buffers and is not enough for 2 to send the MPI buffers. (At least 3 times larger than18GB could be safe.)
+>
+> I am not sure what row block means by Drew (it can be ddmatrix or my gbd). If ddmatrix, then it may still have the same problem because 8*8 grid will have 8 core (first column) hold all data and rest 56 cores hold nothing. If my gbd, then it is possible, but need more works because I need to manually distribute the single matrix to a gbd, balance it as block cyclic, then convert the gbd to the desired ddmatrix (grid, block size, or ICTXT set by you).
+>
+> The next code is taken from DMAT and DEMO example and works for me, but no guarantee get the right distributed data. It needs more memory to check ... Note that I use pbdMPI_0.2-6, pbdSLAP_0.2-0, pbdBASE_0.4-2, pbdDMAT_0.3-3, and pbdDEMO_0.3-0. (Some DEMO functions need to be renamed to fit new BASE and DMAT when both are ready.)
+>
+> #####################################
+> suppressPackageStartupMessages(library(pbdDEMO, quietly = TRUE))
+>
+> init.grid(8, 8)
+>
+> set.seed(25)
+> M <- N <- 50000
+> BL <- 100
+>
+> {
+>   if (comm.rank()==0)
+>   {
+>     # A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+>     A <- rnorm(M * N, mean = 100, sd = 10)
+>     dim(A) <- c(M, N)
+>   }
+>   else
+>     A <- NULL
+> }
+>
+> # dA <- as.ddmatrix(A, bldim=BL) # distribute
+> A.gbd <- comm.as.gbd(A, balance.method = "block.cyclic")
+> dmat.reblock <- pbdDMAT::reblock
+> dA <- gbd2dmat(A.gbd, bldim = BL)
+>
+> print(dA)
+>
+> if(comm.rank() == 0){
+>   print(proc.time())
+> }
+> finalize()
+> #####################################
+>
+> Then, I get this for returns which I assume theoretically correct, but I can not verify them.
+>
+> #####################################
+> Using 8x8 for the default grid size
+>
+>
+> DENSE DISTRIBUTED MATRIX
+> ---------------------------
+> @Data:                  9.18e+01, 9.92e+01, 1.04e+02, 1.05e+02, ...
+> Process grid:           8x8
+> Global dimension:       50000x50000
+> (max) Local dimension:  6300x6300
+> Blocking:               100x100
+> BLACS ICTXT:            0
+> #####################################
+>
+> Sincerely,
+> Wei-Chen Chen
+>
+>
+>
+> On Tuesday, June 30, 2015 at 11:27:25 AM UTC-4, Christopher Paciorek wrote:
+> > I'm having difficulty understanding your comments. I agree the single
+> > matrix is generated and held in comm.rank=0, but that would only take
+> > up 18 GB of the 256 GB on the machine and nothing stops that single
+> > core from using more than 8 GB, as far as I know. Viewing the job on
+> > 'top' shows memory use for  the comm.rank=0 process gradually growing
+> > to ~18GB of RAM, presumably as the data is read from disk, before the
+> > failure occurs.
+> >
+> > I don't think SGE has anything to do with this - I can run the same
+> > test job directly via mpirun without involving SGE and the same issue
+> > occurs
+> >
+> > On Monday, June 29, 2015 at 7:34:01 PM UTC-7, Wei-Chen Chen wrote:
+> > > Dear Crist,
+> > >
+> > > If I understood correctly, 256 GB in 32 cores were about 8 GB per core. 50K * 50K is about 18GB according to memuse::howbig(). The single matrix is generated and held in comm.rank = 0 before it is distributed. If I were still as rich as before, I might at less add the next to the SGE job script
+> > >
+> > > #$ -l h_vmem=20G
+> > >
+> > > to make sure each core has 20GB. At least, comm.rank = 0 needs that much. Then, wait for several minutes if it runs because data are sent across network when cores per node are reduced ...
+> > >
+> > > No matter which ICTXT is used, the row block will still have the same problem if a single reader is used.
+> > >
+> > > Sincerely,
+> > > Wei-Chen Chen
+> > >
+> > >
+> > > On Monday, June 29, 2015 at 9:00:01 AM UTC-4, Drew Schmidt wrote:
+> > > > Hi Chris,
+> > > >
+> > > > Thanks so much for the report.  We ran into this at one point, and I thought we actually patched it ourselves, but maybe we abandoned that; it's been a while so I'm fuzzy on details.  Looking at recent ScaLAPACK release notes, it doesn't look like it's been fixed, but I would say an update is in order regardless.
+> > > >
+> > > > In the interim, you can use the strategy that's in a few pieces of pbdDEMO, where a matrix is distributed by row and then redistributed in the block-cyclic fashion.  It's maybe not ideal if you only have one reader, but it should get around this until we can fix it.
+> > > >
+> > > > Thanks
+> > > > -Drew
+> > > >
+> > > > On Friday, June 26, 2015 at 7:19:46 PM UTC-4, Christopher Paciorek wrote:
+> > > > > I'm getting an out of memory error as follows. This is on a cluster of 8 Linux nodes, each with 256 Gb RAM, 32 cores, and running Ubuntu 14.04.  I'm using 64 cores for the job and have approximately 32 workers on each of 2 nodes when I start the job via SGE (this varies depending on how SGE decides to allocate cores to the job). The grid size is 8x8 and the block dimension is 100x100.
+> > > > >
+> > > > > I'm using pbdSLAP version 0.2-0 and  pbdBASE and pbdDMAT versions 0.2-3
+> > > > >
+> > > > > I create the matrix on a single worker and then distribute as:
+> > > > > dx <- as.ddmatrix(mat, bldim = rep(bldim, 2))
+> > > > >
+> > > > > I get this error message:
+> > > > > xxmr2d:out of memory
+> > > > > Error in base.rpdgemr2d(x = dx@Data, descx = descx, descy = descy) :
+> > > > >   exit mr2d_malloc
+> > > > > Calls: as.ddmatrix ... base.distribute -> dmat.reblock -> base.rpdgemr2d -> .Call
+> > > > > Execution halted
+> > > > > -------------------------------------------------------
+> > > > > Primary job  terminated normally, but 1 process returned
+> > > > > a non-zero exit code.. Per user-direction, the job has been aborted.
+> > > > > -------------------------------------------------------
+> > > > >
+> > > > > There shouldn't be a memory issue given the amount of memory each node has, unless the redistribution in ScaLapack is somehow asking for as much memory on each of the workers as is needed for the full matrix.
+> > > > >
+> > > > > I probed a bit into the mr2d_malloc call and the error seems to occur when the 'n' argument is negative, in particular it is -1474836480, but I haven't traced back further to see why this is being passed in.
+> > > > >
+> > > > > There are some indications in various mailing lists that this might be a ScaLapack issue, though many of the threads are old (see below). That said, it looks like you are using ScaLapack code from v 1.7 so perhaps this is a bug that has gotten fixed in more recent ScaLapack versions.
+> > > > >
+> > > > > https://icl.cs.utk.edu/lapack-forum/viewtopic.php?t=465
+> > > > > https://software.intel.com/en-us/forums/topic/509048
+> > > > >
+> > > > > Any thoughts?
+> > > > > thanks,
+> > > > > Chris
+
+From ub3fada61390d545a at groups.google.com  Fri Jul 10 22:53:11 2015
+From: ub3fada61390d545a at groups.google.com (Ostrouchov, George)
+Date: Fri, 10 Jul 2015 22:53:11 +0000
+Subject: Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+Message-ID: <B_kkYzGUaG4.egImVV8y_0kJ@rbigdataprogramming.groups.google.com>
+In-Reply-To: <B_kkYzGUaG4.3mHIFBkQaq8J@rbigdataprogramming.groups.google.com>
+References: <B_kkYzGUaG4.Zrm8bOKiDyMJ@rbigdataprogramming.groups.google.com> <B_kkYzGUaG4.3mHIFBkQaq8J@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/B_kkYzGUaG4/m/egImVV8y_0kJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Chris,
+
+Do you have a parallel file system (like lustre or gpfs) attached to the compute cluster? If you do, a parallel reader would solve your problem too. This works well with binary files. If not binary, you may want to keep the data in many files of one directory. I have more information if you can go this way and avoid reading with one process.
+
+As far as reblock, you may be looking for the function redistribute().
+
+George
+
+From:  <rbigdatap...@googlegroups.com> on behalf of Christopher Paciorek <christophe...@gmail.com>
+Reply-To:  <rbigdatap...@googlegroups.com>
+Date:  Friday, July 10, 2015 at 6:18 PM
+To:  <rbigdatap...@googlegroups.com>
+Cc:  <wrathe...@gmail.com>, <christophe...@gmail.com>
+Subject:  [RBigData] Re: problem with distributing a 50k x 50k matrix
+
+> Hi Wei-Chen,
+>
+> I do have 256 GB for the head core, so even with double or triple the 18 GB, it should not be a problem. A few more comments:
+>
+> 1) In terms of reducing additional copies by using dim(A) <- c(M,N), I don't think that is related to the problem. In reality what I have been doing (but didn't specify in my original post) is creating the matrix in a separate R session and saving to a .RData file and then loading to the 0th process using load(), so there shouldn't be any additional copying.
+>
+> 2) I tried your syntax of using gbd2dmat. This seemed to work and I was able to get a distributed ddmatrix across the various processes. And confirming your comment about hidden memory use, the usage on process 0 did get to be rather bigger than 18GB (I think it max'ed out around 40-50 GB as the pieces of the matrix were getting distributed before dropping back to about 20 GB)
+>
+> I did need to make a small change to specify
+> dmat.reblock <- pbdDMAT:::reblock
+> using three ::: as reblock does not seem to be exported
+>
+> 3) With regard to SGE vmem, I am NOT using SGE -- I'm just directly running mpirun with a hostfile pointing to the relevant nodes, so that suggestion is not relevant for my problem.
+>
+> In any event, the use of gbd2dmat seems like a work-around and presumably as.ddmatrix should work here.
+> Drew, did you get a chance to try to reproduce the problem? If you do get a chance to take a look, let me know the outcome. Thanks!
+>
+> Chris
+>
+> On Tuesday, June 30, 2015 at 7:57:03 PM UTC-7, Wei-Chen Chen wrote:
+> > Dear Christ,
+> >
+> > No, it will be more than 18GB for the head core. I will say even double the 18GB may not be sufficient to make it works since hidden buffer of R and MPI can even triple the requirements. Change from
+> > 1.
+> >     A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > to
+> > 2.
+> >     A <- rnorm(M * N, mean = 100, sd = 10)
+> >     dim(A) <- c(M, N)
+> > may cut you a half of memory.
+> >
+> > No, I believe SGE vmem will make it works if you can set it to 36GB or higher. I am not rich as before, so the followings are some poor tests. I have a maximum 24GB per node, so I use vmem=24GB. It means I use 64 nodes for this and 1 core per node. I can have 10K*10K, 20K*20K, 30K*30K, and 40K*40K work, but 50K*50K will return two different fail messages. 1 returns "can not allocate 18GB", 2 returns fails at "xxmr2d:out of memory". This hints me the head core definitely need more memory than others. Because 24GB is not enough to make copies for 1 before sending the MPI buffers and is not enough for 2 to send the MPI buffers. (At least 3 times larger than18GB could be safe.)
+> >
+> > I am not sure what row block means by Drew (it can be ddmatrix or my gbd). If ddmatrix, then it may still have the same problem because 8*8 grid will have 8 core (first column) hold all data and rest 56 cores hold nothing. If my gbd, then it is possible, but need more works because I need to manually distribute the single matrix to a gbd, balance it as block cyclic, then convert the gbd to the desired ddmatrix (grid, block size, or ICTXT set by you).
+> >
+> > The next code is taken from DMAT and DEMO example and works for me, but no guarantee get the right distributed data. It needs more memory to check ... Note that I use pbdMPI_0.2-6, pbdSLAP_0.2-0, pbdBASE_0.4-2, pbdDMAT_0.3-3, and pbdDEMO_0.3-0. (Some DEMO functions need to be renamed to fit new BASE and DMAT when both are ready.)
+> >
+> > #####################################
+> > suppressPackageStartupMessages(library(pbdDEMO, quietly = TRUE))
+> >
+> > init.grid(8, 8)
+> >
+> > set.seed(25)
+> > M <- N <- 50000
+> > BL <- 100
+> >
+> > {
+> >   if (comm.rank()==0)
+> >   {
+> >     # A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> >     A <- rnorm(M * N, mean = 100, sd = 10)
+> >     dim(A) <- c(M, N)
+> >   }
+> >   else
+> >     A <- NULL
+> > }
+> >
+> > # dA <- as.ddmatrix(A, bldim=BL) # distribute
+> > A.gbd <- comm.as.gbd(A, balance.method = "block.cyclic")
+> > dmat.reblock <- pbdDMAT::reblock
+> > dA <- gbd2dmat(A.gbd, bldim = BL)
+> >
+> > print(dA)
+> >
+> > if(comm.rank() == 0){
+> >   print(proc.time())
+> > }
+> > finalize()
+> > #####################################
+> >
+> > Then, I get this for returns which I assume theoretically correct, but I can not verify them.
+> >
+> > #####################################
+> > Using 8x8 for the default grid size
+> >
+> >
+> > DENSE DISTRIBUTED MATRIX
+> > ---------------------------
+> > @Data:                  9.18e+01, 9.92e+01, 1.04e+02, 1.05e+02, ...
+> > Process grid:           8x8
+> > Global dimension:       50000x50000
+> > (max) Local dimension:  6300x6300
+> > Blocking:               100x100
+> > BLACS ICTXT:            0
+> > #####################################
+> >
+> > Sincerely,
+> > Wei-Chen Chen
+> >
+> >
+> >
+> > On Tuesday, June 30, 2015 at 11:27:25 AM UTC-4, Christopher Paciorek wrote:
+> > > I'm having difficulty understanding your comments. I agree the single
+> > > matrix is generated and held in comm.rank=0, but that would only take
+> > > up 18 GB of the 256 GB on the machine and nothing stops that single
+> > > core from using more than 8 GB, as far as I know. Viewing the job on
+> > > 'top' shows memory use for  the comm.rank=0 process gradually growing
+> > > to ~18GB of RAM, presumably as the data is read from disk, before the
+> > > failure occurs.
+> > >
+> > > I don't think SGE has anything to do with this - I can run the same
+> > > test job directly via mpirun without involving SGE and the same issue
+> > > occurs
+> > >
+> > > On Monday, June 29, 2015 at 7:34:01 PM UTC-7, Wei-Chen Chen wrote:
+> > > > Dear Crist,
+> > > >
+> > > > If I understood correctly, 256 GB in 32 cores were about 8 GB per core. 50K * 50K is about 18GB according to memuse::howbig(). The single matrix is generated and held in comm.rank = 0 before it is distributed. If I were still as rich as before, I might at less add the next to the SGE job script
+> > > >
+> > > > #$ -l h_vmem=20G
+> > > >
+> > > > to make sure each core has 20GB. At least, comm.rank = 0 needs that much. Then, wait for several minutes if it runs because data are sent across network when cores per node are reduced ...
+> > > >
+> > > > No matter which ICTXT is used, the row block will still have the same problem if a single reader is used.
+> > > >
+> > > > Sincerely,
+> > > > Wei-Chen Chen
+> > > >
+> > > >
+> > > > On Monday, June 29, 2015 at 9:00:01 AM UTC-4, Drew Schmidt wrote:
+> > > > > Hi Chris,
+> > > > >
+> > > > > Thanks so much for the report.  We ran into this at one point, and I thought we actually patched it ourselves, but maybe we abandoned that; it's been a while so I'm fuzzy on details.  Looking at recent ScaLAPACK release notes, it doesn't look like it's been fixed, but I would say an update is in order regardless.
+> > > > >
+> > > > > In the interim, you can use the strategy that's in a few pieces of pbdDEMO, where a matrix is distributed by row and then redistributed in the block-cyclic fashion.  It's maybe not ideal if you only have one reader, but it should get around this until we can fix it.
+> > > > >
+> > > > > Thanks
+> > > > > -Drew
+> > > > >
+> > > > > On Friday, June 26, 2015 at 7:19:46 PM UTC-4, Christopher Paciorek wrote:
+> > > > > > I'm getting an out of memory error as follows. This is on a cluster of 8 Linux nodes, each with 256 Gb RAM, 32 cores, and running Ubuntu 14.04.  I'm using 64 cores for the job and have approximately 32 workers on each of 2 nodes when I start the job via SGE (this varies depending on how SGE decides to allocate cores to the job). The grid size is 8x8 and the block dimension is 100x100.
+> > > > > >
+> > > > > > I'm using pbdSLAP version 0.2-0 and  pbdBASE and pbdDMAT versions 0.2-3
+> > > > > >
+> > > > > > I create the matrix on a single worker and then distribute as:
+> > > > > > dx <- as.ddmatrix(mat, bldim = rep(bldim, 2))
+> > > > > >
+> > > > > > I get this error message:
+> > > > > > xxmr2d:out of memory
+> > > > > > Error in base.rpdgemr2d(x = dx@Data, descx = descx, descy = descy) :
+> > > > > >   exit mr2d_malloc
+> > > > > > Calls: as.ddmatrix ... base.distribute -> dmat.reblock -> base.rpdgemr2d -> .Call
+> > > > > > Execution halted
+> > > > > > -------------------------------------------------------
+> > > > > > Primary job  terminated normally, but 1 process returned
+> > > > > > a non-zero exit code.. Per user-direction, the job has been aborted.
+> > > > > > -------------------------------------------------------
+> > > > > >
+> > > > > > There shouldn't be a memory issue given the amount of memory each node has, unless the redistribution in ScaLapack is somehow asking for as much memory on each of the workers as is needed for the full matrix.
+> > > > > >
+> > > > > > I probed a bit into the mr2d_malloc call and the error seems to occur when the 'n' argument is negative, in particular it is -1474836480, but I haven't traced back further to see why this is being passed in.
+> > > > > >
+> > > > > > There are some indications in various mailing lists that this might be a ScaLapack issue, though many of the threads are old (see below). That said, it looks like you are using ScaLapack code from v 1.7 so perhaps this is a bug that has gotten fixed in more recent ScaLapack versions.
+> > > > > >
+> > > > > > https://icl.cs.utk.edu/lapack-forum/viewtopic.php?t=465
+> > > > > > https://software.intel.com/en-us/forums/topic/509048
+> > > > > >
+> > > > > > Any thoughts?
+> > > > > > thanks,
+> > > > > > Chris
+>
+
+> --
+> Programming with Big Data in R
+> Simplifying Scalability
+> http://r-pbd.org/
+> ---
+> You received this message because you are subscribed to the Google Groups "RBigDataProgramming" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to rbigdataprogram...@googlegroups.com.
+> To post to this group, send email to rbigdatap...@googlegroups.com.
+> Visit this group at http://groups.google.com/group/rbigdataprogramming.
+> To view this discussion on the web visit https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com <https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u5fa2a363d4ddd1d1 at groups.google.com  Fri Jul 10 22:59:51 2015
+From: u5fa2a363d4ddd1d1 at groups.google.com (Christopher Paciorek)
+Date: Fri, 10 Jul 2015 22:59:51 +0000
+Subject: Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+Message-ID: <B_kkYzGUaG4.VZ0aFPncnksJ@rbigdataprogramming.groups.google.com>
+In-Reply-To: <B_kkYzGUaG4.egImVV8y_0kJ@rbigdataprogramming.groups.google.com>
+References: <B_kkYzGUaG4.Zrm8bOKiDyMJ@rbigdataprogramming.groups.google.com> <B_kkYzGUaG4.egImVV8y_0kJ@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/B_kkYzGUaG4/m/VZ0aFPncnksJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+No, I'm trying to develop some demo code for our users here to use pbdR on smaller clusters w/o a parallel file system.
+
+Hopefully you guys are developing with smaller systems w/o parallel file systems in mind?  Otherwise your customer base might be fairly small...
+
+As far as redistribute - I was just following Wei-Chen's template code.
+
+chris
+
+On Friday, July 10, 2015 at 3:53:11 PM UTC-7, George Ostrouchov wrote:
+> Hi Chris,
+>
+> Do you have a parallel file system (like lustre or gpfs) attached to the compute cluster? If you do, a parallel reader would solve your problem too. This works well with binary files. If not binary, you may want to keep the data in many files of one directory. I have more information if you can go this way and avoid reading with one process.
+>
+> As far as reblock, you may be looking for the function redistribute().
+>
+> George
+>
+>
+> From:  <rbigdatap...@googlegroups.com> on behalf of Christopher Paciorek <christophe...@gmail.com>
+> Reply-To:  <rbigdatap...@googlegroups.com>
+> Date:  Friday, July 10, 2015 at 6:18 PM
+> To:  <rbigdatap...@googlegroups.com>
+> Cc:  <wrathe...@gmail.com>, <christophe...@gmail.com>
+> Subject:  [RBigData] Re: problem with distributing a 50k x 50k matrix
+>
+> > Hi Wei-Chen,
+> >
+> > I do have 256 GB for the head core, so even with double or triple the 18 GB, it should not be a problem. A few more comments:
+> >
+> > 1) In terms of reducing additional copies by using dim(A) <- c(M,N), I don't think that is related to the problem. In reality what I have been doing (but didn't specify in my original post) is creating the matrix in a separate R session and saving to a .RData file and then loading to the 0th process using load(), so there shouldn't be any additional copying.
+> >
+> > 2) I tried your syntax of using gbd2dmat. This seemed to work and I was able to get a distributed ddmatrix across the various processes. And confirming your comment about hidden memory use, the usage on process 0 did get to be rather bigger than 18GB (I think it max'ed out around 40-50 GB as the pieces of the matrix were getting distributed before dropping back to about 20 GB)
+> >
+> > I did need to make a small change to specify
+> > dmat.reblock <- pbdDMAT:::reblock
+> > using three ::: as reblock does not seem to be exported
+> >
+> > 3) With regard to SGE vmem, I am NOT using SGE -- I'm just directly running mpirun with a hostfile pointing to the relevant nodes, so that suggestion is not relevant for my problem.
+> >
+> > In any event, the use of gbd2dmat seems like a work-around and presumably as.ddmatrix should work here.
+> > Drew, did you get a chance to try to reproduce the problem? If you do get a chance to take a look, let me know the outcome. Thanks!
+> >
+> > Chris
+> >
+> > On Tuesday, June 30, 2015 at 7:57:03 PM UTC-7, Wei-Chen Chen wrote:
+> > > Dear Christ,
+> > >
+> > > No, it will be more than 18GB for the head core. I will say even double the 18GB may not be sufficient to make it works since hidden buffer of R and MPI can even triple the requirements. Change from
+> > > 1.
+> > >     A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > > to
+> > > 2.
+> > >     A <- rnorm(M * N, mean = 100, sd = 10)
+> > >     dim(A) <- c(M, N)
+> > > may cut you a half of memory.
+> > >
+> > > No, I believe SGE vmem will make it works if you can set it to 36GB or higher. I am not rich as before, so the followings are some poor tests. I have a maximum 24GB per node, so I use vmem=24GB. It means I use 64 nodes for this and 1 core per node. I can have 10K*10K, 20K*20K, 30K*30K, and 40K*40K work, but 50K*50K will return two different fail messages. 1 returns "can not allocate 18GB", 2 returns fails at "xxmr2d:out of memory". This hints me the head core definitely need more memory than others. Because 24GB is not enough to make copies for 1 before sending the MPI buffers and is not enough for 2 to send the MPI buffers. (At least 3 times larger than18GB could be safe.)
+> > >
+> > > I am not sure what row block means by Drew (it can be ddmatrix or my gbd). If ddmatrix, then it may still have the same problem because 8*8 grid will have 8 core (first column) hold all data and rest 56 cores hold nothing. If my gbd, then it is possible, but need more works because I need to manually distribute the single matrix to a gbd, balance it as block cyclic, then convert the gbd to the desired ddmatrix (grid, block size, or ICTXT set by you).
+> > >
+> > > The next code is taken from DMAT and DEMO example and works for me, but no guarantee get the right distributed data. It needs more memory to check ... Note that I use pbdMPI_0.2-6, pbdSLAP_0.2-0, pbdBASE_0.4-2, pbdDMAT_0.3-3, and pbdDEMO_0.3-0. (Some DEMO functions need to be renamed to fit new BASE and DMAT when both are ready.)
+> > >
+> > > #####################################
+> > > suppressPackageStartupMessages(library(pbdDEMO, quietly = TRUE))
+> > >
+> > > init.grid(8, 8)
+> > >
+> > > set.seed(25)
+> > > M <- N <- 50000
+> > > BL <- 100
+> > >
+> > > {
+> > >   if (comm.rank()==0)
+> > >   {
+> > >     # A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > >     A <- rnorm(M * N, mean = 100, sd = 10)
+> > >     dim(A) <- c(M, N)
+> > >   }
+> > >   else
+> > >     A <- NULL
+> > > }
+> > >
+> > > # dA <- as.ddmatrix(A, bldim=BL) # distribute
+> > > A.gbd <- comm.as.gbd(A, balance.method = "block.cyclic")
+> > > dmat.reblock <- pbdDMAT::reblock
+> > > dA <- gbd2dmat(A.gbd, bldim = BL)
+> > >
+> > > print(dA)
+> > >
+> > > if(comm.rank() == 0){
+> > >   print(proc.time())
+> > > }
+> > > finalize()
+> > > #####################################
+> > >
+> > > Then, I get this for returns which I assume theoretically correct, but I can not verify them.
+> > >
+> > > #####################################
+> > > Using 8x8 for the default grid size
+> > >
+> > >
+> > > DENSE DISTRIBUTED MATRIX
+> > > ---------------------------
+> > > @Data:                  9.18e+01, 9.92e+01, 1.04e+02, 1.05e+02, ...
+> > > Process grid:           8x8
+> > > Global dimension:       50000x50000
+> > > (max) Local dimension:  6300x6300
+> > > Blocking:               100x100
+> > > BLACS ICTXT:            0
+> > > #####################################
+> > >
+> > > Sincerely,
+> > > Wei-Chen Chen
+> > >
+> > >
+> > >
+> > > On Tuesday, June 30, 2015 at 11:27:25 AM UTC-4, Christopher Paciorek wrote:
+> > > > I'm having difficulty understanding your comments. I agree the single
+> > > > matrix is generated and held in comm.rank=0, but that would only take
+> > > > up 18 GB of the 256 GB on the machine and nothing stops that single
+> > > > core from using more than 8 GB, as far as I know. Viewing the job on
+> > > > 'top' shows memory use for  the comm.rank=0 process gradually growing
+> > > > to ~18GB of RAM, presumably as the data is read from disk, before the
+> > > > failure occurs.
+> > > >
+> > > > I don't think SGE has anything to do with this - I can run the same
+> > > > test job directly via mpirun without involving SGE and the same issue
+> > > > occurs
+> > > >
+> > > > On Monday, June 29, 2015 at 7:34:01 PM UTC-7, Wei-Chen Chen wrote:
+> > > > > Dear Crist,
+> > > > >
+> > > > > If I understood correctly, 256 GB in 32 cores were about 8 GB per core. 50K * 50K is about 18GB according to memuse::howbig(). The single matrix is generated and held in comm.rank = 0 before it is distributed. If I were still as rich as before, I might at less add the next to the SGE job script
+> > > > >
+> > > > > #$ -l h_vmem=20G
+> > > > >
+> > > > > to make sure each core has 20GB. At least, comm.rank = 0 needs that much. Then, wait for several minutes if it runs because data are sent across network when cores per node are reduced ...
+> > > > >
+> > > > > No matter which ICTXT is used, the row block will still have the same problem if a single reader is used.
+> > > > >
+> > > > > Sincerely,
+> > > > > Wei-Chen Chen
+> > > > >
+> > > > >
+> > > > > On Monday, June 29, 2015 at 9:00:01 AM UTC-4, Drew Schmidt wrote:
+> > > > > > Hi Chris,
+> > > > > >
+> > > > > > Thanks so much for the report.  We ran into this at one point, and I thought we actually patched it ourselves, but maybe we abandoned that; it's been a while so I'm fuzzy on details.  Looking at recent ScaLAPACK release notes, it doesn't look like it's been fixed, but I would say an update is in order regardless.
+> > > > > >
+> > > > > > In the interim, you can use the strategy that's in a few pieces of pbdDEMO, where a matrix is distributed by row and then redistributed in the block-cyclic fashion.  It's maybe not ideal if you only have one reader, but it should get around this until we can fix it.
+> > > > > >
+> > > > > > Thanks
+> > > > > > -Drew
+> > > > > >
+> > > > > > On Friday, June 26, 2015 at 7:19:46 PM UTC-4, Christopher Paciorek wrote:
+> > > > > > > I'm getting an out of memory error as follows. This is on a cluster of 8 Linux nodes, each with 256 Gb RAM, 32 cores, and running Ubuntu 14.04.  I'm using 64 cores for the job and have approximately 32 workers on each of 2 nodes when I start the job via SGE (this varies depending on how SGE decides to allocate cores to the job). The grid size is 8x8 and the block dimension is 100x100.
+> > > > > > >
+> > > > > > > I'm using pbdSLAP version 0.2-0 and  pbdBASE and pbdDMAT versions 0.2-3
+> > > > > > >
+> > > > > > > I create the matrix on a single worker and then distribute as:
+> > > > > > > dx <- as.ddmatrix(mat, bldim = rep(bldim, 2))
+> > > > > > >
+> > > > > > > I get this error message:
+> > > > > > > xxmr2d:out of memory
+> > > > > > > Error in base.rpdgemr2d(x = dx@Data, descx = descx, descy = descy) :
+> > > > > > >   exit mr2d_malloc
+> > > > > > > Calls: as.ddmatrix ... base.distribute -> dmat.reblock -> base.rpdgemr2d -> .Call
+> > > > > > > Execution halted
+> > > > > > > -------------------------------------------------------
+> > > > > > > Primary job  terminated normally, but 1 process returned
+> > > > > > > a non-zero exit code.. Per user-direction, the job has been aborted.
+> > > > > > > -------------------------------------------------------
+> > > > > > >
+> > > > > > > There shouldn't be a memory issue given the amount of memory each node has, unless the redistribution in ScaLapack is somehow asking for as much memory on each of the workers as is needed for the full matrix.
+> > > > > > >
+> > > > > > > I probed a bit into the mr2d_malloc call and the error seems to occur when the 'n' argument is negative, in particular it is -1474836480, but I haven't traced back further to see why this is being passed in.
+> > > > > > >
+> > > > > > > There are some indications in various mailing lists that this might be a ScaLapack issue, though many of the threads are old (see below). That said, it looks like you are using ScaLapack code from v 1.7 so perhaps this is a bug that has gotten fixed in more recent ScaLapack versions.
+> > > > > > >
+> > > > > > > https://icl.cs.utk.edu/lapack-forum/viewtopic.php?t=465
+> > > > > > > https://software.intel.com/en-us/forums/topic/509048
+> > > > > > >
+> > > > > > > Any thoughts?
+> > > > > > > thanks,
+> > > > > > > Chris
+> >
+> > --
+> > Programming with Big Data in R
+> > Simplifying Scalability
+> > http://r-pbd.org/
+> > ---
+> > You received this message because you are subscribed to the Google Groups "RBigDataProgramming" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to rbigdataprogram...@googlegroups.com.
+> > To post to this group, send email to rbigdatap...@googlegroups.com.
+> > Visit this group at http://groups.google.com/group/rbigdataprogramming.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com <https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From ub3fada61390d545a at groups.google.com  Fri Jul 10 23:23:29 2015
+From: ub3fada61390d545a at groups.google.com (Ostrouchov, George)
+Date: Fri, 10 Jul 2015 23:23:29 +0000
+Subject: Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+Message-ID: <B_kkYzGUaG4.4H0wsQwi0ksJ@rbigdataprogramming.groups.google.com>
+In-Reply-To: <B_kkYzGUaG4.VZ0aFPncnksJ@rbigdataprogramming.groups.google.com>
+References: <B_kkYzGUaG4.Zrm8bOKiDyMJ@rbigdataprogramming.groups.google.com> <B_kkYzGUaG4.VZ0aFPncnksJ@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/B_kkYzGUaG4/m/4H0wsQwi0ksJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+My understanding is that MPI implementations are still not completely 64-bit so sending huge messages may run into problems https://github.com/jeffhammond/BigMPI/commit/ff931277ee102c3aa3875e117bb51f81257380fd. I find that a rule of thumb of working with well under 3 GB per core is useful both from R’s copy-happy perspective and from testing my patience in waiting for the code to finish perspective. If MPI is the underlying problem, a solution might be to read the data in chunks by one process as you do now and distribute in smaller pieces.
+
+Actually, now I remember that Junji Nakano’s package Rhpc was built to handle such large data distributions to a cluster through one process.
+
+George
+
+From:  <rbigdatap...@googlegroups.com> on behalf of Christopher Paciorek <christophe...@gmail.com>
+Reply-To:  <rbigdatap...@googlegroups.com>
+Date:  Friday, July 10, 2015 at 6:59 PM
+To:  <rbigdatap...@googlegroups.com>
+Cc:  <christophe...@gmail.com>, <wrathe...@gmail.com>
+Subject:  Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+
+> No, I'm trying to develop some demo code for our users here to use pbdR on smaller clusters w/o a parallel file system.
+>
+> Hopefully you guys are developing with smaller systems w/o parallel file systems in mind?  Otherwise your customer base might be fairly small...
+>
+> As far as redistribute - I was just following Wei-Chen's template code.
+>
+> chris
+>
+> On Friday, July 10, 2015 at 3:53:11 PM UTC-7, George Ostrouchov wrote:
+> > Hi Chris,
+> >
+> > Do you have a parallel file system (like lustre or gpfs) attached to the compute cluster? If you do, a parallel reader would solve your problem too. This works well with binary files. If not binary, you may want to keep the data in many files of one directory. I have more information if you can go this way and avoid reading with one process.
+> >
+> > As far as reblock, you may be looking for the function redistribute().
+> >
+> > George
+> >
+> >
+> > From:  <rbigdatap...@googlegroups.com> on behalf of Christopher Paciorek <christophe...@gmail.com>
+> > Reply-To:  <rbigdatap...@googlegroups.com>
+> > Date:  Friday, July 10, 2015 at 6:18 PM
+> > To:  <rbigdatap...@googlegroups.com>
+> > Cc:  <wrathe...@gmail.com>, <christophe...@gmail.com>
+> > Subject:  [RBigData] Re: problem with distributing a 50k x 50k matrix
+> >
+> > > Hi Wei-Chen,
+> > >
+> > > I do have 256 GB for the head core, so even with double or triple the 18 GB, it should not be a problem. A few more comments:
+> > >
+> > > 1) In terms of reducing additional copies by using dim(A) <- c(M,N), I don't think that is related to the problem. In reality what I have been doing (but didn't specify in my original post) is creating the matrix in a separate R session and saving to a .RData file and then loading to the 0th process using load(), so there shouldn't be any additional copying.
+> > >
+> > > 2) I tried your syntax of using gbd2dmat. This seemed to work and I was able to get a distributed ddmatrix across the various processes. And confirming your comment about hidden memory use, the usage on process 0 did get to be rather bigger than 18GB (I think it max'ed out around 40-50 GB as the pieces of the matrix were getting distributed before dropping back to about 20 GB)
+> > >
+> > > I did need to make a small change to specify
+> > > dmat.reblock <- pbdDMAT:::reblock
+> > > using three ::: as reblock does not seem to be exported
+> > >
+> > > 3) With regard to SGE vmem, I am NOT using SGE -- I'm just directly running mpirun with a hostfile pointing to the relevant nodes, so that suggestion is not relevant for my problem.
+> > >
+> > > In any event, the use of gbd2dmat seems like a work-around and presumably as.ddmatrix should work here.
+> > > Drew, did you get a chance to try to reproduce the problem? If you do get a chance to take a look, let me know the outcome. Thanks!
+> > >
+> > > Chris
+> > >
+> > > On Tuesday, June 30, 2015 at 7:57:03 PM UTC-7, Wei-Chen Chen wrote:
+> > > > Dear Christ,
+> > > >
+> > > > No, it will be more than 18GB for the head core. I will say even double the 18GB may not be sufficient to make it works since hidden buffer of R and MPI can even triple the requirements. Change from
+> > > > 1.
+> > > >     A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > > > to
+> > > > 2.
+> > > >     A <- rnorm(M * N, mean = 100, sd = 10)
+> > > >     dim(A) <- c(M, N)
+> > > > may cut you a half of memory.
+> > > >
+> > > > No, I believe SGE vmem will make it works if you can set it to 36GB or higher. I am not rich as before, so the followings are some poor tests. I have a maximum 24GB per node, so I use vmem=24GB. It means I use 64 nodes for this and 1 core per node. I can have 10K*10K, 20K*20K, 30K*30K, and 40K*40K work, but 50K*50K will return two different fail messages. 1 returns "can not allocate 18GB", 2 returns fails at "xxmr2d:out of memory". This hints me the head core definitely need more memory than others. Because 24GB is not enough to make copies for 1 before sending the MPI buffers and is not enough for 2 to send the MPI buffers. (At least 3 times larger than18GB could be safe.)
+> > > >
+> > > > I am not sure what row block means by Drew (it can be ddmatrix or my gbd). If ddmatrix, then it may still have the same problem because 8*8 grid will have 8 core (first column) hold all data and rest 56 cores hold nothing. If my gbd, then it is possible, but need more works because I need to manually distribute the single matrix to a gbd, balance it as block cyclic, then convert the gbd to the desired ddmatrix (grid, block size, or ICTXT set by you).
+> > > >
+> > > > The next code is taken from DMAT and DEMO example and works for me, but no guarantee get the right distributed data. It needs more memory to check ... Note that I use pbdMPI_0.2-6, pbdSLAP_0.2-0, pbdBASE_0.4-2, pbdDMAT_0.3-3, and pbdDEMO_0.3-0. (Some DEMO functions need to be renamed to fit new BASE and DMAT when both are ready.)
+> > > >
+> > > > #####################################
+> > > > suppressPackageStartupMessages(library(pbdDEMO, quietly = TRUE))
+> > > >
+> > > > init.grid(8, 8)
+> > > >
+> > > > set.seed(25)
+> > > > M <- N <- 50000
+> > > > BL <- 100
+> > > >
+> > > > {
+> > > >   if (comm.rank()==0)
+> > > >   {
+> > > >     # A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > > >     A <- rnorm(M * N, mean = 100, sd = 10)
+> > > >     dim(A) <- c(M, N)
+> > > >   }
+> > > >   else
+> > > >     A <- NULL
+> > > > }
+> > > >
+> > > > # dA <- as.ddmatrix(A, bldim=BL) # distribute
+> > > > A.gbd <- comm.as.gbd(A, balance.method = "block.cyclic")
+> > > > dmat.reblock <- pbdDMAT::reblock
+> > > > dA <- gbd2dmat(A.gbd, bldim = BL)
+> > > >
+> > > > print(dA)
+> > > >
+> > > > if(comm.rank() == 0){
+> > > >   print(proc.time())
+> > > > }
+> > > > finalize()
+> > > > #####################################
+> > > >
+> > > > Then, I get this for returns which I assume theoretically correct, but I can not verify them.
+> > > >
+> > > > #####################################
+> > > > Using 8x8 for the default grid size
+> > > >
+> > > >
+> > > > DENSE DISTRIBUTED MATRIX
+> > > > ---------------------------
+> > > > @Data:                  9.18e+01, 9.92e+01, 1.04e+02, 1.05e+02, ...
+> > > > Process grid:           8x8
+> > > > Global dimension:       50000x50000
+> > > > (max) Local dimension:  6300x6300
+> > > > Blocking:               100x100
+> > > > BLACS ICTXT:            0
+> > > > #####################################
+> > > >
+> > > > Sincerely,
+> > > > Wei-Chen Chen
+> > > >
+> > > >
+> > > >
+> > > > On Tuesday, June 30, 2015 at 11:27:25 AM UTC-4, Christopher Paciorek wrote:
+> > > > > I'm having difficulty understanding your comments. I agree the single
+> > > > > matrix is generated and held in comm.rank=0, but that would only take
+> > > > > up 18 GB of the 256 GB on the machine and nothing stops that single
+> > > > > core from using more than 8 GB, as far as I know. Viewing the job on
+> > > > > 'top' shows memory use for  the comm.rank=0 process gradually growing
+> > > > > to ~18GB of RAM, presumably as the data is read from disk, before the
+> > > > > failure occurs.
+> > > > >
+> > > > > I don't think SGE has anything to do with this - I can run the same
+> > > > > test job directly via mpirun without involving SGE and the same issue
+> > > > > occurs
+> > > > >
+> > > > > On Monday, June 29, 2015 at 7:34:01 PM UTC-7, Wei-Chen Chen wrote:
+> > > > > > Dear Crist,
+> > > > > >
+> > > > > > If I understood correctly, 256 GB in 32 cores were about 8 GB per core. 50K * 50K is about 18GB according to memuse::howbig(). The single matrix is generated and held in comm.rank = 0 before it is distributed. If I were still as rich as before, I might at less add the next to the SGE job script
+> > > > > >
+> > > > > > #$ -l h_vmem=20G
+> > > > > >
+> > > > > > to make sure each core has 20GB. At least, comm.rank = 0 needs that much. Then, wait for several minutes if it runs because data are sent across network when cores per node are reduced ...
+> > > > > >
+> > > > > > No matter which ICTXT is used, the row block will still have the same problem if a single reader is used.
+> > > > > >
+> > > > > > Sincerely,
+> > > > > > Wei-Chen Chen
+> > > > > >
+> > > > > >
+> > > > > > On Monday, June 29, 2015 at 9:00:01 AM UTC-4, Drew Schmidt wrote:
+> > > > > > > Hi Chris,
+> > > > > > >
+> > > > > > > Thanks so much for the report.  We ran into this at one point, and I thought we actually patched it ourselves, but maybe we abandoned that; it's been a while so I'm fuzzy on details.  Looking at recent ScaLAPACK release notes, it doesn't look like it's been fixed, but I would say an update is in order regardless.
+> > > > > > >
+> > > > > > > In the interim, you can use the strategy that's in a few pieces of pbdDEMO, where a matrix is distributed by row and then redistributed in the block-cyclic fashion.  It's maybe not ideal if you only have one reader, but it should get around this until we can fix it.
+> > > > > > >
+> > > > > > > Thanks
+> > > > > > > -Drew
+> > > > > > >
+> > > > > > > On Friday, June 26, 2015 at 7:19:46 PM UTC-4, Christopher Paciorek wrote:
+> > > > > > > > I'm getting an out of memory error as follows. This is on a cluster of 8 Linux nodes, each with 256 Gb RAM, 32 cores, and running Ubuntu 14.04.  I'm using 64 cores for the job and have approximately 32 workers on each of 2 nodes when I start the job via SGE (this varies depending on how SGE decides to allocate cores to the job). The grid size is 8x8 and the block dimension is 100x100.
+> > > > > > > >
+> > > > > > > > I'm using pbdSLAP version 0.2-0 and  pbdBASE and pbdDMAT versions 0.2-3
+> > > > > > > >
+> > > > > > > > I create the matrix on a single worker and then distribute as:
+> > > > > > > > dx <- as.ddmatrix(mat, bldim = rep(bldim, 2))
+> > > > > > > >
+> > > > > > > > I get this error message:
+> > > > > > > > xxmr2d:out of memory
+> > > > > > > > Error in base.rpdgemr2d(x = dx@Data, descx = descx, descy = descy) :
+> > > > > > > >   exit mr2d_malloc
+> > > > > > > > Calls: as.ddmatrix ... base.distribute -> dmat.reblock -> base.rpdgemr2d -> .Call
+> > > > > > > > Execution halted
+> > > > > > > > -------------------------------------------------------
+> > > > > > > > Primary job  terminated normally, but 1 process returned
+> > > > > > > > a non-zero exit code.. Per user-direction, the job has been aborted.
+> > > > > > > > -------------------------------------------------------
+> > > > > > > >
+> > > > > > > > There shouldn't be a memory issue given the amount of memory each node has, unless the redistribution in ScaLapack is somehow asking for as much memory on each of the workers as is needed for the full matrix.
+> > > > > > > >
+> > > > > > > > I probed a bit into the mr2d_malloc call and the error seems to occur when the 'n' argument is negative, in particular it is -1474836480, but I haven't traced back further to see why this is being passed in.
+> > > > > > > >
+> > > > > > > > There are some indications in various mailing lists that this might be a ScaLapack issue, though many of the threads are old (see below). That said, it looks like you are using ScaLapack code from v 1.7 so perhaps this is a bug that has gotten fixed in more recent ScaLapack versions.
+> > > > > > > >
+> > > > > > > > https://icl.cs.utk.edu/lapack-forum/viewtopic.php?t=465
+> > > > > > > > https://software.intel.com/en-us/forums/topic/509048
+> > > > > > > >
+> > > > > > > > Any thoughts?
+> > > > > > > > thanks,
+> > > > > > > > Chris
+> > >
+> > > --
+> > > Programming with Big Data in R
+> > > Simplifying Scalability
+> > > http://r-pbd.org/
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "RBigDataProgramming" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to rbigdataprogram...@googlegroups.com.
+> > > To post to this group, send email to rbigdatap...@googlegroups.com.
+> > > Visit this group at http://groups.google.com/group/rbigdataprogramming.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com <https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> Programming with Big Data in R
+> Simplifying Scalability
+> http://r-pbd.org/
+> ---
+> You received this message because you are subscribed to the Google Groups "RBigDataProgramming" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to rbigdataprogram...@googlegroups.com.
+> To post to this group, send email to rbigdatap...@googlegroups.com.
+> Visit this group at http://groups.google.com/group/rbigdataprogramming.
+
+> To view this discussion on the web visit https://groups.google.com/d/msgid/rbigdataprogramming/9fb9c85d-d6c1-4609-858c-9e15c3d9c148%40googlegroups.com <https://groups.google.com/d/msgid/rbigdataprogramming/9fb9c85d-d6c1-4609-858c-9e15c3d9c148%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+>
+> For more options, visit https://groups.google.com/d/optout.
+
+From ub3fada61390d545a at groups.google.com  Fri Jul 10 23:33:23 2015
+From: ub3fada61390d545a at groups.google.com (Ostrouchov, George)
+Date: Fri, 10 Jul 2015 23:33:23 +0000
+Subject: Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+Message-ID: <B_kkYzGUaG4.AUYpyLmF6F0J@rbigdataprogramming.groups.google.com>
+In-Reply-To: <B_kkYzGUaG4.4H0wsQwi0ksJ@rbigdataprogramming.groups.google.com>
+References: <B_kkYzGUaG4.Zrm8bOKiDyMJ@rbigdataprogramming.groups.google.com> <B_kkYzGUaG4.4H0wsQwi0ksJ@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/B_kkYzGUaG4/m/AUYpyLmF6F0J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Another thought … It looks like you are constructing the big matrix with one core and then distributing. A better strategy might be to first distribute contiguous chunks of the raw data, create local row-block or column-block matrices in parallel, then use new(“ddmatrix, …, ICTXT=1 or 2) to glue the local pieces into a ddmatrix. The last step uses no communication. After that, you do a parallel redistribute( … , ICTXT=0) to get it into a block-cyclic, ready for ScaLAPACK, form.
+
+George
+
+From:  "Ostrouchov, George" <geor...@gmail.com>
+Date:  Friday, July 10, 2015 at 7:23 PM
+To:  <rbigdatap...@googlegroups.com>
+Cc:  <christophe...@gmail.com>, <wrathe...@gmail.com>
+Subject:  Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+
+> My understanding is that MPI implementations are still not completely 64-bit so sending huge messages may run into problems https://github.com/jeffhammond/BigMPI/commit/ff931277ee102c3aa3875e117bb51f81257380fd. I find that a rule of thumb of working with well under 3 GB per core is useful both from R’s copy-happy perspective and from testing my patience in waiting for the code to finish perspective. If MPI is the underlying problem, a solution might be to read the data in chunks by one process as you do now and distribute in smaller pieces.
+>
+> Actually, now I remember that Junji Nakano’s package Rhpc was built to handle such large data distributions to a cluster through one process.
+>
+> George
+>
+> From:  <rbigdatap...@googlegroups.com> on behalf of Christopher Paciorek <christophe...@gmail.com>
+> Reply-To:  <rbigdatap...@googlegroups.com>
+> Date:  Friday, July 10, 2015 at 6:59 PM
+> To:  <rbigdatap...@googlegroups.com>
+> Cc:  <christophe...@gmail.com>, <wrathe...@gmail.com>
+> Subject:  Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+>
+> > No, I'm trying to develop some demo code for our users here to use pbdR on smaller clusters w/o a parallel file system.
+> >
+> > Hopefully you guys are developing with smaller systems w/o parallel file systems in mind?  Otherwise your customer base might be fairly small...
+> >
+> > As far as redistribute - I was just following Wei-Chen's template code.
+> >
+> > chris
+> >
+> > On Friday, July 10, 2015 at 3:53:11 PM UTC-7, George Ostrouchov wrote:
+> > > Hi Chris,
+> > >
+> > > Do you have a parallel file system (like lustre or gpfs) attached to the compute cluster? If you do, a parallel reader would solve your problem too. This works well with binary files. If not binary, you may want to keep the data in many files of one directory. I have more information if you can go this way and avoid reading with one process.
+> > >
+> > > As far as reblock, you may be looking for the function redistribute().
+> > >
+> > > George
+> > >
+> > >
+> > > From:  <rbigdatap...@googlegroups.com> on behalf of Christopher Paciorek <christophe...@gmail.com>
+> > > Reply-To:  <rbigdatap...@googlegroups.com>
+> > > Date:  Friday, July 10, 2015 at 6:18 PM
+> > > To:  <rbigdatap...@googlegroups.com>
+> > > Cc:  <wrathe...@gmail.com>, <christophe...@gmail.com>
+> > > Subject:  [RBigData] Re: problem with distributing a 50k x 50k matrix
+> > >
+> > > > Hi Wei-Chen,
+> > > >
+> > > > I do have 256 GB for the head core, so even with double or triple the 18 GB, it should not be a problem. A few more comments:
+> > > >
+> > > > 1) In terms of reducing additional copies by using dim(A) <- c(M,N), I don't think that is related to the problem. In reality what I have been doing (but didn't specify in my original post) is creating the matrix in a separate R session and saving to a .RData file and then loading to the 0th process using load(), so there shouldn't be any additional copying.
+> > > >
+> > > > 2) I tried your syntax of using gbd2dmat. This seemed to work and I was able to get a distributed ddmatrix across the various processes. And confirming your comment about hidden memory use, the usage on process 0 did get to be rather bigger than 18GB (I think it max'ed out around 40-50 GB as the pieces of the matrix were getting distributed before dropping back to about 20 GB)
+> > > >
+> > > > I did need to make a small change to specify
+> > > > dmat.reblock <- pbdDMAT:::reblock
+> > > > using three ::: as reblock does not seem to be exported
+> > > >
+> > > > 3) With regard to SGE vmem, I am NOT using SGE -- I'm just directly running mpirun with a hostfile pointing to the relevant nodes, so that suggestion is not relevant for my problem.
+> > > >
+> > > > In any event, the use of gbd2dmat seems like a work-around and presumably as.ddmatrix should work here.
+> > > > Drew, did you get a chance to try to reproduce the problem? If you do get a chance to take a look, let me know the outcome. Thanks!
+> > > >
+> > > > Chris
+> > > >
+> > > > On Tuesday, June 30, 2015 at 7:57:03 PM UTC-7, Wei-Chen Chen wrote:
+> > > > > Dear Christ,
+> > > > >
+> > > > > No, it will be more than 18GB for the head core. I will say even double the 18GB may not be sufficient to make it works since hidden buffer of R and MPI can even triple the requirements. Change from
+> > > > > 1.
+> > > > >     A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > > > > to
+> > > > > 2.
+> > > > >     A <- rnorm(M * N, mean = 100, sd = 10)
+> > > > >     dim(A) <- c(M, N)
+> > > > > may cut you a half of memory.
+> > > > >
+> > > > > No, I believe SGE vmem will make it works if you can set it to 36GB or higher. I am not rich as before, so the followings are some poor tests. I have a maximum 24GB per node, so I use vmem=24GB. It means I use 64 nodes for this and 1 core per node. I can have 10K*10K, 20K*20K, 30K*30K, and 40K*40K work, but 50K*50K will return two different fail messages. 1 returns "can not allocate 18GB", 2 returns fails at "xxmr2d:out of memory". This hints me the head core definitely need more memory than others. Because 24GB is not enough to make copies for 1 before sending the MPI buffers and is not enough for 2 to send the MPI buffers. (At least 3 times larger than18GB could be safe.)
+> > > > >
+> > > > > I am not sure what row block means by Drew (it can be ddmatrix or my gbd). If ddmatrix, then it may still have the same problem because 8*8 grid will have 8 core (first column) hold all data and rest 56 cores hold nothing. If my gbd, then it is possible, but need more works because I need to manually distribute the single matrix to a gbd, balance it as block cyclic, then convert the gbd to the desired ddmatrix (grid, block size, or ICTXT set by you).
+> > > > >
+> > > > > The next code is taken from DMAT and DEMO example and works for me, but no guarantee get the right distributed data. It needs more memory to check ... Note that I use pbdMPI_0.2-6, pbdSLAP_0.2-0, pbdBASE_0.4-2, pbdDMAT_0.3-3, and pbdDEMO_0.3-0. (Some DEMO functions need to be renamed to fit new BASE and DMAT when both are ready.)
+> > > > >
+> > > > > #####################################
+> > > > > suppressPackageStartupMessages(library(pbdDEMO, quietly = TRUE))
+> > > > >
+> > > > > init.grid(8, 8)
+> > > > >
+> > > > > set.seed(25)
+> > > > > M <- N <- 50000
+> > > > > BL <- 100
+> > > > >
+> > > > > {
+> > > > >   if (comm.rank()==0)
+> > > > >   {
+> > > > >     # A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > > > >     A <- rnorm(M * N, mean = 100, sd = 10)
+> > > > >     dim(A) <- c(M, N)
+> > > > >   }
+> > > > >   else
+> > > > >     A <- NULL
+> > > > > }
+> > > > >
+> > > > > # dA <- as.ddmatrix(A, bldim=BL) # distribute
+> > > > > A.gbd <- comm.as.gbd(A, balance.method = "block.cyclic")
+> > > > > dmat.reblock <- pbdDMAT::reblock
+> > > > > dA <- gbd2dmat(A.gbd, bldim = BL)
+> > > > >
+> > > > > print(dA)
+> > > > >
+> > > > > if(comm.rank() == 0){
+> > > > >   print(proc.time())
+> > > > > }
+> > > > > finalize()
+> > > > > #####################################
+> > > > >
+> > > > > Then, I get this for returns which I assume theoretically correct, but I can not verify them.
+> > > > >
+> > > > > #####################################
+> > > > > Using 8x8 for the default grid size
+> > > > >
+> > > > >
+> > > > > DENSE DISTRIBUTED MATRIX
+> > > > > ---------------------------
+> > > > > @Data:                  9.18e+01, 9.92e+01, 1.04e+02, 1.05e+02, ...
+> > > > > Process grid:           8x8
+> > > > > Global dimension:       50000x50000
+> > > > > (max) Local dimension:  6300x6300
+> > > > > Blocking:               100x100
+> > > > > BLACS ICTXT:            0
+> > > > > #####################################
+> > > > >
+> > > > > Sincerely,
+> > > > > Wei-Chen Chen
+> > > > >
+> > > > >
+> > > > >
+> > > > > On Tuesday, June 30, 2015 at 11:27:25 AM UTC-4, Christopher Paciorek wrote:
+> > > > > > I'm having difficulty understanding your comments. I agree the single
+> > > > > > matrix is generated and held in comm.rank=0, but that would only take
+> > > > > > up 18 GB of the 256 GB on the machine and nothing stops that single
+> > > > > > core from using more than 8 GB, as far as I know. Viewing the job on
+> > > > > > 'top' shows memory use for  the comm.rank=0 process gradually growing
+> > > > > > to ~18GB of RAM, presumably as the data is read from disk, before the
+> > > > > > failure occurs.
+> > > > > >
+> > > > > > I don't think SGE has anything to do with this - I can run the same
+> > > > > > test job directly via mpirun without involving SGE and the same issue
+> > > > > > occurs
+> > > > > >
+> > > > > > On Monday, June 29, 2015 at 7:34:01 PM UTC-7, Wei-Chen Chen wrote:
+> > > > > > > Dear Crist,
+> > > > > > >
+> > > > > > > If I understood correctly, 256 GB in 32 cores were about 8 GB per core. 50K * 50K is about 18GB according to memuse::howbig(). The single matrix is generated and held in comm.rank = 0 before it is distributed. If I were still as rich as before, I might at less add the next to the SGE job script
+> > > > > > >
+> > > > > > > #$ -l h_vmem=20G
+> > > > > > >
+> > > > > > > to make sure each core has 20GB. At least, comm.rank = 0 needs that much. Then, wait for several minutes if it runs because data are sent across network when cores per node are reduced ...
+> > > > > > >
+> > > > > > > No matter which ICTXT is used, the row block will still have the same problem if a single reader is used.
+> > > > > > >
+> > > > > > > Sincerely,
+> > > > > > > Wei-Chen Chen
+> > > > > > >
+> > > > > > >
+> > > > > > > On Monday, June 29, 2015 at 9:00:01 AM UTC-4, Drew Schmidt wrote:
+> > > > > > > > Hi Chris,
+> > > > > > > >
+> > > > > > > > Thanks so much for the report.  We ran into this at one point, and I thought we actually patched it ourselves, but maybe we abandoned that; it's been a while so I'm fuzzy on details.  Looking at recent ScaLAPACK release notes, it doesn't look like it's been fixed, but I would say an update is in order regardless.
+> > > > > > > >
+> > > > > > > > In the interim, you can use the strategy that's in a few pieces of pbdDEMO, where a matrix is distributed by row and then redistributed in the block-cyclic fashion.  It's maybe not ideal if you only have one reader, but it should get around this until we can fix it.
+> > > > > > > >
+> > > > > > > > Thanks
+> > > > > > > > -Drew
+> > > > > > > >
+> > > > > > > > On Friday, June 26, 2015 at 7:19:46 PM UTC-4, Christopher Paciorek wrote:
+> > > > > > > > > I'm getting an out of memory error as follows. This is on a cluster of 8 Linux nodes, each with 256 Gb RAM, 32 cores, and running Ubuntu 14.04.  I'm using 64 cores for the job and have approximately 32 workers on each of 2 nodes when I start the job via SGE (this varies depending on how SGE decides to allocate cores to the job). The grid size is 8x8 and the block dimension is 100x100.
+> > > > > > > > >
+> > > > > > > > > I'm using pbdSLAP version 0.2-0 and  pbdBASE and pbdDMAT versions 0.2-3
+> > > > > > > > >
+> > > > > > > > > I create the matrix on a single worker and then distribute as:
+> > > > > > > > > dx <- as.ddmatrix(mat, bldim = rep(bldim, 2))
+> > > > > > > > >
+> > > > > > > > > I get this error message:
+> > > > > > > > > xxmr2d:out of memory
+> > > > > > > > > Error in base.rpdgemr2d(x = dx@Data, descx = descx, descy = descy) :
+> > > > > > > > >   exit mr2d_malloc
+> > > > > > > > > Calls: as.ddmatrix ... base.distribute -> dmat.reblock -> base.rpdgemr2d -> .Call
+> > > > > > > > > Execution halted
+> > > > > > > > > -------------------------------------------------------
+> > > > > > > > > Primary job  terminated normally, but 1 process returned
+> > > > > > > > > a non-zero exit code.. Per user-direction, the job has been aborted.
+> > > > > > > > > -------------------------------------------------------
+> > > > > > > > >
+> > > > > > > > > There shouldn't be a memory issue given the amount of memory each node has, unless the redistribution in ScaLapack is somehow asking for as much memory on each of the workers as is needed for the full matrix.
+> > > > > > > > >
+> > > > > > > > > I probed a bit into the mr2d_malloc call and the error seems to occur when the 'n' argument is negative, in particular it is -1474836480, but I haven't traced back further to see why this is being passed in.
+> > > > > > > > >
+> > > > > > > > > There are some indications in various mailing lists that this might be a ScaLapack issue, though many of the threads are old (see below). That said, it looks like you are using ScaLapack code from v 1.7 so perhaps this is a bug that has gotten fixed in more recent ScaLapack versions.
+> > > > > > > > >
+> > > > > > > > > https://icl.cs.utk.edu/lapack-forum/viewtopic.php?t=465
+> > > > > > > > > https://software.intel.com/en-us/forums/topic/509048
+> > > > > > > > >
+> > > > > > > > > Any thoughts?
+> > > > > > > > > thanks,
+> > > > > > > > > Chris
+> > > >
+> > > > --
+> > > > Programming with Big Data in R
+> > > > Simplifying Scalability
+> > > > http://r-pbd.org/
+> > > > ---
+> > > > You received this message because you are subscribed to the Google Groups "RBigDataProgramming" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to rbigdataprogram...@googlegroups.com.
+> > > > To post to this group, send email to rbigdatap...@googlegroups.com.
+> > > > Visit this group at http://groups.google.com/group/rbigdataprogramming.
+> > > > To view this discussion on the web visit https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com <https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> >
+> > --
+> > Programming with Big Data in R
+> > Simplifying Scalability
+> > http://r-pbd.org/
+> > ---
+> > You received this message because you are subscribed to the Google Groups "RBigDataProgramming" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to rbigdataprogram...@googlegroups.com.
+> > To post to this group, send email to rbigdatap...@googlegroups.com.
+> > Visit this group at http://groups.google.com/group/rbigdataprogramming.
+> > To view this discussion on the web visit https://groups.google.com/d/msgid/rbigdataprogramming/9fb9c85d-d6c1-4609-858c-9e15c3d9c148%40googlegroups.com <https://groups.google.com/d/msgid/rbigdataprogramming/9fb9c85d-d6c1-4609-858c-9e15c3d9c148%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u2bde96eb78567e9f at groups.google.com  Sat Jul 11 20:25:59 2015
+From: u2bde96eb78567e9f at groups.google.com (Wei-Chen Chen)
+Date: Sat, 11 Jul 2015 20:25:59 +0000
+Subject: Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+Message-ID: <B_kkYzGUaG4.v1zwU4pLg7gJ@rbigdataprogramming.groups.google.com>
+In-Reply-To: <B_kkYzGUaG4.AUYpyLmF6F0J@rbigdataprogramming.groups.google.com>
+References: <B_kkYzGUaG4.Zrm8bOKiDyMJ@rbigdataprogramming.groups.google.com> <B_kkYzGUaG4.AUYpyLmF6F0J@rbigdataprogramming.groups.google.com>
+Archived-At: <https://groups.google.com/g/rbigdataprogramming/c/B_kkYzGUaG4/m/v1zwU4pLg7gJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Dear All,
+
+Thank you Christ for the information and verification. Those are correct and useful. I am waiting for long time and wish someone to verify those functions which are really lack of tested.
+
+The strategy suggested by George was implemented as in gbd2dmat(). I believe this is a better way if no parallel FS is assumed, and still a good way even parallel FS is assumed. (Read in block cyclic format is cool, but is also really tedious and format dependent.)
+
+pbdMPI does support R long vector distributions as sending huge messages which is done by repeatedly MPI calls (no need to worry wither 64-bits were supported or not). Unfortunately, it never has a chance to be tested for validity to claim success.
+
+I believe things can be done in smart ways even poor in memory or no parallel FS.
+
+Cheers,
+Wei-Chen Chen
+
+On Friday, July 10, 2015 at 7:33:23 PM UTC-4, George Ostrouchov wrote:
+> Another thought … It looks like you are constructing the big matrix with one core and then distributing. A better strategy might be to first distribute contiguous chunks of the raw data, create local row-block or column-block matrices in parallel, then use new(“ddmatrix, …, ICTXT=1 or 2) to glue the local pieces into a ddmatrix. The last step uses no communication. After that, you do a parallel redistribute( … , ICTXT=0) to get it into a block-cyclic, ready for ScaLAPACK, form.
+>
+> George
+>
+> From:  "Ostrouchov, George" <geor...@gmail.com>
+> Date:  Friday, July 10, 2015 at 7:23 PM
+> To:  <rbigdatap...@googlegroups.com>
+> Cc:  <christophe...@gmail.com>, <wrathe...@gmail.com>
+> Subject:  Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+>
+> > My understanding is that MPI implementations are still not completely 64-bit so sending huge messages may run into problems https://github.com/jeffhammond/BigMPI/commit/ff931277ee102c3aa3875e117bb51f81257380fd. I find that a rule of thumb of working with well under 3 GB per core is useful both from R’s copy-happy perspective and from testing my patience in waiting for the code to finish perspective. If MPI is the underlying problem, a solution might be to read the data in chunks by one process as you do now and distribute in smaller pieces.
+> >
+> > Actually, now I remember that Junji Nakano’s package Rhpc was built to handle such large data distributions to a cluster through one process.
+> >
+> > George
+> >
+> > From:  <rbigdatap...@googlegroups.com> on behalf of Christopher Paciorek <christophe...@gmail.com>
+> > Reply-To:  <rbigdatap...@googlegroups.com>
+> > Date:  Friday, July 10, 2015 at 6:59 PM
+> > To:  <rbigdatap...@googlegroups.com>
+> > Cc:  <christophe...@gmail.com>, <wrathe...@gmail.com>
+> > Subject:  Re: [RBigData] Re: problem with distributing a 50k x 50k matrix
+> >
+> > > No, I'm trying to develop some demo code for our users here to use pbdR on smaller clusters w/o a parallel file system.
+> > >
+> > > Hopefully you guys are developing with smaller systems w/o parallel file systems in mind?  Otherwise your customer base might be fairly small...
+> > >
+> > > As far as redistribute - I was just following Wei-Chen's template code.
+> > >
+> > > chris
+> > >
+> > > On Friday, July 10, 2015 at 3:53:11 PM UTC-7, George Ostrouchov wrote:
+> > > > Hi Chris,
+> > > >
+> > > > Do you have a parallel file system (like lustre or gpfs) attached to the compute cluster? If you do, a parallel reader would solve your problem too. This works well with binary files. If not binary, you may want to keep the data in many files of one directory. I have more information if you can go this way and avoid reading with one process.
+> > > >
+> > > > As far as reblock, you may be looking for the function redistribute().
+> > > >
+> > > > George
+> > > >
+> > > >
+> > > > From:  <rbigdatap...@googlegroups.com> on behalf of Christopher Paciorek <christophe...@gmail.com>
+> > > > Reply-To:  <rbigdatap...@googlegroups.com>
+> > > > Date:  Friday, July 10, 2015 at 6:18 PM
+> > > > To:  <rbigdatap...@googlegroups.com>
+> > > > Cc:  <wrathe...@gmail.com>, <christophe...@gmail.com>
+> > > > Subject:  [RBigData] Re: problem with distributing a 50k x 50k matrix
+> > > >
+> > > > > Hi Wei-Chen,
+> > > > >
+> > > > > I do have 256 GB for the head core, so even with double or triple the 18 GB, it should not be a problem. A few more comments:
+> > > > >
+> > > > > 1) In terms of reducing additional copies by using dim(A) <- c(M,N), I don't think that is related to the problem. In reality what I have been doing (but didn't specify in my original post) is creating the matrix in a separate R session and saving to a .RData file and then loading to the 0th process using load(), so there shouldn't be any additional copying.
+> > > > >
+> > > > > 2) I tried your syntax of using gbd2dmat. This seemed to work and I was able to get a distributed ddmatrix across the various processes. And confirming your comment about hidden memory use, the usage on process 0 did get to be rather bigger than 18GB (I think it max'ed out around 40-50 GB as the pieces of the matrix were getting distributed before dropping back to about 20 GB)
+> > > > >
+> > > > > I did need to make a small change to specify
+> > > > > dmat.reblock <- pbdDMAT:::reblock
+> > > > > using three ::: as reblock does not seem to be exported
+> > > > >
+> > > > > 3) With regard to SGE vmem, I am NOT using SGE -- I'm just directly running mpirun with a hostfile pointing to the relevant nodes, so that suggestion is not relevant for my problem.
+> > > > >
+> > > > > In any event, the use of gbd2dmat seems like a work-around and presumably as.ddmatrix should work here.
+> > > > > Drew, did you get a chance to try to reproduce the problem? If you do get a chance to take a look, let me know the outcome. Thanks!
+> > > > >
+> > > > > Chris
+> > > > >
+> > > > > On Tuesday, June 30, 2015 at 7:57:03 PM UTC-7, Wei-Chen Chen wrote:
+> > > > > > Dear Christ,
+> > > > > >
+> > > > > > No, it will be more than 18GB for the head core. I will say even double the 18GB may not be sufficient to make it works since hidden buffer of R and MPI can even triple the requirements. Change from
+> > > > > > 1.
+> > > > > >     A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > > > > > to
+> > > > > > 2.
+> > > > > >     A <- rnorm(M * N, mean = 100, sd = 10)
+> > > > > >     dim(A) <- c(M, N)
+> > > > > > may cut you a half of memory.
+> > > > > >
+> > > > > > No, I believe SGE vmem will make it works if you can set it to 36GB or higher. I am not rich as before, so the followings are some poor tests. I have a maximum 24GB per node, so I use vmem=24GB. It means I use 64 nodes for this and 1 core per node. I can have 10K*10K, 20K*20K, 30K*30K, and 40K*40K work, but 50K*50K will return two different fail messages. 1 returns "can not allocate 18GB", 2 returns fails at "xxmr2d:out of memory". This hints me the head core definitely need more memory than others. Because 24GB is not enough to make copies for 1 before sending the MPI buffers and is not enough for 2 to send the MPI buffers. (At least 3 times larger than18GB could be safe.)
+> > > > > >
+> > > > > > I am not sure what row block means by Drew (it can be ddmatrix or my gbd). If ddmatrix, then it may still have the same problem because 8*8 grid will have 8 core (first column) hold all data and rest 56 cores hold nothing. If my gbd, then it is possible, but need more works because I need to manually distribute the single matrix to a gbd, balance it as block cyclic, then convert the gbd to the desired ddmatrix (grid, block size, or ICTXT set by you).
+> > > > > >
+> > > > > > The next code is taken from DMAT and DEMO example and works for me, but no guarantee get the right distributed data. It needs more memory to check ... Note that I use pbdMPI_0.2-6, pbdSLAP_0.2-0, pbdBASE_0.4-2, pbdDMAT_0.3-3, and pbdDEMO_0.3-0. (Some DEMO functions need to be renamed to fit new BASE and DMAT when both are ready.)
+> > > > > >
+> > > > > > #####################################
+> > > > > > suppressPackageStartupMessages(library(pbdDEMO, quietly = TRUE))
+> > > > > >
+> > > > > > init.grid(8, 8)
+> > > > > >
+> > > > > > set.seed(25)
+> > > > > > M <- N <- 50000
+> > > > > > BL <- 100
+> > > > > >
+> > > > > > {
+> > > > > >   if (comm.rank()==0)
+> > > > > >   {
+> > > > > >     # A <- matrix(rnorm(M * N, mean = 100, sd = 10), nrow = M, ncol = N)
+> > > > > >     A <- rnorm(M * N, mean = 100, sd = 10)
+> > > > > >     dim(A) <- c(M, N)
+> > > > > >   }
+> > > > > >   else
+> > > > > >     A <- NULL
+> > > > > > }
+> > > > > >
+> > > > > > # dA <- as.ddmatrix(A, bldim=BL) # distribute
+> > > > > > A.gbd <- comm.as.gbd(A, balance.method = "block.cyclic")
+> > > > > > dmat.reblock <- pbdDMAT::reblock
+> > > > > > dA <- gbd2dmat(A.gbd, bldim = BL)
+> > > > > >
+> > > > > > print(dA)
+> > > > > >
+> > > > > > if(comm.rank() == 0){
+> > > > > >   print(proc.time())
+> > > > > > }
+> > > > > > finalize()
+> > > > > > #####################################
+> > > > > >
+> > > > > > Then, I get this for returns which I assume theoretically correct, but I can not verify them.
+> > > > > >
+> > > > > > #####################################
+> > > > > > Using 8x8 for the default grid size
+> > > > > >
+> > > > > >
+> > > > > > DENSE DISTRIBUTED MATRIX
+> > > > > > ---------------------------
+> > > > > > @Data:                  9.18e+01, 9.92e+01, 1.04e+02, 1.05e+02, ...
+> > > > > > Process grid:           8x8
+> > > > > > Global dimension:       50000x50000
+> > > > > > (max) Local dimension:  6300x6300
+> > > > > > Blocking:               100x100
+> > > > > > BLACS ICTXT:            0
+> > > > > > #####################################
+> > > > > >
+> > > > > > Sincerely,
+> > > > > > Wei-Chen Chen
+> > > > > >
+> > > > > >
+> > > > > >
+> > > > > > On Tuesday, June 30, 2015 at 11:27:25 AM UTC-4, Christopher Paciorek wrote:
+> > > > > > > I'm having difficulty understanding your comments. I agree the single
+> > > > > > > matrix is generated and held in comm.rank=0, but that would only take
+> > > > > > > up 18 GB of the 256 GB on the machine and nothing stops that single
+> > > > > > > core from using more than 8 GB, as far as I know. Viewing the job on
+> > > > > > > 'top' shows memory use for  the comm.rank=0 process gradually growing
+> > > > > > > to ~18GB of RAM, presumably as the data is read from disk, before the
+> > > > > > > failure occurs.
+> > > > > > >
+> > > > > > > I don't think SGE has anything to do with this - I can run the same
+> > > > > > > test job directly via mpirun without involving SGE and the same issue
+> > > > > > > occurs
+> > > > > > >
+> > > > > > > On Monday, June 29, 2015 at 7:34:01 PM UTC-7, Wei-Chen Chen wrote:
+> > > > > > > > Dear Crist,
+> > > > > > > >
+> > > > > > > > If I understood correctly, 256 GB in 32 cores were about 8 GB per core. 50K * 50K is about 18GB according to memuse::howbig(). The single matrix is generated and held in comm.rank = 0 before it is distributed. If I were still as rich as before, I might at less add the next to the SGE job script
+> > > > > > > >
+> > > > > > > > #$ -l h_vmem=20G
+> > > > > > > >
+> > > > > > > > to make sure each core has 20GB. At least, comm.rank = 0 needs that much. Then, wait for several minutes if it runs because data are sent across network when cores per node are reduced ...
+> > > > > > > >
+> > > > > > > > No matter which ICTXT is used, the row block will still have the same problem if a single reader is used.
+> > > > > > > >
+> > > > > > > > Sincerely,
+> > > > > > > > Wei-Chen Chen
+> > > > > > > >
+> > > > > > > >
+> > > > > > > > On Monday, June 29, 2015 at 9:00:01 AM UTC-4, Drew Schmidt wrote:
+> > > > > > > > > Hi Chris,
+> > > > > > > > >
+> > > > > > > > > Thanks so much for the report.  We ran into this at one point, and I thought we actually patched it ourselves, but maybe we abandoned that; it's been a while so I'm fuzzy on details.  Looking at recent ScaLAPACK release notes, it doesn't look like it's been fixed, but I would say an update is in order regardless.
+> > > > > > > > >
+> > > > > > > > > In the interim, you can use the strategy that's in a few pieces of pbdDEMO, where a matrix is distributed by row and then redistributed in the block-cyclic fashion.  It's maybe not ideal if you only have one reader, but it should get around this until we can fix it.
+> > > > > > > > >
+> > > > > > > > > Thanks
+> > > > > > > > > -Drew
+> > > > > > > > >
+> > > > > > > > > On Friday, June 26, 2015 at 7:19:46 PM UTC-4, Christopher Paciorek wrote:
+> > > > > > > > > > I'm getting an out of memory error as follows. This is on a cluster of 8 Linux nodes, each with 256 Gb RAM, 32 cores, and running Ubuntu 14.04.  I'm using 64 cores for the job and have approximately 32 workers on each of 2 nodes when I start the job via SGE (this varies depending on how SGE decides to allocate cores to the job). The grid size is 8x8 and the block dimension is 100x100.
+> > > > > > > > > >
+> > > > > > > > > > I'm using pbdSLAP version 0.2-0 and  pbdBASE and pbdDMAT versions 0.2-3
+> > > > > > > > > >
+> > > > > > > > > > I create the matrix on a single worker and then distribute as:
+> > > > > > > > > > dx <- as.ddmatrix(mat, bldim = rep(bldim, 2))
+> > > > > > > > > >
+> > > > > > > > > > I get this error message:
+> > > > > > > > > > xxmr2d:out of memory
+> > > > > > > > > > Error in base.rpdgemr2d(x = dx@Data, descx = descx, descy = descy) :
+> > > > > > > > > >   exit mr2d_malloc
+> > > > > > > > > > Calls: as.ddmatrix ... base.distribute -> dmat.reblock -> base.rpdgemr2d -> .Call
+> > > > > > > > > > Execution halted
+> > > > > > > > > > -------------------------------------------------------
+> > > > > > > > > > Primary job  terminated normally, but 1 process returned
+> > > > > > > > > > a non-zero exit code.. Per user-direction, the job has been aborted.
+> > > > > > > > > > -------------------------------------------------------
+> > > > > > > > > >
+> > > > > > > > > > There shouldn't be a memory issue given the amount of memory each node has, unless the redistribution in ScaLapack is somehow asking for as much memory on each of the workers as is needed for the full matrix.
+> > > > > > > > > >
+> > > > > > > > > > I probed a bit into the mr2d_malloc call and the error seems to occur when the 'n' argument is negative, in particular it is -1474836480, but I haven't traced back further to see why this is being passed in.
+> > > > > > > > > >
+> > > > > > > > > > There are some indications in various mailing lists that this might be a ScaLapack issue, though many of the threads are old (see below). That said, it looks like you are using ScaLapack code from v 1.7 so perhaps this is a bug that has gotten fixed in more recent ScaLapack versions.
+> > > > > > > > > >
+> > > > > > > > > > https://icl.cs.utk.edu/lapack-forum/viewtopic.php?t=465
+> > > > > > > > > > https://software.intel.com/en-us/forums/topic/509048
+> > > > > > > > > >
+> > > > > > > > > > Any thoughts?
+> > > > > > > > > > thanks,
+> > > > > > > > > > Chris
+> > > > >
+> > > > > --
+> > > > > Programming with Big Data in R
+> > > > > Simplifying Scalability
+> > > > > http://r-pbd.org/
+> > > > > ---
+> > > > > You received this message because you are subscribed to the Google Groups "RBigDataProgramming" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to rbigdataprogram...@googlegroups.com.
+> > > > > To post to this group, send email to rbigdatap...@googlegroups.com.
+> > > > > Visit this group at http://groups.google.com/group/rbigdataprogramming.
+> > > > > To view this discussion on the web visit https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com <https://groups.google.com/d/msgid/rbigdataprogramming/024f98ae-30db-4ada-a6ad-c479b52c4117%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > > --
+> > > Programming with Big Data in R
+> > > Simplifying Scalability
+> > > http://r-pbd.org/
+> > > ---
+> > > You received this message because you are subscribed to the Google Groups "RBigDataProgramming" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to rbigdataprogram...@googlegroups.com.
+> > > To post to this group, send email to rbigdatap...@googlegroups.com.
+> > > Visit this group at http://groups.google.com/group/rbigdataprogramming.
+> > > To view this discussion on the web visit https://groups.google.com/d/msgid/rbigdataprogramming/9fb9c85d-d6c1-4609-858c-9e15c3d9c148%40googlegroups.com <https://groups.google.com/d/msgid/rbigdataprogramming/9fb9c85d-d6c1-4609-858c-9e15c3d9c148%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> > > For more options, visit https://groups.google.com/d/optout.
+
