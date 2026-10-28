@@ -1,0 +1,1107 @@
+From u279c89810c26c86e at groups.google.com  Sat Jun 17 19:25:27 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Sat, 17 Jun 2017 19:25:27 +0000
+Subject: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/tco5NqXDCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+Thanks for compiling this great package.
+
+I'm currently trying to adapt the the bandit2arm model for my needs. Instead of
+dealing with binary choices as outcome, my outcome is continuous; I'm trying
+to set up a Rescorla-Wagner learning model together with a linear observation
+model, i.e., I'm trying to assess how skin conductance data recorded during a
+Pavlovian fear-conditioning task is modulated by punishment expectancy.
+I'm switching to hierarchical Bayes because the MLE estimates I get from
+nonlinear optimization appear to be too noisy to be usable for model-based
+fMRI analysis.
+
+Anyway, I thought the bandit2arm model should be quite easy to adapt for my
+needs. The only free parameter I have is the learning rate, while there is no use
+for the inverse temperature parameter anymore.
+
+Thus, I replaced the categorical_logit distribution in the model section with a
+normal distribution, reflecting the linear regression of punishment expectancy
+on skin conductance data.
+
+However, when I use simulated data, generated with a set of learning rates
+for each subject, for some reason I am not able to recover the correct learning
+rate from the hierarchical Bayes model. I was wondering if there is an obvious
+mistake in my model section. I also attached the full model:
+
+model {
+  # Hyperparameters
+  mu_p  ~ normal(0, 1);
+  sigma ~ cauchy(0, 5);
+
+  # individual parameters
+  A_pr   ~ normal(0, 1);
+  alpha ~ normal(mu_p[2], sigma[2]);
+  beta ~ normal(mu_p[3], sigma[3]);
+
+  # subject loop and trial loop
+  for (i in 1:N) {
+    vector[2] ev; # expected value
+    real PE;      # prediction error
+
+    ev = initV;
+
+    for (t in 1:(Tsubj[i])) {
+      scr[t, i] ~ normal(alpha + beta * ev, sigma_i);
+
+      # prediction error
+      PE = lambda[t, i] - ev[stim[t,i]];
+
+      # value updating (learning)
+      ev[stim[t, i]] = ev[stim[t, i]] + A[i] * PE;
+    }
+  }
+}
+
+Thank you so much.
+Jane
+
+From u279c89810c26c86e at groups.google.com  Sat Jun 17 20:25:01 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Sat, 17 Jun 2017 20:25:01 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.hVSMSuXGCgAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/hVSMSuXGCgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+PS: I also attached the R-file that calls the stan-model to make this a
+reproducable example.
+
+Thanks.
+
+From uaae41f24a6066e49 at groups.google.com  Mon Jun 19 12:49:07 2017
+From: uaae41f24a6066e49 at groups.google.com (Nathaniel Haines)
+Date: Mon, 19 Jun 2017 12:49:07 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.eweIgS1LCwAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/eweIgS1LCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jane,
+
+Thanks for your interest in the package!
+
+After looking through your code, there are a few potential issues that I can spot. First, in the .stan file:
+
+1) You should be estimating a hyper-location and hyper-scale parameter for the standard deviation of the normal model that you are using. Looking at line 58:
+
+`scr[t, i] ~ normal(alpha + beta * ev, sigma[4]);`
+
+Here, you are using sigma[4] as the standard deviation for the normal model, but the `sigma` vector (as is specified in the code) is the hyper-scale parameter for the model parameters. This is kind of confusing because the normal model has a parameter called sigma, but what you need to do is estimate a hyper-location and hyper-sigma for the "normal model sigma" just like any other parameter (e.g. the learning rate "A" has an estimated mean and sigma).
+
+2) In the same chunk of code above, you had:
+
+`scr[t, i] ~ normal(alpha + beta * ev, sigma[4]);`
+
+but ev is a vector when it should be the ev of the chosen option (or received reward/punishment/etc.). This can be corrected by doing the following:
+
+`scr[t, i] ~ normal(alpha + beta * ev[stim[t,i]], sigma[4]);`
+
+3) You have modified the code so that parameters are estimated using a centered parameterization, but have not specified the parameter vectors correctly to reflect this difference. Our .stan codes are separating the location and scale hyper-parameters for each parameter estimate in order to make sampling more efficient. In making this change, it looks like you also removed the hierarchy between mu_alpha and mu_beta and the individual alpha and beta estimates and then estimated a single alpha and beta all subjects.
+
+I have attached a .stan code that addresses all the potential issues above for your reference (with a few comments to help).
+
+On the R code, I am a bit confused about the simulation code. The model doing the simulation is assuming that SCR is a results of the learned expectation, but in your .stan code it is modeled as part of a linear (`scr[t, i] ~ normal(alpha + beta * ev, sigma)`) model. To recover parameters, you will need to simulated data from the exact model as specified in the .stan code. This includes having individual parameters for alpha, beta, A, and sigma, and then simulating the task data with those parameters for each subject. If you find it easier, you can actually simulate data directly from the .stan code. I have never done this, but there are some tutorials online that show how to do so (e.g. http://modernstatisticalworkflow.blogspot.com/2017/04/an-easy-way-to-simulate-fake-data-from.html).
+
+Anyway, I hope this helps! Let us know if you have questions about the .stan code I attached.
+
+Best,
+Nate
+
+On Saturday, June 17, 2017 at 3:25:27 PM UTC-4, janine....@gmail.com wrote:
+> Hi,
+>
+> Thanks for compiling this great package.
+>
+> I'm currently trying to adapt the the bandit2arm model for my needs. Instead of
+> dealing with binary choices as outcome, my outcome is continuous; I'm trying
+> to set up a Rescorla-Wagner learning model together with a linear observation
+> model, i.e., I'm trying to assess how skin conductance data recorded during a
+> Pavlovian fear-conditioning task is modulated by punishment expectancy.
+> I'm switching to hierarchical Bayes because the MLE estimates I get from
+> nonlinear optimization appear to be too noisy to be usable for model-based
+> fMRI analysis.
+>
+> Anyway, I thought the bandit2arm model should be quite easy to adapt for my
+> needs. The only free parameter I have is the learning rate, while there is no use
+> for the inverse temperature parameter anymore.
+>
+> Thus, I replaced the categorical_logit distribution in the model section with a
+> normal distribution, reflecting the linear regression of punishment expectancy
+> on skin conductance data.
+>
+> However, when I use simulated data, generated with a set of learning rates
+> for each subject, for some reason I am not able to recover the correct learning
+> rate from the hierarchical Bayes model. I was wondering if there is an obvious
+> mistake in my model section. I also attached the full model:
+>
+> model {
+>   # Hyperparameters
+>   mu_p  ~ normal(0, 1);
+>   sigma ~ cauchy(0, 5);
+>
+>   # individual parameters
+>   A_pr   ~ normal(0, 1);
+>   alpha ~ normal(mu_p[2], sigma[2]);
+>   beta ~ normal(mu_p[3], sigma[3]);
+>
+>   # subject loop and trial loop
+>   for (i in 1:N) {
+>     vector[2] ev; # expected value
+>     real PE;      # prediction error
+>
+>     ev = initV;
+>
+>     for (t in 1:(Tsubj[i])) {
+>       scr[t, i] ~ normal(alpha + beta * ev, sigma_i);
+>
+>       # prediction error
+>       PE = lambda[t, i] - ev[stim[t,i]];
+>
+>       # value updating (learning)
+>       ev[stim[t, i]] = ev[stim[t, i]] + A[i] * PE;
+>     }
+>   }
+> }
+>
+> Thank you so much.
+> Jane
+
+From u279c89810c26c86e at groups.google.com  Mon Jun 19 15:27:53 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Mon, 19 Jun 2017 15:27:53 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.z-PthddTCwAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.eweIgS1LCwAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com> <wGL_jsmPEec.eweIgS1LCwAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/z-PthddTCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Nate, that was very helpful.
+
+A few clarifications:
+
+1. You are right the simulation; it is assuming that SCR is a result of learned expectation.
+The reason I modeled it as a linear model in stan is because this is how I would have done it
+in MLE. The learning model is the R-W-model, the observation model is a linear model of
+the form y ~ N(alpha + beta * ev, sigma), where ev is the expected value (c.f. Daw 2011, p. 23).
+
+2. I am thus not interested in alpha or beta per se, but only in A (and mu_A), the learning rate.
+
+3. When I run the code with your modifications, it appears that the sampling gets stuck in
+the warmup (at 20%) and never makes it to the next iteration. How would I proceed to debug
+my model?
+
+Thank you again!
+
+On Monday, June 19, 2017 at 8:49:07 AM UTC-4, Nathaniel Haines wrote:
+> Hi Jane,
+>
+> Thanks for your interest in the package!
+>
+> After looking through your code, there are a few potential issues that I can spot. First, in the .stan file:
+>
+> 1) You should be estimating a hyper-location and hyper-scale parameter for the standard deviation of the normal model that you are using. Looking at line 58:
+>
+> `scr[t, i] ~ normal(alpha + beta * ev, sigma[4]);`
+>
+> Here, you are using sigma[4] as the standard deviation for the normal model, but the `sigma` vector (as is specified in the code) is the hyper-scale parameter for the model parameters. This is kind of confusing because the normal model has a parameter called sigma, but what you need to do is estimate a hyper-location and hyper-sigma for the "normal model sigma" just like any other parameter (e.g. the learning rate "A" has an estimated mean and sigma).
+>
+> 2) In the same chunk of code above, you had:
+>
+> `scr[t, i] ~ normal(alpha + beta * ev, sigma[4]);`
+>
+> but ev is a vector when it should be the ev of the chosen option (or received reward/punishment/etc.). This can be corrected by doing the following:
+>
+> `scr[t, i] ~ normal(alpha + beta * ev[stim[t,i]], sigma[4]);`
+>
+> 3) You have modified the code so that parameters are estimated using a centered parameterization, but have not specified the parameter vectors correctly to reflect this difference. Our .stan codes are separating the location and scale hyper-parameters for each parameter estimate in order to make sampling more efficient. In making this change, it looks like you also removed the hierarchy between mu_alpha and mu_beta and the individual alpha and beta estimates and then estimated a single alpha and beta all subjects.
+>
+> I have attached a .stan code that addresses all the potential issues above for your reference (with a few comments to help).
+>
+>
+> On the R code, I am a bit confused about the simulation code. The model doing the simulation is assuming that SCR is a results of the learned expectation, but in your .stan code it is modeled as part of a linear (`scr[t, i] ~ normal(alpha + beta * ev, sigma)`) model. To recover parameters, you will need to simulated data from the exact model as specified in the .stan code. This includes having individual parameters for alpha, beta, A, and sigma, and then simulating the task data with those parameters for each subject. If you find it easier, you can actually simulate data directly from the .stan code. I have never done this, but there are some tutorials online that show how to do so (e.g. http://modernstatisticalworkflow.blogspot.com/2017/04/an-easy-way-to-simulate-fake-data-from.html).
+>
+> Anyway, I hope this helps! Let us know if you have questions about the .stan code I attached.
+>
+> Best,
+> Nate
+>
+>
+>
+> On Saturday, June 17, 2017 at 3:25:27 PM UTC-4, janine....@gmail.com wrote:
+> > Hi,
+> >
+> > Thanks for compiling this great package.
+> >
+> > I'm currently trying to adapt the the bandit2arm model for my needs. Instead of
+> > dealing with binary choices as outcome, my outcome is continuous; I'm trying
+> > to set up a Rescorla-Wagner learning model together with a linear observation
+> > model, i.e., I'm trying to assess how skin conductance data recorded during a
+> > Pavlovian fear-conditioning task is modulated by punishment expectancy.
+> > I'm switching to hierarchical Bayes because the MLE estimates I get from
+> > nonlinear optimization appear to be too noisy to be usable for model-based
+> > fMRI analysis.
+> >
+> > Anyway, I thought the bandit2arm model should be quite easy to adapt for my
+> > needs. The only free parameter I have is the learning rate, while there is no use
+> > for the inverse temperature parameter anymore.
+> >
+> > Thus, I replaced the categorical_logit distribution in the model section with a
+> > normal distribution, reflecting the linear regression of punishment expectancy
+> > on skin conductance data.
+> >
+> > However, when I use simulated data, generated with a set of learning rates
+> > for each subject, for some reason I am not able to recover the correct learning
+> > rate from the hierarchical Bayes model. I was wondering if there is an obvious
+> > mistake in my model section. I also attached the full model:
+> >
+> > model {
+> >   # Hyperparameters
+> >   mu_p  ~ normal(0, 1);
+> >   sigma ~ cauchy(0, 5);
+> >
+> >   # individual parameters
+> >   A_pr   ~ normal(0, 1);
+> >   alpha ~ normal(mu_p[2], sigma[2]);
+> >   beta ~ normal(mu_p[3], sigma[3]);
+> >
+> >   # subject loop and trial loop
+> >   for (i in 1:N) {
+> >     vector[2] ev; # expected value
+> >     real PE;      # prediction error
+> >
+> >     ev = initV;
+> >
+> >     for (t in 1:(Tsubj[i])) {
+> >       scr[t, i] ~ normal(alpha + beta * ev, sigma_i);
+> >
+> >       # prediction error
+> >       PE = lambda[t, i] - ev[stim[t,i]];
+> >
+> >       # value updating (learning)
+> >       ev[stim[t, i]] = ev[stim[t, i]] + A[i] * PE;
+> >     }
+> >   }
+> > }
+> >
+> > Thank you so much.
+> > Jane
+
+From uaae41f24a6066e49 at groups.google.com  Tue Jun 20 04:41:08 2017
+From: uaae41f24a6066e49 at groups.google.com (Nathaniel Haines)
+Date: Tue, 20 Jun 2017 04:41:08 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.23dNFyF_CwAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.z-PthddTCwAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com> <wGL_jsmPEec.z-PthddTCwAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/23dNFyF_CwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+1. Yes, the model makes sense to me. My comment is that if you do not simulate the full model (RW + linear model), then you may have trouble recovering the true parameters when you fit the data to the full .stan model. The way the data are simulated now assumes that alpha == 0, beta == 1, and sigma == 0 (since scr == ev, so there is no residual error after the ev is computed). My confusion was coming from me assuming that you would want to simulate the whole model, but if not then I understand now.
+
+2. If you are interested in how well you can recover learning rates in real data, I would recommend also simulating alpha, beta, and sigma parameters. That way, you have a sense of how well you can recover the learning rates that you will interpret when you fit the full model to the real data.
+
+3. Interesting that it is sticking at 20%. Are there any error/warning messages that you get? I have never run into a problem where the chains stop running part-way through–if they get stuck for a long period of time, it is typically safe to assume that the model/data entered into the model have been mis-specified. One thing you may try is to run it with very few iterations (e.g. 10 or 20 with 5 or 10 warmup). If it still gets stuck, I wonder if it has something to do with the data being sent to Stan?
+
+Best,
+Nate
+
+On Monday, June 19, 2017 at 11:27:53 AM UTC-4, janine....@gmail.com wrote:
+>
+> Thank you Nate, that was very helpful.
+>
+> A few clarifications:
+>
+> 1. You are right the simulation; it is assuming that SCR is a result of learned expectation.
+> The reason I modeled it as a linear model in stan is because this is how I would have done it
+> in MLE. The learning model is the R-W-model, the observation model is a linear model of
+> the form y ~ N(alpha + beta * ev, sigma), where ev is the expected value (c.f. Daw 2011, p. 23).
+>
+> 2. I am thus not interested in alpha or beta per se, but only in A (and mu_A), the learning rate.
+>
+> 3. When I run the code with your modifications, it appears that the sampling gets stuck in
+> the warmup (at 20%) and never makes it to the next iteration. How would I proceed to debug
+> my model?
+>
+> Thank you again!
+>
+> On Monday, June 19, 2017 at 8:49:07 AM UTC-4, Nathaniel Haines wrote:
+> > Hi Jane,
+> >
+> > Thanks for your interest in the package!
+> >
+> > After looking through your code, there are a few potential issues that I can spot. First, in the .stan file:
+> >
+> > 1) You should be estimating a hyper-location and hyper-scale parameter for the standard deviation of the normal model that you are using. Looking at line 58:
+> >
+> > `scr[t, i] ~ normal(alpha + beta * ev, sigma[4]);`
+> >
+> > Here, you are using sigma[4] as the standard deviation for the normal model, but the `sigma` vector (as is specified in the code) is the hyper-scale parameter for the model parameters. This is kind of confusing because the normal model has a parameter called sigma, but what you need to do is estimate a hyper-location and hyper-sigma for the "normal model sigma" just like any other parameter (e.g. the learning rate "A" has an estimated mean and sigma).
+> >
+> > 2) In the same chunk of code above, you had:
+> >
+> > `scr[t, i] ~ normal(alpha + beta * ev, sigma[4]);`
+> >
+> > but ev is a vector when it should be the ev of the chosen option (or received reward/punishment/etc.). This can be corrected by doing the following:
+> >
+> > `scr[t, i] ~ normal(alpha + beta * ev[stim[t,i]], sigma[4]);`
+> >
+> > 3) You have modified the code so that parameters are estimated using a centered parameterization, but have not specified the parameter vectors correctly to reflect this difference. Our .stan codes are separating the location and scale hyper-parameters for each parameter estimate in order to make sampling more efficient. In making this change, it looks like you also removed the hierarchy between mu_alpha and mu_beta and the individual alpha and beta estimates and then estimated a single alpha and beta all subjects.
+> >
+> > I have attached a .stan code that addresses all the potential issues above for your reference (with a few comments to help).
+> >
+> >
+> > On the R code, I am a bit confused about the simulation code. The model doing the simulation is assuming that SCR is a results of the learned expectation, but in your .stan code it is modeled as part of a linear (`scr[t, i] ~ normal(alpha + beta * ev, sigma)`) model. To recover parameters, you will need to simulated data from the exact model as specified in the .stan code. This includes having individual parameters for alpha, beta, A, and sigma, and then simulating the task data with those parameters for each subject. If you find it easier, you can actually simulate data directly from the .stan code. I have never done this, but there are some tutorials online that show how to do so (e.g. http://modernstatisticalworkflow.blogspot.com/2017/04/an-easy-way-to-simulate-fake-data-from.html).
+> >
+> > Anyway, I hope this helps! Let us know if you have questions about the .stan code I attached.
+> >
+> > Best,
+> > Nate
+> >
+> >
+> >
+> > On Saturday, June 17, 2017 at 3:25:27 PM UTC-4, janine....@gmail.com wrote:
+> > > Hi,
+> > >
+> > > Thanks for compiling this great package.
+> > >
+> > > I'm currently trying to adapt the the bandit2arm model for my needs. Instead of
+> > > dealing with binary choices as outcome, my outcome is continuous; I'm trying
+> > > to set up a Rescorla-Wagner learning model together with a linear observation
+> > > model, i.e., I'm trying to assess how skin conductance data recorded during a
+> > > Pavlovian fear-conditioning task is modulated by punishment expectancy.
+> > > I'm switching to hierarchical Bayes because the MLE estimates I get from
+> > > nonlinear optimization appear to be too noisy to be usable for model-based
+> > > fMRI analysis.
+> > >
+> > > Anyway, I thought the bandit2arm model should be quite easy to adapt for my
+> > > needs. The only free parameter I have is the learning rate, while there is no use
+> > > for the inverse temperature parameter anymore.
+> > >
+> > > Thus, I replaced the categorical_logit distribution in the model section with a
+> > > normal distribution, reflecting the linear regression of punishment expectancy
+> > > on skin conductance data.
+> > >
+> > > However, when I use simulated data, generated with a set of learning rates
+> > > for each subject, for some reason I am not able to recover the correct learning
+> > > rate from the hierarchical Bayes model. I was wondering if there is an obvious
+> > > mistake in my model section. I also attached the full model:
+> > >
+> > > model {
+> > >   # Hyperparameters
+> > >   mu_p  ~ normal(0, 1);
+> > >   sigma ~ cauchy(0, 5);
+> > >
+> > >   # individual parameters
+> > >   A_pr   ~ normal(0, 1);
+> > >   alpha ~ normal(mu_p[2], sigma[2]);
+> > >   beta ~ normal(mu_p[3], sigma[3]);
+> > >
+> > >   # subject loop and trial loop
+> > >   for (i in 1:N) {
+> > >     vector[2] ev; # expected value
+> > >     real PE;      # prediction error
+> > >
+> > >     ev = initV;
+> > >
+> > >     for (t in 1:(Tsubj[i])) {
+> > >       scr[t, i] ~ normal(alpha + beta * ev, sigma_i);
+> > >
+> > >       # prediction error
+> > >       PE = lambda[t, i] - ev[stim[t,i]];
+> > >
+> > >       # value updating (learning)
+> > >       ev[stim[t, i]] = ev[stim[t, i]] + A[i] * PE;
+> > >     }
+> > >   }
+> > > }
+> > >
+> > > Thank you so much.
+> > > Jane
+
+From u279c89810c26c86e at groups.google.com  Tue Jun 20 12:57:16 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Tue, 20 Jun 2017 12:57:16 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.UBlV2zOaCwAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/UBlV2zOaCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you so much, that was really helpful again!
+
+I agree, including intercept, slope, and noise in the simulation does make
+a lot of sense, and I have adapted the simulation accordingly. I'm wondering
+whether this might have actually been the reason why the sampling wasn't
+working well when using your code: if there is no variance across subjects
+in alpha, beta, and sigma_er, and the code is set up as if there was, maybe
+that's why the sampling process ran into troubles.
+
+From u47d1400f432367d7 at groups.google.com  Tue Jun 20 13:19:43 2017
+From: u47d1400f432367d7 at groups.google.com (Haines, Nathaniel B.)
+Date: Tue, 20 Jun 2017 13:19:43 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.hHt0qAOnAQAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/hHt0qAOnAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Of course!
+
+Yes, it could have potentially been that there was no variation in the responses (i.e. if the learning rate is known, the responses are completely determined). In practice, I typically do something like:
+
+alpha  = rnorm(10, mean = 0.5, sd = 0.1)
+
+beta = rnorm(10, mean = 1, sd = 0.2)
+
+...
+
+to generate individual level parameters (for 10 subjects in this case), and then use these to simulate the task data. Better yet, you would then add error to each individual-level parameter. After generating these parameters, then for your sampling statement it would be like:
+
+scr = rnorm(1, mean = alpha[subject] + beta[subject] * ev[choice], sd = sigma_er[choice])
+
+The SCR will be randomly distributed around the linear model as it will be in reality.
+
+Hopefully this helps!
+
+Best,
+
+Nate
+
+From: hbayesd...@googlegroups.com <hbayesd...@googlegroups.com> on behalf of janine....@gmail.com <janine....@gmail.com>
+Sent: Tuesday, June 20, 2017 8:57:15 AM
+To: hbayesdm-users
+Subject: Re: Reinforcement learning model with linear observation model
+
+Thank you so much, that was really helpful again!
+
+I agree, including intercept, slope, and noise in the simulation does make
+a lot of sense, and I have adapted the simulation accordingly. I'm wondering
+whether this might have actually been the reason why the sampling wasn't
+working well when using your code: if there is no variance across subjects
+in alpha, beta, and sigma_er, and the code is set up as if there was, maybe
+that's why the sampling process ran into troubles.
+
+--
+You received this message because you are subscribed to the Google Groups "hbayesdm-users" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hbayesdm-user...@googlegroups.com.
+To post to this group, send email to  hbayesd...@googlegroups.com.
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hbayesdm-users/e9eceea4-c6f6-4eda-aa19-21e77aaf0689%40googlegroups.com <https://groups.google.com/d/msgid/hbayesdm-users/e9eceea4-c6f6-4eda-aa19-21e77aaf0689%40googlegroups.com?utm_medium=email&utm_source=footer>.
+For more options, visit https://groups.google.com/d/optout.
+
+From u279c89810c26c86e at groups.google.com  Tue Jun 20 14:09:18 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Tue, 20 Jun 2017 14:09:18 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.BJ9WQSKeCwAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/BJ9WQSKeCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I ran the stan code with the simulated data including intercept, slope, and noise term.
+However, the chains did not converge, and I'm wondering what is going on.
+I used the stan code you suggested. Do you have any ideas?
+
+Thank you!
+
+From u4bcf82a01cf98f56 at groups.google.com  Tue Jun 20 14:15:41 2017
+From: u4bcf82a01cf98f56 at groups.google.com (Woo-Young Ahn)
+Date: Tue, 20 Jun 2017 14:15:41 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.vjgViHueCwAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.BJ9WQSKeCwAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com> <wGL_jsmPEec.BJ9WQSKeCwAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/vjgViHueCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jane,
+
+Thanks for using the hBayesDM package and your inquiry. When you ask questions on these matters, to save our time, please send us your up-to-date codes and data files, so that we can easily replicate your findings (hopefully the files will run as they are with minimal changes).
+
+Best,
+Young
+
+On Tuesday, June 20, 2017 at 10:09:18 AM UTC-4, janine....@gmail.com wrote:
+> I ran the stan code with the simulated data including intercept, slope, and noise term.
+> However, the chains did not converge, and I'm wondering what is going on.
+> I used the stan code you suggested. Do you have any ideas?
+>
+> Thank you!
+
+From u279c89810c26c86e at groups.google.com  Tue Jun 20 14:29:48 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Tue, 20 Jun 2017 14:29:48 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.8-Q_mUCfCwAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/8-Q_mUCfCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Absolutely.
+
+The files are attached.
+
+From u279c89810c26c86e at groups.google.com  Tue Jun 20 14:38:05 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Tue, 20 Jun 2017 14:38:05 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.BSwAUbSfCwAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/BSwAUbSfCwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The R-code sources "multiplot.R" so I attached that file as while.
+
+From ua5ddaf12702264b7 at groups.google.com  Wed Jun 21 16:49:02 2017
+From: ua5ddaf12702264b7 at groups.google.com (Jonathon Howlett)
+Date: Wed, 21 Jun 2017 16:49:02 +0000
+Subject: Drift Diffusion Model
+Message-ID: <OJGuL1ETZ04.AfwuA3LUBAAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/OJGuL1ETZ04/m/AfwuA3LUBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I am very interested in applying the drift diffusion model.  According to my understanding, the input for the model for each trial includes subject identifier, response, and reaction time, but does not include any information about the stimulus/trial type.  In my task, there are two stimuli and two responses; subjects are instructed to respond based on the stimulus.  An "A" response to an "A" stimulus would be correct, while a "B" response to an "A" stimulus would be an error.  The accuracy rates on this task are quite high, with many subjects achieving 100% accuracy.
+
+I have been unable to apply the hBayesDM drift diffusion model to my data.  If I encode an "A" response as the upper boundary and a "B" response as the lower boundary, the model will not generate results (presumably because, without information about the stimulus type, the resulting drift rate would be approximately zero and all responses would be based on noise).  If I encode a correct response as the upper boundary and an error as the lower boundary, the model will not run, presumably because many subjects have 100% accuracy (i.e. no error trials).
+
+Is it possible to apply the drift diffusion model to my task?
+
+Thank you,
+Jon
+
+From u4bcf82a01cf98f56 at groups.google.com  Wed Jun 21 18:51:32 2017
+From: u4bcf82a01cf98f56 at groups.google.com (Woo-Young Ahn)
+Date: Wed, 21 Jun 2017 18:51:32 +0000
+Subject: Re: Drift Diffusion Model
+Message-ID: <OJGuL1ETZ04.D6B7WCHbBAAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <OJGuL1ETZ04.AfwuA3LUBAAJ@hbayesdm-users.groups.google.com>
+References: <OJGuL1ETZ04.AfwuA3LUBAAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/OJGuL1ETZ04/m/D6B7WCHbBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jon,
+
+And have you checked the 'choiceRT_lba' model? Currently 'choiceRT_ddm' doesn't have the flexibility of modeling more than 1 condition YET.
+
+Could you upload a sample dataset (maybe 2-3 subjects' data) so that we can test it?
+
+Best,
+Young
+
+On Wednesday, June 21, 2017 at 12:49:02 PM UTC-4, Jonathon Howlett wrote:
+> Hi,
+>
+> I am very interested in applying the drift diffusion model.  According to my understanding, the input for the model for each trial includes subject identifier, response, and reaction time, but does not include any information about the stimulus/trial type.  In my task, there are two stimuli and two responses; subjects are instructed to respond based on the stimulus.  An "A" response to an "A" stimulus would be correct, while a "B" response to an "A" stimulus would be an error.  The accuracy rates on this task are quite high, with many subjects achieving 100% accuracy.
+>
+> I have been unable to apply the hBayesDM drift diffusion model to my data.  If I encode an "A" response as the upper boundary and a "B" response as the lower boundary, the model will not generate results (presumably because, without information about the stimulus type, the resulting drift rate would be approximately zero and all responses would be based on noise).  If I encode a correct response as the upper boundary and an error as the lower boundary, the model will not run, presumably because many subjects have 100% accuracy (i.e. no error trials).
+>
+> Is it possible to apply the drift diffusion model to my task?
+>
+> Thank you,
+> Jon
+
+From ua5ddaf12702264b7 at groups.google.com  Wed Jun 21 21:48:43 2017
+From: ua5ddaf12702264b7 at groups.google.com (Jonathon Howlett)
+Date: Wed, 21 Jun 2017 21:48:43 +0000
+Subject: Re: Drift Diffusion Model
+Message-ID: <OJGuL1ETZ04.U71Zj8zkBAAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <OJGuL1ETZ04.D6B7WCHbBAAJ@hbayesdm-users.groups.google.com>
+References: <OJGuL1ETZ04.AfwuA3LUBAAJ@hbayesdm-users.groups.google.com> <OJGuL1ETZ04.D6B7WCHbBAAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/OJGuL1ETZ04/m/U71Zj8zkBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Young,
+
+Thank you for your response.  I have tried the LBA model (but so far with only a small number of iterations, not enough to determine whether it converges).  I get 4 drift rates (A response for an A stimulus, B response for an A stimulus, B response for a B stimulus, and A response for a B stimulus).  Note that error trials (A response for B stimulus and B response for A stimulus) are rare and are nonexistent for some subjects, so I am not sure whether these rates are meaningful.
+
+I have attached a sample dataset with 3 subjects.  The "condition" column refers to stimulus type, so the "condition" and "response" columns match on most of the trials.
+
+Thank you,
+Jon
+
+On Wednesday, June 21, 2017 at 11:51:32 AM UTC-7, Woo-Young Ahn wrote:
+> Hi Jon,
+>
+> And have you checked the 'choiceRT_lba' model? Currently 'choiceRT_ddm' doesn't have the flexibility of modeling more than 1 condition YET.
+>
+> Could you upload a sample dataset (maybe 2-3 subjects' data) so that we can test it?
+>
+> Best,
+> Young
+>
+>
+>
+> On Wednesday, June 21, 2017 at 12:49:02 PM UTC-4, Jonathon Howlett wrote:
+> > Hi,
+> >
+> > I am very interested in applying the drift diffusion model.  According to my understanding, the input for the model for each trial includes subject identifier, response, and reaction time, but does not include any information about the stimulus/trial type.  In my task, there are two stimuli and two responses; subjects are instructed to respond based on the stimulus.  An "A" response to an "A" stimulus would be correct, while a "B" response to an "A" stimulus would be an error.  The accuracy rates on this task are quite high, with many subjects achieving 100% accuracy.
+> >
+> > I have been unable to apply the hBayesDM drift diffusion model to my data.  If I encode an "A" response as the upper boundary and a "B" response as the lower boundary, the model will not generate results (presumably because, without information about the stimulus type, the resulting drift rate would be approximately zero and all responses would be based on noise).  If I encode a correct response as the upper boundary and an error as the lower boundary, the model will not run, presumably because many subjects have 100% accuracy (i.e. no error trials).
+> >
+> > Is it possible to apply the drift diffusion model to my task?
+> >
+> > Thank you,
+> > Jon
+
+From u4bcf82a01cf98f56 at groups.google.com  Wed Jun 21 22:26:13 2017
+From: u4bcf82a01cf98f56 at groups.google.com (Woo-Young Ahn)
+Date: Wed, 21 Jun 2017 22:26:13 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.j1X5edjmBAAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.BSwAUbSfCwAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com> <wGL_jsmPEec.BSwAUbSfCwAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/j1X5edjmBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jane,
+
+I quickly ran the model and it doesn't converge as you pointed out. Nate and I can possibly look into it more closely but it will require a lot of our time and please understand that we are quite occupied with other projects/papers. We mainly provide support for models we include in the hBayesDM package, so perhaps you can post your question to the Stan mailing list? But I think this is an interesting model and we may include this type of model in a future release of the hBayesDM. Thanks for your understanding!
+
+Best,
+Young
+
+On Tuesday, June 20, 2017 at 10:38:05 AM UTC-4, janine....@gmail.com wrote:
+> The R-code sources "multiplot.R" so I attached that file as while.
+
+From u4bcf82a01cf98f56 at groups.google.com  Wed Jun 21 22:42:17 2017
+From: u4bcf82a01cf98f56 at groups.google.com (Woo-Young Ahn)
+Date: Wed, 21 Jun 2017 22:42:17 +0000
+Subject: Re: Drift Diffusion Model
+Message-ID: <OJGuL1ETZ04.w4-ozLjnBAAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <OJGuL1ETZ04.U71Zj8zkBAAJ@hbayesdm-users.groups.google.com>
+References: <OJGuL1ETZ04.AfwuA3LUBAAJ@hbayesdm-users.groups.google.com> <OJGuL1ETZ04.U71Zj8zkBAAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/OJGuL1ETZ04/m/w4-ozLjnBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It seems chocieRT_lba model can fit at least the 3 subjects' data well? For example, you can check individual parameters by calling:
+
+output = choiceRT_lba("~/Downloads/SampleFile.txt", 2000, 1000, 4, 4)
+
+plotInd(output, "v")
+output$allIndPars
+
+And please check this paper. We used their Stan code almost as it is in hBayesDM version 0.4.0.
+
+Annis, J., Miller, B. J., & Palmeri, T. J. (2016). Bayesian inference with Stan: A tutorial on adding custom distributions. Behavior research methods, 1-24.
+
+The DDM included in the hBayesDM (v0.4.0) doesn't have a lot of features yet. So for more drift diffusion modeling, you can also check HDDM (http://ski.clps.brown.edu/hddm_docs/) and other DDM packages.
+
+Best,
+Young
+
+On Wednesday, June 21, 2017 at 5:48:43 PM UTC-4, Jonathon Howlett wrote:
+> Hi Young,
+>
+> Thank you for your response.  I have tried the LBA model (but so far with only a small number of iterations, not enough to determine whether it converges).  I get 4 drift rates (A response for an A stimulus, B response for an A stimulus, B response for a B stimulus, and A response for a B stimulus).  Note that error trials (A response for B stimulus and B response for A stimulus) are rare and are nonexistent for some subjects, so I am not sure whether these rates are meaningful.
+>
+> I have attached a sample dataset with 3 subjects.  The "condition" column refers to stimulus type, so the "condition" and "response" columns match on most of the trials.
+>
+> Thank you,
+> Jon
+>
+>
+> On Wednesday, June 21, 2017 at 11:51:32 AM UTC-7, Woo-Young Ahn wrote:
+> > Hi Jon,
+> >
+> > And have you checked the 'choiceRT_lba' model? Currently 'choiceRT_ddm' doesn't have the flexibility of modeling more than 1 condition YET.
+> >
+> > Could you upload a sample dataset (maybe 2-3 subjects' data) so that we can test it?
+> >
+> > Best,
+> > Young
+> >
+> >
+> >
+> > On Wednesday, June 21, 2017 at 12:49:02 PM UTC-4, Jonathon Howlett wrote:
+> > > Hi,
+> > >
+> > > I am very interested in applying the drift diffusion model.  According to my understanding, the input for the model for each trial includes subject identifier, response, and reaction time, but does not include any information about the stimulus/trial type.  In my task, there are two stimuli and two responses; subjects are instructed to respond based on the stimulus.  An "A" response to an "A" stimulus would be correct, while a "B" response to an "A" stimulus would be an error.  The accuracy rates on this task are quite high, with many subjects achieving 100% accuracy.
+> > >
+> > > I have been unable to apply the hBayesDM drift diffusion model to my data.  If I encode an "A" response as the upper boundary and a "B" response as the lower boundary, the model will not generate results (presumably because, without information about the stimulus type, the resulting drift rate would be approximately zero and all responses would be based on noise).  If I encode a correct response as the upper boundary and an error as the lower boundary, the model will not run, presumably because many subjects have 100% accuracy (i.e. no error trials).
+> > >
+> > > Is it possible to apply the drift diffusion model to my task?
+> > >
+> > > Thank you,
+> > > Jon
+
+From uaae41f24a6066e49 at groups.google.com  Wed Jun 21 23:17:21 2017
+From: uaae41f24a6066e49 at groups.google.com (Nathaniel Haines)
+Date: Wed, 21 Jun 2017 23:17:21 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.xOebyaLpBAAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.BSwAUbSfCwAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com> <wGL_jsmPEec.BSwAUbSfCwAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/xOebyaLpBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+One thing I might point out is that I think you should be simulating sigma_er in a different way. Right now, you are generating "gaussian noise", and then just adding it to the estimated value. Instead, you should be generating a positive sigma_er for each subject, and then simulating the response like this:
+
+`
+# beta and noise
+alpha <- truncnorm::rtruncnorm(nsubs, mean=0.4, sd=0.12, a=0, b=1)
+beta0 <- rnorm(nsubs, mean=2.5, sd=0.2)
+beta1 <- rnorm(nsubs, mean=1.2, sd=0.4)
+sigma_er <- truncnorm::rtruncnorm(nsubs, mean=?, sd=?, a=0.05, b=Inf) # replace ? with what you think would be best
+
+# create time series
+for (i in 1:nsubs) {
+  vm    <- vector("numeric", 35)
+  vp    <- vector("numeric", 34)
+  vm[1] <- 0.5
+  vp[1] <- 0.5
+  pc    <- 0
+  mc    <- 0
+  for (t in 1:(ntrials-1)) {
+    if (stim[t] == 1) {
+      mc       <- mc + 1
+      vm[mc+1] <- vm[mc] + alpha[i] * (lambda[t] - vm[mc])
+    } else if (pc < length(vp)-1) {
+      pc       <- pc + 1
+      vp[pc+1] <- vp[pc] + alpha[i] * (lambda[t] - vp[pc])
+    }
+  }
+  y[stim==1] <- vm
+  y[stim==2] <- vp
+
+  # create final time series
+  # corrupted by gaussian noise --> the "noise" here is actually estimated (i.e. it is the error after predicting the SCR given the expectation)
+  y          <- rnorm(1, mean = beta0[i] + beta1[i] * y,  sd = sigma_er[i])
+  Y[, i]     <- y
+
+}
+`
+
+Note that I am using the `truncnorm` package above to simulate from a truncated normal distribution (learning rate must be between 0 and 1 and sigma_er must be above 0).
+
+Best,
+Nate
+
+On Tuesday, June 20, 2017 at 10:29:48 AM UTC-4, janine....@gmail.com wrote:
+> Absolutely.
+>
+> The files are attached.
+
+From uaae41f24a6066e49 at groups.google.com  Wed Jun 21 23:20:04 2017
+From: uaae41f24a6066e49 at groups.google.com (Nathaniel Haines)
+Date: Wed, 21 Jun 2017 23:20:04 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.Zg0RkcjpBAAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.xOebyaLpBAAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com> <wGL_jsmPEec.xOebyaLpBAAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/Zg0RkcjpBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Oops, you may need to replace the sampling call from above with the following:
+
+`
+
+# create final time series
+  # corrupted by gaussian noise --> the "noise" here is actually estimated (i.e. it is the error after predicting the SCR given the expectation)
+
+  y          <- rnorm(ntrials-1, mean = beta0[i] + beta1[i] * y,  sd = sigma_er[i])
+
+  Y[, i]     <- y
+
+`
+
+On Wednesday, June 21, 2017 at 7:17:21 PM UTC-4, Nathaniel Haines wrote:
+> One thing I might point out is that I think you should be simulating sigma_er in a different way. Right now, you are generating "gaussian noise", and then just adding it to the estimated value. Instead, you should be generating a positive sigma_er for each subject, and then simulating the response like this:
+>
+>
+> `
+> # beta and noise
+> alpha <- truncnorm::rtruncnorm(nsubs, mean=0.4, sd=0.12, a=0, b=1)
+> beta0 <- rnorm(nsubs, mean=2.5, sd=0.2)
+> beta1 <- rnorm(nsubs, mean=1.2, sd=0.4)
+> sigma_er <- truncnorm::rtruncnorm(nsubs, mean=?, sd=?, a=0.05, b=Inf) # replace ? with what you think would be best
+>
+> # create time series
+> for (i in 1:nsubs) {
+>   vm    <- vector("numeric", 35)
+>   vp    <- vector("numeric", 34)
+>   vm[1] <- 0.5
+>   vp[1] <- 0.5
+>   pc    <- 0
+>   mc    <- 0
+>   for (t in 1:(ntrials-1)) {
+>     if (stim[t] == 1) {
+>       mc       <- mc + 1
+>       vm[mc+1] <- vm[mc] + alpha[i] * (lambda[t] - vm[mc])
+>     } else if (pc < length(vp)-1) {
+>       pc       <- pc + 1
+>       vp[pc+1] <- vp[pc] + alpha[i] * (lambda[t] - vp[pc])
+>     }
+>   }
+>   y[stim==1] <- vm
+>   y[stim==2] <- vp
+>
+>   # create final time series
+>   # corrupted by gaussian noise --> the "noise" here is actually estimated (i.e. it is the error after predicting the SCR given the expectation)
+>   y          <- rnorm(1, mean = beta0[i] + beta1[i] * y,  sd = sigma_er[i])
+>   Y[, i]     <- y
+>
+> }
+> `
+>
+> Note that I am using the `truncnorm` package above to simulate from a truncated normal distribution (learning rate must be between 0 and 1 and sigma_er must be above 0).
+>
+> Best,
+> Nate
+>
+> On Tuesday, June 20, 2017 at 10:29:48 AM UTC-4, janine....@gmail.com wrote:
+> > Absolutely.
+> >
+> > The files are attached.
+
+From u279c89810c26c86e at groups.google.com  Thu Jun 22 04:20:33 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Thu, 22 Jun 2017 04:20:33 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.gNoDXi76BAAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/gNoDXi76BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+That was really helpful. I think it is working now. The model converges
+and I can recover the average learning rate, althought the individual
+learning rates sometimes appear to be too close to the average
+compared to the simulated value.
+
+Anyway, for completeness, this is the sampling code that I ended
+up using:
+
+for (i in 1:nsubs) {
+
+  vm    <- 0.5
+  vp    <- 0.5
+  for (t in 1:ntrials) {
+
+    if (stim[t] == 1) {
+
+      v[t, i] <- vm
+      vm <- vm + alpha[i] * (lambda[t] - vm)
+    } else {
+      v[t, i] <- vp
+      vp <- vp + alpha[i] * (lambda[t] - vp)
+    }
+    mu <- beta0[i] + beta1[i] * v[t, i]
+    Y[t, i] <- rnorm(1, mean=mu, sd=sigma[i])
+  }
+}
+
+And attached is the output, comparing true individual learning rates
+with the ones obtained from stan.
+
+From u47d1400f432367d7 at groups.google.com  Thu Jun 22 13:09:43 2017
+From: u47d1400f432367d7 at groups.google.com (Haines, Nathaniel B.)
+Date: Thu, 22 Jun 2017 13:09:43 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.YIm7CMGvAAAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/YIm7CMGvAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Jane,
+
+Great! I am glad we could help. The individual parameters shrinking toward the average is the hierarchical shrinkage–in practice this shrinkage typically gives us better estimates than we would have without it (i.e. "regularized" estimates). Are the true individual rates at least within the 95% highest density interval of the estimated individual posteriors? Most of them should be.
+
+Anyway, good luck with your project!
+
+Best,
+
+Nate
+
+From: hbayesd...@googlegroups.com <hbayesd...@googlegroups.com> on behalf of janine....@gmail.com <janine....@gmail.com>
+
+Sent: Thursday, June 22, 2017 12:20:33 AM
+
+To: hbayesdm-users
+Subject: Re: Reinforcement learning model with linear observation model
+
+That was really helpful. I think it is working now. The model converges
+and I can recover the average learning rate, althought the individual
+learning rates sometimes appear to be too close to the average
+compared to the simulated value.
+
+Anyway, for completeness, this is the sampling code that I ended
+up using:
+
+for (i in 1:nsubs) {
+  vm    <- 0.5
+  vp    <- 0.5
+  for (t in 1:ntrials) {
+    if (stim[t] == 1) {
+      v[t, i] <- vm
+      vm <- vm + alpha[i] * (lambda[t] - vm)
+    } else {
+      v[t, i] <- vp
+      vp <- vp + alpha[i] * (lambda[t] - vp)
+    }
+    mu <- beta0[i] + beta1[i] * v[t, i]
+    Y[t, i] <- rnorm(1, mean=mu, sd=sigma[i])
+  }
+}
+
+And attached is the output, comparing true individual learning rates
+with the ones obtained from stan.
+
+--
+You received this message because you are subscribed to the Google Groups "hbayesdm-users" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hbayesdm-user...@googlegroups.com.
+To post to this group, send email to  hbayesd...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hbayesdm-users/bdb86aba-9e64-4f1b-acb2-aadbb119f18b%40googlegroups.com <https://groups.google.com/d/msgid/hbayesdm-users/bdb86aba-9e64-4f1b-acb2-aadbb119f18b%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+For more options, visit https://groups.google.com/d/optout.
+
+From u279c89810c26c86e at groups.google.com  Sat Jun 24 04:58:33 2017
+From: u279c89810c26c86e at groups.google.com (janine....@gmail.com)
+Date: Sat, 24 Jun 2017 04:58:33 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.Q3N5YGqZBQAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/Q3N5YGqZBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Nate,
+
+I think it's working now. I played around with sigma in the simulation and
+was eventually able to recover the parameters.
+
+Anyway, I came across a previous post of yours on bimodal posteriors
+(https://groups.google.com/forum/#!topic/stan-users/swku9w9fnKs) and
+was wondering whether you had any updates on this issue. I did see
+bimodal posteriors in the individual learning rates in a slightly more
+complex model, and found your post on the different priors very helpful.
+However, it looks like you decided to stick with the cauchy(0, 5) prior
+in most of the models I saw. As you know, bimodal posteriors in individual
+learning rates are a problem when we want to generate fMRI regressors
+based on point estimates.
+
+Would be very interested to hear your thoughts on this.
+
+Thanks!
+
+From u47d1400f432367d7 at groups.google.com  Tue Jun 27 16:14:35 2017
+From: u47d1400f432367d7 at groups.google.com (Haines, Nathaniel B.)
+Date: Tue, 27 Jun 2017 16:14:35 +0000
+Subject: Re: Reinforcement learning model with linear observation model
+Message-ID: <wGL_jsmPEec.3oRClb5CAgAJ@hbayesdm-users.groups.google.com>
+In-Reply-To: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+References: <wGL_jsmPEec.tco5NqXDCgAJ@hbayesdm-users.groups.google.com>
+Archived-At: <https://groups.google.com/g/hbayesdm-users/c/wGL_jsmPEec/m/3oRClb5CAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jane,
+
+Typically I find that the model is mis-specified or there are not enough observations at the individual level when I get this behavior. That said, I have tried versions with sigma ~ cauchy(0,1), which tends to help is most situations–I would try that first. If this still fails, you can try putting normal priors on the sigma (e.g. sigma ~ normal(0,5)).
+
+If you still have trouble after this, it may be one of the problems above (i.e. mis-specification or too few observations at individual level).
+
+Best,
+
+Nate
+
+From: hbayesd...@googlegroups.com <hbayesd...@googlegroups.com> on behalf of janine....@gmail.com <janine....@gmail.com>
+
+Sent: Saturday, June 24, 2017 12:58:33 AM
+To: hbayesdm-users
+Cc: Haines, Nathaniel B.
+
+Subject: Re: Reinforcement learning model with linear observation model
+
+Hi Nate,
+
+I think it's working now. I played around with sigma in the simulation and
+was eventually able to recover the parameters.
+
+Anyway, I came across a previous post of yours on bimodal posteriors
+(https://groups.google.com/forum/#!topic/stan-users/swku9w9fnKs) and
+was wondering whether you had any updates on this issue. I did see
+bimodal posteriors in the individual learning rates in a slightly more
+complex model, and found your post on the different priors very helpful.
+However, it looks like you decided to stick with the cauchy(0, 5) prior
+in most of the models I saw. As you know, bimodal posteriors in individual
+learning rates are a problem when we want to generate fMRI regressors
+based on point estimates.
+
+Would be very interested to hear your thoughts on this.
+
+Thanks!
+
+--
+You received this message because you are subscribed to the Google Groups "hbayesdm-users" group.
+To unsubscribe from this group and stop receiving emails from it, send an email to hbayesdm-user...@googlegroups.com.
+To post to this group, send email to  hbayesd...@googlegroups.com.
+
+To view this discussion on the web visit  https://groups.google.com/d/msgid/hbayesdm-users/552b1833-34a0-4fee-8bfa-85ebe79fa071%40googlegroups.com <https://groups.google.com/d/msgid/hbayesdm-users/552b1833-34a0-4fee-8bfa-85ebe79fa071%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+For more options, visit https://groups.google.com/d/optout.
+
