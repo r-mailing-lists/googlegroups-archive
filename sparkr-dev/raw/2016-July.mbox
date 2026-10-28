@@ -1,0 +1,152 @@
+From u87e25f9519a2eecb at groups.google.com  Mon Jul  4 00:27:00 2016
+From: u87e25f9519a2eecb at groups.google.com (=?utf-8?q?Gonzalo_Andr=C3=A9s_Moreno_G=C3=B3mez?=)
+Date: Mon, 04 Jul 2016 00:27:00 +0000
+Subject: Re: Building a Random Forest model with SparkR
+Message-ID: <3N6LK7k4NB0.pH1pvefDAgAJ@sparkr-dev.groups.google.com>
+In-Reply-To: <3N6LK7k4NB0.5hJEecWT6NUJ@sparkr-dev.groups.google.com>
+References: <3N6LK7k4NB0.5hJEecWT6NUJ@sparkr-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/sparkr-dev/c/3N6LK7k4NB0/m/pH1pvefDAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Sean:
+
+Where do I find the function includePackage(sc, randomforest)?
+
+regards
+
+Gonzalo
+
+El jueves, 19 de marzo de 2015, 19:15:26 (UTC-5), Sean Farrell escribió:
+> Hi all,
+>
+> I've been working on building a Random Forest model on my modest AWS cluster (6 nodes each with 16 cores and 32G RAM) using Spark. My training set is pretty big (~30,000 rows and ~2,000 columns) so won't run on a single node. I had cobbled together some code to build the model as a Map Reduce job, and now I've hacked some code together to do this in Spark (see below). It takes about 15 sec to build a model on my cluster using this code (an equivalent implementation as a MapReduce job took about 15 mins).
+>
+> In this example my training set data is located in HDFS as a csv file with no column or row names. The column names of the training set are instead saved in the file train.names.rda which is loaded in before building the model. To combine the random forests together into a single model at the end, I use the my_combine function that was helpfully provided by Joran at http://stackoverflow.com/questions/19170130/combining-random-forests-built-with-different-training-sets-in-r.
+>
+> I'm sure there is likely to be a better way of doing it than this, so please feel free to suggest improvements (or alternative approaches)!
+>
+>
+> ### START
+>
+> # Load libraries
+> library(randomForest)
+> library(SparkR)
+>
+> # Set spark memory allocation (important even though I set the spark executor and driver memories when initializing the Spark context, as without it I run into Java heap space errors)
+> Sys.setenv(SPARK_MEM="40g")
+>
+> # Initialise Spark context
+> sc <- sparkR.init(master="yarn-client",sparkEnvir=list(spark.executor.memory="24g",spark.driver.memory="24g",spark.executor.instances="5",spark.executor.cores="16", spark.driver.maxResultSize="10g"))
+>
+> # Pass randomForest package to all nodes
+> includePackage(sc,randomForest)
+>
+>
+> ### Build randomForest models of 10 trees each for entire data set sliced into 50 chunks (so 500 trees in the forest)
+>
+> # Load the column names of the training set
+> load("train.names.rda")
+>
+> # Define RDD with 50 slices
+> rdd <- textFile(sc, "hdfs:<server_address>/user/spark/spark_training.csv",50)
+>
+> # Define mapPartition function to build randomForest models
+> rf <- mapPartitions(rdd, function(input) {
+>
+> # Parse the RDD into a data frame
+> df <- data.frame(do.call('rbind',strsplit(as.character(input),',',fixed=TRUE)))
+>
+> # Set the data frame column names
+> names(df) <- train.names
+>
+> # Fix the data type to numeric for all but the classification column
+> for (i in 1:(ncol(df)-1)){
+> df[,i] <- as.numeric(as.character(df[,i]))
+> }
+>
+> # Get rid of quotation marks in classification column
+> df$MyClass <- as.factor(gsub("\"","", df$MyClass))
+> # Build the RF model
+> randomForest(df[,-ncol(df)],df[,ncol(df)],ntree=10)
+> })
+>
+> # Build the models
+> output.rf<- collect(rf)
+>
+> # Define function to split output list into individual models and combine into one uber model
+> uberRF <- function (x) {
+>         j=1
+>         rf.list <- list()
+>         for (i in 1:(length(x)/18)){
+>                 temp <-x[j:(i*18)]
+>                 class(temp) <- "randomForest"
+>                 varname <- paste("rf",i,sep="")
+>                 assign(varname,temp)
+>                 j = j + 18
+>                 rf.list[[length(rf.list)+1]] <- temp
+>         }
+>
+>         # Combine the models together
+>         final.rf <- do.call(my_combine, rf.list)
+>         final.rf
+> }
+>
+> # Combine the RF models
+> forest <- uberRF(output.rf)
+>
+> ### END
+
+From u809bc4f9c1db77d1 at groups.google.com  Tue Jul  5 10:30:36 2016
+From: u809bc4f9c1db77d1 at groups.google.com (pvill...@stratio.com)
+Date: Tue, 05 Jul 2016 10:30:36 +0000
+Subject: Call to new JObject sometimes returns an empty R environment
+Message-ID: <oeN6O0liNYM.gmGRdmwzAwAJ@sparkr-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/sparkr-dev/c/oeN6O0liNYM/m/gmGRdmwzAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+ Hi all,
+
+ I have recently moved from SparkR 1.5.2 to 1.6.0. I am doing some experiments using SparkR:::newJObject("java.util.HashMap") and I notice the behaviour has changed, and it now returns an "environment" instead of a "jobj":
+
+> print(class(SparkR:::newJObject("java.util.HashMap")))  # SparkR 1.5.2
+[1] "jobj"
+
+> print(class(SparkR:::newJObject("java.util.HashMap")))  # SparkR 1.6.0
+[1] "environment"
+
+Moreover, the environment returned is apparently empty (when I call ls() on the resulting environment, it returns character(0)) . This problem only happens with some Java classes. I am not able to say exactly which classes cause the problem.
+
+If I try to create an instance of other classes such as java.util.BitSet, it works successfully. I thought it might be related with parameterized types, but it does work successfully with ArrayList and with HashSet, which take a parameter.
+
+Any suggestions on this change of behaviour (apart from "do not use private functions" :-)   ) ?
+
+Thank you very much
+
+From udf930932ee491205 at groups.google.com  Wed Jul 27 11:00:32 2016
+From: udf930932ee491205 at groups.google.com (Info Cim)
+Date: Wed, 27 Jul 2016 11:00:32 +0000
+Subject: Hadoop Training In Bay Area
+Message-ID: <QhtG0ZQ2D3k.Qf_HMeKhAgAJ@sparkr-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/sparkr-dev/c/QhtG0ZQ2D3k/m/Qf_HMeKhAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hadoop is  a very common and powerful (raised, flat supporting surface) for working with data, but it can be a little hard to get a grip exactly on what it is and what it does. Hadoop Training In Bay Area <http://www.bigdatatrunk.com/> It's a collection of software computer programs that are used to work with big data. Hadoop Training offers full-length courses on a range of Hadoop technologies for developers, data analysts and administrators. Hadoop Training is  Designed for the people who wants to learn hadoop in a format that meets your convenience, availability and flexibility needs, these courses will lead you on the path to becoming a certified Hadoop professional. People are looking for Hadoop Training in bay area ,  BigData trunk will provide  bigdata training with experienced faculty in union city.   Hadoop Training focuses on leading focus consulting and training specialists.
+
+From u9bb9005bae5be673 at groups.google.com  Thu Jul 28 09:52:42 2016
+From: u9bb9005bae5be673 at groups.google.com (infoc...@gmail.com)
+Date: Thu, 28 Jul 2016 09:52:42 +0000
+Subject: Big Data Analyst Training
+Message-ID: <trfzcBTH99g.5yprBMPsAgAJ@sparkr-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/sparkr-dev/c/trfzcBTH99g/m/5yprBMPsAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+The amount of data produced across the globe has been going on increasing quickly and will continue to grow at a speeding-up rate for the future (that can be imagined now). Big Data Analyst Training <http://www.bigdatatrunk.com/>  Organizations use their data to support and influence decisions and build data-intensive products and services, such as recommendation, prediction, and diagnostic systems. The collection of skills required by organizations to support these functions has been grouped under the term ‘data science’. Effective big data analysis needs/demands skills in a range of computer science areas such as data storage and processing, (related to studying numbers) data analysis and (math based/computer-based) (the study of language), and the skill to combine this knowledge in new ways. In big data analyst you  will learn who is best suited to attend the full training, what prior knowledge you should have, and how the skills will help you (do/complete) business-critical analyses using Big Data in Hadoop.
+
