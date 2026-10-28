@@ -1,0 +1,1135 @@
+From u5d1131f3aa485e34 at groups.google.com  Wed Feb  2 01:43:28 2022
+From: u5d1131f3aa485e34 at groups.google.com (Taylor Velander)
+Date: Wed, 02 Feb 2022 01:43:28 +0000
+Subject: Accounting for latent heat of fusion and solidification
+Message-ID: <tKuU1TrP2Hk.v44jn-DhAQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/tKuU1TrP2Hk/m/v44jn-DhAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I am struggling to figure out how NicheMapR accounts for the latent heat of fusion and solidification of moisture within the soil/snow. If I am not mistaken, latent heat of fusion/solidification of water (phase change) is a key component for why soil/snow can maintain ~0 C
+
+Anything could help, I noticed that if moisture is present in soil and temps are around 0 C, the latent heat of fusion (333 J/kg) is added to the specific heat computation of soil. But how?
+
+Thank You!
+
+From u6cec8ea3702ece93 at groups.google.com  Wed Feb  2 10:13:19 2022
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Wed, 02 Feb 2022 10:13:19 +0000
+Subject: Re: Range Wide Activity Map
+Message-ID: <j51wthk2VSE.O-6sRrP9AQAJ@nichemapr.groups.google.com>
+In-Reply-To: <j51wthk2VSE.NydLcaKNAQAJ@nichemapr.groups.google.com>
+References: <j51wthk2VSE.NydLcaKNAQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/j51wthk2VSE/m/O-6sRrP9AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Connor,
+
+There isn't any built-in functionality but you can do it by running through a list of points in a grid and then rasterising at the end. Here's an example:
+
+library(NicheMapR)
+library(raster)
+
+# create a vector of latitudes and longitudes
+sites <- expand.grid(seq(126, 127, 0.11), seq(-30, -29, 0.11))
+colnames(sites) <- c('long', 'lat') # name columns
+sites$soiltemp <- NA # add a blank column to put a variable
+
+# loop through the sites and run the microclimate model, saving the soil temperature at 11 am
+for(i in 1:nrow(sites)){
+ micro <- micro_global(loc = c(sites[i, 1], sites[i, 2]), runshade = 0)
+ sites$soiltemp[i] <- micro$soil[12, 3]
+}
+
+# create a grid
+lat1<-min(sites[, 2]) - 0.065 # min latitude
+lat2<-max(sites[, 2]) + 0.065 # max latitude
+lon1<-min(sites[, 1]) - 0.065 # min longitude
+lon2<-max(sites[, 1]) + 0.065 # max longitude
+quadwid <- (lon2 - lon1) / 0.11
+quadlen <- (lat2 - lat1) / 0.11
+gridout <- raster(ncol = quadwid, nrow = quadlen, xmn = lon1, xmx = lon2, ymn = lat1, ymx = lat2)
+
+# put the results in the grid
+x <- cbind(sites$long, sites$lat) # list of co-ordinates
+grid <- rasterize(x, gridout, sites[, 3])
+grid <- projectRaster(grid, crs="+proj=longlat +datum=WGS84") # change projection here if needed
+
+plot(grid)
+
+All the best,
+Mike
+
+On Tuesday, February 1, 2022 at 10:59:41 AM UTC+11 connorh...@gmail.com wrote:
+>
+> Hi All,
+>
+> I frequently see papers using NicheMapR to calculate range or continent wide conditions (like potential activity hours) for a species in a similar way as you have done in the Heteronotia binoei paper from 2004, with resulting raster outputs across the range of a species. Despite how common this seems in the literature, I have yet to come upon a standardized methodology of applying a parameterized ectotherm model across a range to produce a raster image like this, only running it at individual points. While in theory I feel like I could come up with ways to do this, I wanted to double check that there wasn’t already some built in functionality or documentation on doing this that I may be missing that you could point me in the direction of.
+>
+> Thanks in advance,
+>
+> Connor Hughes
+> --
+> M.S. Biology, Austin Peay State University 2022
+> B.S. Wildlife and Fisheries Ecology and Conservation & GIS Technologies.
+> UMass Amherst College of Natural Sciences 2020
+> He/Him/His
+
+From u6cec8ea3702ece93 at groups.google.com  Wed Feb  2 11:04:14 2022
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Wed, 02 Feb 2022 11:04:14 +0000
+Subject: Re: Accounting for latent heat of fusion and solidification
+Message-ID: <tKuU1TrP2Hk.o7QRk3oAAgAJ@nichemapr.groups.google.com>
+In-Reply-To: <tKuU1TrP2Hk.v44jn-DhAQAJ@nichemapr.groups.google.com>
+References: <tKuU1TrP2Hk.v44jn-DhAQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/tKuU1TrP2Hk/m/o7QRk3oAAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Taylor,
+
+The snow/ice is dealt with on an hourly basis, checking what the predicted change in temperature is between hours and, if it reaches the phase transition it keeps the snow/water temperature constant at just below zero while keeping track of the amount of heat exchanged until sufficient energy has been met to meet the heat of fusion/heat capacity of water. Does that make sense? I've pasted the relevant Fortran code for the main part of the snow calculations below, which are pretty convoluted (it was a brain stretch to get this right!). Also, here's what's stated in the paper describing the snow model https://onlinelibrary.wiley.com/doi/abs/10.1111/geb.13100
+
+"Snow melt occurs according to the heat
+load as computed by the heat budget for the substrate (including
+the snow), in addition to melting attributable to rain. If there is an
+increase in temperature between time steps for a given internode
+of the snowpack, this temperature difference is multiplied by the
+snow heat capacity (including the heat of fusion), snow density and
+distance between the nodes to obtain the heat input, and then divided
+by the heat of fusion to compute the mass of snow melted,
+with temperatures of the respective nodes set to 0°C."
+
+All the best,
+Mike
+
+************** begin main code for snow model ********************************
+      if(runsnow.eq.1)then
+c       write(*,*) "in osub"
+c       write(*,*) methour
+c      get cm snow lost due to rainfall - from Anderson model
+       if((OUT(2).ge.snowtemp).and.(rainfall.gt.0).and.((time.lt.1e-8)
+     & .or.(int(rainhourly).eq.1)))then ! mean air temperature warmer than snow temperature and more than 1 mm rain and midnight
+        rainmelt=(rainmeltf*rainfall*(OUT(2)))*24./10./snowdens ! melt the snow as a function of the air temperature
+        if(int(rainhourly).eq.1)then
+         rainmelt=rainmelt/24.
+        endif
+        if(rainmelt.lt.0)then
+         rainmelt=0.D0
+        endif
+       else
+        rainmelt=0.D0
+       endif
+       netsnow=snowfall-gwsurf*0.0001/snowdens ! convert gwsurf from g/h/m2 (cm3/h/m2) to cm/m2 of evap, and then to snow depth equivalent (1mm/m2 rain/evap = 1000 cm3/m2)
+       if(netsnow.lt.0)then
+        netsnow=0
+       endif
+       netsnow = netsnow + xtrain/snowdens ! add any extra snow carried over by xtrain
+       xtrain=0.D0 !reset xtrain
+       maxsnode2=int(maxsnode1)
+       melt=0.D0
+       if((methour.eq.1).and.(DOY.eq.1))then
+        meanT=tt
+       else
+        do 98 i=1,8 ! get mean snowpack temperature
+         meanT(i)=(tt(i)+tt(i+1))/2. ! current temp
+         meanTpast(i)=(tt_past(i)+tt_past(i+1))/2. ! last hour's temp
+98      continue
+       endif
+       if((methour.eq.1).and.(DOY.eq.1))then
+        melt=0.D0
+       else
+        prevsnow=snowhr(methour-1)
+        if(prevsnow.ge.minsnow)then ! melt the snow
+        WB = 0.D0
+        DP = 999.
+C       BP CALCULATED FROM ALTITUDE USING THE STANDARD ATMOSPHERE
+C       EQUATIONS FROM SUBROUTINE DRYAIR    (TRACY ET AL,1972)
+        PSTD=101325.
+        PATMOS=PSTD*((1.-(0.0065*ALTT/288.))**(1./0.190284))
+        BP = PATMOS
+        call WETAIR(0.D+0,WB,100.D+0,DP,BP,E,ESAT,VD,RW,TVIR,TVINC,
+     &  DENAIR,CP,WTRPOT) ! get specific heat and mixing ratio of humid air at zero C
+        cpsnow = (2.100*snowdens+(1.005+1.82*(RW/1.+RW))* ! based on https://en.wiktionary.org/wiki/humid_heat
+     &   (1-snowdens)) ! compute weighted specific heat accounting for ice vs airm SI units
+         hcap=cpsnow+HTOFN !J/gC
+         do 1100 j=1,(maxsnode2+1) ! loop through snow nodes
+          cnd=j+7-maxsnode2
+          if(j.ne.maxsnode2+1)then ! not at the bottom yet
+           if(meanT(cnd).gt.melthresh)then ! check if greater than threshold above 0 deg C (here 0.4 deg C)
+            meltheat=(meanT(cnd)-melthresh)*cpsnow* ! g snow melted (change in temp x heat capacity x g snow (1m2 * height of layer)
+     &       (snode(max(1,j+8-maxsnode2))-snode(max(1,cnd)))*10000.D0* ! plus mass times heat of fusion since the layer got above zero
+     &        snowdens+HTOFN*(snode(max(1,j+8-maxsnode2))-
+     &        snode(max(1,cnd)))*10000.D0*snowdens
+            melt=melt+meltheat/HTOFN !(snow depth in cm x snow density in g/cm3 converted units of g/m2) gives J heat input,
+           endif                     ! divided by heat of fusion to get g melted
+          else
+           if(meanT(cnd).gt.melthresh)then ! doing deepest node - depth here is flexible and is the difference between current snow and the
+            meltheat=(meanT(cnd)-melthresh)*cpsnow* ! height of the current maximum node used of the 8 possible
+     &       (cursnow-snownode(max(1,maxsnode2)))*10000.D0*snowdens+
+     &      HTOFN*(cursnow-snownode(max(1,maxsnode2)))*10000.D0*snowdens
+            melt=melt+meltheat/HTOFN
+           endif
+          endif
+          if(cursnow.lt.200)then
+           if(j.lt.8)then
+            if(j.ne.maxsnode2+1)then ! not at bottom yet
+             if((meanTpast(cnd).ge.0).and.(meanT(cnd).le.0))then ! phase change, freezing
+              layermass(cnd)=max(0.D+0,(snode(max(1,j+8-maxsnode2))-
+     &        snode(max(1,cnd)))*10000.D0*snowdens)
+              qphase(max(1,cnd))=(meanTpast(max(1,cnd))-meanT(max(1,cnd)
+     &        ))*layermass(max(1,cnd))*cpsnow
+              t(cnd)=0.D0
+              t(cnd+1)=0.D0
+              tt(cnd)=0.D0
+              tt(cnd+1)=0.D0
+              y(cnd)=0.D0
+              y(cnd+1)=0.D0
+             endif
+            else
+             if((meanTpast(max(1,cnd)).ge.0.D0).and.
+     &(meanT(max(1,cnd)).le.0.))then ! phase change, freezing
+              layermass(cnd)=max(0.D+0,(cursnow-snownode(max(1,maxsnode2
+     &        )))*10000*snowdens)
+              qphase(max(1,cnd))=(meanTpast(max(1,cnd))-meanT(max(1,cnd
+     &        )))*layermass(max(1,cnd))*cpsnow
+              t(max(1,cnd))=0.D0
+              t(cnd+1)=0.D0
+              tt(max(1,cnd))=0.D0
+              tt(cnd+1)=0.D0
+              y(max(1,cnd))=0.D0
+              y(cnd+1)=0.D0
+             endif
+            endif
+           else
+            if((meanTpast(8).ge.0.D0).and.(meanT(8).le.0.D0))then ! phase change, freezing
+             layermass(8)=max(0.D+0,(cursnow-snownode(8))*10000.D0
+     &       *snowdens)
+             qphase(8)=(meanTpast(8)-meanT(8))*layermass(8)*
+     &       cpsnow
+             t(max(1,cnd))=0.D0
+             tt(max(1,cnd))=0.D0
+             y(max(1,cnd))=0.D0
+            endif
+           endif
+          endif
+1100     continue
+         sumphase=sum(qphase)+sumphase
+         sumlayer=sum(layermass)
+         if(cursnow.lt.200)then
+          if(sumphase.gt.(HTOFN*sumlayer))then
+           do 1121 j=1,(maxsnode2+1) ! loop through snow nodes
+            if(j.lt.9)then
+             cnd=j+7-maxsnode2
+             if((t(max(1,cnd)).lt.-1e-8).and.(qphase(max(1,cnd))
+     &        .gt.0.D0))then
+              t(max(1,cnd))=-0.5
+              t(cnd+1)=-0.5
+              tt(max(1,cnd))=-0.5
+              tt(cnd+1)=-0.5
+              y(max(1,cnd))=-0.5
+              y(cnd+1)=-0.5
+              qphase(max(1,cnd))=0.
+             endif
+            endif
+1121       continue
+           sumphase=0.D0
+          endif
+         !write(*,*) sumphase
+         !write(*,*) snode
+         endif
+        endif
+       endif
+       melted=melt*0.0001 ! convert from g/m2 of ice to cm snow
+       if(DOY.gt.1)then
+        melted=melted*snowmelt
+        QFREZE=melted*(1-snowmelt)*79.7/60./10000.D0 ! convert from g snow melted to cal/min/cm2, latent heat of fusion being 79.7 calories per gram, only affecting surface layer!
+        if(snowmelt.gt.1)then
+         QFREZE=0.D0
+        endif
+       endif
+       cummelted=melted+cummelted
+       if((methour.eq.1).and.(DOY.eq.1))then
+        melted=0
+       endif
+       if(methour.gt.1)then
+        cursnow=snowhr(methour-1)+netsnow-rainmelt-melted
+        snowhr(methour)=cursnow
+        if(snowhr(methour).lt.0.D0)then
+         snowhr(methour)=0.D0
+        endif
+        snowpres = snowhr(methour)
+        snowtest = snowhr(methour-1)
+        if(int(siout(1)).eq.1380)then
+         if(cummelted.gt.snowhr(methour-1))then
+          cummelted=snowhr(methour-1)
+         endif
+         cummelted=0.D0
+        endif
+       endif
+       if(snowhr(methour).lt.0.D0)then
+        snowhr(methour)=0.D0
+       endif
+       if(methour.gt.1)then
+       if((snowhr(methour).lt.minsnow).and.(snowhr(methour-1).lt.1e-8)
+     &)then
+        xtrain=snowhr(methour)*snowdens !save snow below min level and add to next hour
+        snowhr(methour)=0.D0
+       endif
+       endif
+       cursnow=snowhr(methour)
+C      make sure snow is 0 degrees or less, now that melting is done
+       do 102 i=1,8
+        if(snode(i).gt.0)then
+         if(tt(i).gt.0.D0)then
+          t(i)=0.D0
+          tt(i)=0.D0
+          y(i)=0.D0
+          if((i.eq.8).and.(tt(9).gt.0.D0))then
+           t(9)=0.D0
+           tt(9)=0.D0
+           y(9)=0.D0
+          endif
+         endif
+        endif
+102    continue
+c      ensure that recently fallen snow is frozen
+       if(methour.gt.1)then
+        if((snowhr(methour).gt.0).and.(snowhr(methour-1).lt.1e-8))then
+         do 101 i=1,8
+          if(snowhr(methour).gt.snownode(i))then
+           maxsnode3=i
+          endif
+101      continue
+         if(maxsnode3.eq.0)then
+          if(tt(9).gt.0.D0)then
+           t(9)=0.D0
+           tt(9)=0.D0
+           y(9)=0.D0
+          endif
+         else
+          do 989 i=9-maxsnode3,8-maxsnode3
+           if(tt(i).gt.0.D0)then
+            t(i)=0.D0
+            tt(i)=0.D0
+            y(i)=0.D0
+           endif
+989       continue
+         endif
+        endif
+       else
+        cursnow=netsnow-rainmelt-melted
+        snowhr(methour)=cursnow
+        SNOWOUT=snowhr(methour)
+        tt_past=tt
+        call snowlayer
+       endif
+       if(methour.gt.1)then
+        if(snowhr(methour-1).gt.0.D0)then
+         snowalbedo=(-9.8740*dlog(daysincesnow) + 78.3434)/100.
+         SABNEW = 1-snowalbedo
+C        SETTING THIS MONTH'S PERCENT OF SURFACE WITH FREE WATER/SNOW ON IT
+         PTWET = 100.
+         SLE = 0.98
+        else
+         SABNEW = 1.0 - REFLS(DOY)
+C        SETTING THIS MONTH'S PERCENT OF SURFACE WITH FREE WATER/SNOW ON IT
+         PTWET = PCTWET(DOY)
+         SLE = SLES(DOY)
+        endif
+       else
+        SABNEW = 1.0 - REFLS(DOY)
+C       SETTING THIS MONTH'S PERCENT OF SURFACE WITH FREE WATER/SNOW ON IT
+        PTWET = PCTWET(DOY)
+        SLE = SLES(DOY)
+       endif
+       SNOWOUT=snowhr(methour)
+       call snowlayer
+       if(methour.gt.1)then
+        if((SNOWOUT-snownode(max(1,int(maxsnode1))).lt.0.5) ! avoid getting too close to a given node - save to xtrain and add/subtract later
+     &   .and.(snowout.le.snowhr(methour-1)).and.(SNOWOUT.gt.0))then
+         xtrain=xtrain+(SNOWOUT-snownode(max(1,int(maxsnode1))))
+     &    *snowdens
+         SNOWOUT=snownode(max(1,int(maxsnode1)))-.1
+         snowhr(methour)=SNOWOUT
+        endif
+       endif
+       call snowlayer
+       if(((snowout.lt.minsnow+0.5).or.(snowout.lt.snownode(max(1,int ! avoid getting too close to a given node - save to xtrain and add/subtract later
+     &  (maxsnode1)))+0.5)).and.(snowout.gt.0))THEN
+        xtrain=0.5*snowdens
+        SNOWOUT=snownode(max(1,int(maxsnode1)))+0.5
+        snowhr(methour)=SNOWOUT
+       endif
+       call snowlayer
+       tt_past=tt
+      else
+       xtrain=0.D0
+       SNOWOUT=0.D0
+      endif
+      ! count days of snow in a row
+      if((methour.eq.1).and.(DOY.eq.1))then
+       snowage=0.D0
+      else
+       if(snowhr(methour).gt.0.D0)then
+        if(snowhr(methour-1).gt.0.D0)then
+         snowage=snowage+1./25.
+        else
+         snowage=0.D0
+        endif
+       else
+        snowage=0.D0
+       endif
+      endif
+      prevden=snowdens
+********************* end main code for snow model *******************************
+
+On Wednesday, February 2, 2022 at 12:43:28 PM UTC+11 vela...@d.umn.edu wrote:
+> Hello,
+>
+> I am struggling to figure out how NicheMapR accounts for the latent heat of fusion and solidification of moisture within the soil/snow. If I am not mistaken, latent heat of fusion/solidification of water (phase change) is a key component for why soil/snow can maintain ~0 C
+>
+> Anything could help, I noticed that if moisture is present in soil and temps are around 0 C, the latent heat of fusion (333 J/kg) is added to the specific heat computation of soil. But how?
+>
+> Thank You!
+
+From u94835dd4e822b53e at groups.google.com  Wed Feb  2 17:59:26 2022
+From: u94835dd4e822b53e at groups.google.com (Connor Hughes)
+Date: Wed, 02 Feb 2022 17:59:26 +0000
+Subject: Re: Range Wide Activity Map
+Message-ID: <j51wthk2VSE.QzrsL_PjAgAJ@nichemapr.groups.google.com>
+In-Reply-To: <j51wthk2VSE.O-6sRrP9AQAJ@nichemapr.groups.google.com>
+References: <j51wthk2VSE.NydLcaKNAQAJ@nichemapr.groups.google.com> <j51wthk2VSE.O-6sRrP9AQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/j51wthk2VSE/m/QzrsL_PjAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Mike,
+
+Thanks for the response! That is exactly what I was looking for, thanks!
+
+Best,
+
+Connor
+
+On Wed, Feb 2, 2022 at 4:13 AM NicheMapR <nich...@googlegroups.com> wrote:
+
+> Hi Connor,
+>
+> There isn't any built-in functionality but you can do it by running through a list of points in a grid and then rasterising at the end. Here's an example:
+>
+> library(NicheMapR)
+> library(raster)
+>
+> # create a vector of latitudes and longitudes
+> sites <- expand.grid(seq(126, 127, 0.11), seq(-30, -29, 0.11))
+> colnames(sites) <- c('long', 'lat') # name columns
+> sites$soiltemp <- NA # add a blank column to put a variable
+>
+> # loop through the sites and run the microclimate model, saving the soil temperature at 11 am
+> for(i in 1:nrow(sites)){
+>  micro <- micro_global(loc = c(sites[i, 1], sites[i, 2]), runshade = 0)
+>  sites$soiltemp[i] <- micro$soil[12, 3]
+> }
+>
+> # create a grid
+> lat1<-min(sites[, 2]) - 0.065 # min latitude
+> lat2<-max(sites[, 2]) + 0.065 # max latitude
+> lon1<-min(sites[, 1]) - 0.065 # min longitude
+> lon2<-max(sites[, 1]) + 0.065 # max longitude
+> quadwid <- (lon2 - lon1) / 0.11
+> quadlen <- (lat2 - lat1) / 0.11
+> gridout <- raster(ncol = quadwid, nrow = quadlen, xmn = lon1, xmx = lon2, ymn = lat1, ymx = lat2)
+>
+> # put the results in the grid
+> x <- cbind(sites$long, sites$lat) # list of co-ordinates
+> grid <- rasterize(x, gridout, sites[, 3])
+> grid <- projectRaster(grid, crs="+proj=longlat +datum=WGS84") # change projection here if needed
+>
+> plot(grid)
+>
+> All the best,
+> Mike
+>
+> On Tuesday, February 1, 2022 at 10:59:41 AM UTC+11 connorh...@gmail.com wrote:
+> >
+> > Hi All,
+> >
+> > I frequently see papers using NicheMapR to calculate range or continent wide conditions (like potential activity hours) for a species in a similar way as you have done in the Heteronotia binoei paper from 2004, with resulting raster outputs across the range of a species. Despite how common this seems in the literature, I have yet to come upon a standardized methodology of applying a parameterized ectotherm model across a range to produce a raster image like this, only running it at individual points. While in theory I feel like I could come up with ways to do this, I wanted to double check that there wasn’t already some built in functionality or documentation on doing this that I may be missing that you could point me in the direction of.
+> >
+> > Thanks in advance,
+> >
+> > Connor Hughes
+> > --
+> > M.S. Biology, Austin Peay State University 2022
+> > B.S. Wildlife and Fisheries Ecology and Conservation & GIS Technologies.
+> > UMass Amherst College of Natural Sciences 2020
+> > He/Him/His
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+> To view this discussion on the web, visit https://groups.google.com/d/msgid/nichemapr/b61f7637-25be-4700-824a-32e463ce743an%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/b61f7637-25be-4700-824a-32e463ce743an%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+M.S. Biology, Austin Peay State University 2022
+B.S. Wildlife and Fisheries Ecology and Conservation & GIS Technologies.
+UMass Amherst College of Natural Sciences 2020
+He/Him/His
+
+From uf9f1c443eac95d14 at groups.google.com  Mon Feb  7 00:13:16 2022
+From: uf9f1c443eac95d14 at groups.google.com (Nicholas Wu)
+Date: Mon, 07 Feb 2022 00:13:16 +0000
+Subject: Simulating cave microclimate
+Message-ID: <IKy5gXU_up8.CByS36syBAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/IKy5gXU_up8/m/CByS36syBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi everyone,
+Is there a function in NicheMapR to simulate a hypothetical cave microclimate for a given location?
+
+For example, lat = -33.818, lon = 150.022
+
+Regards,
+Nicholas
+
+--
+
+Nicholas C. Wu | PhD
+
+Postdoctoral Research Fellow
+
+Animal Ecology Lab | Hawkesbury Institute for the Environment
+
+Western Sydney University, NSW 2753 | Australia
+
+E: nichola...@gmail.com | M: +61 409 456 802 | W: http://wunicholas.wix.com/home
+
+From u6cec8ea3702ece93 at groups.google.com  Mon Feb  7 03:59:13 2022
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Mon, 07 Feb 2022 03:59:13 +0000
+Subject: Re: Simulating cave microclimate
+Message-ID: <IKy5gXU_up8.CRRPUAA_BAAJ@nichemapr.groups.google.com>
+In-Reply-To: <IKy5gXU_up8.CByS36syBAAJ@nichemapr.groups.google.com>
+References: <IKy5gXU_up8.CByS36syBAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/IKy5gXU_up8/m/CRRPUAA_BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Nicholas,
+
+The microclimate model assumes the ~2m deep soil temperature is the running mean of the past year of 2m height air temperature records, as a boundary condition. That should be a very good approximation to a cave temperature. But exactly what the temperature and humidity is will depend on how air is flowing through it, presence of water bodies in the cave, etc. It's one of the rare situations where the standard bioclim mean annual temperature is a very good approximation for the temperature experienced by an organism!
+
+All the best,
+Mike
+
+On Monday, February 7, 2022 at 11:13:16 AM UTC+11 Nicholas wrote:
+> Hi everyone,
+> Is there a function in NicheMapR to simulate a hypothetical cave microclimate for a given location?
+>
+> For example, lat = -33.818, lon = 150.022
+>
+> Regards,
+> Nicholas
+>
+> --
+>
+> Nicholas C. Wu | PhD
+>
+> Postdoctoral Research Fellow
+>
+> Animal Ecology Lab | Hawkesbury Institute for the Environment
+>
+> Western Sydney University, NSW 2753 | Australia
+>
+>
+> E: nichola...@gmail.com | M: +61 409 456 802 | W: http://wunicholas.wix.com/home
+>
+>
+>
+
+From uf9f1c443eac95d14 at groups.google.com  Mon Feb  7 04:46:28 2022
+From: uf9f1c443eac95d14 at groups.google.com (Nicholas Wu)
+Date: Mon, 07 Feb 2022 04:46:28 +0000
+Subject: Re: Simulating cave microclimate
+Message-ID: <IKy5gXU_up8.Hg5vlpRBBAAJ@nichemapr.groups.google.com>
+In-Reply-To: <IKy5gXU_up8.CRRPUAA_BAAJ@nichemapr.groups.google.com>
+References: <IKy5gXU_up8.CByS36syBAAJ@nichemapr.groups.google.com> <IKy5gXU_up8.CRRPUAA_BAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/IKy5gXU_up8/m/Hg5vlpRBBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Mike, that makes sense! One more question. With the endoR function from NicheMapR, is it able to simulate temperature-dependent torpor (or hibernation; i.e., pronounced reduction, but maintained, physiological states like metabolic rate and EWL; see attached image for example) for a small-bodied mammal? For example, I would like to simulate yearly changes in torpor duration and overall energy expenditure under different climate models. During the spring-summer season, the animal does its usual thing, then in autumn-winter, it enters torpor after reaching below a body temperature threshold (e.g., normal body temp reduces by 5°C). Is there a way to simulate this?
+
+I had a look at your paper Kearney (2019) How will snow alter exposure of organisms to cold under climate change, which talks about hibernation cost. But in the methods, the simulation ran for "a hibernating 20 g endotherm at 5 cm depth" and "Basal metabolic rate was adjusted from the expected normothermic value at 37°C". So it seems that the simulated endotherm was in a hibernating state all year?
+
+Regards,
+Nicholas
+
+On Mon, 7 Feb 2022 at 14:59, NicheMapR <nich...@googlegroups.com> wrote:
+
+> Hi Nicholas,
+>
+> The microclimate model assumes the ~2m deep soil temperature is the running mean of the past year of 2m height air temperature records, as a boundary condition. That should be a very good approximation to a cave temperature. But exactly what the temperature and humidity is will depend on how air is flowing through it, presence of water bodies in the cave, etc. It's one of the rare situations where the standard bioclim mean annual temperature is a very good approximation for the temperature experienced by an organism!
+>
+> All the best,
+> Mike
+>
+> On Monday, February 7, 2022 at 11:13:16 AM UTC+11 Nicholas wrote:
+> > Hi everyone,
+> > Is there a function in NicheMapR to simulate a hypothetical cave microclimate for a given location?
+> >
+> > For example, lat = -33.818, lon = 150.022
+> >
+> > Regards,
+> > Nicholas
+> >
+> > --
+> >
+> > Nicholas C. Wu | PhD
+> >
+> > Postdoctoral Research Fellow
+> >
+> > Animal Ecology Lab | Hawkesbury Institute for the Environment
+> >
+> > Western Sydney University, NSW 2753 | Australia
+> >
+> >
+> > E: nichola...@gmail.com | M: +61 409 456 802 | W: http://wunicholas.wix.com/home
+> >
+> >
+> >
+
+> --
+> You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+> To view this discussion on the web, visit https://groups.google.com/d/msgid/nichemapr/014a8869-b83d-4c97-9b92-8db60b471c9en%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/014a8869-b83d-4c97-9b92-8db60b471c9en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u6cec8ea3702ece93 at groups.google.com  Mon Feb  7 19:21:23 2022
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Mon, 07 Feb 2022 19:21:23 +0000
+Subject: Re: Simulating cave microclimate
+Message-ID: <IKy5gXU_up8.69VX0lJxBAAJ@nichemapr.groups.google.com>
+In-Reply-To: <IKy5gXU_up8.Hg5vlpRBBAAJ@nichemapr.groups.google.com>
+References: <IKy5gXU_up8.CByS36syBAAJ@nichemapr.groups.google.com> <IKy5gXU_up8.Hg5vlpRBBAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/IKy5gXU_up8/m/69VX0lJxBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Nicholas,
+
+Yes it is possible to do this - I have written some code to do this for Burramys (mountain pygmy possum) for Shane Morris which we'll finalise soon and release.
+
+All the best,
+Mike
+
+On Monday, February 7, 2022 at 3:46:28 PM UTC+11 Nicholas wrote:
+> Thanks Mike, that makes sense! One more question. With the endoR function from NicheMapR, is it able to simulate temperature-dependent torpor (or hibernation; i.e., pronounced reduction, but maintained, physiological states like metabolic rate and EWL; see attached image for example) for a small-bodied mammal? For example, I would like to simulate yearly changes in torpor duration and overall energy expenditure under different climate models. During the spring-summer season, the animal does its usual thing, then in autumn-winter, it enters torpor after reaching below a body temperature threshold (e.g., normal body temp reduces by 5°C). Is there a way to simulate this?
+>
+> I had a look at your paper Kearney (2019) How will snow alter exposure of organisms to cold under climate change, which talks about hibernation cost. But in the methods, the simulation ran for "a hibernating 20 g endotherm at 5 cm depth" and "Basal metabolic rate was adjusted from the expected normothermic value at 37°C". So it seems that the simulated endotherm was in a hibernating state all year?
+>
+> Regards,
+> Nicholas
+>
+> On Mon, 7 Feb 2022 at 14:59, NicheMapR <nich...@googlegroups.com> wrote:
+> > Hi Nicholas,
+> >
+> > The microclimate model assumes the ~2m deep soil temperature is the running mean of the past year of 2m height air temperature records, as a boundary condition. That should be a very good approximation to a cave temperature. But exactly what the temperature and humidity is will depend on how air is flowing through it, presence of water bodies in the cave, etc. It's one of the rare situations where the standard bioclim mean annual temperature is a very good approximation for the temperature experienced by an organism!
+> >
+> > All the best,
+> > Mike
+> >
+> > On Monday, February 7, 2022 at 11:13:16 AM UTC+11 Nicholas wrote:
+> > > Hi everyone,
+> > > Is there a function in NicheMapR to simulate a hypothetical cave microclimate for a given location?
+> > >
+> > > For example, lat = -33.818, lon = 150.022
+> > >
+> > > Regards,
+> > > Nicholas
+> > >
+> > > --
+> > >
+> > > Nicholas C. Wu | PhD
+> > >
+> > > Postdoctoral Research Fellow
+> > >
+> > > Animal Ecology Lab | Hawkesbury Institute for the Environment
+> > >
+> > > Western Sydney University, NSW 2753 | Australia
+> > >
+> > >
+> > > E: nichola...@gmail.com | M: +61 409 456 802 | W: http://wunicholas.wix.com/home
+> > >
+> > >
+> > >
+> > --
+> > You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+> > To view this discussion on the web, visit https://groups.google.com/d/msgid/nichemapr/014a8869-b83d-4c97-9b92-8db60b471c9en%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/014a8869-b83d-4c97-9b92-8db60b471c9en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From uf9f1c443eac95d14 at groups.google.com  Mon Feb  7 22:37:10 2022
+From: uf9f1c443eac95d14 at groups.google.com (Nicholas Wu)
+Date: Mon, 07 Feb 2022 22:37:10 +0000
+Subject: Re: Simulating cave microclimate
+Message-ID: <IKy5gXU_up8._djj1QF8BAAJ@nichemapr.groups.google.com>
+In-Reply-To: <IKy5gXU_up8.69VX0lJxBAAJ@nichemapr.groups.google.com>
+References: <IKy5gXU_up8.CByS36syBAAJ@nichemapr.groups.google.com> <IKy5gXU_up8.69VX0lJxBAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/IKy5gXU_up8/m/_djj1QF8BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Mike! I look forward to reading it.
+
+On Tue, 8 Feb 2022 at 06:21, NicheMapR <nich...@googlegroups.com> wrote:
+
+> Hi Nicholas,
+>
+> Yes it is possible to do this - I have written some code to do this for Burramys (mountain pygmy possum) for Shane Morris which we'll finalise soon and release.
+>
+> All the best,
+> Mike
+>
+> On Monday, February 7, 2022 at 3:46:28 PM UTC+11 Nicholas wrote:
+> > Thanks Mike, that makes sense! One more question. With the endoR function from NicheMapR, is it able to simulate temperature-dependent torpor (or hibernation; i.e., pronounced reduction, but maintained, physiological states like metabolic rate and EWL; see attached image for example) for a small-bodied mammal? For example, I would like to simulate yearly changes in torpor duration and overall energy expenditure under different climate models. During the spring-summer season, the animal does its usual thing, then in autumn-winter, it enters torpor after reaching below a body temperature threshold (e.g., normal body temp reduces by 5°C). Is there a way to simulate this?
+> >
+> > I had a look at your paper Kearney (2019) How will snow alter exposure of organisms to cold under climate change, which talks about hibernation cost. But in the methods, the simulation ran for "a hibernating 20 g endotherm at 5 cm depth" and "Basal metabolic rate was adjusted from the expected normothermic value at 37°C". So it seems that the simulated endotherm was in a hibernating state all year?
+> >
+> > Regards,
+> > Nicholas
+> >
+> > On Mon, 7 Feb 2022 at 14:59, NicheMapR <nich...@googlegroups.com> wrote:
+> > > Hi Nicholas,
+> > >
+> > > The microclimate model assumes the ~2m deep soil temperature is the running mean of the past year of 2m height air temperature records, as a boundary condition. That should be a very good approximation to a cave temperature. But exactly what the temperature and humidity is will depend on how air is flowing through it, presence of water bodies in the cave, etc. It's one of the rare situations where the standard bioclim mean annual temperature is a very good approximation for the temperature experienced by an organism!
+> > >
+> > > All the best,
+> > > Mike
+> > >
+> > > On Monday, February 7, 2022 at 11:13:16 AM UTC+11 Nicholas wrote:
+> > > > Hi everyone,
+> > > > Is there a function in NicheMapR to simulate a hypothetical cave microclimate for a given location?
+> > > >
+> > > > For example, lat = -33.818, lon = 150.022
+> > > >
+> > > > Regards,
+> > > > Nicholas
+> > > >
+> > > > --
+> > > >
+> > > > Nicholas C. Wu | PhD
+> > > >
+> > > > Postdoctoral Research Fellow
+> > > >
+> > > > Animal Ecology Lab | Hawkesbury Institute for the Environment
+> > > >
+> > > > Western Sydney University, NSW 2753 | Australia
+> > > >
+> > > >
+> > > > E: nichola...@gmail.com | M: +61 409 456 802 | W: http://wunicholas.wix.com/home
+> > > >
+> > > >
+> > > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+> > > To view this discussion on the web, visit https://groups.google.com/d/msgid/nichemapr/014a8869-b83d-4c97-9b92-8db60b471c9en%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/014a8869-b83d-4c97-9b92-8db60b471c9en%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+
+> To view this discussion on the web, visit https://groups.google.com/d/msgid/nichemapr/13e46047-b7b9-4d68-82f8-18f068cf7ba0n%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/13e46047-b7b9-4d68-82f8-18f068cf7ba0n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4bea65ce01511c62 at groups.google.com  Thu Feb 10 20:53:52 2022
+From: u4bea65ce01511c62 at groups.google.com (Jonathan Green)
+Date: Thu, 10 Feb 2022 20:53:52 +0000
+Subject: Semi-aquatic endotherm
+Message-ID: <P6xI1FoYqHs.TPS4qPtOBAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/P6xI1FoYqHs/m/TPS4qPtOBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Mike & Fellow Energetics Fans
+
+I was very excited to see today that the endotherm model is now available in NicheMapR. I am thinking of including it in an upcoming project but looking at the paper, its use is described for 'most types of terrestrial animal'. So can it be applied to an aquatic air breathing animal (specifically a seabird)? The original Niche Mapper software has been applied to seabirds (https://doi.org/10.1242/jeb.032300). But can NicheMapR be applied in the same way for a bird semi-submerged in water?
+
+Best wishes
+
+Jon
+
+From u6cec8ea3702ece93 at groups.google.com  Sat Feb 12 11:22:22 2022
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Sat, 12 Feb 2022 11:22:22 +0000
+Subject: Re: Semi-aquatic endotherm
+Message-ID: <P6xI1FoYqHs.LoaA8PTMBAAJ@nichemapr.groups.google.com>
+In-Reply-To: <P6xI1FoYqHs.TPS4qPtOBAAJ@nichemapr.groups.google.com>
+References: <P6xI1FoYqHs.TPS4qPtOBAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/P6xI1FoYqHs/m/LoaA8PTMBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jon,
+
+Yes it can in that you can make the 'fluid' air or water (input argument 'FLTYPE') though to make e.g. the ventral side water and the top side air you'd have to make some modifications to the endoR_devel function so that the fluid type changes between the dorsal and ventral calls to SIMULSOL.
+
+All the best,
+Mike
+
+On Friday, February 11, 2022 at 7:53:52 AM UTC+11 jonatha...@liverpool.ac.uk wrote:
+> Hi Mike & Fellow Energetics Fans
+>
+> I was very excited to see today that the endotherm model is now available in NicheMapR. I am thinking of including it in an upcoming project but looking at the paper, its use is described for 'most types of terrestrial animal'. So can it be applied to an aquatic air breathing animal (specifically a seabird)? The original Niche Mapper software has been applied to seabirds (https://doi.org/10.1242/jeb.032300). But can NicheMapR be applied in the same way for a bird semi-submerged in water?
+>
+> Best wishes
+>
+> Jon
+
+From u4bea65ce01511c62 at groups.google.com  Sun Feb 13 20:49:13 2022
+From: u4bea65ce01511c62 at groups.google.com (Green, Jonathan)
+Date: Sun, 13 Feb 2022 20:49:13 +0000
+Subject: RE: Semi-aquatic endotherm
+Message-ID: <P6xI1FoYqHs.wdrEnXg6BQAJ@nichemapr.groups.google.com>
+In-Reply-To: <P6xI1FoYqHs.TPS4qPtOBAAJ@nichemapr.groups.google.com>
+References: <P6xI1FoYqHs.TPS4qPtOBAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/P6xI1FoYqHs/m/wdrEnXg6BQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+And is that an easy thing to do…..?!
+
+JG
+
+Dr Jonathan A Green
+
+Senior Lecturer in Marine Biology
+
+Programme Director for BSc Environmental Science
+
+School of Environmental Sciences
+
+University of Liverpool
+
+Liverpool, L69 3GP, UK
+
++44 (0) 151 795 4385
+
+www.segul.org.uk <http://www.segul.org.uk/>
+
+@jon_seabirds <https://twitter.com/jon_seabirds>
+
+Pronouns: He/Him
+
+Working hours: Different every day
+
+From: NicheMapR <nich...@googlegroups.com>
+Sent: 12 February 2022 11:22
+To: NicheMapR <nich...@googlegroups.com>
+Subject: Re: Semi-aquatic endotherm
+
+Hi Jon,
+
+Yes it can in that you can make the 'fluid' air or water (input argument 'FLTYPE') though to make e.g. the ventral side water and the top side air you'd have to make some modifications to the endoR_devel function so that the fluid type changes between the dorsal and ventral calls to SIMULSOL.
+
+All the best,
+Mike
+
+On Friday, February 11, 2022 at 7:53:52 AM UTC+11  jonatha...@liverpool.ac.uk wrote:
+>
+> Hi Mike & Fellow Energetics Fans
+>
+>
+>
+> I was very excited to see today that the endotherm model is now available in NicheMapR. I am thinking of including it in an upcoming project but looking at the paper, its use is described for 'most types of terrestrial animal'. So can it be applied to an aquatic air breathing animal (specifically a seabird)? The original Niche Mapper software has been applied to seabirds (https://doi.org/10.1242/jeb.032300). But can NicheMapR be applied in the same way for a bird semi-submerged in water?
+>
+>
+>
+> Best wishes
+>
+>
+>
+> Jon
+
+--
+You received this message because you are subscribed to a topic in the Google Groups "NicheMapR" group.
+To unsubscribe from this topic, visit  https://groups.google.com/d/topic/nichemapr/P6xI1FoYqHs/unsubscribe.
+To unsubscribe from this group and all its topics, send an email to  nichemapr+...@googlegroups.com.
+To view this discussion on the web, visit  https://groups.google.com/d/msgid/nichemapr/b9330237-5b09-4f0e-b573-d4609a7433adn%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/b9330237-5b09-4f0e-b573-d4609a7433adn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u6cec8ea3702ece93 at groups.google.com  Mon Feb 14 00:05:29 2022
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Mon, 14 Feb 2022 00:05:29 +0000
+Subject: Re: Semi-aquatic endotherm
+Message-ID: <P6xI1FoYqHs.FWUARS5FBQAJ@nichemapr.groups.google.com>
+In-Reply-To: <P6xI1FoYqHs.wdrEnXg6BQAJ@nichemapr.groups.google.com>
+References: <P6xI1FoYqHs.TPS4qPtOBAAJ@nichemapr.groups.google.com> <P6xI1FoYqHs.wdrEnXg6BQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/P6xI1FoYqHs/m/FWUARS5FBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Jonathan,
+
+It is, in that you just need to add:
+
+        if(S == 2){
+          FLTYPE <- 2
+        }else{
+          FLTYPE <- 0
+        }
+
+to endoR_devel, in addition to passing the appropriate values for sea water for the environmental conditions, but I would strongly recommend having a clear understanding of exactly what the model is doing before proceeding, and ideally having some good test data to compare against. Definitely step through the tutorials.
+
+All the best,
+Mike
+
+On Monday, February 14, 2022 at 7:49:13 AM UTC+11 jonatha...@liverpool.ac.uk wrote:
+>
+> And is that an easy thing to do…..?!
+>
+>
+>
+> JG
+>
+>
+>
+> Dr Jonathan A Green
+>
+> Senior Lecturer in Marine Biology
+>
+> Programme Director for BSc Environmental Science
+>
+>
+>
+> School of Environmental Sciences
+>
+> University of Liverpool
+>
+> Liverpool, L69 3GP, UK
+>
+>
+>
+> +44 (0) 151 795 4385
+>
+> www.segul.org.uk <http://www.segul.org.uk/>
+>
+> @jon_seabirds <https://twitter.com/jon_seabirds>
+>
+>
+>
+> Pronouns: He/Him
+>
+> Working hours: Different every day
+>
+>
+>
+> From: NicheMapR <nich...@googlegroups.com>
+> Sent: 12 February 2022 11:22
+> To: NicheMapR <nich...@googlegroups.com>
+> Subject: Re: Semi-aquatic endotherm
+>
+>
+>
+> Hi Jon,
+>
+>
+>
+> Yes it can in that you can make the 'fluid' air or water (input argument 'FLTYPE') though to make e.g. the ventral side water and the top side air you'd have to make some modifications to the endoR_devel function so that the fluid type changes between the dorsal and ventral calls to SIMULSOL.
+>
+>
+>
+> All the best,
+> Mike
+>
+>
+>
+> On Friday, February 11, 2022 at 7:53:52 AM UTC+11  jonatha...@liverpool.ac.uk wrote:
+> >
+> > Hi Mike & Fellow Energetics Fans
+> >
+> >
+> >
+> > I was very excited to see today that the endotherm model is now available in NicheMapR. I am thinking of including it in an upcoming project but looking at the paper, its use is described for 'most types of terrestrial animal'. So can it be applied to an aquatic air breathing animal (specifically a seabird)? The original Niche Mapper software has been applied to seabirds (https://doi.org/10.1242/jeb.032300). But can NicheMapR be applied in the same way for a bird semi-submerged in water?
+> >
+> >
+> >
+> > Best wishes
+> >
+> >
+> >
+> > Jon
+>
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "NicheMapR" group.
+> To unsubscribe from this topic, visit  https://groups.google.com/d/topic/nichemapr/P6xI1FoYqHs/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to  nichemapr+...@googlegroups.com.
+> To view this discussion on the web, visit  https://groups.google.com/d/msgid/nichemapr/b9330237-5b09-4f0e-b573-d4609a7433adn%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/b9330237-5b09-4f0e-b573-d4609a7433adn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+From u4bea65ce01511c62 at groups.google.com  Mon Feb 14 10:57:03 2022
+From: u4bea65ce01511c62 at groups.google.com (Green, Jonathan)
+Date: Mon, 14 Feb 2022 10:57:03 +0000
+Subject: RE: Semi-aquatic endotherm
+Message-ID: <P6xI1FoYqHs.A5cOqbxoBQAJ@nichemapr.groups.google.com>
+In-Reply-To: <P6xI1FoYqHs.wdrEnXg6BQAJ@nichemapr.groups.google.com>
+References: <P6xI1FoYqHs.TPS4qPtOBAAJ@nichemapr.groups.google.com> <P6xI1FoYqHs.wdrEnXg6BQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/P6xI1FoYqHs/m/A5cOqbxoBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks so much! Yes if we get into this we will hopefully have a PDRA working on it full time and we have lots of data from other methods to compare to.
+
+Thanks for your help
+
+Jon
+
+Dr Jonathan A Green
+
+Senior Lecturer in Marine Biology
+
+Programme Director for BSc Environmental Science
+
+School of Environmental Sciences
+
+University of Liverpool
+
+Liverpool, L69 3GP, UK
+
++44 (0) 151 795 4385
+
+www.segul.org.uk <http://www.segul.org.uk/>
+
+@jon_seabirds <https://twitter.com/jon_seabirds>
+
+Pronouns: He/Him
+
+Working hours: Different every day
+
+From: NicheMapR <nich...@googlegroups.com>
+Sent: 14 February 2022 00:05
+To: NicheMapR <nich...@googlegroups.com>
+Subject: Re: Semi-aquatic endotherm
+
+Hi Jonathan,
+
+It is, in that you just need to add:
+
+        if(S == 2){
+          FLTYPE <- 2
+        }else{
+
+          FLTYPE <- 0
+
+        }
+
+to endoR_devel, in addition to passing the appropriate values for sea water for the environmental conditions, but I would strongly recommend having a clear understanding of exactly what the model is doing before proceeding, and ideally having some good test data to compare against. Definitely step through the tutorials.
+
+All the best,
+Mike
+
+On Monday, February 14, 2022 at 7:49:13 AM UTC+11  jonatha...@liverpool.ac.uk wrote:
+>
+> And is that an easy thing to do…..?!
+>
+>
+>
+> JG
+>
+>
+>
+> Dr Jonathan A Green
+>
+> Senior Lecturer in Marine Biology
+>
+> Programme Director for BSc Environmental Science
+>
+>
+>
+> School of Environmental Sciences
+>
+> University of Liverpool
+>
+> Liverpool, L69 3GP, UK
+>
+>
+>
+> +44 (0) 151 795 4385
+>
+> www.segul.org.uk <http://www.segul.org.uk/>
+>
+> @jon_seabirds <https://twitter.com/jon_seabirds>
+>
+>
+>
+> Pronouns: He/Him
+>
+> Working hours: Different every day
+>
+>
+>
+> From: NicheMapR <nich...@googlegroups.com>
+> Sent: 12 February 2022 11:22
+> To: NicheMapR <nich...@googlegroups.com>
+> Subject: Re: Semi-aquatic endotherm
+>
+>
+>
+> Hi Jon,
+>
+>
+>
+> Yes it can in that you can make the 'fluid' air or water (input argument 'FLTYPE') though to make e.g. the ventral side water and the top side air you'd have to make some modifications to the endoR_devel function so that the fluid type changes between the dorsal and ventral calls to SIMULSOL.
+>
+>
+>
+> All the best,
+> Mike
+>
+>
+>
+> On Friday, February 11, 2022 at 7:53:52 AM UTC+11 jonatha...@liverpool.ac.uk wrote:
+> >
+> > Hi Mike & Fellow Energetics Fans
+> >
+> >
+> >
+> > I was very excited to see today that the endotherm model is now available in NicheMapR. I am thinking of including it in an upcoming project but looking at the paper, its use is described for 'most types of terrestrial animal'. So can it be applied to an aquatic air breathing animal (specifically a seabird)? The original Niche Mapper software has been applied to seabirds (https://doi.org/10.1242/jeb.032300). But can NicheMapR be applied in the same way for a bird semi-submerged in water?
+> >
+> >
+> >
+> > Best wishes
+> >
+> >
+> >
+> > Jon
+>
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "NicheMapR" group.
+> To unsubscribe from this topic, visit  https://groups.google.com/d/topic/nichemapr/P6xI1FoYqHs/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to  nichemapr+...@googlegroups.com.
+> To view this discussion on the web, visit  https://groups.google.com/d/msgid/nichemapr/b9330237-5b09-4f0e-b573-d4609a7433adn%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/b9330237-5b09-4f0e-b573-d4609a7433adn%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+You received this message because you are subscribed to a topic in the Google Groups "NicheMapR" group.
+To unsubscribe from this topic, visit  https://groups.google.com/d/topic/nichemapr/P6xI1FoYqHs/unsubscribe.
+To unsubscribe from this group and all its topics, send an email to  nichemapr+...@googlegroups.com.
+
+To view this discussion on the web, visit  https://groups.google.com/d/msgid/nichemapr/9b2d3ea4-9fc1-4614-8761-e8c11ff685c6n%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/9b2d3ea4-9fc1-4614-8761-e8c11ff685c6n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+

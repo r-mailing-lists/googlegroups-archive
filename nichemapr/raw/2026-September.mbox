@@ -1,0 +1,417 @@
+From udc28b3e0354efd85 at groups.google.com  Tue Sep  1 22:30:12 2026
+From: udc28b3e0354efd85 at groups.google.com (Desire Uwera)
+Date: Tue, 01 Sep 2026 22:30:12 +0000
+Subject: Large-area ERA5 downloads vs. local storage vs. micro_era5() single-file requirement
+Message-ID: <PoIOw27QbnU.QQ3H9E7XAQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/PoIOw27QbnU/m/QQ3H9E7XAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+I'm running micro_era5() across a large number of occurrence points spread across all of Brazil, simulating one ERA5 grid cell per year across several years of data, and I've run into a combination of constraints I'd love some ideas on.
+
+The core problem has three parts that don't have an obvious combined solution:
+
+1. Copernicus/CDS download size limits: a single request for the whole-Brazil bounding box at hourly resolution for a full year is too large for CDS to return in one request.
+
+2. Local storage limits: the natural workaround is to split the download into smaller time chunks (e.g. bi-monthly), but keeping all of those raw NetCDF files on disk at once -- across many years and a country-sized area -- adds up to more local storage than I have available. I need a way to process and discard data incrementally rather than accumulate it all before running any models.
+
+3. micro_era5() compatibility: mcera5/micro_era5() appears to require the driving climate data as a single locally-stored NetCDF file (named "<prefix>_<year>.nc") and doesn't stitch multiple chunked files together. So splitting a year's download into several smaller files to get around constraint #1 breaks compatibility with #3 -- there's no way to hand micro_era5() several bi-monthly chunks and have it treat them as one continuous year.
+
+And even setting storage aside -- say I had a hard drive with enough room to keep every chunk for every year -- I'd still be stuck at the same wall: I've tried and failed to actually combine multiple bi-monthly NetCDF files into a single valid annual file that micro_era5() will accept. So this isn't just a storage problem; even with unlimited local storage, the merge step itself is the part we haven't been able to solve.
+
+So I'm stuck between: request too large for CDS to hand back in one piece, too much data to keep all the pieces locally at once, and even if storage weren't an issue, no working method to merge the pieces into the single file micro_era5() insists on.
+
+Has anyone dealt with this combination before? Specifically, I'm wondering about:
+- Whether there's a working chunk-download -> merge-into-one-file -> delete-raw-chunks workflow that others use for large-area/long-duration runs, and if so what tool/approach actually does the merge correctly (we've tried and failed at this step specifically)
+- Whether micro_era5()/mcera5 has (or could have) any way to read from multiple sequential files instead of requiring one merged file up front
+- Any other approach people use for large-scale ERA5-driven runs that don't fit in memory/disk all at once
+
+Happy to share more detail on my setup (bounding box, variables, occurrence data structure) if that's useful for troubleshooting. Any pointers would be genuinely helpful -- this is the main thing standing between me and a full run.
+
+Thanks,
+Desire
+
+From u9758bf7788372487 at groups.google.com  Wed Sep  2 07:46:32 2026
+From: u9758bf7788372487 at groups.google.com (drinky fan)
+Date: Wed, 02 Sep 2026 07:46:32 +0000
+Subject: Re: Large-area ERA5 downloads vs. local storage vs. micro_era5() single-file requirement
+Message-ID: <PoIOw27QbnU.RTBJ0qr1AQAJ@nichemapr.groups.google.com>
+In-Reply-To: <PoIOw27QbnU.QQ3H9E7XAQAJ@nichemapr.groups.google.com>
+References: <PoIOw27QbnU.QQ3H9E7XAQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/PoIOw27QbnU/m/RTBJ0qr1AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi, I am not the developer but faced the similar problem.
+
+CDS just released a Zarr store (https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=analysis_ready_data). The official documentation provides examples of how to use them in the Python environment. You can try it if you want to speed up your download. Although its initial design was for direct programmatic access, I found that selecting the required variables, temporal and spatial ranges for downloading is much faster (not a queue) than traditional access (the method used by request_era5() function). My current workflow is (1) read the required variables from the zarr store, (2) save it as nc file that is exactly the same as the output of request_era5(). Notably the zarr store doesn't provide variable of Net Longwave Radiation (`avg_snlwrf`). You need to calculate it manually.
+
+And I think it's feasible to access era5 data directly through Zarr store and input it under a R environment, but I haven't tried it. It might address the disk issue.
+
+Regarding the micro_era5's compatibility, you can extract the .nc file yourself and input it into the microclimate model.. Looking inside source code of micro_era5() function (and other micro_ series functions), you would find that it (1) first calls extract_clim() and extract_precip() function of mcera5 package to extract macro-climate data from .nc file. They compile the data into data.frame object with fixed format ,
+(It looks like)
+and then (2) pass these data.frame to an external Fortran function (MICRO.f). So you can manually use extract_clim() and extract_precip() function to extract your chunk .nc files, merge them into one data.frame, by the time order,  finally input them to the Fortran function.
+
+Hope these are helpful!
+
+Cheers
+Junqi
+
+On Wednesday, September 2, 2026 at 6:30:12 AM UTC+8 desire...@gmail.com wrote:
+> Hi all,
+>
+> I'm running micro_era5() across a large number of occurrence points spread across all of Brazil, simulating one ERA5 grid cell per year across several years of data, and I've run into a combination of constraints I'd love some ideas on.
+>
+> The core problem has three parts that don't have an obvious combined solution:
+>
+> 1. Copernicus/CDS download size limits: a single request for the whole-Brazil bounding box at hourly resolution for a full year is too large for CDS to return in one request.
+>
+> 2. Local storage limits: the natural workaround is to split the download into smaller time chunks (e.g. bi-monthly), but keeping all of those raw NetCDF files on disk at once -- across many years and a country-sized area -- adds up to more local storage than I have available. I need a way to process and discard data incrementally rather than accumulate it all before running any models.
+>
+> 3. micro_era5() compatibility: mcera5/micro_era5() appears to require the driving climate data as a single locally-stored NetCDF file (named "<prefix>_<year>.nc") and doesn't stitch multiple chunked files together. So splitting a year's download into several smaller files to get around constraint #1 breaks compatibility with #3 -- there's no way to hand micro_era5() several bi-monthly chunks and have it treat them as one continuous year.
+>
+> And even setting storage aside -- say I had a hard drive with enough room to keep every chunk for every year -- I'd still be stuck at the same wall: I've tried and failed to actually combine multiple bi-monthly NetCDF files into a single valid annual file that micro_era5() will accept. So this isn't just a storage problem; even with unlimited local storage, the merge step itself is the part we haven't been able to solve.
+>
+> So I'm stuck between: request too large for CDS to hand back in one piece, too much data to keep all the pieces locally at once, and even if storage weren't an issue, no working method to merge the pieces into the single file micro_era5() insists on.
+>
+> Has anyone dealt with this combination before? Specifically, I'm wondering about:
+> - Whether there's a working chunk-download -> merge-into-one-file -> delete-raw-chunks workflow that others use for large-area/long-duration runs, and if so what tool/approach actually does the merge correctly (we've tried and failed at this step specifically)
+> - Whether micro_era5()/mcera5 has (or could have) any way to read from multiple sequential files instead of requiring one merged file up front
+> - Any other approach people use for large-scale ERA5-driven runs that don't fit in memory/disk all at once
+>
+> Happy to share more detail on my setup (bounding box, variables, occurrence data structure) if that's useful for troubleshooting. Any pointers would be genuinely helpful -- this is the main thing standing between me and a full run.
+>
+> Thanks,
+> Desire
+
+From u2bcecdd9c0443e65 at groups.google.com  Thu Sep  3 16:41:21 2026
+From: u2bcecdd9c0443e65 at groups.google.com (David Klinges)
+Date: Thu, 03 Sep 2026 16:41:21 +0000
+Subject: Re: Large-area ERA5 downloads vs. local storage vs. micro_era5() single-file requirement
+Message-ID: <PoIOw27QbnU.sM74v25hAgAJ@nichemapr.groups.google.com>
+In-Reply-To: <PoIOw27QbnU.RTBJ0qr1AQAJ@nichemapr.groups.google.com>
+References: <PoIOw27QbnU.QQ3H9E7XAQAJ@nichemapr.groups.google.com> <PoIOw27QbnU.RTBJ0qr1AQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/PoIOw27QbnU/m/sM74v25hAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Desire, Junqi, and all,
+
+I'm the lead developer on mcera5 R package, which holds the functions that query ERA5 data and are called from within micro_era5(). The concerns that Desire brings up are valid, and stem partly from how the CDS API is set up, and partly from how mcera5 was written to conform to that API.
+
+The approach Junqi describes, using the ARCO ERA Zarr data is probably the right way forward. This was released a few months ago, and I hope to find the time to update mcera5 to reflect this new archive. But this likely won't happen until November, perhaps Oct at the earliest, given the time needed to test before releasing a new version of the package. If your needs are urgent then I'd follow Junqi's workaround for now. And, the mcera5 software is on GitHub <https://github.com/dklinges9/mcera5> – feel free to submit pull requests if there is a method you have worked on.
+
+Best,
+Dave
+
+On Wed, Sep 2, 2026 at 3:46 AM drinky fan <kieran...@gmail.com> wrote:
+
+> Hi, I am not the developer but faced the similar problem.
+>
+> CDS just released a Zarr store (https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=analysis_ready_data). The official documentation provides examples of how to use them in the Python environment. You can try it if you want to speed up your download. Although its initial design was for direct programmatic access, I found that selecting the required variables, temporal and spatial ranges for downloading is much faster (not a queue) than traditional access (the method used by request_era5() function). My current workflow is (1) read the required variables from the zarr store, (2) save it as nc file that is exactly the same as the output of request_era5(). Notably the zarr store doesn't provide variable of Net Longwave Radiation (`avg_snlwrf`). You need to calculate it manually.
+>
+> And I think it's feasible to access era5 data directly through Zarr store and input it under a R environment, but I haven't tried it. It might address the disk issue.
+>
+> Regarding the micro_era5's compatibility, you can extract the .nc file yourself and input it into the microclimate model.. Looking inside source code of micro_era5() function (and other micro_ series functions), you would find that it (1) first calls extract_clim() and extract_precip() function of mcera5 package to extract macro-climate data from .nc file. They compile the data into data.frame object with fixed format ,
+> (It looks like)
+> and then (2) pass these data.frame to an external Fortran function (MICRO.f). So you can manually use extract_clim() and extract_precip() function to extract your chunk .nc files, merge them into one data.frame, by the time order,  finally input them to the Fortran function.
+>
+> Hope these are helpful!
+>
+> Cheers
+> Junqi
+> On Wednesday, September 2, 2026 at 6:30:12 AM UTC+8 desire...@gmail.com wrote:
+> > Hi all,
+> >
+> > I'm running micro_era5() across a large number of occurrence points spread across all of Brazil, simulating one ERA5 grid cell per year across several years of data, and I've run into a combination of constraints I'd love some ideas on.
+> >
+> > The core problem has three parts that don't have an obvious combined solution:
+> >
+> > 1. Copernicus/CDS download size limits: a single request for the whole-Brazil bounding box at hourly resolution for a full year is too large for CDS to return in one request.
+> >
+> > 2. Local storage limits: the natural workaround is to split the download into smaller time chunks (e.g. bi-monthly), but keeping all of those raw NetCDF files on disk at once -- across many years and a country-sized area -- adds up to more local storage than I have available. I need a way to process and discard data incrementally rather than accumulate it all before running any models.
+> >
+> > 3. micro_era5() compatibility: mcera5/micro_era5() appears to require the driving climate data as a single locally-stored NetCDF file (named "<prefix>_<year>.nc") and doesn't stitch multiple chunked files together. So splitting a year's download into several smaller files to get around constraint #1 breaks compatibility with #3 -- there's no way to hand micro_era5() several bi-monthly chunks and have it treat them as one continuous year.
+> >
+> > And even setting storage aside -- say I had a hard drive with enough room to keep every chunk for every year -- I'd still be stuck at the same wall: I've tried and failed to actually combine multiple bi-monthly NetCDF files into a single valid annual file that micro_era5() will accept. So this isn't just a storage problem; even with unlimited local storage, the merge step itself is the part we haven't been able to solve.
+> >
+> > So I'm stuck between: request too large for CDS to hand back in one piece, too much data to keep all the pieces locally at once, and even if storage weren't an issue, no working method to merge the pieces into the single file micro_era5() insists on.
+> >
+> > Has anyone dealt with this combination before? Specifically, I'm wondering about:
+> > - Whether there's a working chunk-download -> merge-into-one-file -> delete-raw-chunks workflow that others use for large-area/long-duration runs, and if so what tool/approach actually does the merge correctly (we've tried and failed at this step specifically)
+> > - Whether micro_era5()/mcera5 has (or could have) any way to read from multiple sequential files instead of requiring one merged file up front
+> > - Any other approach people use for large-scale ERA5-driven runs that don't fit in memory/disk all at once
+> >
+> > Happy to share more detail on my setup (bounding box, variables, occurrence data structure) if that's useful for troubleshooting. Any pointers would be genuinely helpful -- this is the main thing standing between me and a full run.
+> >
+> > Thanks,
+> > Desire
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+> To view this discussion, visit https://groups.google.com/d/msgid/nichemapr/28ae358f-7d58-43c0-a223-946a7408d394n%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/28ae358f-7d58-43c0-a223-946a7408d394n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+David Klinges, PhD
+https://ecoclimateglobal.org/
+Google Scholar Page <https://streaklinks.com/A-tFlFdgINAxFuFCfwOEhad9/https%3A%2F%2Fscholar.google.com%2Fcitations%3Fuser%3Di9pmQasAAAAJ%26hl%3Den>
+
+From u6cec8ea3702ece93 at groups.google.com  Sat Sep  5 08:15:57 2026
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Sat, 05 Sep 2026 08:15:57 +0000
+Subject: Re: Large-area ERA5 downloads vs. local storage vs. micro_era5() single-file requirement
+Message-ID: <PoIOw27QbnU.Yu-cSwPjAgAJ@nichemapr.groups.google.com>
+In-Reply-To: <PoIOw27QbnU.sM74v25hAgAJ@nichemapr.groups.google.com>
+References: <PoIOw27QbnU.QQ3H9E7XAQAJ@nichemapr.groups.google.com> <PoIOw27QbnU.sM74v25hAgAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/PoIOw27QbnU/m/Yu-cSwPjAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thanks Dave - and note also that Raf Schouten and I have been reconstructing the NicheMapR package in Julia and I just implemented code to use the ARCO ERA Zarr dataset - it works well, taking about 1.5 mins to download a year of ERA5 data for a point and run a simulation. I'll be providing more on the new setup once it's finalised, which should be in the next month or two.
+
+All the best,
+Mike
+
+On Friday, September 4, 2026 at 2:41:21 AM UTC+10 dkli...@gmail.com wrote:
+> Hi Desire, Junqi, and all,
+>
+> I'm the lead developer on mcera5 R package, which holds the functions that query ERA5 data and are called from within micro_era5(). The concerns that Desire brings up are valid, and stem partly from how the CDS API is set up, and partly from how mcera5 was written to conform to that API.
+>
+> The approach Junqi describes, using the ARCO ERA Zarr data is probably the right way forward. This was released a few months ago, and I hope to find the time to update mcera5 to reflect this new archive. But this likely won't happen until November, perhaps Oct at the earliest, given the time needed to test before releasing a new version of the package. If your needs are urgent then I'd follow Junqi's workaround for now. And, the mcera5 software is on GitHub <https://github.com/dklinges9/mcera5> – feel free to submit pull requests if there is a method you have worked on.
+>
+> Best,
+> Dave
+>
+> On Wed, Sep 2, 2026 at 3:46 AM drinky fan <kieran...@gmail.com> wrote:
+> > Hi, I am not the developer but faced the similar problem.
+> >
+> > CDS just released a Zarr store (https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=analysis_ready_data). The official documentation provides examples of how to use them in the Python environment. You can try it if you want to speed up your download. Although its initial design was for direct programmatic access, I found that selecting the required variables, temporal and spatial ranges for downloading is much faster (not a queue) than traditional access (the method used by request_era5() function). My current workflow is (1) read the required variables from the zarr store, (2) save it as nc file that is exactly the same as the output of request_era5(). Notably the zarr store doesn't provide variable of Net Longwave Radiation (`avg_snlwrf`). You need to calculate it manually.
+> >
+> > And I think it's feasible to access era5 data directly through Zarr store and input it under a R environment, but I haven't tried it. It might address the disk issue.
+> >
+> > Regarding the micro_era5's compatibility, you can extract the .nc file yourself and input it into the microclimate model.. Looking inside source code of micro_era5() function (and other micro_ series functions), you would find that it (1) first calls extract_clim() and extract_precip() function of mcera5 package to extract macro-climate data from .nc file. They compile the data into data.frame object with fixed format ,
+> > (It looks like)
+> > and then (2) pass these data.frame to an external Fortran function (MICRO.f). So you can manually use extract_clim() and extract_precip() function to extract your chunk .nc files, merge them into one data.frame, by the time order,  finally input them to the Fortran function.
+> >
+> > Hope these are helpful!
+> >
+> > Cheers
+> > Junqi
+> > On Wednesday, September 2, 2026 at 6:30:12 AM UTC+8 desire...@gmail.com wrote:
+> > > Hi all,
+> > >
+> > > I'm running micro_era5() across a large number of occurrence points spread across all of Brazil, simulating one ERA5 grid cell per year across several years of data, and I've run into a combination of constraints I'd love some ideas on.
+> > >
+> > > The core problem has three parts that don't have an obvious combined solution:
+> > >
+> > > 1. Copernicus/CDS download size limits: a single request for the whole-Brazil bounding box at hourly resolution for a full year is too large for CDS to return in one request.
+> > >
+> > > 2. Local storage limits: the natural workaround is to split the download into smaller time chunks (e.g. bi-monthly), but keeping all of those raw NetCDF files on disk at once -- across many years and a country-sized area -- adds up to more local storage than I have available. I need a way to process and discard data incrementally rather than accumulate it all before running any models.
+> > >
+> > > 3. micro_era5() compatibility: mcera5/micro_era5() appears to require the driving climate data as a single locally-stored NetCDF file (named "<prefix>_<year>.nc") and doesn't stitch multiple chunked files together. So splitting a year's download into several smaller files to get around constraint #1 breaks compatibility with #3 -- there's no way to hand micro_era5() several bi-monthly chunks and have it treat them as one continuous year.
+> > >
+> > > And even setting storage aside -- say I had a hard drive with enough room to keep every chunk for every year -- I'd still be stuck at the same wall: I've tried and failed to actually combine multiple bi-monthly NetCDF files into a single valid annual file that micro_era5() will accept. So this isn't just a storage problem; even with unlimited local storage, the merge step itself is the part we haven't been able to solve.
+> > >
+> > > So I'm stuck between: request too large for CDS to hand back in one piece, too much data to keep all the pieces locally at once, and even if storage weren't an issue, no working method to merge the pieces into the single file micro_era5() insists on.
+> > >
+> > > Has anyone dealt with this combination before? Specifically, I'm wondering about:
+> > > - Whether there's a working chunk-download -> merge-into-one-file -> delete-raw-chunks workflow that others use for large-area/long-duration runs, and if so what tool/approach actually does the merge correctly (we've tried and failed at this step specifically)
+> > > - Whether micro_era5()/mcera5 has (or could have) any way to read from multiple sequential files instead of requiring one merged file up front
+> > > - Any other approach people use for large-scale ERA5-driven runs that don't fit in memory/disk all at once
+> > >
+> > > Happy to share more detail on my setup (bounding box, variables, occurrence data structure) if that's useful for troubleshooting. Any pointers would be genuinely helpful -- this is the main thing standing between me and a full run.
+> > >
+> > > Thanks,
+> > > Desire
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+> > To view this discussion, visit https://groups.google.com/d/msgid/nichemapr/28ae358f-7d58-43c0-a223-946a7408d394n%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/28ae358f-7d58-43c0-a223-946a7408d394n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+>
+>
+> --
+> David Klinges, PhD
+> https://ecoclimateglobal.org/
+> Google Scholar Page <https://streaklinks.com/A-tFlFdgINAxFuFCfwOEhad9/https%3A%2F%2Fscholar.google.com%2Fcitations%3Fuser%3Di9pmQasAAAAJ%26hl%3Den>
+
+From u2bcecdd9c0443e65 at groups.google.com  Sat Sep  5 12:11:10 2026
+From: u2bcecdd9c0443e65 at groups.google.com (David Klinges)
+Date: Sat, 05 Sep 2026 12:11:10 +0000
+Subject: Re: Large-area ERA5 downloads vs. local storage vs. micro_era5() single-file requirement
+Message-ID: <PoIOw27QbnU.HrCyV9nvAgAJ@nichemapr.groups.google.com>
+In-Reply-To: <PoIOw27QbnU.Yu-cSwPjAgAJ@nichemapr.groups.google.com>
+References: <PoIOw27QbnU.QQ3H9E7XAQAJ@nichemapr.groups.google.com> <PoIOw27QbnU.Yu-cSwPjAgAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/PoIOw27QbnU/m/HrCyV9nvAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Great news, as with many others I'm eager to see the Julia implementation ship!
+
+On Sat, Sep 5, 2026 at 4:16 AM NicheMapR <nich...@googlegroups.com> wrote:
+
+> Thanks Dave - and note also that Raf Schouten and I have been reconstructing the NicheMapR package in Julia and I just implemented code to use the ARCO ERA Zarr dataset - it works well, taking about 1.5 mins to download a year of ERA5 data for a point and run a simulation. I'll be providing more on the new setup once it's finalised, which should be in the next month or two.
+>
+> All the best,
+> Mike
+>
+> On Friday, September 4, 2026 at 2:41:21 AM UTC+10 dkli...@gmail.com wrote:
+> > Hi Desire, Junqi, and all,
+> >
+> > I'm the lead developer on mcera5 R package, which holds the functions that query ERA5 data and are called from within micro_era5(). The concerns that Desire brings up are valid, and stem partly from how the CDS API is set up, and partly from how mcera5 was written to conform to that API.
+> >
+> > The approach Junqi describes, using the ARCO ERA Zarr data is probably the right way forward. This was released a few months ago, and I hope to find the time to update mcera5 to reflect this new archive. But this likely won't happen until November, perhaps Oct at the earliest, given the time needed to test before releasing a new version of the package. If your needs are urgent then I'd follow Junqi's workaround for now. And, the mcera5 software is on GitHub <https://github.com/dklinges9/mcera5> – feel free to submit pull requests if there is a method you have worked on.
+> >
+> > Best,
+> > Dave
+> >
+> > On Wed, Sep 2, 2026 at 3:46 AM drinky fan <kieran...@gmail.com> wrote:
+> > > Hi, I am not the developer but faced the similar problem.
+> > >
+> > > CDS just released a Zarr store (https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=analysis_ready_data). The official documentation provides examples of how to use them in the Python environment. You can try it if you want to speed up your download. Although its initial design was for direct programmatic access, I found that selecting the required variables, temporal and spatial ranges for downloading is much faster (not a queue) than traditional access (the method used by request_era5() function). My current workflow is (1) read the required variables from the zarr store, (2) save it as nc file that is exactly the same as the output of request_era5(). Notably the zarr store doesn't provide variable of Net Longwave Radiation (`avg_snlwrf`). You need to calculate it manually.
+> > >
+> > > And I think it's feasible to access era5 data directly through Zarr store and input it under a R environment, but I haven't tried it. It might address the disk issue.
+> > >
+> > > Regarding the micro_era5's compatibility, you can extract the .nc file yourself and input it into the microclimate model.. Looking inside source code of micro_era5() function (and other micro_ series functions), you would find that it (1) first calls extract_clim() and extract_precip() function of mcera5 package to extract macro-climate data from .nc file. They compile the data into data.frame object with fixed format ,
+> > > (It looks like)
+> > > and then (2) pass these data.frame to an external Fortran function (MICRO.f). So you can manually use extract_clim() and extract_precip() function to extract your chunk .nc files, merge them into one data.frame, by the time order,  finally input them to the Fortran function.
+> > >
+> > > Hope these are helpful!
+> > >
+> > > Cheers
+> > > Junqi
+> > > On Wednesday, September 2, 2026 at 6:30:12 AM UTC+8 desire...@gmail.com wrote:
+> > > > Hi all,
+> > > >
+> > > > I'm running micro_era5() across a large number of occurrence points spread across all of Brazil, simulating one ERA5 grid cell per year across several years of data, and I've run into a combination of constraints I'd love some ideas on.
+> > > >
+> > > > The core problem has three parts that don't have an obvious combined solution:
+> > > >
+> > > > 1. Copernicus/CDS download size limits: a single request for the whole-Brazil bounding box at hourly resolution for a full year is too large for CDS to return in one request.
+> > > >
+> > > > 2. Local storage limits: the natural workaround is to split the download into smaller time chunks (e.g. bi-monthly), but keeping all of those raw NetCDF files on disk at once -- across many years and a country-sized area -- adds up to more local storage than I have available. I need a way to process and discard data incrementally rather than accumulate it all before running any models.
+> > > >
+> > > > 3. micro_era5() compatibility: mcera5/micro_era5() appears to require the driving climate data as a single locally-stored NetCDF file (named "<prefix>_<year>.nc") and doesn't stitch multiple chunked files together. So splitting a year's download into several smaller files to get around constraint #1 breaks compatibility with #3 -- there's no way to hand micro_era5() several bi-monthly chunks and have it treat them as one continuous year.
+> > > >
+> > > > And even setting storage aside -- say I had a hard drive with enough room to keep every chunk for every year -- I'd still be stuck at the same wall: I've tried and failed to actually combine multiple bi-monthly NetCDF files into a single valid annual file that micro_era5() will accept. So this isn't just a storage problem; even with unlimited local storage, the merge step itself is the part we haven't been able to solve.
+> > > >
+> > > > So I'm stuck between: request too large for CDS to hand back in one piece, too much data to keep all the pieces locally at once, and even if storage weren't an issue, no working method to merge the pieces into the single file micro_era5() insists on.
+> > > >
+> > > > Has anyone dealt with this combination before? Specifically, I'm wondering about:
+> > > > - Whether there's a working chunk-download -> merge-into-one-file -> delete-raw-chunks workflow that others use for large-area/long-duration runs, and if so what tool/approach actually does the merge correctly (we've tried and failed at this step specifically)
+> > > > - Whether micro_era5()/mcera5 has (or could have) any way to read from multiple sequential files instead of requiring one merged file up front
+> > > > - Any other approach people use for large-scale ERA5-driven runs that don't fit in memory/disk all at once
+> > > >
+> > > > Happy to share more detail on my setup (bounding box, variables, occurrence data structure) if that's useful for troubleshooting. Any pointers would be genuinely helpful -- this is the main thing standing between me and a full run.
+> > > >
+> > > > Thanks,
+> > > > Desire
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+> > > To view this discussion, visit https://groups.google.com/d/msgid/nichemapr/28ae358f-7d58-43c0-a223-946a7408d394n%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/28ae358f-7d58-43c0-a223-946a7408d394n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+> >
+> >
+> > --
+> > David Klinges, PhD
+> > https://ecoclimateglobal.org/
+> > Google Scholar Page <https://streaklinks.com/A-tFlFdgINAxFuFCfwOEhad9/https%3A%2F%2Fscholar.google.com%2Fcitations%3Fuser%3Di9pmQasAAAAJ%26hl%3Den>
+>
+> --
+> You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+
+> To view this discussion, visit https://groups.google.com/d/msgid/nichemapr/da98dcba-7908-466a-8577-28740ec1ca76n%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/da98dcba-7908-466a-8577-28740ec1ca76n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+
+--
+David Klinges, PhD
+https://ecoclimateglobal.org/
+Google Scholar Page <https://streaklinks.com/A-tFlFdgINAxFuFCfwOEhad9/https%3A%2F%2Fscholar.google.com%2Fcitations%3Fuser%3Di9pmQasAAAAJ%26hl%3Den>
+
+From ucf0a61b30321fbd5 at groups.google.com  Wed Sep 30 09:03:37 2026
+From: ucf0a61b30321fbd5 at groups.google.com (Shane Morris)
+Date: Wed, 30 Sep 2026 09:03:37 +0000
+Subject: Endotherm Stand Up
+Message-ID: <q7Uovtn4JP4.boUdqq4LAQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/q7Uovtn4JP4/m/boUdqq4LAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Mike,
+
+I am currently working on modelling a ground nesting bird whilst it is incubating and a key feature I want to include is the fact that birds can cool themselves down quite a bit by standing up. What would be the simplest way to implement incubating vs standing? I was going to keep all else equal bar the following :
+
+Incubating
+TAIR <- TAIR.10cm.50shd  # TA at 10cm
+TGRD <- TGRD.50shd         # Ground temp
+TCONDSB<-  TGRD.50shd   # Ground temp
+SHAPE_MAX <- 2
+
+Standing
+TAIR <- TAIR.30cm.50shd  # TA at 30cm
+TGRD <-  TAIR.10cm.50shd    # TA at 10cm
+TCONDSB<-  TAIR.10cm.50shd  # TA at 10cm
+SHAPE_MAX <- 4
+
+Or should I simply keep TAIR, TGRD, TCONSDSB the same and have PCOND = 0.5 for incubating and PCOND = 0 for standing?
+
+All the best,
+Shane.
+
+From ue46cb5dd353b7dfb at groups.google.com  Wed Sep 30 22:35:00 2026
+From: ue46cb5dd353b7dfb at groups.google.com (Michael Kearney)
+Date: Wed, 30 Sep 2026 22:35:00 +0000
+Subject: Re: Endotherm Stand Up
+Message-ID: <q7Uovtn4JP4.y5CCnfU3AQAJ@nichemapr.groups.google.com>
+In-Reply-To: <q7Uovtn4JP4.boUdqq4LAQAJ@nichemapr.groups.google.com>
+References: <q7Uovtn4JP4.boUdqq4LAQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/q7Uovtn4JP4/m/y5CCnfU3AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Shane,
+I'd definitely simulate the air temperature, wind speed and humidity at the two heights, i.e. the mid-point of the bird when sitting and standing, and then when it's sitting, and turn off conduction when they are standing and make the bottom of the bird "see" the surface temperature. Note however that conduction isn't modelled properly because it doesn't involve feedback between the ground and the organism that leads to a change in the ground temperature to a new steady state. It's more as if they keep moving to a new patch of ground of the same temperature.
+All the best,
+Mike
+
+On Wed, 30 Sept 2026 at 19:03, Shane Morris <sdpm...@gmail.com> wrote:
+
+> Hi Mike,
+>
+> I am currently working on modelling a ground nesting bird whilst it is incubating and a key feature I want to include is the fact that birds can cool themselves down quite a bit by standing up. What would be the simplest way to implement incubating vs standing? I was going to keep all else equal bar the following :
+>
+> Incubating
+> TAIR <- TAIR.10cm.50shd  # TA at 10cm
+> TGRD <- TGRD.50shd         # Ground temp
+> TCONDSB<-  TGRD.50shd   # Ground temp
+> SHAPE_MAX <- 2
+>
+> Standing
+> TAIR <- TAIR.30cm.50shd  # TA at 30cm
+> TGRD <-  TAIR.10cm.50shd    # TA at 10cm
+> TCONDSB<-  TAIR.10cm.50shd  # TA at 10cm
+> SHAPE_MAX <- 4
+>
+> Or should I simply keep TAIR, TGRD, TCONSDSB the same and have PCOND = 0.5 for incubating and PCOND = 0 for standing?
+>
+> All the best,
+> Shane.
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "NicheMapR" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to nichemapr+...@googlegroups.com.
+> To view this discussion, visit https://groups.google.com/d/msgid/nichemapr/9f6b4ab9-6798-44c4-93e9-dfdf32e50024n%40googlegroups.com <https://groups.google.com/d/msgid/nichemapr/9f6b4ab9-6798-44c4-93e9-dfdf32e50024n%40googlegroups.com?utm_medium=email&utm_source=footer>.
+

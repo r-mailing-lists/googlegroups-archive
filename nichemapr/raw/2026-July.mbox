@@ -1,0 +1,2200 @@
+From u934155c5e68e25d0 at groups.google.com  Wed Jul  1 02:56:53 2026
+From: u934155c5e68e25d0 at groups.google.com (Caity Dwyer)
+Date: Wed, 01 Jul 2026 02:56:53 +0000
+Subject: Enforcing a constant day time TC
+Message-ID: <c5GLNdeN_gU.fH4aR5--CgAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/c5GLNdeN_gU/m/fH4aR5--CgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Good afternoon Mike,
+
+I am very new to NicheMapR and am having a bit of trouble with getting my model to represent natural torpor. I want to mimic the results of a study which shows relatively constant day time temperatures followed by a nightly drop into torpor (doi:10.1098/rsbl.2019.0211). I'm not sure how can I adjust different aspects of torpor to more closely match measured results. I've pasted my code below and am currently using the following parameters:
+
+########### Parameters ############
+TC <- 41.9                # Core body temperature (°C)
+TC_MAX <- 46              # Maximum core body temperature (°C)
+TC_MIN <- 30.4            # Minimum core body temperature (°C)
+TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+PCTWET <- 1               # Base skin wetness (%)
+PCTWET_MAX <- 5           # Maximum skin wetness (%)
+PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+DELTAR <- 5               # Difference between air temperature and breath (°C)
+EXTREF <- 25              # O2 extraction efficiency (%)
+PANT_INC <- 0.1           # Increment by which panting is increased
+PANT_MAX <- 15            # Maximum panting rate
+PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+TORPOR <- 1               # Allows body temperature to drop to TC_MIN
+TREGMODE <- 2
+endoshade <- 0
+#############################################
+
+Here is my endoR loop. I am running it through different feather conditions however that is working well, it is the torpor that needs adjusting:
+
+##############################################
+results_list <- list()   # store results for each condition level
+
+ptm <- proc.time()
+
+for (i in seq_along(condition_grid)) {
+
+  # Scale feather density and length
+  LHAIRD <- condition_grid[i] * LHAIRD_base
+  LHAIRV <- condition_grid[i] * LHAIRV_base
+  RHOD   <- condition_grid[i] * RHOD_base
+  RHOV   <- condition_grid[i] * RHOV_base
+
+  # Run endoR across all microclimate time steps
+  endo.out <- lapply(seq_along(TAs), function(x) {
+
+    # Behavioural ptiloerection based on air temperature
+    ptilo <- ptilo_func(TAs[x])
+
+    # Adjust feather depth (ptiloerection)
+    ZFURD <- ZFURD_base + (LHAIRD - ZFURD_base) * ptilo
+    ZFURV <- ZFURV_base + (LHAIRV - ZFURV_base) * ptilo
+
+    # Run endoR with modified insulation
+    endoR(
+      # Climate variables
+      TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+      VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+      ABSSB = ABSSB,
+
+      # Constants
+      TC = TC, TC_MAX = TC_MAX, AMASS = AMASS, SHAPE = SHAPE,
+      SHAPE_B = SHAPE_B, SHAPE_B_MAX = SHAPE_B_MAX,
+      PCTWET = PCTWET, PCTWET_INC = PCTWET_INC,
+      Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR,
+      DHAIRD = DHAIRD, DHAIRV = DHAIRV,
+      REFLD = REFLD, TC_INC = TC_INC, PANT_INC = PANT_INC,
+      PANT_MAX = PANT_MAX, EXTREF = EXTREF, UNCURL = UNCURL,
+      SAMODE = SAMODE, PANT_MULT = PANT_MULT, TORPOR = TORPOR,
+      SHADE = endoshade, TREGMODE = TREGMODE,
+
+      # Varied Feather Traits
+      LHAIRD = LHAIRD,
+      LHAIRV = LHAIRV,
+      RHOD   = RHOD,
+      RHOV   = RHOV,
+      ZFURD  = ZFURD,
+      ZFURV  = ZFURV
+    )
+  })
+
+  # Convert list of endoR outputs into a single data frame
+  endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+
+  # Climate
+  daynight <- ifelse(Zs >= 90, "night", "day")
+
+  # Extract heat balance (metabolic rate)
+  enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+  colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+
+  # Thermoregulation output
+  treg <- endo_df[, grep("treg", colnames(endo_df))]
+  colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+
+  # Mass aspects
+  masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+  colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+
+  # Save results for this condition level
+  results_list[[i]] <- data.frame(
+    condition = condition_grid[i],
+    time_step = seq_along(TAs),
+    QGEN = enbal$QGEN,                             # Metabolic energy generated
+    TCs = treg$TC,                                 # Core temperature
+    H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+    TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+    TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+    TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+    TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+    Pant = treg$PANT,                              # Panting multiplier
+    daynight = daynight                            # Day or night
+  )
+}
+
+proc.time() - ptm
+
+results_all <- do.call(rbind, results_list)
+
+ggplot(results_all, aes(x = time_step, y = TCs, colour = factor(condition))) +
+  geom_line(size = 1) +
+  labs(
+    x = "Time step",
+    y = "Core Temperature",
+    colour = "Feather condition"
+  )
+#############################################
+
+I hope this is enough to explain my problem, and thank you for your time.
+All the best,
+Caity
+
+From u6cec8ea3702ece93 at groups.google.com  Sun Jul  5 11:52:44 2026
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Sun, 05 Jul 2026 11:52:44 +0000
+Subject: Re: Enforcing a constant day time TC
+Message-ID: <c5GLNdeN_gU.KdLQOy8WDAAJ@nichemapr.groups.google.com>
+In-Reply-To: <c5GLNdeN_gU.fH4aR5--CgAJ@nichemapr.groups.google.com>
+References: <c5GLNdeN_gU.fH4aR5--CgAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/c5GLNdeN_gU/m/KdLQOy8WDAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Caity,
+I can't run your script as is - if you send a fully self-contained example and the data you're trying to capture, I can take a look. But perhaps it's just a case of altering whether or not the animal can go into torpor based on time of day?
+All the best,
+Mike
+
+On Wednesday, July 1, 2026 at 12:56:53 PM UTC+10 cait...@gmail.com wrote:
+> Good afternoon Mike,
+>
+> I am very new to NicheMapR and am having a bit of trouble with getting my model to represent natural torpor. I want to mimic the results of a study which shows relatively constant day time temperatures followed by a nightly drop into torpor (doi:10.1098/rsbl.2019.0211). I'm not sure how can I adjust different aspects of torpor to more closely match measured results. I've pasted my code below and am currently using the following parameters:
+>
+> ########### Parameters ############
+> TC <- 41.9                # Core body temperature (°C)
+> TC_MAX <- 46              # Maximum core body temperature (°C)
+> TC_MIN <- 30.4            # Minimum core body temperature (°C)
+> TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+> PCTWET <- 1               # Base skin wetness (%)
+> PCTWET_MAX <- 5           # Maximum skin wetness (%)
+> PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+> Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+> Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+> QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+> DELTAR <- 5               # Difference between air temperature and breath (°C)
+> EXTREF <- 25              # O2 extraction efficiency (%)
+> PANT_INC <- 0.1           # Increment by which panting is increased
+> PANT_MAX <- 15            # Maximum panting rate
+> PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+> TORPOR <- 1               # Allows body temperature to drop to TC_MIN
+> TREGMODE <- 2
+> endoshade <- 0
+> #############################################
+>
+> Here is my endoR loop. I am running it through different feather conditions however that is working well, it is the torpor that needs adjusting:
+>
+> ##############################################
+> results_list <- list()   # store results for each condition level
+>
+> ptm <- proc.time()
+>
+> for (i in seq_along(condition_grid)) {
+>
+>   # Scale feather density and length
+>   LHAIRD <- condition_grid[i] * LHAIRD_base
+>   LHAIRV <- condition_grid[i] * LHAIRV_base
+>   RHOD   <- condition_grid[i] * RHOD_base
+>   RHOV   <- condition_grid[i] * RHOV_base
+>
+>   # Run endoR across all microclimate time steps
+>   endo.out <- lapply(seq_along(TAs), function(x) {
+>
+>     # Behavioural ptiloerection based on air temperature
+>     ptilo <- ptilo_func(TAs[x])
+>
+>     # Adjust feather depth (ptiloerection)
+>     ZFURD <- ZFURD_base + (LHAIRD - ZFURD_base) * ptilo
+>     ZFURV <- ZFURV_base + (LHAIRV - ZFURV_base) * ptilo
+>
+>     # Run endoR with modified insulation
+>     endoR(
+>       # Climate variables
+>       TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+>       VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+>       ABSSB = ABSSB,
+>
+>       # Constants
+>       TC = TC, TC_MAX = TC_MAX, AMASS = AMASS, SHAPE = SHAPE,
+>       SHAPE_B = SHAPE_B, SHAPE_B_MAX = SHAPE_B_MAX,
+>       PCTWET = PCTWET, PCTWET_INC = PCTWET_INC,
+>       Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR,
+>       DHAIRD = DHAIRD, DHAIRV = DHAIRV,
+>       REFLD = REFLD, TC_INC = TC_INC, PANT_INC = PANT_INC,
+>       PANT_MAX = PANT_MAX, EXTREF = EXTREF, UNCURL = UNCURL,
+>       SAMODE = SAMODE, PANT_MULT = PANT_MULT, TORPOR = TORPOR,
+>       SHADE = endoshade, TREGMODE = TREGMODE,
+>
+>       # Varied Feather Traits
+>       LHAIRD = LHAIRD,
+>       LHAIRV = LHAIRV,
+>       RHOD   = RHOD,
+>       RHOV   = RHOV,
+>       ZFURD  = ZFURD,
+>       ZFURV  = ZFURV
+>     )
+>   })
+>
+>   # Convert list of endoR outputs into a single data frame
+>   endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+>
+>   # Climate
+>   daynight <- ifelse(Zs >= 90, "night", "day")
+>
+>   # Extract heat balance (metabolic rate)
+>   enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+>   colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+>
+>   # Thermoregulation output
+>   treg <- endo_df[, grep("treg", colnames(endo_df))]
+>   colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+>
+>   # Mass aspects
+>   masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+>   colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+>
+>
+>   # Save results for this condition level
+>   results_list[[i]] <- data.frame(
+>     condition = condition_grid[i],
+>     time_step = seq_along(TAs),
+>     QGEN = enbal$QGEN,                             # Metabolic energy generated
+>     TCs = treg$TC,                                 # Core temperature
+>     H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+>     TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+>     TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+>     TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+>     TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+>     Pant = treg$PANT,                              # Panting multiplier
+>     daynight = daynight                            # Day or night
+>   )
+> }
+>
+> proc.time() - ptm
+>
+> results_all <- do.call(rbind, results_list)
+>
+> ggplot(results_all, aes(x = time_step, y = TCs, colour = factor(condition))) +
+>   geom_line(size = 1) +
+>   labs(
+>     x = "Time step",
+>     y = "Core Temperature",
+>     colour = "Feather condition"
+>   )
+> #############################################
+>
+> I hope this is enough to explain my problem, and thank you for your time.
+> All the best,
+> Caity
+
+From u934155c5e68e25d0 at groups.google.com  Mon Jul  6 00:16:57 2026
+From: u934155c5e68e25d0 at groups.google.com (Caity Dwyer)
+Date: Mon, 06 Jul 2026 00:16:57 +0000
+Subject: Re: Enforcing a constant day time TC
+Message-ID: <c5GLNdeN_gU.pYEey8s-DAAJ@nichemapr.groups.google.com>
+In-Reply-To: <c5GLNdeN_gU.KdLQOy8WDAAJ@nichemapr.groups.google.com>
+References: <c5GLNdeN_gU.fH4aR5--CgAJ@nichemapr.groups.google.com> <c5GLNdeN_gU.KdLQOy8WDAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/c5GLNdeN_gU/m/pYEey8s-DAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Mike,
+
+I've added a night time requirement for TORPOR in the following self-contained code. While the animal does drop into torpor at night, the drop is seemingly instant unlike the gradual decrease measured experimentally. I was wondering if there was a way to encode some kind of non-energetic cost of torpor that would prevent the model from immediately maximising it. Otherwise, how would I force the model to consider TORPOR a last resort. Thank you and I hope this code runs!
+
+All the best,
+Caity
+
+#############################################################
+library(NicheMapR)
+library(ggplot2)
+
+# Australian National Botanic Gardens Input
+loc <- c(149.1112592, -35.2733684)    # Coordinates
+maxshade <- 100                       # Maximum Shade
+
+# Superb fairywren centroid height (m)
+Usrhyt <- 0.07
+
+# Running the microclimate models
+micro <- micro_global(loc = loc, Usrhyt = Usrhyt, maxshade = maxshade)
+
+metout <- as.data.frame(micro$metout)          # unshaded above-ground conditions
+soil <- as.data.frame(micro$soil)              # unshaded below-ground soil temperatures
+shadmet <- as.data.frame(micro$shadmet)        # shaded above-ground conditions
+shadsoil <- as.data.frame(micro$shadsoil)      # shaded below-ground soil temperatures
+dates <- micro$dates
+
+TAs <- metout$TALOC            # air temperatures at height of animal (°C)
+TAREFs <- metout$TAREF         # air temperatures at reference height (°C)
+TSKYs <- metout$TSKYC          # sky temperatures (°C)
+TGRDs <- soil$D0cm             # surface temperatures (°C)
+VELs <- metout$VLOC            # wind speeds at animal height (m/s)
+RHs <- metout$RHLOC            # relative humidity at animal height (%)
+QSOLRs <- metout$SOLR          # solar radiation (W/m2)
+Zs <- metout$ZEN               # zenith angle of the sun (degrees)
+ELEV <- micro$elev             # elevation (m)
+ABSSB <- 1 - micro$REFL        # substrate solar absorptivity (%)
+
+# Morphometric Parameters
+AMASS <- 0.0097    # Mass (kg)
+ANDENS <- 875     # Flesh density (kg/m^3)
+AK1 <- 1          # Initial thermal conductivity of flesh (0.412 - 2.8 W/mK)
+SHAPE_B <- 1.01   # Long to short body axis ratio
+SHAPE_B_MAX <- 2  # Maximum long to short body axis ratio
+UNCURL <- 0.1     # Increment of change between SHAPE_B and SHAPE_B_MAX
+SHAPE <- 4        # Shape type (4 = ellipsoid)
+SAMODE <- 1       # Geometry (1 = bird)
+FATPCT <- 3.6     # Body fat (%)
+
+# Metabolic Parameters and Physiological Responses
+
+TC <- 41.9                # Core body temperature (°C)
+TC_MAX <- 46              # Maximum core body temperature (°C)
+TC_MIN <- 30.4            # Minimum core body temperature (°C)
+TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+PCTWET <- 1               # Base skin wetness (%)
+PCTWET_MAX <- 5           # Maximum skin wetness (%)
+PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+DELTAR <- 5               # Difference between air temperature and breath (°C)
+EXTREF <- 25              # O2 extraction efficiency (%)
+PANT_INC <- 0.1           # Increment by which panting is increased
+PANT_MAX <- 15            # Maximum panting rate
+PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+
+# Fixed Feather Properties
+DHAIRD <- 0.00003         # Dorsal "hair" diameter (m)
+DHAIRV <- 0.00003         # Ventral "hair" diameter (m)
+REFLD <- 0.41             # Dorsal fractional reflectivity (0-1)
+REFLV <- 0.48             # Ventral fractional reflectivity (0-1)
+
+# Base Feather Properties (adjusted seasonally) !!!!!!!!!!!!!!!!!!!! CORRECT THESE TO FAIRYWREN VALUES
+#ZFURD <- 0.00217               # Dorsal "fur" depth (m) -> will vary with ptiloerection
+#ZFURV <- 0.00254               # Ventral "fur" depth (m)  -> will vary with ptiloerection
+LHAIRD_base <- 0.01611         # Dorsal "hair" length (m)
+LHAIRV_base <- 0.01413         # Ventral "hair" length (m)
+RHOD_base <- 5e+07             # Dorsal feather density (m^-2)
+RHOV_base <- 5e+07             # Ventral feather density (m^-2)
+TREGMODE <- 1                  # Allows dynamic ptiloerection
+
+condition_grid <- seq(0.5, 3.5, by = 0.5) # To cycle through feather conditions
+
+results_list_torpor <- list()   # store results for each condition level
+
+ptm <- proc.time()
+
+for (i in seq_along(condition_grid)) {
+
+  # Scale feather density and length
+  LHAIRD <- condition_grid[i] * LHAIRD_base
+  LHAIRV <- condition_grid[i] * LHAIRV_base
+  RHOD   <- condition_grid[i] * RHOD_base
+  RHOV   <- condition_grid[i] * RHOV_base
+
+  ZFURD_MAX <- LHAIRD
+  ZFURV_MAX <-LHAIRV
+
+  # Run endoR across all microclimate time steps
+  endo.out <- lapply(seq_along(TAs), function(x) {
+
+    TORPOR <- if (Zs[x] >= 90) 1 else 0
+
+    # Run endoR with modified insulation
+    endoR(
+      # Climate variables
+      TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+      VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+      ABSSB = ABSSB,
+
+      # Morphometrics
+      AMASS = AMASS, ANDENS = ANDENS, AK1 = AK1, SHAPE_B = SHAPE_B,
+      SHAPE_B_MAX = SHAPE_B_MAX, UNCURL = UNCURL, SHAPE = SHAPE,
+      SAMODE = SAMODE, FATPCT = FATPCT,
+
+      # Metabolic Parameters
+      TC = TC, TC_MAX = TC_MAX, TC_MIN = TC_MIN,TC_INC = TC_INC,
+      PCTWET = PCTWET, PCTWET_MAX = PCTWET_MAX, PCTWET_INC = PCTWET_INC,
+      Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR, EXTREF = EXTREF,
+      PANT_INC = PANT_INC, PANT_MAX = PANT_MAX, PANT_MULT = PANT_MULT,
+      TORPOR = TORPOR, # Torpor is the main addition to nighttime runs
+
+      # Fixed Feather Properties
+      DHAIRD = DHAIRD, DHAIRV = DHAIRV, REFLD = REFLD, REFLV = REFLV,
+
+      # Varied Feather Properties
+      ZFURD_MAX = ZFURD_MAX, ZFURV_MAX = ZFURV_MAX,
+
+      LHAIRD = LHAIRD, LHAIRV = LHAIRV,
+
+      RHOD = RHOD, RHOV = RHOV, TREGMODE = TREGMODE,
+
+    )
+  })
+
+  # Convert list of endoR outputs into a single data frame
+  endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+
+  # Climate
+
+  daynight <- ifelse(Zs >= 90, "torpid_night", "day")
+
+  # Extract heat balance (metabolic rate)
+  enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+  colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+
+  # Thermoregulation output
+  treg <- endo_df[, grep("treg", colnames(endo_df))]
+  colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+
+  # Mass aspects
+  masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+  colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+
+  # Save results for this condition level
+
+  results_list_torpor[[i]] <- data.frame(
+
+    condition = condition_grid[i],
+    time_step = seq_along(TAs),
+    QGEN = enbal$QGEN,                             # Metabolic energy generated
+    TCs = treg$TC,                                 # Core temperature
+    H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+    TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+    TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+    TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+    TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+    Pant = treg$PANT,                              # Panting multiplier
+    daynight = daynight                            # Day or night
+  )
+}
+
+proc.time() - ptm
+
+results_all_torpor <- do.call(rbind, results_list_torpor)
+
+sanity_check <- subset(results_all_torpor, condition == 1)
+
+ggplot(sanity_check, aes(x = time_step)) +
+  geom_line(aes(y = TFA_D, color = "Feathers dorsal", linetype = "Feathers dorsal")) +
+  geom_line(aes(y = TFA_V, color = "Feathers ventral", linetype = "Feathers ventral")) +
+  geom_line(aes(y = TskinD, color = "Skin dorsal", linetype = "Skin dorsal")) +
+  geom_line(aes(y = TskinV, color = "Skin ventral", linetype = "Skin ventral")) +
+  geom_line(aes(y = TCs, color = "Core", linetype = "Core")) +
+  geom_line(aes(y=TAs, color = "Air Temperature", linetype = "Air Temperature")) +
+  scale_color_manual(values = c("Core" = "red", "Skin dorsal" = "orange", "Skin ventral" = "orange", "Feathers dorsal" = "darkgreen",
+                                "Feathers ventral"= "darkgreen", "Air Temperature" = "violet")) +
+  scale_linetype_manual(values = c("Core" = 1, "Skin dorsal" = 1, "Skin ventral" = 2, "Feathers dorsal" = 1,
+                                   "Feathers ventral"= 2, "Air Temperature" = 1)) +
+  labs(x = "time", y = "temperature (°C)", color = "", linetype = "") +
+  ylim(-10, 50) +
+  theme_bw() +
+  theme(
+    legend.position = "top",
+    legend.key.width = unit(1.5, "cm")
+  )
+########################################################################
+
+On Sunday, 5 July 2026 at 9:52:44 pm UTC+10 NicheMapR wrote:
+> Hi Caity,
+> I can't run your script as is - if you send a fully self-contained example and the data you're trying to capture, I can take a look. But perhaps it's just a case of altering whether or not the animal can go into torpor based on time of day?
+> All the best,
+> Mike
+>
+> On Wednesday, July 1, 2026 at 12:56:53 PM UTC+10 cait...@gmail.com wrote:
+> > Good afternoon Mike,
+> >
+> > I am very new to NicheMapR and am having a bit of trouble with getting my model to represent natural torpor. I want to mimic the results of a study which shows relatively constant day time temperatures followed by a nightly drop into torpor (doi:10.1098/rsbl.2019.0211). I'm not sure how can I adjust different aspects of torpor to more closely match measured results. I've pasted my code below and am currently using the following parameters:
+> >
+> > ########### Parameters ############
+> > TC <- 41.9                # Core body temperature (°C)
+> > TC_MAX <- 46              # Maximum core body temperature (°C)
+> > TC_MIN <- 30.4            # Minimum core body temperature (°C)
+> > TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+> > PCTWET <- 1               # Base skin wetness (%)
+> > PCTWET_MAX <- 5           # Maximum skin wetness (%)
+> > PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+> > Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+> > Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+> > QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+> > DELTAR <- 5               # Difference between air temperature and breath (°C)
+> > EXTREF <- 25              # O2 extraction efficiency (%)
+> > PANT_INC <- 0.1           # Increment by which panting is increased
+> > PANT_MAX <- 15            # Maximum panting rate
+> > PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+> > TORPOR <- 1               # Allows body temperature to drop to TC_MIN
+> > TREGMODE <- 2
+> > endoshade <- 0
+> > #############################################
+> >
+> > Here is my endoR loop. I am running it through different feather conditions however that is working well, it is the torpor that needs adjusting:
+> >
+> > ##############################################
+> > results_list <- list()   # store results for each condition level
+> >
+> > ptm <- proc.time()
+> >
+> > for (i in seq_along(condition_grid)) {
+> >
+> >   # Scale feather density and length
+> >   LHAIRD <- condition_grid[i] * LHAIRD_base
+> >   LHAIRV <- condition_grid[i] * LHAIRV_base
+> >   RHOD   <- condition_grid[i] * RHOD_base
+> >   RHOV   <- condition_grid[i] * RHOV_base
+> >
+> >   # Run endoR across all microclimate time steps
+> >   endo.out <- lapply(seq_along(TAs), function(x) {
+> >
+> >     # Behavioural ptiloerection based on air temperature
+> >     ptilo <- ptilo_func(TAs[x])
+> >
+> >     # Adjust feather depth (ptiloerection)
+> >     ZFURD <- ZFURD_base + (LHAIRD - ZFURD_base) * ptilo
+> >     ZFURV <- ZFURV_base + (LHAIRV - ZFURV_base) * ptilo
+> >
+> >     # Run endoR with modified insulation
+> >     endoR(
+> >       # Climate variables
+> >       TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+> >       VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+> >       ABSSB = ABSSB,
+> >
+> >       # Constants
+> >       TC = TC, TC_MAX = TC_MAX, AMASS = AMASS, SHAPE = SHAPE,
+> >       SHAPE_B = SHAPE_B, SHAPE_B_MAX = SHAPE_B_MAX,
+> >       PCTWET = PCTWET, PCTWET_INC = PCTWET_INC,
+> >       Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR,
+> >       DHAIRD = DHAIRD, DHAIRV = DHAIRV,
+> >       REFLD = REFLD, TC_INC = TC_INC, PANT_INC = PANT_INC,
+> >       PANT_MAX = PANT_MAX, EXTREF = EXTREF, UNCURL = UNCURL,
+> >       SAMODE = SAMODE, PANT_MULT = PANT_MULT, TORPOR = TORPOR,
+> >       SHADE = endoshade, TREGMODE = TREGMODE,
+> >
+> >       # Varied Feather Traits
+> >       LHAIRD = LHAIRD,
+> >       LHAIRV = LHAIRV,
+> >       RHOD   = RHOD,
+> >       RHOV   = RHOV,
+> >       ZFURD  = ZFURD,
+> >       ZFURV  = ZFURV
+> >     )
+> >   })
+> >
+> >   # Convert list of endoR outputs into a single data frame
+> >   endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+> >
+> >   # Climate
+> >   daynight <- ifelse(Zs >= 90, "night", "day")
+> >
+> >   # Extract heat balance (metabolic rate)
+> >   enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+> >   colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+> >
+> >   # Thermoregulation output
+> >   treg <- endo_df[, grep("treg", colnames(endo_df))]
+> >   colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+> >
+> >   # Mass aspects
+> >   masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+> >   colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+> >
+> >
+> >   # Save results for this condition level
+> >   results_list[[i]] <- data.frame(
+> >     condition = condition_grid[i],
+> >     time_step = seq_along(TAs),
+> >     QGEN = enbal$QGEN,                             # Metabolic energy generated
+> >     TCs = treg$TC,                                 # Core temperature
+> >     H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+> >     TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+> >     TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+> >     TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+> >     TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+> >     Pant = treg$PANT,                              # Panting multiplier
+> >     daynight = daynight                            # Day or night
+> >   )
+> > }
+> >
+> > proc.time() - ptm
+> >
+> > results_all <- do.call(rbind, results_list)
+> >
+> > ggplot(results_all, aes(x = time_step, y = TCs, colour = factor(condition))) +
+> >   geom_line(size = 1) +
+> >   labs(
+> >     x = "Time step",
+> >     y = "Core Temperature",
+> >     colour = "Feather condition"
+> >   )
+> > #############################################
+> >
+> > I hope this is enough to explain my problem, and thank you for your time.
+> > All the best,
+> > Caity
+
+From u6cec8ea3702ece93 at groups.google.com  Thu Jul  9 00:14:04 2026
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Thu, 09 Jul 2026 00:14:04 +0000
+Subject: Re: Enforcing a constant day time TC
+Message-ID: <c5GLNdeN_gU.sqAbT2JlAgAJ@nichemapr.groups.google.com>
+In-Reply-To: <c5GLNdeN_gU.pYEey8s-DAAJ@nichemapr.groups.google.com>
+References: <c5GLNdeN_gU.fH4aR5--CgAJ@nichemapr.groups.google.com> <c5GLNdeN_gU.pYEey8s-DAAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/c5GLNdeN_gU/m/sqAbT2JlAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Caity,
+The model at present can't do that kind of thing I'm afraid. But what if you just run different scenarios and then write code to choose between them afterwards? That's generally how my colleagues and I work with the endotherm model.
+All the best,
+Mike
+
+On Monday, July 6, 2026 at 10:16:57 AM UTC+10 cait...@gmail.com wrote:
+> Thank you Mike,
+>
+> I've added a night time requirement for TORPOR in the following self-contained code. While the animal does drop into torpor at night, the drop is seemingly instant unlike the gradual decrease measured experimentally. I was wondering if there was a way to encode some kind of non-energetic cost of torpor that would prevent the model from immediately maximising it. Otherwise, how would I force the model to consider TORPOR a last resort. Thank you and I hope this code runs!
+>
+> All the best,
+> Caity
+>
+> #############################################################
+> library(NicheMapR)
+> library(ggplot2)
+>
+>
+> # Australian National Botanic Gardens Input
+> loc <- c(149.1112592, -35.2733684)    # Coordinates
+> maxshade <- 100                       # Maximum Shade
+>
+> # Superb fairywren centroid height (m)
+> Usrhyt <- 0.07
+>
+> # Running the microclimate models
+> micro <- micro_global(loc = loc, Usrhyt = Usrhyt, maxshade = maxshade)
+>
+> metout <- as.data.frame(micro$metout)          # unshaded above-ground conditions
+> soil <- as.data.frame(micro$soil)              # unshaded below-ground soil temperatures
+> shadmet <- as.data.frame(micro$shadmet)        # shaded above-ground conditions
+> shadsoil <- as.data.frame(micro$shadsoil)      # shaded below-ground soil temperatures
+> dates <- micro$dates
+>
+> TAs <- metout$TALOC            # air temperatures at height of animal (°C)
+> TAREFs <- metout$TAREF         # air temperatures at reference height (°C)
+> TSKYs <- metout$TSKYC          # sky temperatures (°C)
+> TGRDs <- soil$D0cm             # surface temperatures (°C)
+> VELs <- metout$VLOC            # wind speeds at animal height (m/s)
+> RHs <- metout$RHLOC            # relative humidity at animal height (%)
+> QSOLRs <- metout$SOLR          # solar radiation (W/m2)
+> Zs <- metout$ZEN               # zenith angle of the sun (degrees)
+> ELEV <- micro$elev             # elevation (m)
+> ABSSB <- 1 - micro$REFL        # substrate solar absorptivity (%)
+>
+> # Morphometric Parameters
+> AMASS <- 0.0097    # Mass (kg)
+> ANDENS <- 875     # Flesh density (kg/m^3)
+> AK1 <- 1          # Initial thermal conductivity of flesh (0.412 - 2.8 W/mK)
+> SHAPE_B <- 1.01   # Long to short body axis ratio
+> SHAPE_B_MAX <- 2  # Maximum long to short body axis ratio
+> UNCURL <- 0.1     # Increment of change between SHAPE_B and SHAPE_B_MAX
+> SHAPE <- 4        # Shape type (4 = ellipsoid)
+> SAMODE <- 1       # Geometry (1 = bird)
+> FATPCT <- 3.6     # Body fat (%)
+>
+> # Metabolic Parameters and Physiological Responses
+>
+> TC <- 41.9                # Core body temperature (°C)
+> TC_MAX <- 46              # Maximum core body temperature (°C)
+> TC_MIN <- 30.4            # Minimum core body temperature (°C)
+> TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+> PCTWET <- 1               # Base skin wetness (%)
+> PCTWET_MAX <- 5           # Maximum skin wetness (%)
+> PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+> Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+> Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+> QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+> DELTAR <- 5               # Difference between air temperature and breath (°C)
+> EXTREF <- 25              # O2 extraction efficiency (%)
+> PANT_INC <- 0.1           # Increment by which panting is increased
+> PANT_MAX <- 15            # Maximum panting rate
+> PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+>
+> # Fixed Feather Properties
+> DHAIRD <- 0.00003         # Dorsal "hair" diameter (m)
+> DHAIRV <- 0.00003         # Ventral "hair" diameter (m)
+> REFLD <- 0.41             # Dorsal fractional reflectivity (0-1)
+> REFLV <- 0.48             # Ventral fractional reflectivity (0-1)
+>
+> # Base Feather Properties (adjusted seasonally) !!!!!!!!!!!!!!!!!!!! CORRECT THESE TO FAIRYWREN VALUES
+> #ZFURD <- 0.00217               # Dorsal "fur" depth (m) -> will vary with ptiloerection
+> #ZFURV <- 0.00254               # Ventral "fur" depth (m)  -> will vary with ptiloerection
+> LHAIRD_base <- 0.01611         # Dorsal "hair" length (m)
+> LHAIRV_base <- 0.01413         # Ventral "hair" length (m)
+> RHOD_base <- 5e+07             # Dorsal feather density (m^-2)
+> RHOV_base <- 5e+07             # Ventral feather density (m^-2)
+> TREGMODE <- 1                  # Allows dynamic ptiloerection
+>
+> condition_grid <- seq(0.5, 3.5, by = 0.5) # To cycle through feather conditions
+>
+> results_list_torpor <- list()   # store results for each condition level
+>
+>
+> ptm <- proc.time()
+>
+> for (i in seq_along(condition_grid)) {
+>
+>   # Scale feather density and length
+>   LHAIRD <- condition_grid[i] * LHAIRD_base
+>   LHAIRV <- condition_grid[i] * LHAIRV_base
+>   RHOD   <- condition_grid[i] * RHOD_base
+>   RHOV   <- condition_grid[i] * RHOV_base
+>
+>   ZFURD_MAX <- LHAIRD
+>   ZFURV_MAX <-LHAIRV
+>
+>
+>   # Run endoR across all microclimate time steps
+>   endo.out <- lapply(seq_along(TAs), function(x) {
+>     TORPOR <- if (Zs[x] >= 90) 1 else 0
+>
+>     # Run endoR with modified insulation
+>     endoR(
+>       # Climate variables
+>       TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+>       VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+>       ABSSB = ABSSB,
+>
+>       # Morphometrics
+>       AMASS = AMASS, ANDENS = ANDENS, AK1 = AK1, SHAPE_B = SHAPE_B,
+>       SHAPE_B_MAX = SHAPE_B_MAX, UNCURL = UNCURL, SHAPE = SHAPE,
+>       SAMODE = SAMODE, FATPCT = FATPCT,
+>
+>       # Metabolic Parameters
+>       TC = TC, TC_MAX = TC_MAX, TC_MIN = TC_MIN,TC_INC = TC_INC,
+>       PCTWET = PCTWET, PCTWET_MAX = PCTWET_MAX, PCTWET_INC = PCTWET_INC,
+>       Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR, EXTREF = EXTREF,
+>       PANT_INC = PANT_INC, PANT_MAX = PANT_MAX, PANT_MULT = PANT_MULT,
+>       TORPOR = TORPOR, # Torpor is the main addition to nighttime runs
+>
+>       # Fixed Feather Properties
+>       DHAIRD = DHAIRD, DHAIRV = DHAIRV, REFLD = REFLD, REFLV = REFLV,
+>
+>       # Varied Feather Properties
+>       ZFURD_MAX = ZFURD_MAX, ZFURV_MAX = ZFURV_MAX,
+>       LHAIRD = LHAIRD, LHAIRV = LHAIRV,
+>       RHOD = RHOD, RHOV = RHOV, TREGMODE = TREGMODE,
+>
+>     )
+>   })
+>
+>   # Convert list of endoR outputs into a single data frame
+>   endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+>
+>   # Climate
+>   daynight <- ifelse(Zs >= 90, "torpid_night", "day")
+>
+>
+>   # Extract heat balance (metabolic rate)
+>   enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+>   colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+>
+>   # Thermoregulation output
+>   treg <- endo_df[, grep("treg", colnames(endo_df))]
+>   colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+>
+>   # Mass aspects
+>   masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+>   colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+>
+>
+>   # Save results for this condition level
+>   results_list_torpor[[i]] <- data.frame(
+>
+>     condition = condition_grid[i],
+>     time_step = seq_along(TAs),
+>     QGEN = enbal$QGEN,                             # Metabolic energy generated
+>     TCs = treg$TC,                                 # Core temperature
+>     H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+>     TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+>     TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+>     TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+>     TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+>     Pant = treg$PANT,                              # Panting multiplier
+>     daynight = daynight                            # Day or night
+>   )
+> }
+>
+> proc.time() - ptm
+>
+> results_all_torpor <- do.call(rbind, results_list_torpor)
+>
+> sanity_check <- subset(results_all_torpor, condition == 1)
+>
+> ggplot(sanity_check, aes(x = time_step)) +
+>   geom_line(aes(y = TFA_D, color = "Feathers dorsal", linetype = "Feathers dorsal")) +
+>   geom_line(aes(y = TFA_V, color = "Feathers ventral", linetype = "Feathers ventral")) +
+>   geom_line(aes(y = TskinD, color = "Skin dorsal", linetype = "Skin dorsal")) +
+>   geom_line(aes(y = TskinV, color = "Skin ventral", linetype = "Skin ventral")) +
+>   geom_line(aes(y = TCs, color = "Core", linetype = "Core")) +
+>   geom_line(aes(y=TAs, color = "Air Temperature", linetype = "Air Temperature")) +
+>   scale_color_manual(values = c("Core" = "red", "Skin dorsal" = "orange", "Skin ventral" = "orange", "Feathers dorsal" = "darkgreen",
+>                                 "Feathers ventral"= "darkgreen", "Air Temperature" = "violet")) +
+>   scale_linetype_manual(values = c("Core" = 1, "Skin dorsal" = 1, "Skin ventral" = 2, "Feathers dorsal" = 1,
+>                                    "Feathers ventral"= 2, "Air Temperature" = 1)) +
+>   labs(x = "time", y = "temperature (°C)", color = "", linetype = "") +
+>   ylim(-10, 50) +
+>   theme_bw() +
+>   theme(
+>     legend.position = "top",
+>     legend.key.width = unit(1.5, "cm")
+>   )
+> ########################################################################
+> On Sunday, 5 July 2026 at 9:52:44 pm UTC+10 NicheMapR wrote:
+> > Hi Caity,
+> > I can't run your script as is - if you send a fully self-contained example and the data you're trying to capture, I can take a look. But perhaps it's just a case of altering whether or not the animal can go into torpor based on time of day?
+> > All the best,
+> > Mike
+> >
+> > On Wednesday, July 1, 2026 at 12:56:53 PM UTC+10 cait...@gmail.com wrote:
+> > > Good afternoon Mike,
+> > >
+> > > I am very new to NicheMapR and am having a bit of trouble with getting my model to represent natural torpor. I want to mimic the results of a study which shows relatively constant day time temperatures followed by a nightly drop into torpor (doi:10.1098/rsbl.2019.0211). I'm not sure how can I adjust different aspects of torpor to more closely match measured results. I've pasted my code below and am currently using the following parameters:
+> > >
+> > > ########### Parameters ############
+> > > TC <- 41.9                # Core body temperature (°C)
+> > > TC_MAX <- 46              # Maximum core body temperature (°C)
+> > > TC_MIN <- 30.4            # Minimum core body temperature (°C)
+> > > TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+> > > PCTWET <- 1               # Base skin wetness (%)
+> > > PCTWET_MAX <- 5           # Maximum skin wetness (%)
+> > > PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+> > > Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+> > > Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+> > > QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+> > > DELTAR <- 5               # Difference between air temperature and breath (°C)
+> > > EXTREF <- 25              # O2 extraction efficiency (%)
+> > > PANT_INC <- 0.1           # Increment by which panting is increased
+> > > PANT_MAX <- 15            # Maximum panting rate
+> > > PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+> > > TORPOR <- 1               # Allows body temperature to drop to TC_MIN
+> > > TREGMODE <- 2
+> > > endoshade <- 0
+> > > #############################################
+> > >
+> > > Here is my endoR loop. I am running it through different feather conditions however that is working well, it is the torpor that needs adjusting:
+> > >
+> > > ##############################################
+> > > results_list <- list()   # store results for each condition level
+> > >
+> > > ptm <- proc.time()
+> > >
+> > > for (i in seq_along(condition_grid)) {
+> > >
+> > >   # Scale feather density and length
+> > >   LHAIRD <- condition_grid[i] * LHAIRD_base
+> > >   LHAIRV <- condition_grid[i] * LHAIRV_base
+> > >   RHOD   <- condition_grid[i] * RHOD_base
+> > >   RHOV   <- condition_grid[i] * RHOV_base
+> > >
+> > >   # Run endoR across all microclimate time steps
+> > >   endo.out <- lapply(seq_along(TAs), function(x) {
+> > >
+> > >     # Behavioural ptiloerection based on air temperature
+> > >     ptilo <- ptilo_func(TAs[x])
+> > >
+> > >     # Adjust feather depth (ptiloerection)
+> > >     ZFURD <- ZFURD_base + (LHAIRD - ZFURD_base) * ptilo
+> > >     ZFURV <- ZFURV_base + (LHAIRV - ZFURV_base) * ptilo
+> > >
+> > >     # Run endoR with modified insulation
+> > >     endoR(
+> > >       # Climate variables
+> > >       TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+> > >       VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+> > >       ABSSB = ABSSB,
+> > >
+> > >       # Constants
+> > >       TC = TC, TC_MAX = TC_MAX, AMASS = AMASS, SHAPE = SHAPE,
+> > >       SHAPE_B = SHAPE_B, SHAPE_B_MAX = SHAPE_B_MAX,
+> > >       PCTWET = PCTWET, PCTWET_INC = PCTWET_INC,
+> > >       Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR,
+> > >       DHAIRD = DHAIRD, DHAIRV = DHAIRV,
+> > >       REFLD = REFLD, TC_INC = TC_INC, PANT_INC = PANT_INC,
+> > >       PANT_MAX = PANT_MAX, EXTREF = EXTREF, UNCURL = UNCURL,
+> > >       SAMODE = SAMODE, PANT_MULT = PANT_MULT, TORPOR = TORPOR,
+> > >       SHADE = endoshade, TREGMODE = TREGMODE,
+> > >
+> > >       # Varied Feather Traits
+> > >       LHAIRD = LHAIRD,
+> > >       LHAIRV = LHAIRV,
+> > >       RHOD   = RHOD,
+> > >       RHOV   = RHOV,
+> > >       ZFURD  = ZFURD,
+> > >       ZFURV  = ZFURV
+> > >     )
+> > >   })
+> > >
+> > >   # Convert list of endoR outputs into a single data frame
+> > >   endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+> > >
+> > >   # Climate
+> > >   daynight <- ifelse(Zs >= 90, "night", "day")
+> > >
+> > >   # Extract heat balance (metabolic rate)
+> > >   enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+> > >   colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+> > >
+> > >   # Thermoregulation output
+> > >   treg <- endo_df[, grep("treg", colnames(endo_df))]
+> > >   colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+> > >
+> > >   # Mass aspects
+> > >   masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+> > >   colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+> > >
+> > >
+> > >   # Save results for this condition level
+> > >   results_list[[i]] <- data.frame(
+> > >     condition = condition_grid[i],
+> > >     time_step = seq_along(TAs),
+> > >     QGEN = enbal$QGEN,                             # Metabolic energy generated
+> > >     TCs = treg$TC,                                 # Core temperature
+> > >     H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+> > >     TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+> > >     TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+> > >     TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+> > >     TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+> > >     Pant = treg$PANT,                              # Panting multiplier
+> > >     daynight = daynight                            # Day or night
+> > >   )
+> > > }
+> > >
+> > > proc.time() - ptm
+> > >
+> > > results_all <- do.call(rbind, results_list)
+> > >
+> > > ggplot(results_all, aes(x = time_step, y = TCs, colour = factor(condition))) +
+> > >   geom_line(size = 1) +
+> > >   labs(
+> > >     x = "Time step",
+> > >     y = "Core Temperature",
+> > >     colour = "Feather condition"
+> > >   )
+> > > #############################################
+> > >
+> > > I hope this is enough to explain my problem, and thank you for your time.
+> > > All the best,
+> > > Caity
+
+From u934155c5e68e25d0 at groups.google.com  Thu Jul  9 01:28:59 2026
+From: u934155c5e68e25d0 at groups.google.com (Caity Dwyer)
+Date: Thu, 09 Jul 2026 01:28:59 +0000
+Subject: Private message regarding: Enforcing a constant day time TC
+Message-ID: <c5GLNdeN_gU.9b7kFnlpAgAJ@nichemapr.groups.google.com>
+In-Reply-To: <c5GLNdeN_gU.sqAbT2JlAgAJ@nichemapr.groups.google.com>
+References: <c5GLNdeN_gU.fH4aR5--CgAJ@nichemapr.groups.google.com> <c5GLNdeN_gU.sqAbT2JlAgAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/c5GLNdeN_gU/m/9b7kFnlpAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Thank you Mike,
+
+I will have a go at that on a more powerful computer than mine! Thanks again, I appreciate the advice.
+
+All the best,
+Caity
+
+On Thursday, 9 July 2026 at 10:14:04 am UTC+10 NicheMapR wrote:
+> Hi Caity,
+> The model at present can't do that kind of thing I'm afraid. But what if you just run different scenarios and then write code to choose between them afterwards? That's generally how my colleagues and I work with the endotherm model.
+> All the best,
+> Mike
+>
+> On Monday, July 6, 2026 at 10:16:57 AM UTC+10 cait...@gmail.com wrote:
+> > Thank you Mike,
+> >
+> > I've added a night time requirement for TORPOR in the following self-contained code. While the animal does drop into torpor at night, the drop is seemingly instant unlike the gradual decrease measured experimentally. I was wondering if there was a way to encode some kind of non-energetic cost of torpor that would prevent the model from immediately maximising it. Otherwise, how would I force the model to consider TORPOR a last resort. Thank you and I hope this code runs!
+> >
+> > All the best,
+> > Caity
+> >
+> > #############################################################
+> > library(NicheMapR)
+> > library(ggplot2)
+> >
+> >
+> > # Australian National Botanic Gardens Input
+> > loc <- c(149.1112592, -35.2733684)    # Coordinates
+> > maxshade <- 100                       # Maximum Shade
+> >
+> > # Superb fairywren centroid height (m)
+> > Usrhyt <- 0.07
+> >
+> > # Running the microclimate models
+> > micro <- micro_global(loc = loc, Usrhyt = Usrhyt, maxshade = maxshade)
+> >
+> > metout <- as.data.frame(micro$metout)          # unshaded above-ground conditions
+> > soil <- as.data.frame(micro$soil)              # unshaded below-ground soil temperatures
+> > shadmet <- as.data.frame(micro$shadmet)        # shaded above-ground conditions
+> > shadsoil <- as.data.frame(micro$shadsoil)      # shaded below-ground soil temperatures
+> > dates <- micro$dates
+> >
+> > TAs <- metout$TALOC            # air temperatures at height of animal (°C)
+> > TAREFs <- metout$TAREF         # air temperatures at reference height (°C)
+> > TSKYs <- metout$TSKYC          # sky temperatures (°C)
+> > TGRDs <- soil$D0cm             # surface temperatures (°C)
+> > VELs <- metout$VLOC            # wind speeds at animal height (m/s)
+> > RHs <- metout$RHLOC            # relative humidity at animal height (%)
+> > QSOLRs <- metout$SOLR          # solar radiation (W/m2)
+> > Zs <- metout$ZEN               # zenith angle of the sun (degrees)
+> > ELEV <- micro$elev             # elevation (m)
+> > ABSSB <- 1 - micro$REFL        # substrate solar absorptivity (%)
+> >
+> > # Morphometric Parameters
+> > AMASS <- 0.0097    # Mass (kg)
+> > ANDENS <- 875     # Flesh density (kg/m^3)
+> > AK1 <- 1          # Initial thermal conductivity of flesh (0.412 - 2.8 W/mK)
+> > SHAPE_B <- 1.01   # Long to short body axis ratio
+> > SHAPE_B_MAX <- 2  # Maximum long to short body axis ratio
+> > UNCURL <- 0.1     # Increment of change between SHAPE_B and SHAPE_B_MAX
+> > SHAPE <- 4        # Shape type (4 = ellipsoid)
+> > SAMODE <- 1       # Geometry (1 = bird)
+> > FATPCT <- 3.6     # Body fat (%)
+> >
+> > # Metabolic Parameters and Physiological Responses
+> >
+> > TC <- 41.9                # Core body temperature (°C)
+> > TC_MAX <- 46              # Maximum core body temperature (°C)
+> > TC_MIN <- 30.4            # Minimum core body temperature (°C)
+> > TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+> > PCTWET <- 1               # Base skin wetness (%)
+> > PCTWET_MAX <- 5           # Maximum skin wetness (%)
+> > PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+> > Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+> > Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+> > QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+> > DELTAR <- 5               # Difference between air temperature and breath (°C)
+> > EXTREF <- 25              # O2 extraction efficiency (%)
+> > PANT_INC <- 0.1           # Increment by which panting is increased
+> > PANT_MAX <- 15            # Maximum panting rate
+> > PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+> >
+> > # Fixed Feather Properties
+> > DHAIRD <- 0.00003         # Dorsal "hair" diameter (m)
+> > DHAIRV <- 0.00003         # Ventral "hair" diameter (m)
+> > REFLD <- 0.41             # Dorsal fractional reflectivity (0-1)
+> > REFLV <- 0.48             # Ventral fractional reflectivity (0-1)
+> >
+> > # Base Feather Properties (adjusted seasonally) !!!!!!!!!!!!!!!!!!!! CORRECT THESE TO FAIRYWREN VALUES
+> > #ZFURD <- 0.00217               # Dorsal "fur" depth (m) -> will vary with ptiloerection
+> > #ZFURV <- 0.00254               # Ventral "fur" depth (m)  -> will vary with ptiloerection
+> > LHAIRD_base <- 0.01611         # Dorsal "hair" length (m)
+> > LHAIRV_base <- 0.01413         # Ventral "hair" length (m)
+> > RHOD_base <- 5e+07             # Dorsal feather density (m^-2)
+> > RHOV_base <- 5e+07             # Ventral feather density (m^-2)
+> > TREGMODE <- 1                  # Allows dynamic ptiloerection
+> >
+> > condition_grid <- seq(0.5, 3.5, by = 0.5) # To cycle through feather conditions
+> >
+> > results_list_torpor <- list()   # store results for each condition level
+> >
+> >
+> > ptm <- proc.time()
+> >
+> > for (i in seq_along(condition_grid)) {
+> >
+> >   # Scale feather density and length
+> >   LHAIRD <- condition_grid[i] * LHAIRD_base
+> >   LHAIRV <- condition_grid[i] * LHAIRV_base
+> >   RHOD   <- condition_grid[i] * RHOD_base
+> >   RHOV   <- condition_grid[i] * RHOV_base
+> >
+> >   ZFURD_MAX <- LHAIRD
+> >   ZFURV_MAX <-LHAIRV
+> >
+> >
+> >   # Run endoR across all microclimate time steps
+> >   endo.out <- lapply(seq_along(TAs), function(x) {
+> >     TORPOR <- if (Zs[x] >= 90) 1 else 0
+> >
+> >     # Run endoR with modified insulation
+> >     endoR(
+> >       # Climate variables
+> >       TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+> >       VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+> >       ABSSB = ABSSB,
+> >
+> >       # Morphometrics
+> >       AMASS = AMASS, ANDENS = ANDENS, AK1 = AK1, SHAPE_B = SHAPE_B,
+> >       SHAPE_B_MAX = SHAPE_B_MAX, UNCURL = UNCURL, SHAPE = SHAPE,
+> >       SAMODE = SAMODE, FATPCT = FATPCT,
+> >
+> >       # Metabolic Parameters
+> >       TC = TC, TC_MAX = TC_MAX, TC_MIN = TC_MIN,TC_INC = TC_INC,
+> >       PCTWET = PCTWET, PCTWET_MAX = PCTWET_MAX, PCTWET_INC = PCTWET_INC,
+> >       Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR, EXTREF = EXTREF,
+> >       PANT_INC = PANT_INC, PANT_MAX = PANT_MAX, PANT_MULT = PANT_MULT,
+> >       TORPOR = TORPOR, # Torpor is the main addition to nighttime runs
+> >
+> >       # Fixed Feather Properties
+> >       DHAIRD = DHAIRD, DHAIRV = DHAIRV, REFLD = REFLD, REFLV = REFLV,
+> >
+> >       # Varied Feather Properties
+> >       ZFURD_MAX = ZFURD_MAX, ZFURV_MAX = ZFURV_MAX,
+> >       LHAIRD = LHAIRD, LHAIRV = LHAIRV,
+> >       RHOD = RHOD, RHOV = RHOV, TREGMODE = TREGMODE,
+> >
+> >     )
+> >   })
+> >
+> >   # Convert list of endoR outputs into a single data frame
+> >   endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+> >
+> >   # Climate
+> >   daynight <- ifelse(Zs >= 90, "torpid_night", "day")
+> >
+> >
+> >   # Extract heat balance (metabolic rate)
+> >   enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+> >   colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+> >
+> >   # Thermoregulation output
+> >   treg <- endo_df[, grep("treg", colnames(endo_df))]
+> >   colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+> >
+> >   # Mass aspects
+> >   masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+> >   colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+> >
+> >
+> >   # Save results for this condition level
+> >   results_list_torpor[[i]] <- data.frame(
+> >
+> >     condition = condition_grid[i],
+> >     time_step = seq_along(TAs),
+> >     QGEN = enbal$QGEN,                             # Metabolic energy generated
+> >     TCs = treg$TC,                                 # Core temperature
+> >     H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+> >     TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+> >     TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+> >     TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+> >     TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+> >     Pant = treg$PANT,                              # Panting multiplier
+> >     daynight = daynight                            # Day or night
+> >   )
+> > }
+> >
+> > proc.time() - ptm
+> >
+> > results_all_torpor <- do.call(rbind, results_list_torpor)
+> >
+> > sanity_check <- subset(results_all_torpor, condition == 1)
+> >
+> > ggplot(sanity_check, aes(x = time_step)) +
+> >   geom_line(aes(y = TFA_D, color = "Feathers dorsal", linetype = "Feathers dorsal")) +
+> >   geom_line(aes(y = TFA_V, color = "Feathers ventral", linetype = "Feathers ventral")) +
+> >   geom_line(aes(y = TskinD, color = "Skin dorsal", linetype = "Skin dorsal")) +
+> >   geom_line(aes(y = TskinV, color = "Skin ventral", linetype = "Skin ventral")) +
+> >   geom_line(aes(y = TCs, color = "Core", linetype = "Core")) +
+> >   geom_line(aes(y=TAs, color = "Air Temperature", linetype = "Air Temperature")) +
+> >   scale_color_manual(values = c("Core" = "red", "Skin dorsal" = "orange", "Skin ventral" = "orange", "Feathers dorsal" = "darkgreen",
+> >                                 "Feathers ventral"= "darkgreen", "Air Temperature" = "violet")) +
+> >   scale_linetype_manual(values = c("Core" = 1, "Skin dorsal" = 1, "Skin ventral" = 2, "Feathers dorsal" = 1,
+> >                                    "Feathers ventral"= 2, "Air Temperature" = 1)) +
+> >   labs(x = "time", y = "temperature (°C)", color = "", linetype = "") +
+> >   ylim(-10, 50) +
+> >   theme_bw() +
+> >   theme(
+> >     legend.position = "top",
+> >     legend.key.width = unit(1.5, "cm")
+> >   )
+> > ########################################################################
+> > On Sunday, 5 July 2026 at 9:52:44 pm UTC+10 NicheMapR wrote:
+> > > Hi Caity,
+> > > I can't run your script as is - if you send a fully self-contained example and the data you're trying to capture, I can take a look. But perhaps it's just a case of altering whether or not the animal can go into torpor based on time of day?
+> > > All the best,
+> > > Mike
+> > >
+> > > On Wednesday, July 1, 2026 at 12:56:53 PM UTC+10 cait...@gmail.com wrote:
+> > > > Good afternoon Mike,
+> > > >
+> > > > I am very new to NicheMapR and am having a bit of trouble with getting my model to represent natural torpor. I want to mimic the results of a study which shows relatively constant day time temperatures followed by a nightly drop into torpor (doi:10.1098/rsbl.2019.0211). I'm not sure how can I adjust different aspects of torpor to more closely match measured results. I've pasted my code below and am currently using the following parameters:
+> > > >
+> > > > ########### Parameters ############
+> > > > TC <- 41.9                # Core body temperature (°C)
+> > > > TC_MAX <- 46              # Maximum core body temperature (°C)
+> > > > TC_MIN <- 30.4            # Minimum core body temperature (°C)
+> > > > TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+> > > > PCTWET <- 1               # Base skin wetness (%)
+> > > > PCTWET_MAX <- 5           # Maximum skin wetness (%)
+> > > > PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+> > > > Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+> > > > Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+> > > > QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+> > > > DELTAR <- 5               # Difference between air temperature and breath (°C)
+> > > > EXTREF <- 25              # O2 extraction efficiency (%)
+> > > > PANT_INC <- 0.1           # Increment by which panting is increased
+> > > > PANT_MAX <- 15            # Maximum panting rate
+> > > > PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+> > > > TORPOR <- 1               # Allows body temperature to drop to TC_MIN
+> > > > TREGMODE <- 2
+> > > > endoshade <- 0
+> > > > #############################################
+> > > >
+> > > > Here is my endoR loop. I am running it through different feather conditions however that is working well, it is the torpor that needs adjusting:
+> > > >
+> > > > ##############################################
+> > > > results_list <- list()   # store results for each condition level
+> > > >
+> > > > ptm <- proc.time()
+> > > >
+> > > > for (i in seq_along(condition_grid)) {
+> > > >
+> > > >   # Scale feather density and length
+> > > >   LHAIRD <- condition_grid[i] * LHAIRD_base
+> > > >   LHAIRV <- condition_grid[i] * LHAIRV_base
+> > > >   RHOD   <- condition_grid[i] * RHOD_base
+> > > >   RHOV   <- condition_grid[i] * RHOV_base
+> > > >
+> > > >   # Run endoR across all microclimate time steps
+> > > >   endo.out <- lapply(seq_along(TAs), function(x) {
+> > > >
+> > > >     # Behavioural ptiloerection based on air temperature
+> > > >     ptilo <- ptilo_func(TAs[x])
+> > > >
+> > > >     # Adjust feather depth (ptiloerection)
+> > > >     ZFURD <- ZFURD_base + (LHAIRD - ZFURD_base) * ptilo
+> > > >     ZFURV <- ZFURV_base + (LHAIRV - ZFURV_base) * ptilo
+> > > >
+> > > >     # Run endoR with modified insulation
+> > > >     endoR(
+> > > >       # Climate variables
+> > > >       TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+> > > >       VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+> > > >       ABSSB = ABSSB,
+> > > >
+> > > >       # Constants
+> > > >       TC = TC, TC_MAX = TC_MAX, AMASS = AMASS, SHAPE = SHAPE,
+> > > >       SHAPE_B = SHAPE_B, SHAPE_B_MAX = SHAPE_B_MAX,
+> > > >       PCTWET = PCTWET, PCTWET_INC = PCTWET_INC,
+> > > >       Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR,
+> > > >       DHAIRD = DHAIRD, DHAIRV = DHAIRV,
+> > > >       REFLD = REFLD, TC_INC = TC_INC, PANT_INC = PANT_INC,
+> > > >       PANT_MAX = PANT_MAX, EXTREF = EXTREF, UNCURL = UNCURL,
+> > > >       SAMODE = SAMODE, PANT_MULT = PANT_MULT, TORPOR = TORPOR,
+> > > >       SHADE = endoshade, TREGMODE = TREGMODE,
+> > > >
+> > > >       # Varied Feather Traits
+> > > >       LHAIRD = LHAIRD,
+> > > >       LHAIRV = LHAIRV,
+> > > >       RHOD   = RHOD,
+> > > >       RHOV   = RHOV,
+> > > >       ZFURD  = ZFURD,
+> > > >       ZFURV  = ZFURV
+> > > >     )
+> > > >   })
+> > > >
+> > > >   # Convert list of endoR outputs into a single data frame
+> > > >   endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+> > > >
+> > > >   # Climate
+> > > >   daynight <- ifelse(Zs >= 90, "night", "day")
+> > > >
+> > > >   # Extract heat balance (metabolic rate)
+> > > >   enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+> > > >   colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+> > > >
+> > > >   # Thermoregulation output
+> > > >   treg <- endo_df[, grep("treg", colnames(endo_df))]
+> > > >   colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+> > > >
+> > > >   # Mass aspects
+> > > >   masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+> > > >   colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+> > > >
+> > > >
+> > > >   # Save results for this condition level
+> > > >   results_list[[i]] <- data.frame(
+> > > >     condition = condition_grid[i],
+> > > >     time_step = seq_along(TAs),
+> > > >     QGEN = enbal$QGEN,                             # Metabolic energy generated
+> > > >     TCs = treg$TC,                                 # Core temperature
+> > > >     H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+> > > >     TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+> > > >     TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+> > > >     TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+> > > >     TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+> > > >     Pant = treg$PANT,                              # Panting multiplier
+> > > >     daynight = daynight                            # Day or night
+> > > >   )
+> > > > }
+> > > >
+> > > > proc.time() - ptm
+> > > >
+> > > > results_all <- do.call(rbind, results_list)
+> > > >
+> > > > ggplot(results_all, aes(x = time_step, y = TCs, colour = factor(condition))) +
+> > > >   geom_line(size = 1) +
+> > > >   labs(
+> > > >     x = "Time step",
+> > > >     y = "Core Temperature",
+> > > >     colour = "Feather condition"
+> > > >   )
+> > > > #############################################
+> > > >
+> > > > I hope this is enough to explain my problem, and thank you for your time.
+> > > > All the best,
+> > > > Caity
+
+From u934155c5e68e25d0 at groups.google.com  Thu Jul  9 06:59:43 2026
+From: u934155c5e68e25d0 at groups.google.com (Caity Dwyer)
+Date: Thu, 09 Jul 2026 06:59:43 +0000
+Subject: Dips in QSOL and QCONV
+Message-ID: <1FfpNxl34dw.J11_QoV7AgAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/1FfpNxl34dw/m/J11_QoV7AgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi again Mike,
+
+I am not sure if this is an issue with my parameters, but I have noticed that QSOL and QCONV are dipping to a day time minimum at midday and reaching maximums at sunrise and sunset. The only possible explanation I thought of was that feathers were being adjusted at the same time. I found that the dorsal feather surface temp does an odd jump down during the day in hot weather as well, but it doesn't seem to explain the trend. If this is a problem you've seen before or you can offer an explanation i would really appreciate it. My code is copied in below. Thank you!
+
+All the best,
+Caity
+
+library(NicheMapR)
+library(ggplot2)
+library(dplyr)
+
+#///////////////////////////////#
+#### Microclimate Parameters ####
+#///////////////////////////////#
+
+# Australian National Botanic Gardens Input
+loc <- c(149.1112592, -35.2733684)    # Coordinates
+
+# Superb fairywren centroid height (m)
+Usrhyt <- 0.07
+maxshade = 0.1
+
+#///# Run the climate model once and save to laptop #///#
+
+# Running the microclimate models (12 representative days only, comment out if running the full microclimate model above)
+micro <- micro_global(loc = loc, Usrhyt = Usrhyt, maxshade = maxshade)
+
+saveRDS(micro, file = "micro_silo_output.rds")
+
+micro <- readRDS("micro_silo_output.rds")
+
+metout <- as.data.frame(micro$metout)          # unshaded above-ground conditions
+soil <- as.data.frame(micro$soil)              # unshaded below-ground soil temperatures
+shadmet <- as.data.frame(micro$shadmet)        # shaded above-ground conditions
+shadsoil <- as.data.frame(micro$shadsoil)      # shaded below-ground soil temperatures
+dates <- micro$dates
+
+TAs <- metout$TALOC            # air temperatures at height of animal (°C)
+TAREFs <- metout$TAREF         # air temperatures at reference height (°C)
+TSKYs <- metout$TSKYC          # sky temperatures (°C)
+TGRDs <- soil$D0cm             # surface temperatures (°C)
+VELs <- metout$VLOC            # wind speeds at animal height (m/s)
+RHs <- metout$RHLOC            # relative humidity at animal height (%)
+QSOLRs <- metout$SOLR          # solar radiation (W/m2)
+Zs <- metout$ZEN               # zenith angle of the sun (degrees)
+ELEV <- micro$elev             # elevation (m)
+ABSSB <- 1 - micro$REFL        # substrate solar absorptivity (%)
+
+#///////////////////////////////////#
+#### Superb Fairywren Parameters ####
+#///////////////////////////////////#
+
+# Morphometric Parameters
+AMASS <- 0.0097    # Mass (kg)
+ANDENS <- 875     # Flesh density (kg/m^3)
+AK1 <- 1          # Initial thermal conductivity of flesh (0.412 - 2.8 W/mK)
+SHAPE_B <- 1.01   # Long to short body axis ratio
+SHAPE_B_MAX <- 2  # Maximum long to short body axis ratio
+UNCURL <- 0.1     # Increment of change between SHAPE_B and SHAPE_B_MAX
+SHAPE <- 4        # Shape type (4 = ellipsoid)
+SAMODE <- 1       # Geometry (1 = bird)
+FATPCT <- 3.6     # Body fat (%)
+
+# Metabolic Parameters and Physiological Responses
+TC <- 41.9                # Core body temperature (°C)
+TC_MAX <- 43              # Maximum core body temperature (°C)
+TC_MIN <- 30.4            # Minimum core body temperature (°C)
+TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+PCTWET <- 1               # Base skin wetness (%)
+PCTWET_MAX <- 5           # Maximum skin wetness (%)
+PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+DELTAR <- 5               # Difference between air temperature and breath (°C)
+EXTREF <- 25              # O2 extraction efficiency (%)
+PANT_INC <- 0.5           # Increment by which panting is increased
+PANT_MAX <- 15            # Maximum panting rate
+PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+THERMOREG <- 2            # Allows panting and core temperature rise simultaneously
+
+# Fixed Feather Properties
+DHAIRD <- 0.00003         # Dorsal "hair" diameter (m)
+DHAIRV <- 0.00003         # Ventral "hair" diameter (m)
+REFLD <- 0.41             # Dorsal fractional reflectivity (0-1)
+REFLV <- 0.48             # Ventral fractional reflectivity (0-1)
+
+# Base Feather Properties (adjusted seasonally) !!!!!!!!!!!!!!!!!!!! CORRECT THESE TO FAIRYWREN VALUES
+LHAIRD_base <- 0.01611         # Dorsal "hair" length (m)
+LHAIRV_base <- 0.01413         # Ventral "hair" length (m)
+RHOD_base <- 5e+07             # Dorsal feather density (m^-2)
+RHOV_base <- 5e+07             # Ventral feather density (m^-2)
+TREGMODE <- 1                  # Allows dynamic ptiloerection
+
+# Feather Variation Driver
+condition_grid <- seq(0.2, 7, by = 0.1)
+
+#////////////////////////////////////////////////////#
+#### Running the Model through Feather Conditions ####
+#////////////////////////////////////////////////////#
+
+results_list_t <- list()   # store results for each condition level
+
+ptm <- proc.time()
+
+for (i in seq_along(condition_grid)) {
+
+  # Scale feather density and length
+  LHAIRD <- condition_grid[i] * LHAIRD_base
+  LHAIRV <- condition_grid[i] * LHAIRV_base
+  RHOD   <- condition_grid[i] * RHOD_base
+  RHOV   <- condition_grid[i] * RHOV_base
+
+  ZFURD_MAX <- LHAIRD
+  ZFURV_MAX <-LHAIRV
+
+  # Run endoR across all microclimate time steps
+  endo.out <- lapply(seq_along(TAs), function(x) {
+    TORPOR <- if (Zs[x] >= 90) 1 else 0
+
+    # Run endoR with modified insulation
+    endoR(
+      # Climate variables
+      TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+      VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+      ABSSB = ABSSB,
+
+      # Morphometrics
+      AMASS = AMASS, ANDENS = ANDENS, AK1 = AK1, SHAPE_B = SHAPE_B,
+      SHAPE_B_MAX = SHAPE_B_MAX, UNCURL = UNCURL, SHAPE = SHAPE,
+      SAMODE = SAMODE, FATPCT = FATPCT,
+
+      # Metabolic Parameters
+      TC = TC, TC_MAX = TC_MAX, TC_MIN = TC_MIN,TC_INC = TC_INC,
+      PCTWET = PCTWET, PCTWET_MAX = PCTWET_MAX, PCTWET_INC = PCTWET_INC,
+      Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR, EXTREF = EXTREF,
+      PANT_INC = PANT_INC, PANT_MAX = PANT_MAX, PANT_MULT = PANT_MULT,
+      TORPOR = TORPOR,
+
+      # Fixed Feather Properties
+      DHAIRD = DHAIRD, DHAIRV = DHAIRV, REFLD = REFLD, REFLV = REFLV,
+
+      # Varied Feather Properties
+      ZFURD_MAX = ZFURD_MAX, ZFURV_MAX = ZFURV_MAX,
+      LHAIRD = LHAIRD, LHAIRV = LHAIRV,
+      RHOD = RHOD, RHOV = RHOV, TREGMODE = TREGMODE,
+    )
+  })
+
+  # Convert list of endoR outputs into a single data frame
+  endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+
+  # Climate
+  daynight <- ifelse(Zs >= 90, "night", "day")
+
+  # Extract heat balance (metabolic rate)
+  enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+  colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+
+  # Thermoregulation output
+  treg <- endo_df[, grep("treg", colnames(endo_df))]
+  colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+
+  # Mass aspects
+  masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+  colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+
+  # Save results for this condition level
+  results_list_t[[i]] <- data.frame(
+    condition = condition_grid[i],
+    time_step = seq_along(TAs),
+    QGEN = enbal$QGEN,                             # Metabolic energy generated
+    TCs = treg$TC,                                 # Core temperature
+    H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+    TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+    TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+    TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+    TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+    Pant = treg$PANT,                              # Panting multiplier
+    daynight = daynight,                           # Day or night
+    DOY = metout$DOY,                              # Day index
+    TAs = TAs                                      # Air temperature
+  )
+}
+
+proc.time() - ptm
+
+sanity_check_condition1 <- subset(results_t, condition == 1)
+
+Temperature <- ggplot(sanity_check_condition1, aes(x = time_step)) +
+  geom_line(aes(y = TFA_D, color = "Feathers dorsal", linetype = "Feathers dorsal")) +
+  geom_line(aes(y = Z_FUR_D, color = "Z_FUR_D", linetype = "Z_FUR_D")) +
+  geom_line(aes(y = TFA_V, color = "Feathers ventral", linetype = "Feathers ventral")) +
+  geom_line(aes(y = TskinD, color = "Skin dorsal", linetype = "Skin dorsal")) +
+  geom_line(aes(y = TskinV, color = "Skin ventral", linetype = "Skin ventral")) +
+  geom_line(aes(y = TCs, color = "Core", linetype = "Core")) +
+  geom_line(aes(y=TAs, color = "Air Temperature", linetype = "Air Temperature")) +
+  scale_color_manual(values = c("Core" = "red", "Z_FUR_D" = "blue", "Skin dorsal" = "orange", "Skin ventral" = "orange", "Feathers dorsal" = "darkgreen", "Feathers ventral"= "darkgreen", "Air Temperature" = "violet")) +
+  scale_linetype_manual(values = c("Core" = 1, Z_FUR_D = 1, "Skin dorsal" = 1, "Skin ventral" = 2, "Feathers dorsal" = 1,
+                                   "Feathers ventral"= 2, "Air Temperature" = 1)) +
+  labs(x = "time (hours)", y = "temperature (°C)", color = "", linetype = "") +
+  ylim(-10, 50) +
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 25),
+    legend.text = element_text(size = 20),
+    legend.position = "top",
+    legend.key.width = unit(1.5, "cm")
+  )
+
+Energy_Budget <-ggplot(sanity_check_condition1, aes(x = time_step)) +
+  # Add individual lines for each Q-factor
+  geom_line(aes(y = QCONV, colour = "Convection (QCONV)"), linewidth = 1) +
+  geom_line(aes(y = QGEN,  colour = "Metabolism (QGEN)"), linewidth = 1) +
+  geom_line(aes(y = QSOL,  colour = "Solar (QSOL)"), linewidth = 1) +
+  geom_line(aes(y = QIRIN, colour = "Infrared In (QIRIN)"), linewidth = 1) +
+  geom_line(aes(y = QIROUT, colour = "Infrared In (QIROUT)"), linewidth = 1) +
+  geom_line(aes(y = (QSOL + QIRIN - QCONV - QEVAP - QCOND - QIROUT), colour = "Total environmental gains"), linewidth = 1) +
+  geom_line(aes(y = QEVAP, colour = "Evaporation (QEVAP)"), linewidth = 1) +
+  geom_line(aes(y = QCOND, colour = "Conduction (QCOND)"), linewidth = 1) +
+  labs(
+    x = "Time step",
+    y = "Energy / Metabolic Rate (W)",
+    colour = "Energy Budget Component" # This titles the color legend
+  ) +
+  theme_minimal(base_size = 14)
+
+From u5f5b9098b71648d9 at groups.google.com  Sat Jul 18 18:07:04 2026
+From: u5f5b9098b71648d9 at groups.google.com (urtzi enriquez)
+Date: Sat, 18 Jul 2026 18:07:04 +0000
+Subject: Re: DEB simulations for males?
+Message-ID: <Ovuqowh4l_g.hfBo90NpAwAJ@nichemapr.groups.google.com>
+In-Reply-To: <Ovuqowh4l_g._RERIXCeCgAJ@nichemapr.groups.google.com>
+References: <Ovuqowh4l_g.45OsfwrACQAJ@nichemapr.groups.google.com> <Ovuqowh4l_g._RERIXCeCgAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/Ovuqowh4l_g/m/hfBo90NpAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Mike,
+
+I am now making some simulations for males and females, using male specific parameters (in fact, individual level parameters) as you suggested.
+
+The problem is that the "reproductive strategy" is the same for females/males (using batch=1 and abclutch), so the males don't use the energy stored in the reproduction buffer some years because they are unable to produce a clutch... However, I would expect males to deplete the reproduction buffer each year, fertilizing more or less eggs, depending on how much energy they have stored. Is it possible to simulate that?
+
+Thanks a lot in advance!
+
+Cheers,
+
+Urtzi
+
+On Thursday, June 25, 2026 at 3:56:04 PM UTC urtzi enriquez wrote:
+> Hi Mike,
+>
+> That is very interesting! Thanks!
+>
+> All the best,
+>
+> Urtzi
+>
+> On Monday, June 22, 2026 at 9:12:52 PM UTC NicheMapR wrote:
+> > Hi Urtzi,
+> > Good question. The NicheMapR code is focused on females. But a DEB model for a male is the same as for a female, it's just the reproduction buffer is treated as energy invested in sperm (or perhaps also extra energy invested in running around fighting etc.). If you have male-specific parameter estimates you'd just use those instead (e.g., that lead to males becoming smaller or larger than females).
+> > All the best,
+> > Mike
+> >
+> > On Tuesday, June 23, 2026 at 7:06:51 AM UTC+10 urtzi enriquez wrote:
+> > > Hi Mike,
+> > >
+> > > Is there a way to make DEB simulations for males, instead of the default simulations for females?
+> > >
+> > > Thanks a lot in advance!
+> > >
+> > > Cheers,
+> > >
+> > > Urtzi
+
+From u6cec8ea3702ece93 at groups.google.com  Fri Jul 31 03:22:57 2026
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Fri, 31 Jul 2026 03:22:57 +0000
+Subject: Re: DEB simulations for males?
+Message-ID: <Ovuqowh4l_g.EttmhZXwCQAJ@nichemapr.groups.google.com>
+In-Reply-To: <Ovuqowh4l_g.hfBo90NpAwAJ@nichemapr.groups.google.com>
+References: <Ovuqowh4l_g.45OsfwrACQAJ@nichemapr.groups.google.com> <Ovuqowh4l_g.hfBo90NpAwAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/Ovuqowh4l_g/m/EttmhZXwCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Urtzi,
+It uses E_0 - energy in an egg - plus the clutch size to work out when to empty the buffer so we'd need ideally a new parameter for energy of a sperm to make it work for males but you could just specify a "clutch size" and E_0 for sperm and I think it will work, only the wetmass calc of an embryo stage might look a bit odd because it uses the energy of an egg in the calculation.
+All the best,
+Mike
+
+On Sunday, July 19, 2026 at 4:07:04 AM UTC+10 urtzi enriquez wrote:
+> Hi Mike,
+>
+> I am now making some simulations for males and females, using male specific parameters (in fact, individual level parameters) as you suggested.
+>
+> The problem is that the "reproductive strategy" is the same for females/males (using batch=1 and abclutch), so the males don't use the energy stored in the reproduction buffer some years because they are unable to produce a clutch... However, I would expect males to deplete the reproduction buffer each year, fertilizing more or less eggs, depending on how much energy they have stored. Is it possible to simulate that?
+>
+> Thanks a lot in advance!
+>
+> Cheers,
+>
+> Urtzi
+>
+> On Thursday, June 25, 2026 at 3:56:04 PM UTC urtzi enriquez wrote:
+> > Hi Mike,
+> >
+> > That is very interesting! Thanks!
+> >
+> > All the best,
+> >
+> > Urtzi
+> >
+> > On Monday, June 22, 2026 at 9:12:52 PM UTC NicheMapR wrote:
+> > > Hi Urtzi,
+> > > Good question. The NicheMapR code is focused on females. But a DEB model for a male is the same as for a female, it's just the reproduction buffer is treated as energy invested in sperm (or perhaps also extra energy invested in running around fighting etc.). If you have male-specific parameter estimates you'd just use those instead (e.g., that lead to males becoming smaller or larger than females).
+> > > All the best,
+> > > Mike
+> > >
+> > > On Tuesday, June 23, 2026 at 7:06:51 AM UTC+10 urtzi enriquez wrote:
+> > > > Hi Mike,
+> > > >
+> > > > Is there a way to make DEB simulations for males, instead of the default simulations for females?
+> > > >
+> > > > Thanks a lot in advance!
+> > > >
+> > > > Cheers,
+> > > >
+> > > > Urtzi
+
+From u6cec8ea3702ece93 at groups.google.com  Fri Jul 31 04:25:32 2026
+From: u6cec8ea3702ece93 at groups.google.com (NicheMapR)
+Date: Fri, 31 Jul 2026 04:25:32 +0000
+Subject: Re: Dips in QSOL and QCONV
+Message-ID: <1FfpNxl34dw.1_vTv__zCQAJ@nichemapr.groups.google.com>
+In-Reply-To: <1FfpNxl34dw.J11_QoV7AgAJ@nichemapr.groups.google.com>
+References: <1FfpNxl34dw.J11_QoV7AgAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/1FfpNxl34dw/m/1_vTv__zCQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Caity,
+Sorry for the slow reply on this one. Great that you're looking at the results carefully. I started to look at what's going on and it is not immediately obvious why (it is definitely something to do with the piloerection behaviour and it could be a bug). I'll have to spend some time looking into this.
+All the best,
+Mike
+
+On Thursday, July 9, 2026 at 4:59:43 PM UTC+10 cait...@gmail.com wrote:
+> Hi again Mike,
+>
+> I am not sure if this is an issue with my parameters, but I have noticed that QSOL and QCONV are dipping to a day time minimum at midday and reaching maximums at sunrise and sunset. The only possible explanation I thought of was that feathers were being adjusted at the same time. I found that the dorsal feather surface temp does an odd jump down during the day in hot weather as well, but it doesn't seem to explain the trend. If this is a problem you've seen before or you can offer an explanation i would really appreciate it. My code is copied in below. Thank you!
+>
+> All the best,
+> Caity
+>
+> library(NicheMapR)
+> library(ggplot2)
+> library(dplyr)
+>
+> #///////////////////////////////#
+> #### Microclimate Parameters ####
+> #///////////////////////////////#
+>
+> # Australian National Botanic Gardens Input
+> loc <- c(149.1112592, -35.2733684)    # Coordinates
+>
+> # Superb fairywren centroid height (m)
+> Usrhyt <- 0.07
+> maxshade = 0.1
+>
+> #///# Run the climate model once and save to laptop #///#
+>
+> # Running the microclimate models (12 representative days only, comment out if running the full microclimate model above)
+> micro <- micro_global(loc = loc, Usrhyt = Usrhyt, maxshade = maxshade)
+>
+> saveRDS(micro, file = "micro_silo_output.rds")
+>
+> micro <- readRDS("micro_silo_output.rds")
+>
+> metout <- as.data.frame(micro$metout)          # unshaded above-ground conditions
+> soil <- as.data.frame(micro$soil)              # unshaded below-ground soil temperatures
+> shadmet <- as.data.frame(micro$shadmet)        # shaded above-ground conditions
+> shadsoil <- as.data.frame(micro$shadsoil)      # shaded below-ground soil temperatures
+> dates <- micro$dates
+>
+> TAs <- metout$TALOC            # air temperatures at height of animal (°C)
+> TAREFs <- metout$TAREF         # air temperatures at reference height (°C)
+> TSKYs <- metout$TSKYC          # sky temperatures (°C)
+> TGRDs <- soil$D0cm             # surface temperatures (°C)
+> VELs <- metout$VLOC            # wind speeds at animal height (m/s)
+> RHs <- metout$RHLOC            # relative humidity at animal height (%)
+> QSOLRs <- metout$SOLR          # solar radiation (W/m2)
+> Zs <- metout$ZEN               # zenith angle of the sun (degrees)
+> ELEV <- micro$elev             # elevation (m)
+> ABSSB <- 1 - micro$REFL        # substrate solar absorptivity (%)
+>
+> #///////////////////////////////////#
+> #### Superb Fairywren Parameters ####
+> #///////////////////////////////////#
+>
+> # Morphometric Parameters
+> AMASS <- 0.0097    # Mass (kg)
+> ANDENS <- 875     # Flesh density (kg/m^3)
+> AK1 <- 1          # Initial thermal conductivity of flesh (0.412 - 2.8 W/mK)
+> SHAPE_B <- 1.01   # Long to short body axis ratio
+> SHAPE_B_MAX <- 2  # Maximum long to short body axis ratio
+> UNCURL <- 0.1     # Increment of change between SHAPE_B and SHAPE_B_MAX
+> SHAPE <- 4        # Shape type (4 = ellipsoid)
+> SAMODE <- 1       # Geometry (1 = bird)
+> FATPCT <- 3.6     # Body fat (%)
+>
+> # Metabolic Parameters and Physiological Responses
+> TC <- 41.9                # Core body temperature (°C)
+> TC_MAX <- 43              # Maximum core body temperature (°C)
+> TC_MIN <- 30.4            # Minimum core body temperature (°C)
+> TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+> PCTWET <- 1               # Base skin wetness (%)
+> PCTWET_MAX <- 5           # Maximum skin wetness (%)
+> PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+> Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+> Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+> QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+> DELTAR <- 5               # Difference between air temperature and breath (°C)
+> EXTREF <- 25              # O2 extraction efficiency (%)
+> PANT_INC <- 0.5           # Increment by which panting is increased
+> PANT_MAX <- 15            # Maximum panting rate
+> PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+> THERMOREG <- 2            # Allows panting and core temperature rise simultaneously
+>
+> # Fixed Feather Properties
+> DHAIRD <- 0.00003         # Dorsal "hair" diameter (m)
+> DHAIRV <- 0.00003         # Ventral "hair" diameter (m)
+> REFLD <- 0.41             # Dorsal fractional reflectivity (0-1)
+> REFLV <- 0.48             # Ventral fractional reflectivity (0-1)
+>
+> # Base Feather Properties (adjusted seasonally) !!!!!!!!!!!!!!!!!!!! CORRECT THESE TO FAIRYWREN VALUES
+> LHAIRD_base <- 0.01611         # Dorsal "hair" length (m)
+> LHAIRV_base <- 0.01413         # Ventral "hair" length (m)
+> RHOD_base <- 5e+07             # Dorsal feather density (m^-2)
+> RHOV_base <- 5e+07             # Ventral feather density (m^-2)
+> TREGMODE <- 1                  # Allows dynamic ptiloerection
+>
+> # Feather Variation Driver
+> condition_grid <- seq(0.2, 7, by = 0.1)
+>
+> #////////////////////////////////////////////////////#
+> #### Running the Model through Feather Conditions ####
+> #////////////////////////////////////////////////////#
+>
+> results_list_t <- list()   # store results for each condition level
+>
+> ptm <- proc.time()
+>
+> for (i in seq_along(condition_grid)) {
+>
+>   # Scale feather density and length
+>   LHAIRD <- condition_grid[i] * LHAIRD_base
+>   LHAIRV <- condition_grid[i] * LHAIRV_base
+>   RHOD   <- condition_grid[i] * RHOD_base
+>   RHOV   <- condition_grid[i] * RHOV_base
+>
+>   ZFURD_MAX <- LHAIRD
+>   ZFURV_MAX <-LHAIRV
+>
+>   # Run endoR across all microclimate time steps
+>   endo.out <- lapply(seq_along(TAs), function(x) {
+>     TORPOR <- if (Zs[x] >= 90) 1 else 0
+>
+>     # Run endoR with modified insulation
+>     endoR(
+>       # Climate variables
+>       TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+>       VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+>       ABSSB = ABSSB,
+>
+>       # Morphometrics
+>       AMASS = AMASS, ANDENS = ANDENS, AK1 = AK1, SHAPE_B = SHAPE_B,
+>       SHAPE_B_MAX = SHAPE_B_MAX, UNCURL = UNCURL, SHAPE = SHAPE,
+>       SAMODE = SAMODE, FATPCT = FATPCT,
+>
+>       # Metabolic Parameters
+>       TC = TC, TC_MAX = TC_MAX, TC_MIN = TC_MIN,TC_INC = TC_INC,
+>       PCTWET = PCTWET, PCTWET_MAX = PCTWET_MAX, PCTWET_INC = PCTWET_INC,
+>       Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR, EXTREF = EXTREF,
+>       PANT_INC = PANT_INC, PANT_MAX = PANT_MAX, PANT_MULT = PANT_MULT,
+>       TORPOR = TORPOR,
+>
+>       # Fixed Feather Properties
+>       DHAIRD = DHAIRD, DHAIRV = DHAIRV, REFLD = REFLD, REFLV = REFLV,
+>
+>       # Varied Feather Properties
+>       ZFURD_MAX = ZFURD_MAX, ZFURV_MAX = ZFURV_MAX,
+>       LHAIRD = LHAIRD, LHAIRV = LHAIRV,
+>       RHOD = RHOD, RHOV = RHOV, TREGMODE = TREGMODE,
+>     )
+>   })
+>
+>   # Convert list of endoR outputs into a single data frame
+>   endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+>
+>   # Climate
+>   daynight <- ifelse(Zs >= 90, "night", "day")
+>
+>   # Extract heat balance (metabolic rate)
+>   enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+>   colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+>
+>   # Thermoregulation output
+>   treg <- endo_df[, grep("treg", colnames(endo_df))]
+>   colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+>
+>   # Mass aspects
+>   masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+>   colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+>
+>
+>   # Save results for this condition level
+>   results_list_t[[i]] <- data.frame(
+>     condition = condition_grid[i],
+>     time_step = seq_along(TAs),
+>     QGEN = enbal$QGEN,                             # Metabolic energy generated
+>     TCs = treg$TC,                                 # Core temperature
+>     H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+>     TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+>     TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+>     TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+>     TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+>     Pant = treg$PANT,                              # Panting multiplier
+>     daynight = daynight,                           # Day or night
+>     DOY = metout$DOY,                              # Day index
+>     TAs = TAs                                      # Air temperature
+>   )
+> }
+>
+> proc.time() - ptm
+>
+>
+>
+> sanity_check_condition1 <- subset(results_t, condition == 1)
+>
+> Temperature <- ggplot(sanity_check_condition1, aes(x = time_step)) +
+>   geom_line(aes(y = TFA_D, color = "Feathers dorsal", linetype = "Feathers dorsal")) +
+>   geom_line(aes(y = Z_FUR_D, color = "Z_FUR_D", linetype = "Z_FUR_D")) +
+>   geom_line(aes(y = TFA_V, color = "Feathers ventral", linetype = "Feathers ventral")) +
+>   geom_line(aes(y = TskinD, color = "Skin dorsal", linetype = "Skin dorsal")) +
+>   geom_line(aes(y = TskinV, color = "Skin ventral", linetype = "Skin ventral")) +
+>   geom_line(aes(y = TCs, color = "Core", linetype = "Core")) +
+>   geom_line(aes(y=TAs, color = "Air Temperature", linetype = "Air Temperature")) +
+>   scale_color_manual(values = c("Core" = "red", "Z_FUR_D" = "blue", "Skin dorsal" = "orange", "Skin ventral" = "orange", "Feathers dorsal" = "darkgreen", "Feathers ventral"= "darkgreen", "Air Temperature" = "violet")) +
+>   scale_linetype_manual(values = c("Core" = 1, Z_FUR_D = 1, "Skin dorsal" = 1, "Skin ventral" = 2, "Feathers dorsal" = 1,
+>                                    "Feathers ventral"= 2, "Air Temperature" = 1)) +
+>   labs(x = "time (hours)", y = "temperature (°C)", color = "", linetype = "") +
+>   ylim(-10, 50) +
+>   theme_bw() +
+>   theme(
+>     axis.text = element_text(size = 20),
+>     axis.title = element_text(size = 25),
+>     legend.text = element_text(size = 20),
+>     legend.position = "top",
+>     legend.key.width = unit(1.5, "cm")
+>   )
+>
+> Energy_Budget <-ggplot(sanity_check_condition1, aes(x = time_step)) +
+>   # Add individual lines for each Q-factor
+>   geom_line(aes(y = QCONV, colour = "Convection (QCONV)"), linewidth = 1) +
+>   geom_line(aes(y = QGEN,  colour = "Metabolism (QGEN)"), linewidth = 1) +
+>   geom_line(aes(y = QSOL,  colour = "Solar (QSOL)"), linewidth = 1) +
+>   geom_line(aes(y = QIRIN, colour = "Infrared In (QIRIN)"), linewidth = 1) +
+>   geom_line(aes(y = QIROUT, colour = "Infrared In (QIROUT)"), linewidth = 1) +
+>   geom_line(aes(y = (QSOL + QIRIN - QCONV - QEVAP - QCOND - QIROUT), colour = "Total environmental gains"), linewidth = 1) +
+>   geom_line(aes(y = QEVAP, colour = "Evaporation (QEVAP)"), linewidth = 1) +
+>   geom_line(aes(y = QCOND, colour = "Conduction (QCOND)"), linewidth = 1) +
+>   labs(
+>     x = "Time step",
+>     y = "Energy / Metabolic Rate (W)",
+>     colour = "Energy Budget Component" # This titles the color legend
+>   ) +
+>   theme_minimal(base_size = 14)
+>
+
+From u934155c5e68e25d0 at groups.google.com  Fri Jul 31 06:29:07 2026
+From: u934155c5e68e25d0 at groups.google.com (Caity Dwyer)
+Date: Fri, 31 Jul 2026 06:29:07 +0000
+Subject: Private message regarding: Dips in QSOL and QCONV
+Message-ID: <1FfpNxl34dw.9-GXRL76CQAJ@nichemapr.groups.google.com>
+In-Reply-To: <1FfpNxl34dw.1_vTv__zCQAJ@nichemapr.groups.google.com>
+References: <1FfpNxl34dw.J11_QoV7AgAJ@nichemapr.groups.google.com> <1FfpNxl34dw.1_vTv__zCQAJ@nichemapr.groups.google.com>
+Archived-At: <https://groups.google.com/g/nichemapr/c/1FfpNxl34dw/m/9-GXRL76CQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Mike,
+No problem at all, thank you for looking into it.
+
+All the best,
+Caity
+
+On Friday, 31 July 2026 at 2:25:32 pm UTC+10 NicheMapR wrote:
+> Hi Caity,
+> Sorry for the slow reply on this one. Great that you're looking at the results carefully. I started to look at what's going on and it is not immediately obvious why (it is definitely something to do with the piloerection behaviour and it could be a bug). I'll have to spend some time looking into this.
+> All the best,
+> Mike
+>
+> On Thursday, July 9, 2026 at 4:59:43 PM UTC+10 cait...@gmail.com wrote:
+> > Hi again Mike,
+> >
+> > I am not sure if this is an issue with my parameters, but I have noticed that QSOL and QCONV are dipping to a day time minimum at midday and reaching maximums at sunrise and sunset. The only possible explanation I thought of was that feathers were being adjusted at the same time. I found that the dorsal feather surface temp does an odd jump down during the day in hot weather as well, but it doesn't seem to explain the trend. If this is a problem you've seen before or you can offer an explanation i would really appreciate it. My code is copied in below. Thank you!
+> >
+> > All the best,
+> > Caity
+> >
+> > library(NicheMapR)
+> > library(ggplot2)
+> > library(dplyr)
+> >
+> > #///////////////////////////////#
+> > #### Microclimate Parameters ####
+> > #///////////////////////////////#
+> >
+> > # Australian National Botanic Gardens Input
+> > loc <- c(149.1112592, -35.2733684)    # Coordinates
+> >
+> > # Superb fairywren centroid height (m)
+> > Usrhyt <- 0.07
+> > maxshade = 0.1
+> >
+> > #///# Run the climate model once and save to laptop #///#
+> >
+> > # Running the microclimate models (12 representative days only, comment out if running the full microclimate model above)
+> > micro <- micro_global(loc = loc, Usrhyt = Usrhyt, maxshade = maxshade)
+> >
+> > saveRDS(micro, file = "micro_silo_output.rds")
+> >
+> > micro <- readRDS("micro_silo_output.rds")
+> >
+> > metout <- as.data.frame(micro$metout)          # unshaded above-ground conditions
+> > soil <- as.data.frame(micro$soil)              # unshaded below-ground soil temperatures
+> > shadmet <- as.data.frame(micro$shadmet)        # shaded above-ground conditions
+> > shadsoil <- as.data.frame(micro$shadsoil)      # shaded below-ground soil temperatures
+> > dates <- micro$dates
+> >
+> > TAs <- metout$TALOC            # air temperatures at height of animal (°C)
+> > TAREFs <- metout$TAREF         # air temperatures at reference height (°C)
+> > TSKYs <- metout$TSKYC          # sky temperatures (°C)
+> > TGRDs <- soil$D0cm             # surface temperatures (°C)
+> > VELs <- metout$VLOC            # wind speeds at animal height (m/s)
+> > RHs <- metout$RHLOC            # relative humidity at animal height (%)
+> > QSOLRs <- metout$SOLR          # solar radiation (W/m2)
+> > Zs <- metout$ZEN               # zenith angle of the sun (degrees)
+> > ELEV <- micro$elev             # elevation (m)
+> > ABSSB <- 1 - micro$REFL        # substrate solar absorptivity (%)
+> >
+> > #///////////////////////////////////#
+> > #### Superb Fairywren Parameters ####
+> > #///////////////////////////////////#
+> >
+> > # Morphometric Parameters
+> > AMASS <- 0.0097    # Mass (kg)
+> > ANDENS <- 875     # Flesh density (kg/m^3)
+> > AK1 <- 1          # Initial thermal conductivity of flesh (0.412 - 2.8 W/mK)
+> > SHAPE_B <- 1.01   # Long to short body axis ratio
+> > SHAPE_B_MAX <- 2  # Maximum long to short body axis ratio
+> > UNCURL <- 0.1     # Increment of change between SHAPE_B and SHAPE_B_MAX
+> > SHAPE <- 4        # Shape type (4 = ellipsoid)
+> > SAMODE <- 1       # Geometry (1 = bird)
+> > FATPCT <- 3.6     # Body fat (%)
+> >
+> > # Metabolic Parameters and Physiological Responses
+> > TC <- 41.9                # Core body temperature (°C)
+> > TC_MAX <- 43              # Maximum core body temperature (°C)
+> > TC_MIN <- 30.4            # Minimum core body temperature (°C)
+> > TC_INC <- 0.22            # Increment of core body temperature elevation (°C)
+> > PCTWET <- 1               # Base skin wetness (%)
+> > PCTWET_MAX <- 5           # Maximum skin wetness (%)
+> > PCTWET_INC <- 0.25        # Increments of skin wetness increase (%)
+> > Q10s <- rep(1, length(TAs))        # The effect of body temperature on metabolic rate,
+> > Q10s[TAs >= TC_MAX] <- 2           # The effect starts above TC_MAX
+> > QBASAL <- 10^(-1.461 + 0.669 * log10(AMASS * 1000))   # Basal heat generation (W)
+> > DELTAR <- 5               # Difference between air temperature and breath (°C)
+> > EXTREF <- 25              # O2 extraction efficiency (%)
+> > PANT_INC <- 0.5           # Increment by which panting is increased
+> > PANT_MAX <- 15            # Maximum panting rate
+> > PANT_MULT <- 1            # Multiplier on basal metabolism at maximum panting level
+> > THERMOREG <- 2            # Allows panting and core temperature rise simultaneously
+> >
+> > # Fixed Feather Properties
+> > DHAIRD <- 0.00003         # Dorsal "hair" diameter (m)
+> > DHAIRV <- 0.00003         # Ventral "hair" diameter (m)
+> > REFLD <- 0.41             # Dorsal fractional reflectivity (0-1)
+> > REFLV <- 0.48             # Ventral fractional reflectivity (0-1)
+> >
+> > # Base Feather Properties (adjusted seasonally) !!!!!!!!!!!!!!!!!!!! CORRECT THESE TO FAIRYWREN VALUES
+> > LHAIRD_base <- 0.01611         # Dorsal "hair" length (m)
+> > LHAIRV_base <- 0.01413         # Ventral "hair" length (m)
+> > RHOD_base <- 5e+07             # Dorsal feather density (m^-2)
+> > RHOV_base <- 5e+07             # Ventral feather density (m^-2)
+> > TREGMODE <- 1                  # Allows dynamic ptiloerection
+> >
+> > # Feather Variation Driver
+> > condition_grid <- seq(0.2, 7, by = 0.1)
+> >
+> > #////////////////////////////////////////////////////#
+> > #### Running the Model through Feather Conditions ####
+> > #////////////////////////////////////////////////////#
+> >
+> > results_list_t <- list()   # store results for each condition level
+> >
+> > ptm <- proc.time()
+> >
+> > for (i in seq_along(condition_grid)) {
+> >
+> >   # Scale feather density and length
+> >   LHAIRD <- condition_grid[i] * LHAIRD_base
+> >   LHAIRV <- condition_grid[i] * LHAIRV_base
+> >   RHOD   <- condition_grid[i] * RHOD_base
+> >   RHOV   <- condition_grid[i] * RHOV_base
+> >
+> >   ZFURD_MAX <- LHAIRD
+> >   ZFURV_MAX <-LHAIRV
+> >
+> >   # Run endoR across all microclimate time steps
+> >   endo.out <- lapply(seq_along(TAs), function(x) {
+> >     TORPOR <- if (Zs[x] >= 90) 1 else 0
+> >
+> >     # Run endoR with modified insulation
+> >     endoR(
+> >       # Climate variables
+> >       TA = TAs[x], TAREF = TAREFs[x], TSKY = TSKYs[x], TGRD = TGRDs[x],
+> >       VEL = VELs[x], RH = RHs[x], QSOLR = QSOLRs[x], Z = Zs[x], ELEV = ELEV,
+> >       ABSSB = ABSSB,
+> >
+> >       # Morphometrics
+> >       AMASS = AMASS, ANDENS = ANDENS, AK1 = AK1, SHAPE_B = SHAPE_B,
+> >       SHAPE_B_MAX = SHAPE_B_MAX, UNCURL = UNCURL, SHAPE = SHAPE,
+> >       SAMODE = SAMODE, FATPCT = FATPCT,
+> >
+> >       # Metabolic Parameters
+> >       TC = TC, TC_MAX = TC_MAX, TC_MIN = TC_MIN,TC_INC = TC_INC,
+> >       PCTWET = PCTWET, PCTWET_MAX = PCTWET_MAX, PCTWET_INC = PCTWET_INC,
+> >       Q10 = Q10s[x], QBASAL = QBASAL, DELTAR = DELTAR, EXTREF = EXTREF,
+> >       PANT_INC = PANT_INC, PANT_MAX = PANT_MAX, PANT_MULT = PANT_MULT,
+> >       TORPOR = TORPOR,
+> >
+> >       # Fixed Feather Properties
+> >       DHAIRD = DHAIRD, DHAIRV = DHAIRV, REFLD = REFLD, REFLV = REFLV,
+> >
+> >       # Varied Feather Properties
+> >       ZFURD_MAX = ZFURD_MAX, ZFURV_MAX = ZFURV_MAX,
+> >       LHAIRD = LHAIRD, LHAIRV = LHAIRV,
+> >       RHOD = RHOD, RHOV = RHOV, TREGMODE = TREGMODE,
+> >     )
+> >   })
+> >
+> >   # Convert list of endoR outputs into a single data frame
+> >   endo_df <- do.call(rbind, lapply(endo.out, data.frame))
+> >
+> >   # Climate
+> >   daynight <- ifelse(Zs >= 90, "night", "day")
+> >
+> >   # Extract heat balance (metabolic rate)
+> >   enbal <- endo_df[, grep("enbal", colnames(endo_df))]
+> >   colnames(enbal) <- gsub("enbal.", "", colnames(enbal))
+> >
+> >   # Thermoregulation output
+> >   treg <- endo_df[, grep("treg", colnames(endo_df))]
+> >   colnames(treg) <- gsub("treg\\.", "", colnames(treg))
+> >
+> >   # Mass aspects
+> >   masbal <- endo_df[, grep("masbal", colnames(endo_df))]
+> >   colnames(masbal) <- gsub("masbal\\.", "", colnames(masbal))
+> >
+> >
+> >   # Save results for this condition level
+> >   results_list_t[[i]] <- data.frame(
+> >     condition = condition_grid[i],
+> >     time_step = seq_along(TAs),
+> >     QGEN = enbal$QGEN,                             # Metabolic energy generated
+> >     TCs = treg$TC,                                 # Core temperature
+> >     H2O = masbal$H2OResp_g + masbal$H2OCut_g,      # Water evaporated (g/hour)
+> >     TFA_D = treg$TFA_D,                            # Dorsal fur surface temperature
+> >     TFA_V = treg$TFA_V,                            # Ventral fur surface temperature
+> >     TskinD = treg$TSKIN_D,                         # Dorsal skin temperature
+> >     TskinV = treg$TSKIN_V,                         # Ventral skin temperature
+> >     Pant = treg$PANT,                              # Panting multiplier
+> >     daynight = daynight,                           # Day or night
+> >     DOY = metout$DOY,                              # Day index
+> >     TAs = TAs                                      # Air temperature
+> >   )
+> > }
+> >
+> > proc.time() - ptm
+> >
+> >
+> >
+> > sanity_check_condition1 <- subset(results_t, condition == 1)
+> >
+> > Temperature <- ggplot(sanity_check_condition1, aes(x = time_step)) +
+> >   geom_line(aes(y = TFA_D, color = "Feathers dorsal", linetype = "Feathers dorsal")) +
+> >   geom_line(aes(y = Z_FUR_D, color = "Z_FUR_D", linetype = "Z_FUR_D")) +
+> >   geom_line(aes(y = TFA_V, color = "Feathers ventral", linetype = "Feathers ventral")) +
+> >   geom_line(aes(y = TskinD, color = "Skin dorsal", linetype = "Skin dorsal")) +
+> >   geom_line(aes(y = TskinV, color = "Skin ventral", linetype = "Skin ventral")) +
+> >   geom_line(aes(y = TCs, color = "Core", linetype = "Core")) +
+> >   geom_line(aes(y=TAs, color = "Air Temperature", linetype = "Air Temperature")) +
+> >   scale_color_manual(values = c("Core" = "red", "Z_FUR_D" = "blue", "Skin dorsal" = "orange", "Skin ventral" = "orange", "Feathers dorsal" = "darkgreen", "Feathers ventral"= "darkgreen", "Air Temperature" = "violet")) +
+> >   scale_linetype_manual(values = c("Core" = 1, Z_FUR_D = 1, "Skin dorsal" = 1, "Skin ventral" = 2, "Feathers dorsal" = 1,
+> >                                    "Feathers ventral"= 2, "Air Temperature" = 1)) +
+> >   labs(x = "time (hours)", y = "temperature (°C)", color = "", linetype = "") +
+> >   ylim(-10, 50) +
+> >   theme_bw() +
+> >   theme(
+> >     axis.text = element_text(size = 20),
+> >     axis.title = element_text(size = 25),
+> >     legend.text = element_text(size = 20),
+> >     legend.position = "top",
+> >     legend.key.width = unit(1.5, "cm")
+> >   )
+> >
+> > Energy_Budget <-ggplot(sanity_check_condition1, aes(x = time_step)) +
+> >   # Add individual lines for each Q-factor
+> >   geom_line(aes(y = QCONV, colour = "Convection (QCONV)"), linewidth = 1) +
+> >   geom_line(aes(y = QGEN,  colour = "Metabolism (QGEN)"), linewidth = 1) +
+> >   geom_line(aes(y = QSOL,  colour = "Solar (QSOL)"), linewidth = 1) +
+> >   geom_line(aes(y = QIRIN, colour = "Infrared In (QIRIN)"), linewidth = 1) +
+> >   geom_line(aes(y = QIROUT, colour = "Infrared In (QIROUT)"), linewidth = 1) +
+> >   geom_line(aes(y = (QSOL + QIRIN - QCONV - QEVAP - QCOND - QIROUT), colour = "Total environmental gains"), linewidth = 1) +
+> >   geom_line(aes(y = QEVAP, colour = "Evaporation (QEVAP)"), linewidth = 1) +
+> >   geom_line(aes(y = QCOND, colour = "Conduction (QCOND)"), linewidth = 1) +
+> >   labs(
+> >     x = "Time step",
+> >     y = "Energy / Metabolic Rate (W)",
+> >     colour = "Energy Budget Component" # This titles the color legend
+> >   ) +
+> >   theme_minimal(base_size = 14)
+> >
+
