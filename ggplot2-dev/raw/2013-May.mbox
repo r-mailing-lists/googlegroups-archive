@@ -1,0 +1,469 @@
+From ubd6dda60d4cdf0ef at groups.google.com  Tue May 21 21:38:46 2013
+From: ubd6dda60d4cdf0ef at groups.google.com (Faheem Mitha)
+Date: Tue, 21 May 2013 21:38:46 +0000
+Subject: Re: [ggplot2] aesthetic inheritance and annotation_custom (#756)
+Message-ID: <O9K1C0E0INM.EtQLYJ0dREcJ@ggplot2-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/ggplot2-dev/c/O9K1C0E0INM/m/EtQLYJ0dREcJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Here is an analysis of this issue (#756). Ggplot2 developers, I'd
+appreciate comments, corrections, clarifications and other feedback.
+
+Bryan, if you don't want to read the whole thing, you can apply PATCH
+1 and PATCH 2, though you really only need PATCH 2, and check if it
+fixes things for you. It is intended as a workaround, not a proper
+fix.
+
+For the record, the original problem that brought me to this issue is
+illustrated by [Positioning two legends independently in a faceted
+ggplot2 plot](http://stackoverflow.com/q/16501999/350713). I checked
+that PATCH 1 and PATCH 2 fixed the issue described as Version 2
+(Version 1 was user error I think). The resulting (faceted) graph now
+has *two* identical legends, one for each facet, which is a bit
+annoying, but it is better than nothing at all.
+
+Consider the following modified version of Bryan's code
+
+     ## EXAMPLE 1
+     library("ggplot2")
+     library("grid")
+     library("proto")
+     len = 2
+     d <- data.frame(r = c( 6.279072, 2.995998, 8.193851, 11.274669),
+          f1 = c(rep("L", len), rep("H", len)), f2 = rep(c("A", "B"), len))
+
+     p <- ggplot(data = d, aes(x = f1, y = r, color = f2, group = f2))
+     p <- p + geom_point()
+     pbuild = ggplot_build(p)
+     pA <- p + annotation_custom(circleGrob())
+     pAbuild = ggplot_build(pA)
+
+     pnew <- ggplot()
+     pnew <- pnew + geom_point(data = d, aes(x = f1, y = r, color = f2, group = f2))
+     pnewbuild = ggplot_build(pnew)
+     pnewA <- pnew + annotation_custom(circleGrob())
+     pnewAbuild = ggplot_build(pnewA)
+
+PART 1: WHY PRINT GIVES AN ERROR FOR `pnewA`.
+=============================================
+
+Here `pA` and `pnewA` are the objects after the annotation has been added.
+Printing `pnewA` gives the same error as Bryan's example, version 3, namely
+
+     Error in if (nrow(layer_data) == 0) return() : argument is of length zero
+
+It is not difficult to see what is going wrong. A fix is less obvious.
+
+The object `pAbuild` and `pnewAbuild` resulting from the call to
+`ggplot_build` look like this. You can call `str` on them to see the
+structure. Here the data frames correspond to e.g. `str(pa$data[[1]])` and
+`str(pa$data[[2]])`.
+
+```
+                                      ------------data frame NON NULL
+             |                       |
+pAbuild --- |                       |
+             ------data (list) ------|
+             |                       |
+             |                       |
+                                      ------------data frame NON NULL
+
+                                      ------------data frame NON NULL
+             |                       |
+pnewAbuild- |                       |
+             ------data (list) ------|
+             |                       |
+             |                       |
+                                      ------------data frame NULL
+```
+
+ggplot2 does not like it if the any of the data frames in the `data`
+list are zero, and it gives this error, specifically, from
+`ggplot_gtable` from inside the print function `print.ggplot` in
+"plot-render.r". Detailed analysis follows
+
+##################################################################
+Detailed analysisb for PART 1 begins
+##################################################################
+
+Say `p` is the object. Then we are passing it to `print.ggplot` (in
+"plot-render.r").
+
+First `print.ggplot` calls `ggplot_build` (in "plot-build.r"). This is
+the line in `print.ggplot`:
+
+     data <- ggplot_build(x)
+
+Then it calls `ggplot_gtable` (also in `plot-render.r`) on the
+resulting object, `data`. This is the line in `print.ggplot`:
+
+     gtable <- ggplot_gtable(data)
+
+`ggplot_gtable` begins with the lines (... means lines omitted)
+
+     gplot_gtable <- function(data) {
+       ...
+       data <- data$data
+       ...
+       build_grob <- function(layer, layer_data) {
+         if (nrow(layer_data) == 0) return()
+       ...
+       # List by layer, list by panel
+       geom_grobs <- Map(build_grob, plot$layer, data)
+
+So, `data$data` is passed as the `layer_data` argument to
+`geom_grobs`. Recall that `data` here is `ggplot_build` applied to
+`p`. So the object we are looking at is
+
+     ggplot_build(p)$data
+
+This is a list of data frames. This is where the error is thrown,
+because `Map` calls `build_grob` on each component of the list
+`ggplot_build(p)$data`, These components are data frames. For problem
+object `pnewA`,
+
+     ggplot_build(pnewA)$data
+
+contains two data frames, one of which is empty (`NULL`).
+
+The code `if (nrow(layer_data) == 0) return()` checks if any of those
+data frames is empty, and if so, returns to the calling function. In
+other words, if the data frame is non-null but has zero rows, the
+function will return and the program will continue.
+
+In this case, the data frame is `NULL`, so the computation is
+
+     if (nrow(NULL) == 0) return()
+
+Since `nrow(NULL)` is `NULL`, `(NULL == 0)` returns `logical(0)`,
+However, `if` can only deal with `True` or `False`, so it returns an
+error. `argument zero` refers to the fact that `logical(0)` is of
+length 0. It seems to me that this line should be modified to deal
+with `NULL` objects as well, because there is no effective difference
+between `NULL` and an empty data set. We can do this with the
+following patch.
+
+```
+PATCH 1
+--- a/R/plot-render.r
++++ b/R/plot-render.r
+@@ -22,7 +22,7 @@ ggplot_gtable <- function(data) {
+    theme <- plot_theme(plot)
+
+    build_grob <- function(layer, layer_data) {
+-    if (nrow(layer_data) == 0) return()
++    if ((is.null(layer_data)) || (nrow(layer_data) == 0)) return()
+
+      dlply(layer_data, "PANEL", function(df) {
+        panel_i <- match(df$PANEL[1], panel$layout$PANEL)
+```
+
+##################################################################
+Detailed analysis for PART 1 ends
+##################################################################
+
+PART 2: ANNOTATION_CUSTOM LAYER HAS A NULL DATA ATTRIBUTE AND IS THAT A PROBLEM?
+
+We now look at what `ggplot_build` does.
+
+We can diagramatically represent the structure of `pA` and `pnewA` as follows.
+
+```
+       ---data (default) D     ----------obj corresponding to geom_point ------- data NULL
+      |                       |
+      |                       |
+pA - |                       |
+       ---layers------------- |
+                              |
+                              |
+                              |
+                               ------------obj corresponding to geom_point ----- data NULL
+
+        --data (default) NULL -----------obj corresponding to geom_point ------- data D
+        |                     |
+        |                     |
+pnewA- |                     |
+        ---layers-------------|
+                              |
+                              |
+                              |
+                               ----------obj corresponding to geom_point ------- data NULL
+```
+
+Here the data objects in `pnewA` correspond to `pnewA$data`
+`pnewA$layers[[1]]$data` etc.
+
+When ggplot_build takes e.g. `pA` as an argument, it first selects the
+layer data elements as a list, calling this `layer_data`. If any of
+these elements are empty, it replaces them with the top level data
+attribute, `pnewA$data`. In the case of `pA`, both layer data elements
+are replaced with the default `D`. For `pnewA`, since the default is
+empty, we are still left with one non-empty and one empty.
+
+This happens at the beginning of `ggplot_build`, in the `map_layout`
+function.  I assume it is done like this because each layer is
+supposed to be associated with data, and if it isn't, then one falls
+back on the default (if it exists), corresponding to
+`ggplot(data)`. There isn't really another candidate for default data.
+
+Now, when the remaining functions in `gglot_build` act on the result
+of `map_layout` the data corresponding to the `annotation_custom`
+layer in `pnewA` quickly becomes `NULL` and stays `NULL`. Whereas in
+the case of the data in the annotation_custom for `pA`, the value for
+data returned from `gglot_build` is
+
+```
+> str(pAbuild$data)
+List of 2
+  $ :'data.frame':	4 obs. of  5 variables:
+   ..$ colour: chr [1:4] "#F8766D" "#00BFC4" "#F8766D" "#00BFC4"
+   ..$ x     : int [1:4] 2 2 1 1
+   ..$ y     : num [1:4] 6.28 3 8.19 11.27
+   ..$ group : int [1:4] 1 2 1 2
+   ..$ PANEL : int [1:4] 1 1 1 1
+  $ :'data.frame':	4 obs. of  5 variables: <-- corresponds to annotation_custom
+   ..$ colour: chr [1:4] "#F8766D" "#00BFC4" "#F8766D" "#00BFC4"
+   ..$ x     : int [1:4] 2 2 1 1
+   ..$ y     : num [1:4] 6.28 3 8.19 11.27
+   ..$ group : int [1:4] 1 2 1 2
+   ..$ PANEL : int [1:4] 1 1 1 1
+```
+
+where the second data frame corresponds to `annotation_custom`.
+However, it does not appear that this data is actually used for the
+custom_annotation. Let's assume that it is not. The problem we had
+with `pnewA` was that there was no default data to replace the `NULL`
+`annotation_custom` layer data with. How about if we replace it with
+dummy data? If the data is not actually used it might work. We can do
+this as follows:
+
+```
+PATCH 2
+--- a/R/panel.r
++++ b/R/panel.r
+@@ -47,6 +47,8 @@ train_layout <- function(panel, facet, d
+  # @param data list of data frames (one for each layer)
+  # @param plot_data default plot data frame
+  map_layout <- function(panel, facet, data, plot_data) {
++  if (is.waive(plot_data) || empty(plot_data))
++    plot_data = data.frame(dummy=c(1))
+    lapply(data, function(data) {
+      if (is.waive(data)) data <- plot_data
+      facet_map_layout(facet, data, panel$layout)
+```
+
+This patch fixes `pnewA` in EXAMPLE 1, which now shows the circle
+custom_annotation correctly. This confirms that the actual data used
+does not matter, as long as it is non-empty. Furthermore, note that
+the difference between `pnewAbuild` with and without PATCH 2 is just
+
+```
+List of 3
+  $ data :List of 2
+   ..$ :'data.frame':	4 obs. of  5 variables:
+   .. ..$ colour: chr [1:4] "#F8766D" "#00BFC4" "#F8766D" "#00BFC4"
+   .. ..$ x     : int [1:4] 2 2 1 1
+   .. ..$ y     : num [1:4] 6.28 3 8.19 11.27
+   .. ..$ group : int [1:4] 1 2 1 2
+   .. ..$ PANEL : int [1:4] 1 1 1 1
+   ..$ : NULL
+```
+vs
+```
+List of 3
+  $ data :List of 2
+   ..$ :'data.frame':	4 obs. of  5 variables:
+   .. ..$ colour: chr [1:4] "#F8766D" "#00BFC4" "#F8766D" "#00BFC4"
+   .. ..$ x     : int [1:4] 2 2 1 1
+   .. ..$ y     : num [1:4] 6.28 3 8.19 11.27
+   .. ..$ group : int [1:4] 1 2 1 2
+   .. ..$ PANEL : int [1:4] 1 1 1 1
+   ..$ :'data.frame':	1 obs. of  2 variables:
+   .. ..$ PANEL: int 1
+   .. ..$ group: int 1
+```
+i.e. the rest of the structure is the same.
+
+So, we return to the question, if it doesn't matter what data is used,
+why is any data at all needed here?
+
+Recall from our detailed discussion of PART 1, we observed at the end
+that
+
+     if (nrow(layer_data) == 0) return()
+
+was the reason that `print` was rejecting `ggplot_build(pnewA) =
+pnewAbuild`. This can be easily fixed by allowing `NULL` values. As
+discussed earlier, the current code can deal with data frames with 0
+rows, but not `NULL` values. PATCH 1 fixes this. If we apply this
+instead of PATCH 2, we see that EXAMPLE 1 does not error out any more,
+but it does not render the annotation either.
+
+So, we have the curious situation that ggplot does not actually use
+the data associated with the annotation custom layer (at least in
+EXAMPLE 1), but still expects it to be there for rendering to
+happen. I think this requires looking into the rendering code to see
+why this is so. It looks to me like a bug.
+
+Actually, if we take the `pAbuild` object and replace each of the two
+data frames in `pAbuild$data` with empty data frames, or just `NULL`
+values, and the plot still renders, however, if we zero out
+`pAbuild$plot$data`, then the plot fails to render. So, in fact, it
+looks like the `data` attribute is not used at all for rendering,
+which makes it doubly puzzling that `pnewAbuild` does not work without
+PATCH 2.
+
+It seems that the function `grid.draw` from the `grid` package is used
+for the actual rendering, but I'm not sure how it works.
+
+##################################################################
+Detailed analysis for Part 2 begins
+##################################################################
+
+The output of `layer_data` for `ggplot_build` run on `pA` for the
+first couple of functions is:
+
+     [1] "map_layout(panel, plot$facet, layer_data, plot$data) finished"
+     List of 2
+      $ :'data.frame':       4 obs. of  4 variables:
+       ..$ r    : num [1:4] 6.28 3 8.19 11.27
+       ..$ f1   : Factor w/ 2 levels "H","L": 2 2 1 1
+       ..$ f2   : Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ PANEL: int [1:4] 1 1 1 1
+      $ :'data.frame':       4 obs. of  4 variables:
+       ..$ r    : num [1:4] 6.28 3 8.19 11.27
+       ..$ f1   : Factor w/ 2 levels "H","L": 2 2 1 1
+       ..$ f2   : Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ PANEL: int [1:4] 1 1 1 1
+
+     [1] "dlapply (function(d, p) p$compute_aesthetics(d, plot)) finished"
+     List of 2
+      $ :'data.frame':       4 obs. of  5 variables:
+       ..$ x     : Factor w/ 2 levels "H","L": 2 2 1 1
+       ..$ y     : num [1:4] 6.28 3 8.19 11.27
+       ..$ colour: Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ group : Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ PANEL : int [1:4] 1 1 1 1
+      $ :'data.frame':       4 obs. of  5 variables:
+       ..$ x     : Factor w/ 2 levels "H","L": 2 2 1 1
+       ..$ y     : num [1:4] 6.28 3 8.19 11.27
+       ..$ colour: Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ group : Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ PANEL : int [1:4] 1 1 1 1
+
+The final result for `ggplot_build` on `pA` is
+
+     List of 2
+      $ :'data.frame':       4 obs. of  5 variables:
+       ..$ colour: chr [1:4] "#F8766D" "#00BFC4" "#F8766D" "#00BFC4"
+       ..$ x     : int [1:4] 2 2 1 1
+       ..$ y     : num [1:4] 6.28 3 8.19 11.27
+       ..$ group : int [1:4] 1 2 1 2
+       ..$ PANEL : int [1:4] 1 1 1 1
+      $ :'data.frame':       4 obs. of  5 variables:
+       ..$ colour: chr [1:4] "#F8766D" "#00BFC4" "#F8766D" "#00BFC4"
+       ..$ x     : int [1:4] 2 2 1 1
+       ..$ y     : num [1:4] 6.28 3 8.19 11.27
+       ..$ group : int [1:4] 1 2 1 2
+       ..$ PANEL : int [1:4] 1 1 1 1
+
+The output for `ggplot_build` run on problem object `pnewA` for the
+first couple of functions is:
+
+     [1] "map_layout(panel, plot$facet, layer_data, plot$data) finished"
+     List of 2
+      $ :'data.frame':       4 obs. of  4 variables:
+       ..$ r    : num [1:4] 6.28 3 8.19 11.27
+       ..$ f1   : Factor w/ 2 levels "H","L": 2 2 1 1
+       ..$ f2   : Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ PANEL: int [1:4] 1 1 1 1
+      $ : list()
+       ..- attr(*, "dim")= int [1:2] 0 2
+       ..- attr(*, "dimnames")=List of 2
+       .. ..$ : NULL
+       .. ..$ : chr [1:2] "data" "PANEL"
+
+     [1] "dlapply (function(d, p) p$compute_aesthetics(d, plot)) finished"
+     List of 2
+      $ :'data.frame':       4 obs. of  5 variables:
+       ..$ x     : Factor w/ 2 levels "H","L": 2 2 1 1
+       ..$ y     : num [1:4] 6.28 3 8.19 11.27
+       ..$ colour: Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ group : Factor w/ 2 levels "A","B": 1 2 1 2
+       ..$ PANEL : int [1:4] 1 1 1 1
+      $ :'data.frame':       0 obs. of  0 variables
+
+The final result for `ggplot_build` on `pnewA` is
+
+     List of 2
+      $ :'data.frame':       4 obs. of  5 variables:
+       ..$ colour: chr [1:4] "#F8766D" "#00BFC4" "#F8766D" "#00BFC4"
+       ..$ x     : int [1:4] 2 2 1 1
+       ..$ y     : num [1:4] 6.28 3 8.19 11.27
+       ..$ group : int [1:4] 1 2 1 2
+       ..$ PANEL : int [1:4] 1 1 1 1
+      $ : NULL
+
+As can clearly be seen from this, things appear to go wrong from
+`map_layout`. I'm assuming if they go wrong, then they continue to go
+wrong. Already by the second transformation on `pnewA`, `dlapply
+(function(d, p) p$compute_aesthetics(d, plot))` the data frame is
+empty.
+
+In the case of `pA`, the data is close to its final form after the
+second transformation - call to `dlapply (function(d, p)
+p$compute_aesthetics(d, plot))`.
+
+`map_layout` is in "panel.r". This mostly calls `facet_map_layout` in
+"facet-.r". This calls some `facet_map_layout` method. There are
+methods in "facet-grid-.r", "facet-null.r", and "facet-wrap.r". In
+this case it turns out to call the method in "facet-null.r", since
+there is no actual faceting here.
+
+`map_layout` does the following operations:
+
+STEP 1: For each data attribute in `layers`, `pA$layers[[i]]$data`, it
+checks if it is a waiver object, basically meaning the calling
+function should use the default value.
+
+     if (is.waive(data))
+
+If so, it then replaces the `pA$layers[[i]]$data` with the top level
+data attribute, e.g. `pA$data`, and passes down to
+`facet_map_layout.null` (in this case).
+
+STEP 2:If the data object constructed from above is either a waiver object or
+empty, then it does a cbind and then returns the result
+
+     if (is.waive(data) || empty(data))
+       return(cbind(data, PANEL = integer(0)))
+
+otherwise it adds a `PANEL` attribute to `data`.
+
+     data$PANEL <- 1L
+
+and returns.
+
+STEP 1 is the important step here.
+
+So to summarize what happens
+
+First, extract the layer data.
+
+            ggplot_build
+     pnewA ----------------> layer_data (lapply(pnewA$layers, function(y) y$data))
+
+Second, pass `layer_data` to `map_layout`, replacing empty elements with
+pnewA$data.
+
+In this case of `pnewA`, this results in one non-empty element, and one
+empty element.
+
+In this case of `pA`, this results in two non-empty elements.
+
+##################################################################
+Detailed analysis for Part 2 ends
+##################################################################
+
