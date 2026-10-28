@@ -1,0 +1,2800 @@
+From u5cf685ede3c7a045 at groups.google.com  Wed Jun  1 14:15:27 2016
+From: u5cf685ede3c7a045 at groups.google.com (avil...@gmail.com)
+Date: Wed, 01 Jun 2016 14:15:27 +0000
+Subject: Loading bismark .CpG_report.txt.gz straight into methylkit
+Message-ID: <89gjErcOmmU.HsR1jm_bAQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/89gjErcOmmU/m/HsR1jm_bAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+This is a question about generating a straightforward standard pipeline from bismark sample-by-sample CpG counting directly into methylKit multi-sample DMR calling.
+
+The methylkit authors kindly provided a loading mechanism for the .CpG_report.txt.gz file from bismark, which means that on a pipeline setup (e.g. Galaxy or Dnanexus), one can go from bismark methylation extractor output directly loaded into methylkit, without intermediate files.
+
+Find below the code snippet with the solution (assumes 2 cases and 2 controls, and min.cov=10).
+
+Feedback welcomed:
+
+$ Rscript run_methylkit_four_samples.R CASE1.CpG_report.txt.gz CASE2.CpG_report.txt.gz CONTROL1.CpG_report.txt.gz CONTROL2.CpG_report.txt.gz 10
+
+########
+
+#!/usr/bin/Rscript
+
+thisdir = getwd()
+tempdir <- function() thisdir
+unlockBinding("tempdir", baseenv())
+assignInNamespace("tempdir", tempdir, ns="base", envir=baseenv())
+assign("tempdir", tempdir, baseenv())
+lockBinding("tempdir", baseenv())
+
+library(methylKit)
+library(tools)
+args<-commandArgs(TRUE)
+
+# readBismarkCytosineReport function
+devtools::source_gist("4839e615e2401d73fe51")
+
+file.list = list(args[1],args[2],args[3],args[4])
+
+# This reads straight from the output of bismark, works for both strands
+myobj = readBismarkCytosineReport(
+        file.list,
+          sample.id <http://sample.id>=list(
+  	  strsplit(basename(args[1]), '[_]')[[1]][1],
+          strsplit(basename(args[2]), '[_]')[[1]][1],
+  	  strsplit(basename(args[3]), '[_]')[[1]][1],
+  	  strsplit(basename(args[4]), '[_]')[[1]][1]
+  	       ),
+  	assembly="hg38",
+  	treatment=c(1,1,0,0),
+  	min.cov=args[5])
+
+pdf(file="Methylkit.01.MethylationStats.Sample01.pdf",width=12,height=12) ; getMethylationStats(myobj[[1]],plot=T,both.strands=T); dev.off()
+pdf(file="Methylkit.01.MethylationStats.Sample02.pdf",width=12,height=12) ; getMethylationStats(myobj[[2]],plot=T,both.strands=T); dev.off()
+pdf(file="Methylkit.01.MethylationStats.Sample03.pdf",width=12,height=12) ; getMethylationStats(myobj[[3]],plot=T,both.strands=T); dev.off()
+pdf(file="Methylkit.01.MethylationStats.Sample04.pdf",width=12,height=12) ; getMethylationStats(myobj[[4]],plot=T,both.strands=T); dev.off()
+
+pdf(file="Methylkit.01.CoverageStats.Sample01.pdf",width=12,height=12) ; getCoverageStats(myobj[[1]],plot=T,both.strands=T); dev.off()
+pdf(file="Methylkit.01.CoverageStats.Sample02.pdf",width=12,height=12) ; getCoverageStats(myobj[[2]],plot=T,both.strands=T); dev.off()
+pdf(file="Methylkit.01.CoverageStats.Sample03.pdf",width=12,height=12) ; getCoverageStats(myobj[[3]],plot=T,both.strands=T); dev.off()
+pdf(file="Methylkit.01.CoverageStats.Sample04.pdf",width=12,height=12) ; getCoverageStats(myobj[[4]],plot=T,both.strands=T); dev.off()
+
+meth = unite(myobj)
+pdf(file="Methylkit.02.Meth_CorrelationPlot.pdf",width=12,height=12); getCorrelation(meth,plot=T); dev.off()
+
+# cluster all samples using correlation distance and return a tree object for plclust
+hc = clusterSamples(meth, dist="correlation", method="ward", plot=FALSE)
+
+# cluster all samples using correlation distance and plot hiarachical clustering
+pdf(file="Methylkit.03.PCASamples.ctreeplot.pdf",width=12,height=12); clusterSamples(meth, dist="correlation", method="ward", plot=TRUE); dev.off()
+
+# screeplot of principal component analysis.
+pdf(file="Methylkit.03.PCASamples.screeplot.pdf",width=12,height=12); PCASamples(meth, screeplot=TRUE); dev.off()
+
+# principal component anlaysis of all samples.
+pdf(file="Methylkit.03.PCASamples.pcaxyplot.pdf",width=12,height=12); PCASamples(meth); dev.off()
+
+myDiff=calculateDiffMeth(meth)
+write.table(myDiff, file="Methylkit.04.DiffMeth.tsv", sep='\t', quote=FALSE)
+myDiff25p.hyper = get.methylDiff(myDiff,difference=25,qvalue=0.01,type="hyper")
+write.table(myDiff25p.hyper,"Methylkit.04.hyper_methylated.txt",sep='\t', quote=FALSE)
+myDiff25p.hypo = get.methylDiff(myDiff,difference=25,qvalue=0.01,type="hypo")
+write.table(myDiff25p.hypo,"Methylkit.04.hypo_methylated.txt",sep='\t', quote=FALSE)
+myDiff25p = get.methylDiff(myDiff,difference=25,qvalue=0.01)
+write.table(myDiff25p,"Methylkit.04.differentialy_methylated.txt",sep='\t', quote=FALSE)
+pdf("Methylkit.04.DiffMethPerChr.pdf",width=12,height=12); diffMethPerChr(myDiff,plot=TRUE,qvalue.cutoff=0.01,meth.cutoff=25); dev.off()
+
+gene.obj=read.transcript.features("/Annotations/UCSC_database/refseq.hg38.bed.txt")
+
+diffAnn = annotate.WithGenicParts(myDiff25p, gene.obj)
+write.table(getAssociationWithTSS(diffAnn),"Methylkit.05.AssociationWithTSS.txt", sep='\t', quote=FALSE)
+
+pdf("Methylkit.05.TargetAnnotation.piechart1.pdf",width=12,height=12); plotTargetAnnotation(diffAnn, precedence = TRUE, main ="differential methylation annotation"); dev.off()
+
+write.table(getFeatsWithTargetsStats(diffAnn, percentage = TRUE),"Methylkit.05.FeatsWithStargetsStats.txt",sep='\t', quote=FALSE)
+
+tmpfiles <- dir(path=getwd(), pattern="*.CpG_report.txt")
+file.remove(tmpfiles)
+
+1
+
+#########
+
+From uab8277113f65c05e at groups.google.com  Wed Jun  1 14:31:42 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Wed, 01 Jun 2016 14:31:42 +0000
+Subject: Re: [methylkit_discussion] Loading bismark .CpG_report.txt.gz straight into methylkit
+Message-ID: <89gjErcOmmU.tuTrtYS1AQAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <89gjErcOmmU.HsR1jm_bAQAJ@methylkit-discussion.groups.google.com>
+References: <89gjErcOmmU.HsR1jm_bAQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/89gjErcOmmU/m/tuTrtYS1AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Albert,
+just one comment, being able to read bismark files is now a part of the development version of methylKit. Here is the full list of current, changes. We changed some function names in order to make naming convention coherent, old names will still work for a while. Maybe you can test your pipeline with the development version.
+
+methylKit 0.9.6
+--------------
+IMPROVEMENTS AND BUG FIXES
+
+* changes to following function names:
+  read() to methRead()
+  read.bismark to processBismarkAln()
+  adjust.methylC() to adjustMethylC()
+  get.methylDiff() to getMethylDiff()
+  annotate.WithFeature() to annotateWithFeature()
+  annotate.WithFeature.Flank() to annotateWithFeatureFlank()
+  annotate.WithGenicParts() to annotateWithGenicParts()
+  read.bed() to readBed()
+  read.feature.flank() to readFeatureFlank()
+  read.transcript.features() to readTranscriptFeatures()
+* Improved documentation for methRead() (old read())
+* Ported the Perl script for methylation base calling to C/C++ style,
+  for easier integration via Rcpp. Contributed by Alexander Gosdschan.
+* methRead() uses data.table::fread() to read files faster.
+
+NEW FUNCTIONS AND FEATURES
+
+* new function methSeg() can segment methylation (methylRaw objects) and
+  differential methylation (methylDiff objects) profiles to segments.
+  Associated function methSeg2bed() creates BED files from segments.
+  see ?methSeg. A test is added to check this in R CMD check.
+  Contributed by Arsene Wabo and Alexander Gosdschan.
+
+* Now, bismark cytosine report and coverage files can be read using methRead()
+  pipeline argument. see ?methRead
+
+* new tabix based classes methylRawDB, methylRawListDB, methylBaseDB,
+  methylDiffDB and respective methods implemented. Tests are updated to
+  check proper function in R CMD check. Contributed by Alexander Gosdschan.
+
+* calculateDiffMeth() now supports basic overdispersion correction and multiple
+  methods for pvalue correction. The function also now handles covariates
+  such as age,sex etc. A test is added to check this in R CMD check.
+  Contributed by Adrian Bierling.
+
+* New function calculateDiffMethDSS() is using beta-binomial model from DSS
+  package to calculate differential methylation. Contributed by
+  Dhruva Chandramohan with modifications from Altuna Akalin. Original function
+  written by Hao Wao in DSS package.
+
+* dataSim creates a methylBase object with simulated methylation data.
+  A test is added to check this in R CMD check. Contributed by Adrian Bierling.
+
+Best,
+Altuna
+
+On Wed, Jun 1, 2016 at 4:15 PM, <avil...@gmail.com> wrote:
+
+> Hi,
+>
+> This is a question about generating a straightforward standard pipeline from bismark sample-by-sample CpG counting directly into methylKit multi-sample DMR calling.
+>
+> The methylkit authors kindly provided a loading mechanism for the .CpG_report.txt.gz file from bismark, which means that on a pipeline setup (e.g. Galaxy or Dnanexus), one can go from bismark methylation extractor output directly loaded into methylkit, without intermediate files.
+>
+> Find below the code snippet with the solution (assumes 2 cases and 2 controls, and min.cov=10).
+>
+> Feedback welcomed:
+>
+> $ Rscript run_methylkit_four_samples.R CASE1.CpG_report.txt.gz CASE2.CpG_report.txt.gz CONTROL1.CpG_report.txt.gz CONTROL2.CpG_report.txt.gz 10
+>
+>
+> ########
+>
+> #!/usr/bin/Rscript
+>
+> thisdir = getwd()
+> tempdir <- function() thisdir
+> unlockBinding("tempdir", baseenv())
+> assignInNamespace("tempdir", tempdir, ns="base", envir=baseenv())
+> assign("tempdir", tempdir, baseenv())
+> lockBinding("tempdir", baseenv())
+>
+> library(methylKit)
+> library(tools)
+> args<-commandArgs(TRUE)
+>
+> # readBismarkCytosineReport function
+> devtools::source_gist("4839e615e2401d73fe51")
+>
+> file.list = list(args[1],args[2],args[3],args[4])
+>
+> # This reads straight from the output of bismark, works for both strands
+> myobj = readBismarkCytosineReport(
+>         file.list,
+>           sample.id <http://sample.id>=list(
+>   	  strsplit(basename(args[1]), '[_]')[[1]][1],
+>           strsplit(basename(args[2]), '[_]')[[1]][1],
+>   	  strsplit(basename(args[3]), '[_]')[[1]][1],
+>   	  strsplit(basename(args[4]), '[_]')[[1]][1]
+>   	       ),
+>   	assembly="hg38",
+>   	treatment=c(1,1,0,0),
+>   	min.cov=args[5])
+>
+> pdf(file="Methylkit.01.MethylationStats.Sample01.pdf",width=12,height=12) ; getMethylationStats(myobj[[1]],plot=T,both.strands=T); dev.off()
+> pdf(file="Methylkit.01.MethylationStats.Sample02.pdf",width=12,height=12) ; getMethylationStats(myobj[[2]],plot=T,both.strands=T); dev.off()
+> pdf(file="Methylkit.01.MethylationStats.Sample03.pdf",width=12,height=12) ; getMethylationStats(myobj[[3]],plot=T,both.strands=T); dev.off()
+> pdf(file="Methylkit.01.MethylationStats.Sample04.pdf",width=12,height=12) ; getMethylationStats(myobj[[4]],plot=T,both.strands=T); dev.off()
+>
+> pdf(file="Methylkit.01.CoverageStats.Sample01.pdf",width=12,height=12) ; getCoverageStats(myobj[[1]],plot=T,both.strands=T); dev.off()
+> pdf(file="Methylkit.01.CoverageStats.Sample02.pdf",width=12,height=12) ; getCoverageStats(myobj[[2]],plot=T,both.strands=T); dev.off()
+> pdf(file="Methylkit.01.CoverageStats.Sample03.pdf",width=12,height=12) ; getCoverageStats(myobj[[3]],plot=T,both.strands=T); dev.off()
+> pdf(file="Methylkit.01.CoverageStats.Sample04.pdf",width=12,height=12) ; getCoverageStats(myobj[[4]],plot=T,both.strands=T); dev.off()
+>
+> meth = unite(myobj)
+> pdf(file="Methylkit.02.Meth_CorrelationPlot.pdf",width=12,height=12); getCorrelation(meth,plot=T); dev.off()
+>
+> # cluster all samples using correlation distance and return a tree object for plclust
+> hc = clusterSamples(meth, dist="correlation", method="ward", plot=FALSE)
+>
+> # cluster all samples using correlation distance and plot hiarachical clustering
+> pdf(file="Methylkit.03.PCASamples.ctreeplot.pdf",width=12,height=12); clusterSamples(meth, dist="correlation", method="ward", plot=TRUE); dev.off()
+>
+> # screeplot of principal component analysis.
+> pdf(file="Methylkit.03.PCASamples.screeplot.pdf",width=12,height=12); PCASamples(meth, screeplot=TRUE); dev.off()
+>
+> # principal component anlaysis of all samples.
+> pdf(file="Methylkit.03.PCASamples.pcaxyplot.pdf",width=12,height=12); PCASamples(meth); dev.off()
+>
+> myDiff=calculateDiffMeth(meth)
+> write.table(myDiff, file="Methylkit.04.DiffMeth.tsv", sep='\t', quote=FALSE)
+> myDiff25p.hyper = get.methylDiff(myDiff,difference=25,qvalue=0.01,type="hyper")
+> write.table(myDiff25p.hyper,"Methylkit.04.hyper_methylated.txt",sep='\t', quote=FALSE)
+> myDiff25p.hypo = get.methylDiff(myDiff,difference=25,qvalue=0.01,type="hypo")
+> write.table(myDiff25p.hypo,"Methylkit.04.hypo_methylated.txt",sep='\t', quote=FALSE)
+> myDiff25p = get.methylDiff(myDiff,difference=25,qvalue=0.01)
+> write.table(myDiff25p,"Methylkit.04.differentialy_methylated.txt",sep='\t', quote=FALSE)
+> pdf("Methylkit.04.DiffMethPerChr.pdf",width=12,height=12); diffMethPerChr(myDiff,plot=TRUE,qvalue.cutoff=0.01,meth.cutoff=25); dev.off()
+>
+> gene.obj=read.transcript.features("/Annotations/UCSC_database/refseq.hg38.bed.txt")
+>
+> diffAnn = annotate.WithGenicParts(myDiff25p, gene.obj)
+> write.table(getAssociationWithTSS(diffAnn),"Methylkit.05.AssociationWithTSS.txt", sep='\t', quote=FALSE)
+>
+> pdf("Methylkit.05.TargetAnnotation.piechart1.pdf",width=12,height=12); plotTargetAnnotation(diffAnn, precedence = TRUE, main ="differential methylation annotation"); dev.off()
+>
+> write.table(getFeatsWithTargetsStats(diffAnn, percentage = TRUE),"Methylkit.05.FeatsWithStargetsStats.txt",sep='\t', quote=FALSE)
+>
+> tmpfiles <- dir(path=getwd(), pattern="*.CpG_report.txt")
+> file.remove(tmpfiles)
+>
+> 1
+>
+> #########
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ua83f11f829fdba64 at groups.google.com  Fri Jun  3 12:03:18 2016
+From: ua83f11f829fdba64 at groups.google.com (dude.d...@gmail.com)
+Date: Fri, 03 Jun 2016 12:03:18 +0000
+Subject: installation issue (Error in dyn.load(file, DLLpath = DLLpath, ...))
+Message-ID: <fiTWiH6TWo8.NCv-9maUBAAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/fiTWiH6TWo8/m/NCv-9maUBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+HI,
+I am facing an methylKit installation problem. I am working with my mac and my R version is 3.30. All the packages are up to date.
+Here is what I typed. I hope someone can help me :-)
+Thanks.
+> library(devtools)
+> install_github("al2na/methylKit", build_vignettes=FALSE, type="source",repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+
+The message in R
+* installing *source* package ‘methylKit’ ...
+** libs
+make: Nothing to be done for `all'.
+installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+** R
+** data
+** inst
+** tests
+** preparing package for lazy loading
+** help
+*** installing help indices
+** building package indices
+** installing vignettes
+** testing if installed package can be loaded
+Error in dyn.load(file, DLLpath = DLLpath, ...) :
+  unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+  dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+  Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+  Reason: image not found
+Error: loading failed
+Execution halted
+ERROR: loading failed
+* removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+Error: Command failed (1)
+
+From uab8277113f65c05e at groups.google.com  Fri Jun  3 12:28:51 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Fri, 03 Jun 2016 12:28:51 +0000
+Subject: Re: [methylkit_discussion] installation issue (Error in dyn.load(file, DLLpath = DLLpath, ...))
+Message-ID: <fiTWiH6TWo8.W7wlkvlLAgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <fiTWiH6TWo8.NCv-9maUBAAJ@methylkit-discussion.groups.google.com>
+References: <fiTWiH6TWo8.NCv-9maUBAAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/fiTWiH6TWo8/m/W7wlkvlLAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+can you try this and report back:
+source("https://bioconductor.org/biocLite.R")
+biocLite("Rhtslib",type="source")
+install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+
+On Fri, Jun 3, 2016 at 2:03 PM, <dude.d...@gmail.com> wrote:
+
+> HI,
+> I am facing an methylKit installation problem. I am working with my mac and my R version is 3.30. All the packages are up to date.
+> Here is what I typed. I hope someone can help me :-)
+> Thanks.
+> > library(devtools)
+> > install_github("al2na/methylKit", build_vignettes=FALSE, type="source",repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+>
+> The message in R
+> * installing *source* package ‘methylKit’ ...
+> ** libs
+> make: Nothing to be done for `all'.
+> installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+> ** R
+> ** data
+> ** inst
+> ** tests
+> ** preparing package for lazy loading
+> ** help
+> *** installing help indices
+> ** building package indices
+> ** installing vignettes
+> ** testing if installed package can be loaded
+> Error in dyn.load(file, DLLpath = DLLpath, ...) :
+>   unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+>   dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+>   Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+>   Reason: image not found
+> Error: loading failed
+> Execution halted
+> ERROR: loading failed
+> * removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+> Error: Command failed (1)
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From ua83f11f829fdba64 at groups.google.com  Fri Jun  3 12:39:07 2016
+From: ua83f11f829fdba64 at groups.google.com (dude.d...@gmail.com)
+Date: Fri, 03 Jun 2016 12:39:07 +0000
+Subject: Re: [methylkit_discussion] installation issue (Error in dyn.load(file, DLLpath = DLLpath, ...))
+Message-ID: <fiTWiH6TWo8.2n7FiguiNAAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <fiTWiH6TWo8.W7wlkvlLAgAJ@methylkit-discussion.groups.google.com>
+References: <fiTWiH6TWo8.NCv-9maUBAAJ@methylkit-discussion.groups.google.com> <fiTWiH6TWo8.W7wlkvlLAgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/fiTWiH6TWo8/m/2n7FiguiNAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Appreciate the prompt reply.
+However, it is the same case.
+
+> source("https://bioconductor.org/biocLite.R")
+> biocLite("Rhtslib",type="source")
+
+...
+installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/Rhtslib/libs
+** R
+** inst
+
+** preparing package for lazy loading
+** help
+*** installing help indices
+** building package indices
+** installing vignettes
+** testing if installed package can be loaded
+
+* DONE (Rhtslib)
+
+> install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+
+installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+** R
+** data
+** inst
+** tests
+** preparing package for lazy loading
+** help
+*** installing help indices
+** building package indices
+** installing vignettes
+** testing if installed package can be loaded
+Error in dyn.load(file, DLLpath = DLLpath, ...) :
+  unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+  dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+  Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+  Reason: image not found
+Error: loading failed
+Execution halted
+ERROR: loading failed
+* removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+Error: Command failed (1)
+
+Altuna Akalin於 2016年6月3日星期五 UTC+8下午8時28分51秒寫道：
+
+> can you try this and report back:
+> source("https://bioconductor.org/biocLite.R")
+> biocLite("Rhtslib",type="source")
+> install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+
+> On Fri, Jun 3, 2016 at 2:03 PM, <dude.d...@gmail.com> wrote:
+
+> > HI,
+> > I am facing an methylKit installation problem. I am working with my mac and my R version is 3.30. All the packages are up to date.
+> > Here is what I typed. I hope someone can help me :-)
+> > Thanks.
+> > > library(devtools)
+> > > install_github("al2na/methylKit", build_vignettes=FALSE, type="source",repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+> >
+> > The message in R
+> > * installing *source* package ‘methylKit’ ...
+> > ** libs
+> > make: Nothing to be done for `all'.
+> > installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+> > ** R
+> > ** data
+> > ** inst
+> > ** tests
+> > ** preparing package for lazy loading
+> > ** help
+> > *** installing help indices
+> > ** building package indices
+> > ** installing vignettes
+> > ** testing if installed package can be loaded
+> > Error in dyn.load(file, DLLpath = DLLpath, ...) :
+> >   unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+> >   dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+> >   Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+> >   Reason: image not found
+> > Error: loading failed
+> > Execution halted
+> > ERROR: loading failed
+> > * removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+> > Error: Command failed (1)
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discussion+unsub...@googlegroups.com.
+
+> >
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From uab8277113f65c05e at groups.google.com  Fri Jun  3 12:52:08 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Fri, 03 Jun 2016 12:52:08 +0000
+Subject: Re: [methylkit_discussion] installation issue (Error in dyn.load(file, DLLpath = DLLpath, ...))
+Message-ID: <fiTWiH6TWo8.T0ep-j5NAgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <fiTWiH6TWo8.2n7FiguiNAAJ@methylkit-discussion.groups.google.com>
+References: <fiTWiH6TWo8.NCv-9maUBAAJ@methylkit-discussion.groups.google.com> <fiTWiH6TWo8.2n7FiguiNAAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/fiTWiH6TWo8/m/T0ep-j5NAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+can you try again this last line:
+
+install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+
+On Fri, Jun 3, 2016 at 2:39 PM, <dude.d...@gmail.com> wrote:
+
+> Appreciate the prompt reply.
+> However, it is the same case.
+>
+> > source("https://bioconductor.org/biocLite.R")
+> > biocLite("Rhtslib",type="source")
+
+> ...
+> installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/Rhtslib/libs
+> ** R
+> ** inst
+> ** preparing package for lazy loading
+> ** help
+> *** installing help indices
+> ** building package indices
+> ** installing vignettes
+> ** testing if installed package can be loaded
+> * DONE (Rhtslib)
+>
+> > install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+> installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+> ** R
+> ** data
+> ** inst
+> ** tests
+> ** preparing package for lazy loading
+> ** help
+> *** installing help indices
+> ** building package indices
+> ** installing vignettes
+> ** testing if installed package can be loaded
+> Error in dyn.load(file, DLLpath = DLLpath, ...) :
+>   unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+>   dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+>   Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+>   Reason: image not found
+> Error: loading failed
+> Execution halted
+> ERROR: loading failed
+> * removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+> Error: Command failed (1)
+>
+> Altuna Akalin於 2016年6月3日星期五 UTC+8下午8時28分51秒寫道：
+
+> > can you try this and report back:
+> > source("https://bioconductor.org/biocLite.R")
+> > biocLite("Rhtslib",type="source")
+> > install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+
+> > On Fri, Jun 3, 2016 at 2:03 PM, <dude.d...@gmail.com> wrote:
+
+> > > HI,
+> > > I am facing an methylKit installation problem. I am working with my mac and my R version is 3.30. All the packages are up to date.
+> > > Here is what I typed. I hope someone can help me :-)
+> > > Thanks.
+> > > > library(devtools)
+> > > > install_github("al2na/methylKit", build_vignettes=FALSE, type="source",repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+> > >
+> > > The message in R
+> > > * installing *source* package ‘methylKit’ ...
+> > > ** libs
+> > > make: Nothing to be done for `all'.
+> > > installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+> > > ** R
+> > > ** data
+> > > ** inst
+> > > ** tests
+> > > ** preparing package for lazy loading
+> > > ** help
+> > > *** installing help indices
+> > > ** building package indices
+> > > ** installing vignettes
+> > > ** testing if installed package can be loaded
+> > > Error in dyn.load(file, DLLpath = DLLpath, ...) :
+> > >   unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+> > >   dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+> > >   Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+> > >   Reason: image not found
+> > > Error: loading failed
+> > > Execution halted
+> > > ERROR: loading failed
+> > > * removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+> > > Error: Command failed (1)
+
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+
+> > > To post to this group, send email to methylkit_...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > For more options, visit https://groups.google.com/d/optout.
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+
+>
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uab8277113f65c05e at groups.google.com  Fri Jun  3 12:57:46 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Fri, 03 Jun 2016 12:57:46 +0000
+Subject: Re: [methylkit_discussion] installation issue (Error in dyn.load(file, DLLpath = DLLpath, ...))
+Message-ID: <fiTWiH6TWo8.EIPejo1NAgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <fiTWiH6TWo8.T0ep-j5NAgAJ@methylkit-discussion.groups.google.com>
+References: <fiTWiH6TWo8.NCv-9maUBAAJ@methylkit-discussion.groups.google.com> <fiTWiH6TWo8.T0ep-j5NAgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/fiTWiH6TWo8/m/EIPejo1NAgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+this now works for people with similar configurations like the one you have
+
+On Fri, Jun 3, 2016 at 2:51 PM, Altuna Akalin <aak...@gmail.com> wrote:
+> can you try again this last line:
+>
+> install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+>
+> On Fri, Jun 3, 2016 at 2:39 PM, <dude.d...@gmail.com> wrote:
+> > Appreciate the prompt reply.
+> > However, it is the same case.
+> >
+> > > source("https://bioconductor.org/biocLite.R")
+> > > biocLite("Rhtslib",type="source")
+> > ...
+> > installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/Rhtslib/libs
+> > ** R
+> > ** inst
+> > ** preparing package for lazy loading
+> > ** help
+> > *** installing help indices
+> > ** building package indices
+> > ** installing vignettes
+> > ** testing if installed package can be loaded
+> > * DONE (Rhtslib)
+> >
+> > > install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+> > installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+> > ** R
+> > ** data
+> > ** inst
+> > ** tests
+> > ** preparing package for lazy loading
+> > ** help
+> > *** installing help indices
+> > ** building package indices
+> > ** installing vignettes
+> > ** testing if installed package can be loaded
+> > Error in dyn.load(file, DLLpath = DLLpath, ...) :
+> >   unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+> >   dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+> >   Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+> >   Reason: image not found
+> > Error: loading failed
+> > Execution halted
+> > ERROR: loading failed
+> > * removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+> > Error: Command failed (1)
+> >
+> > Altuna Akalin於 2016年6月3日星期五 UTC+8下午8時28分51秒寫道：
+> > > can you try this and report back:
+> > > source("https://bioconductor.org/biocLite.R")
+> > > biocLite("Rhtslib",type="source")
+> > > install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+> > >
+> > > On Fri, Jun 3, 2016 at 2:03 PM, <dude.d...@gmail.com> wrote:
+> > > > HI,
+> > > > I am facing an methylKit installation problem. I am working with my mac and my R version is 3.30. All the packages are up to date.
+> > > > Here is what I typed. I hope someone can help me :-)
+> > > > Thanks.
+> > > > > library(devtools)
+> > > > > install_github("al2na/methylKit", build_vignettes=FALSE, type="source",repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+> > > >
+> > > > The message in R
+> > > > * installing *source* package ‘methylKit’ ...
+> > > > ** libs
+> > > > make: Nothing to be done for `all'.
+> > > > installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+> > > > ** R
+> > > > ** data
+> > > > ** inst
+> > > > ** tests
+> > > > ** preparing package for lazy loading
+> > > > ** help
+> > > > *** installing help indices
+> > > > ** building package indices
+> > > > ** installing vignettes
+> > > > ** testing if installed package can be loaded
+> > > > Error in dyn.load(file, DLLpath = DLLpath, ...) :
+> > > >   unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+> > > >   dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+> > > >   Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+> > > >   Reason: image not found
+> > > > Error: loading failed
+> > > > Execution halted
+> > > > ERROR: loading failed
+> > > > * removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+> > > > Error: Command failed (1)
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > > > To post to this group, send email to methylkit_...@googlegroups.com.
+> > > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From ua83f11f829fdba64 at groups.google.com  Fri Jun  3 13:05:20 2016
+From: ua83f11f829fdba64 at groups.google.com (dude.d...@gmail.com)
+Date: Fri, 03 Jun 2016 13:05:20 +0000
+Subject: Re: [methylkit_discussion] installation issue (Error in dyn.load(file, DLLpath = DLLpath, ...))
+Message-ID: <fiTWiH6TWo8.uziypL2nAAAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <fiTWiH6TWo8.EIPejo1NAgAJ@methylkit-discussion.groups.google.com>
+References: <fiTWiH6TWo8.NCv-9maUBAAJ@methylkit-discussion.groups.google.com> <fiTWiH6TWo8.EIPejo1NAgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/fiTWiH6TWo8/m/uziypL2nAAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Prefect. Thanks!
+
+Altuna Akalin於 2016年6月3日星期五 UTC+8下午8時57分46秒寫道：
+
+> this now works for people with similar configurations like the one you have
+
+> On Fri, Jun 3, 2016 at 2:51 PM, Altuna Akalin <aak...@gmail.com> wrote:
+
+> > can you try again this last line:
+> >
+> > install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+
+> > On Fri, Jun 3, 2016 at 2:39 PM, <dude.d...@gmail.com> wrote:
+
+> > > Appreciate the prompt reply.
+> > > However, it is the same case.
+> > >
+> > > > source("https://bioconductor.org/biocLite.R")
+> > > > biocLite("Rhtslib",type="source")
+
+> > > ...
+> > > installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/Rhtslib/libs
+> > > ** R
+> > > ** inst
+> > > ** preparing package for lazy loading
+> > > ** help
+> > > *** installing help indices
+> > > ** building package indices
+> > > ** installing vignettes
+> > > ** testing if installed package can be loaded
+> > > * DONE (Rhtslib)
+> > >
+> > > > install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+> > > installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+> > > ** R
+> > > ** data
+> > > ** inst
+> > > ** tests
+> > > ** preparing package for lazy loading
+> > > ** help
+> > > *** installing help indices
+> > > ** building package indices
+> > > ** installing vignettes
+> > > ** testing if installed package can be loaded
+> > > Error in dyn.load(file, DLLpath = DLLpath, ...) :
+> > >   unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+> > >   dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+> > >   Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+> > >   Reason: image not found
+> > > Error: loading failed
+> > > Execution halted
+> > > ERROR: loading failed
+> > > * removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+> > > Error: Command failed (1)
+> > >
+> > > Altuna Akalin於 2016年6月3日星期五 UTC+8下午8時28分51秒寫道：
+
+> > > > can you try this and report back:
+> > > > source("https://bioconductor.org/biocLite.R")
+> > > > biocLite("Rhtslib",type="source")
+> > > > install_github("al2na/methylKit", build_vignettes=FALSE, repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+
+> > > > On Fri, Jun 3, 2016 at 2:03 PM, <dude.d...@gmail.com> wrote:
+
+> > > > > HI,
+> > > > > I am facing an methylKit installation problem. I am working with my mac and my R version is 3.30. All the packages are up to date.
+> > > > > Here is what I typed. I hope someone can help me :-)
+> > > > > Thanks.
+> > > > > > library(devtools)
+> > > > > > install_github("al2na/methylKit", build_vignettes=FALSE, type="source",repos=BiocInstaller::biocinstallRepos(),dependencies=TRUE)
+> > > > >
+> > > > > The message in R
+> > > > > * installing *source* package ‘methylKit’ ...
+> > > > > ** libs
+> > > > > make: Nothing to be done for `all'.
+> > > > > installing to /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs
+> > > > > ** R
+> > > > > ** data
+> > > > > ** inst
+> > > > > ** tests
+> > > > > ** preparing package for lazy loading
+> > > > > ** help
+> > > > > *** installing help indices
+> > > > > ** building package indices
+> > > > > ** installing vignettes
+> > > > > ** testing if installed package can be loaded
+> > > > > Error in dyn.load(file, DLLpath = DLLpath, ...) :
+> > > > >   unable to load shared object '/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so':
+> > > > >   dlopen(/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so, 6): Library not loaded: /Users/aakalin/Rlibs/Rhtslib/lib/libhts.0.dylib
+> > > > >   Referenced from: /Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit/libs/methylKit.so
+> > > > >   Reason: image not found
+> > > > > Error: loading failed
+> > > > > Execution halted
+> > > > > ERROR: loading failed
+> > > > > * removing ‘/Library/Frameworks/R.framework/Versions/3.3/Resources/library/methylKit’
+> > > > > Error: Command failed (1)
+
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discussion+unsub...@googlegroups.com.
+
+> > > > > To post to this group, send email to methylkit_...@googlegroups.com.
+> > > > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discussion+unsub...@googlegroups.com.
+
+> > >
+> > > To post to this group, send email to methylkit_...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > For more options, visit https://groups.google.com/d/optout.
+
+From u710dedd071ab36af at groups.google.com  Mon Jun  6 05:28:30 2016
+From: u710dedd071ab36af at groups.google.com (alim...@gmail.com)
+Date: Mon, 06 Jun 2016 05:28:30 +0000
+Subject: problem regarding P value
+Message-ID: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/rq81syamBAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am getting problem in P value...P value is coming 1
+
+           chr                     start  end     P-val       q                               fold change
+"15" "AGCT01015668.1"  119 119 "+"   1       0.000254119251295691     -25
+"17" "AGCT01015668.1"  131 131 "+"   1       0.000254119251295691      30
+
+From uab8277113f65c05e at groups.google.com  Mon Jun  6 05:38:25 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Mon, 06 Jun 2016 05:38:25 +0000
+Subject: Re: [methylkit_discussion] problem regarding P value
+Message-ID: <tH06pbkfYLE.P6-Gv1EhAwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com>
+References: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/P6-Gv1EhAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Please send a reproducible example with minimal dataset and code. Do you observe the same problem with example data in the package?
+
+On Monday, 6 June 2016, <alim...@gmail.com> wrote:
+
+> I am getting problem in P value...P value is coming 1
+>
+>
+>            chr                     start  end     P-val       q                               fold change
+> "15" "AGCT01015668.1"  119 119 "+"   1       0.000254119251295691     -25
+> "17" "AGCT01015668.1"  131 131 "+"   1       0.000254119251295691      30
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Sent from mobile, excuse the brevity
+
+From u710dedd071ab36af at groups.google.com  Mon Jun  6 07:10:55 2016
+From: u710dedd071ab36af at groups.google.com (alim...@gmail.com)
+Date: Mon, 06 Jun 2016 07:10:55 +0000
+Subject: Re: [methylkit_discussion] problem regarding P value
+Message-ID: <tH06pbkfYLE.vsAU_l0mAwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com>
+References: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/vsAU_l0mAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+No, earlier i was getting gud results but now when i using at same command , it is giving such a vague data..and when i am writing table, it is making table of 1.5gb size, earlier it was only 20-30kb file
+
+From u710dedd071ab36af at groups.google.com  Mon Jun  6 07:11:45 2016
+From: u710dedd071ab36af at groups.google.com (alim...@gmail.com)
+Date: Mon, 06 Jun 2016 07:11:45 +0000
+Subject: Re: [methylkit_discussion] problem regarding P value
+Message-ID: <tH06pbkfYLE.8KDlypNbOwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com>
+References: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/8KDlypNbOwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+And How a P value = 1 is possible
+
+From uab8277113f65c05e at groups.google.com  Mon Jun  6 07:55:12 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Mon, 06 Jun 2016 07:55:12 +0000
+Subject: Re: [methylkit_discussion] problem regarding P value
+Message-ID: <tH06pbkfYLE.Nik-XcgoAwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <tH06pbkfYLE.8KDlypNbOwAJ@methylkit-discussion.groups.google.com>
+References: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com> <tH06pbkfYLE.8KDlypNbOwAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/Nik-XcgoAwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+send a reproducible example, If I can't replicate the problem I can't tell you if it is a bug or due to file format or misuse of functions.
+
+On Mon, Jun 6, 2016 at 9:11 AM, <alim...@gmail.com> wrote:
+
+>
+> And How a P value = 1 is possible
+
+> --
+
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uab8277113f65c05e at groups.google.com  Mon Jun  6 11:39:33 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Mon, 06 Jun 2016 11:39:33 +0000
+Subject: Re: [methylkit_discussion] problem regarding P value
+Message-ID: <tH06pbkfYLE.-eiYmwY1AwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <tH06pbkfYLE.Nik-XcgoAwAJ@methylkit-discussion.groups.google.com>
+References: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com> <tH06pbkfYLE.Nik-XcgoAwAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/-eiYmwY1AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Only thing that might be related to what you are seeing is that methRead() has now an additional argument "min.cov", which defaults to 10. That means any CpG that has lower than 10 reads is discarded.
+It doesn't make sense to do tests on CpGs with low read counts, and you can get a p-value of 1, please run the following code in R and see the p-value\
+
+fisher.test(matrix(c(1,1,1,1),ncol=2))
+
+On Mon, Jun 6, 2016 at 9:54 AM, Altuna Akalin <aak...@gmail.com> wrote:
+> send a reproducible example, If I can't replicate the problem I can't tell you if it is a bug or due to file format or misuse of functions.
+>
+> On Mon, Jun 6, 2016 at 9:11 AM, <alim...@gmail.com> wrote:
+> >
+> > And How a P value = 1 is possible
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u710dedd071ab36af at groups.google.com  Mon Jun  6 11:48:37 2016
+From: u710dedd071ab36af at groups.google.com (Alim Junaid)
+Date: Mon, 06 Jun 2016 11:48:37 +0000
+Subject: Re: [methylkit_discussion] problem regarding P value
+Message-ID: <tH06pbkfYLE.-_8uKIU1AwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <tH06pbkfYLE.-eiYmwY1AwAJ@methylkit-discussion.groups.google.com>
+References: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com> <tH06pbkfYLE.-eiYmwY1AwAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/-_8uKIU1AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+i used that command also to exclude low coverage read..but getting same result,..ok..i will try this also..
+
+Thank you
+
+On Mon, Jun 6, 2016 at 5:09 PM, Altuna Akalin <aak...@gmail.com> wrote:
+
+> Only thing that might be related to what you are seeing is that methRead() has now an additional argument "min.cov", which defaults to 10. That means any CpG that has lower than 10 reads is discarded.
+> It doesn't make sense to do tests on CpGs with low read counts, and you can get a p-value of 1, please run the following code in R and see the p-value\
+>
+> fisher.test(matrix(c(1,1,1,1),ncol=2))
+
+>
+> On Mon, Jun 6, 2016 at 9:54 AM, Altuna Akalin <aak...@gmail.com> wrote:
+> > send a reproducible example, If I can't replicate the problem I can't tell you if it is a bug or due to file format or misuse of functions.
+> >
+> > On Mon, Jun 6, 2016 at 9:11 AM, <alim...@gmail.com> wrote:
+> > >
+> > > And How a P value = 1 is possible
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > > To post to this group, send email to methylkit_...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+>
+> --
+
+> You received this message because you are subscribed to a topic in the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/methylkit_discussion/tH06pbkfYLE/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to methylkit_discus...@googlegroups.com.
+
+>
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uab8277113f65c05e at groups.google.com  Mon Jun  6 11:54:37 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Mon, 06 Jun 2016 11:54:37 +0000
+Subject: Re: [methylkit_discussion] problem regarding P value
+Message-ID: <tH06pbkfYLE._OS_Atk1AwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <tH06pbkfYLE.-_8uKIU1AwAJ@methylkit-discussion.groups.google.com>
+References: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com> <tH06pbkfYLE.-_8uKIU1AwAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/_OS_Atk1AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+also the other thing about the coverage column of the text file you are using, that could also be related. There are rows with coverage 0, make sure you use the correct column for the coverage.
+
+On Mon, Jun 6, 2016 at 1:48 PM, Alim Junaid <alim...@gmail.com> wrote:
+> i used that command also to exclude low coverage read..but getting same result,..ok..i will try this also..
+>
+> Thank you
+>
+> On Mon, Jun 6, 2016 at 5:09 PM, Altuna Akalin <aak...@gmail.com> wrote:
+> > Only thing that might be related to what you are seeing is that methRead() has now an additional argument "min.cov", which defaults to 10. That means any CpG that has lower than 10 reads is discarded.
+> > It doesn't make sense to do tests on CpGs with low read counts, and you can get a p-value of 1, please run the following code in R and see the p-value\
+> >
+> > fisher.test(matrix(c(1,1,1,1),ncol=2))
+> >
+> > On Mon, Jun 6, 2016 at 9:54 AM, Altuna Akalin <aak...@gmail.com> wrote:
+> > > send a reproducible example, If I can't replicate the problem I can't tell you if it is a bug or due to file format or misuse of functions.
+> > >
+> > > On Mon, Jun 6, 2016 at 9:11 AM, <alim...@gmail.com> wrote:
+> > > >
+> > > > And How a P value = 1 is possible
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > > > To post to this group, send email to methylkit_...@googlegroups.com.
+> > > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > > For more options, visit https://groups.google.com/d/optout.
+> > >
+> >
+> > --
+> > You received this message because you are subscribed to a topic in the Google Groups "methylkit_discussion" group.
+> > To unsubscribe from this topic, visit https://groups.google.com/d/topic/methylkit_discussion/tH06pbkfYLE/unsubscribe.
+> > To unsubscribe from this group and all its topics, send an email to methylkit_discus...@googlegroups.com.
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u710dedd071ab36af at groups.google.com  Mon Jun  6 12:53:13 2016
+From: u710dedd071ab36af at groups.google.com (Alim Junaid)
+Date: Mon, 06 Jun 2016 12:53:13 +0000
+Subject: Re: [methylkit_discussion] problem regarding P value
+Message-ID: <tH06pbkfYLE.TBMqrAs5AwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <tH06pbkfYLE._OS_Atk1AwAJ@methylkit-discussion.groups.google.com>
+References: <tH06pbkfYLE.rq81syamBAAJ@methylkit-discussion.groups.google.com> <tH06pbkfYLE._OS_Atk1AwAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/tH06pbkfYLE/m/TBMqrAs5AwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I got the problem, it is due to assembly sequences...when i used another assembly, i got valid result.
+
+Thank you.
+
+On Mon, Jun 6, 2016 at 5:24 PM, Altuna Akalin <aak...@gmail.com> wrote:
+> also the other thing about the coverage column of the text file you are using, that could also be related. There are rows with coverage 0, make sure you use the correct column for the coverage.
+>
+> On Mon, Jun 6, 2016 at 1:48 PM, Alim Junaid <alim...@gmail.com> wrote:
+> > i used that command also to exclude low coverage read..but getting same result,..ok..i will try this also..
+> >
+> > Thank you
+> >
+> > On Mon, Jun 6, 2016 at 5:09 PM, Altuna Akalin <aak...@gmail.com> wrote:
+> > > Only thing that might be related to what you are seeing is that methRead() has now an additional argument "min.cov", which defaults to 10. That means any CpG that has lower than 10 reads is discarded.
+> > > It doesn't make sense to do tests on CpGs with low read counts, and you can get a p-value of 1, please run the following code in R and see the p-value\
+> > >
+> > > fisher.test(matrix(c(1,1,1,1),ncol=2))
+> > >
+> > > On Mon, Jun 6, 2016 at 9:54 AM, Altuna Akalin <aak...@gmail.com> wrote:
+> > > > send a reproducible example, If I can't replicate the problem I can't tell you if it is a bug or due to file format or misuse of functions.
+> > > >
+> > > > On Mon, Jun 6, 2016 at 9:11 AM, <alim...@gmail.com> wrote:
+> > > > >
+> > > > > And How a P value = 1 is possible
+> > > > >
+> > > > > --
+> > > > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > > > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > > > > To post to this group, send email to methylkit_...@googlegroups.com.
+> > > > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > > > For more options, visit https://groups.google.com/d/optout.
+> > > >
+> > >
+> > > --
+> > > You received this message because you are subscribed to a topic in the Google Groups "methylkit_discussion" group.
+> > > To unsubscribe from this topic, visit https://groups.google.com/d/topic/methylkit_discussion/tH06pbkfYLE/unsubscribe.
+> > > To unsubscribe from this group and all its topics, send an email to methylkit_discus...@googlegroups.com.
+> > > To post to this group, send email to methylkit_...@googlegroups.com.
+> > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > For more options, visit https://groups.google.com/d/optout.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+> --
+> You received this message because you are subscribed to a topic in the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this topic, visit https://groups.google.com/d/topic/methylkit_discussion/tH06pbkfYLE/unsubscribe.
+> To unsubscribe from this group and all its topics, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uab74ce81f1675322 at groups.google.com  Thu Jun  9 19:47:34 2016
+From: uab74ce81f1675322 at groups.google.com (sviatosla...@gmail.com)
+Date: Thu, 09 Jun 2016 19:47:34 +0000
+Subject: Cannot read in methylation call file
+Message-ID: <qUYNhW8cgKw.w9_YGpCoAQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/qUYNhW8cgKw/m/w9_YGpCoAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I am using methylKit_0.9.6 and get error messages when I try to read in a methylation call file; specifically: Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+  arguments imply differing number of rows: 3245305, 9109922
+
+Here is a relevant snippet from my Rstudio session in which I check the format and dimensions of a single file before trying to read it using methRead():
+
+> my_data = read.table("A1_CpG_meth.mkc.txt", sep="\t", header=TRUE, stringsAsFactors = FALSE)
+> head(my_data)
+     chrBase  chr  base strand coverage     freqC    freqT
+1 chr1.10497 chr1 10497      F       49  91.83673 8.163265
+2 chr1.10525 chr1 10525      F       49 100.00000 0.000000
+3 chr1.10526 chr1 10526      R       46  93.47826 6.521739
+4 chr1.10542 chr1 10542      F       49  95.91837 4.081633
+5 chr1.10543 chr1 10543      R       88  97.72727 2.272727
+6 chr1.10563 chr1 10563      F       51  90.19608 9.803922
+> dim(my_data)
+[1] 9109922       7
+> file.list = list("A1_CpG_meth.mkc.txt")
+> myobj=methRead(file.list,
++                sample.id <http://sample.id>=list("A1"),
++                assembly="hg19",
++                treatment=c(1),
++                context="CpG")
+Read 9109922 rows and 7 (of 7) columns from 0.399 GB file in 00:00:09
+Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+  arguments imply differing number of rows: 3245305, 9109922
+
+What could be causing this error? How can I fix it?
+
+I still get the error with a shortened version of the file containing only the first 50 lines (which I've copied to the bottom of this post)
+
+> myobj=methRead("Example.txt",
++                sample.id <http://sample.id>="A1",
++                assembly="hg19",
++                treatment=c(1),
++                context="CpG")
+Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+  arguments imply differing number of rows: 14, 49
+
+Below is the contents of the file, "Example.txt" (note that it is actually a tab-delimited file):
+
+chrBase chr     base    strand  coverage        freqC   freqT
+
+chr1.10497      chr1    10497   F       49      91.8367346938776        8.16326530612244
+
+chr1.10525      chr1    10525   F       49      100     0
+
+chr1.10526      chr1    10526   R       46      93.4782608695652        6.52173913043478
+
+chr1.10542      chr1    10542   F       49      95.9183673469388        4.08163265306123
+
+chr1.10543      chr1    10543   R       88      97.7272727272727        2.27272727272727
+
+chr1.10563      chr1    10563   F       51      90.1960784313726        9.80392156862744
+
+chr1.10564      chr1    10564   R       46      95.6521739130435        4.34782608695652
+
+chr1.10571      chr1    10571   F       51      100     0
+
+chr1.10572      chr1    10572   R       46      97.8260869565217        2.17391304347827
+
+chr1.10577      chr1    10577   F       50      88      12
+
+chr1.10578      chr1    10578   R       46      86.9565217391304        13.0434782608696
+
+chr1.10579      chr1    10579   F       50      90      10
+
+chr1.10580      chr1    10580   R       46      84.7826086956522        15.2173913043478
+
+chr1.10589      chr1    10589   F       1       100     0
+
+chr1.10590      chr1    10590   R       46      93.4782608695652        6.52173913043478
+
+chr1.10609      chr1    10609   F       2       100     0
+
+chr1.10617      chr1    10617   F       2       100     0
+
+chr1.10620      chr1    10620   F       2       100     0
+
+chr1.10631      chr1    10631   F       2       100     0
+
+chr1.10633      chr1    10633   F       2       100     0
+
+chr1.10636      chr1    10636   F       1       100     0
+
+chr1.10638      chr1    10638   F       1       100     0
+
+chr1.10934      chr1    10934   F       2       100     0
+
+chr1.10937      chr1    10937   F       2       100     0
+
+chr1.10943      chr1    10943   F       2       100     0
+
+chr1.10961      chr1    10961   F       2       100     0
+
+chr1.10963      chr1    10963   F       2       100     0
+
+chr1.10979      chr1    10979   F       2       100     0
+
+chr1.11012      chr1    11012   F       1       100     0
+
+chr1.11027      chr1    11027   F       2       100     0
+
+chr1.11048      chr1    11048   F       2       100     0
+
+chr1.11052      chr1    11052   F       2       100     0
+
+chr1.11055      chr1    11055   F       2       100     0
+
+chr1.11300      chr1    11300   F       1       0       100
+
+chr1.11343      chr1    11343   F       1       0       100
+
+chr1.11404      chr1    11404   F       1       0       100
+
+chr1.11842      chr1    11842   F       2       100     0
+
+chr1.11868      chr1    11868   F       2       100     0
+
+chr1.11869      chr1    11869   R       7       100     0
+
+chr1.11879      chr1    11879   F       2       100     0
+
+chr1.11880      chr1    11880   R       7       85.7142857142857        14.2857142857143
+
+chr1.11946      chr1    11946   F       2       100     0
+
+chr1.11947      chr1    11947   R       7       100     0
+
+chr1.11961      chr1    11961   R       7       85.7142857142857        14.2857142857143
+
+chr1.12586      chr1    12586   F       9       77.7777777777778        22.2222222222222
+
+chr1.12754      chr1    12754   F       9       100     0
+
+chr1.12757      chr1    12757   F       9       100     0
+
+chr1.12773      chr1    12773   F       9       100     0
+
+chr1.12807      chr1    12807   F       4       75      25
+
+From uab8277113f65c05e at groups.google.com  Thu Jun  9 21:03:11 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Thu, 09 Jun 2016 21:03:11 +0000
+Subject: Re: [methylkit_discussion] Cannot read in methylation call file
+Message-ID: <qUYNhW8cgKw.pBYuKYY_BAAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <qUYNhW8cgKw.w9_YGpCoAQAJ@methylkit-discussion.groups.google.com>
+References: <qUYNhW8cgKw.w9_YGpCoAQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/qUYNhW8cgKw/m/pBYuKYY_BAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is a bug fixed in development version, it appeared after introducing the minimum coverage argument in  methRead(), if you install the development version (v0.99.2), it should be fixed there.
+
+Best,
+Altuna
+
+On Thu, Jun 9, 2016 at 9:47 PM, <sviatosla...@gmail.com> wrote:
+
+> I am using methylKit_0.9.6 and get error messages when I try to read in a methylation call file; specifically: Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+>   arguments imply differing number of rows: 3245305, 9109922
+>
+> Here is a relevant snippet from my Rstudio session in which I check the format and dimensions of a single file before trying to read it using methRead():
+>
+> > my_data = read.table("A1_CpG_meth.mkc.txt", sep="\t", header=TRUE, stringsAsFactors = FALSE)
+> > head(my_data)
+>      chrBase  chr  base strand coverage     freqC    freqT
+> 1 chr1.10497 chr1 10497      F       49  91.83673 8.163265
+> 2 chr1.10525 chr1 10525      F       49 100.00000 0.000000
+> 3 chr1.10526 chr1 10526      R       46  93.47826 6.521739
+> 4 chr1.10542 chr1 10542      F       49  95.91837 4.081633
+> 5 chr1.10543 chr1 10543      R       88  97.72727 2.272727
+> 6 chr1.10563 chr1 10563      F       51  90.19608 9.803922
+> > dim(my_data)
+> [1] 9109922       7
+> > file.list = list("A1_CpG_meth.mkc.txt")
+> > myobj=methRead(file.list,
+> +                sample.id <http://sample.id>=list("A1"),
+> +                assembly="hg19",
+> +                treatment=c(1),
+> +                context="CpG")
+> Read 9109922 rows and 7 (of 7) columns from 0.399 GB file in 00:00:09
+> Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+>   arguments imply differing number of rows: 3245305, 9109922
+>
+>
+> What could be causing this error? How can I fix it?
+>
+> I still get the error with a shortened version of the file containing only the first 50 lines (which I've copied to the bottom of this post)
+>
+> > myobj=methRead("Example.txt",
+> +                sample.id <http://sample.id>="A1",
+> +                assembly="hg19",
+> +                treatment=c(1),
+> +                context="CpG")
+> Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+>   arguments imply differing number of rows: 14, 49
+>
+>
+> Below is the contents of the file, "Example.txt" (note that it is actually a tab-delimited file):
+>
+>
+> chrBase chr     base    strand  coverage        freqC   freqT
+>
+> chr1.10497      chr1    10497   F       49      91.8367346938776        8.16326530612244
+>
+> chr1.10525      chr1    10525   F       49      100     0
+>
+> chr1.10526      chr1    10526   R       46      93.4782608695652        6.52173913043478
+>
+> chr1.10542      chr1    10542   F       49      95.9183673469388        4.08163265306123
+>
+> chr1.10543      chr1    10543   R       88      97.7272727272727        2.27272727272727
+>
+> chr1.10563      chr1    10563   F       51      90.1960784313726        9.80392156862744
+>
+> chr1.10564      chr1    10564   R       46      95.6521739130435        4.34782608695652
+>
+> chr1.10571      chr1    10571   F       51      100     0
+>
+> chr1.10572      chr1    10572   R       46      97.8260869565217        2.17391304347827
+>
+> chr1.10577      chr1    10577   F       50      88      12
+>
+> chr1.10578      chr1    10578   R       46      86.9565217391304        13.0434782608696
+>
+> chr1.10579      chr1    10579   F       50      90      10
+>
+> chr1.10580      chr1    10580   R       46      84.7826086956522        15.2173913043478
+>
+> chr1.10589      chr1    10589   F       1       100     0
+>
+> chr1.10590      chr1    10590   R       46      93.4782608695652        6.52173913043478
+>
+> chr1.10609      chr1    10609   F       2       100     0
+>
+> chr1.10617      chr1    10617   F       2       100     0
+>
+> chr1.10620      chr1    10620   F       2       100     0
+>
+> chr1.10631      chr1    10631   F       2       100     0
+>
+> chr1.10633      chr1    10633   F       2       100     0
+>
+> chr1.10636      chr1    10636   F       1       100     0
+>
+> chr1.10638      chr1    10638   F       1       100     0
+>
+> chr1.10934      chr1    10934   F       2       100     0
+>
+> chr1.10937      chr1    10937   F       2       100     0
+>
+> chr1.10943      chr1    10943   F       2       100     0
+>
+> chr1.10961      chr1    10961   F       2       100     0
+>
+> chr1.10963      chr1    10963   F       2       100     0
+>
+> chr1.10979      chr1    10979   F       2       100     0
+>
+> chr1.11012      chr1    11012   F       1       100     0
+>
+> chr1.11027      chr1    11027   F       2       100     0
+>
+> chr1.11048      chr1    11048   F       2       100     0
+>
+> chr1.11052      chr1    11052   F       2       100     0
+>
+> chr1.11055      chr1    11055   F       2       100     0
+>
+> chr1.11300      chr1    11300   F       1       0       100
+>
+> chr1.11343      chr1    11343   F       1       0       100
+>
+> chr1.11404      chr1    11404   F       1       0       100
+>
+> chr1.11842      chr1    11842   F       2       100     0
+>
+> chr1.11868      chr1    11868   F       2       100     0
+>
+> chr1.11869      chr1    11869   R       7       100     0
+>
+> chr1.11879      chr1    11879   F       2       100     0
+>
+> chr1.11880      chr1    11880   R       7       85.7142857142857        14.2857142857143
+>
+> chr1.11946      chr1    11946   F       2       100     0
+>
+> chr1.11947      chr1    11947   R       7       100     0
+>
+> chr1.11961      chr1    11961   R       7       85.7142857142857        14.2857142857143
+>
+> chr1.12586      chr1    12586   F       9       77.7777777777778        22.2222222222222
+>
+> chr1.12754      chr1    12754   F       9       100     0
+>
+> chr1.12757      chr1    12757   F       9       100     0
+>
+> chr1.12773      chr1    12773   F       9       100     0
+>
+> chr1.12807      chr1    12807   F       4       75      25
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uab8277113f65c05e at groups.google.com  Thu Jun  9 21:16:04 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Thu, 09 Jun 2016 21:16:04 +0000
+Subject: Re: [methylkit_discussion] Cannot read in methylation call file
+Message-ID: <qUYNhW8cgKw.xAE_QzpABAAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <qUYNhW8cgKw.pBYuKYY_BAAJ@methylkit-discussion.groups.google.com>
+References: <qUYNhW8cgKw.w9_YGpCoAQAJ@methylkit-discussion.groups.google.com> <qUYNhW8cgKw.pBYuKYY_BAAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/qUYNhW8cgKw/m/xAE_QzpABAAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+you could have also read the file specifying the pipeline argument as list and passing the column number of chr,start,end,etc, as shown in the example in methRead()
+
+On Thu, Jun 9, 2016 at 11:02 PM, Altuna Akalin <aak...@gmail.com> wrote:
+> This is a bug fixed in development version, it appeared after introducing the minimum coverage argument in  methRead(), if you install the development version (v0.99.2), it should be fixed there.
+>
+> Best,
+> Altuna
+>
+> On Thu, Jun 9, 2016 at 9:47 PM, <sviatosla...@gmail.com> wrote:
+> > I am using methylKit_0.9.6 and get error messages when I try to read in a methylation call file; specifically: Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+> >   arguments imply differing number of rows: 3245305, 9109922
+> >
+> > Here is a relevant snippet from my Rstudio session in which I check the format and dimensions of a single file before trying to read it using methRead():
+> >
+> > > my_data = read.table("A1_CpG_meth.mkc.txt", sep="\t", header=TRUE, stringsAsFactors = FALSE)
+> > > head(my_data)
+> >      chrBase  chr  base strand coverage     freqC    freqT
+> > 1 chr1.10497 chr1 10497      F       49  91.83673 8.163265
+> > 2 chr1.10525 chr1 10525      F       49 100.00000 0.000000
+> > 3 chr1.10526 chr1 10526      R       46  93.47826 6.521739
+> > 4 chr1.10542 chr1 10542      F       49  95.91837 4.081633
+> > 5 chr1.10543 chr1 10543      R       88  97.72727 2.272727
+> > 6 chr1.10563 chr1 10563      F       51  90.19608 9.803922
+> > > dim(my_data)
+> > [1] 9109922       7
+> > > file.list = list("A1_CpG_meth.mkc.txt")
+> > > myobj=methRead(file.list,
+> > +                sample.id <http://sample.id>=list("A1"),
+> > +                assembly="hg19",
+> > +                treatment=c(1),
+> > +                context="CpG")
+> > Read 9109922 rows and 7 (of 7) columns from 0.399 GB file in 00:00:09
+> > Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+> >   arguments imply differing number of rows: 3245305, 9109922
+> >
+> >
+> > What could be causing this error? How can I fix it?
+> >
+> > I still get the error with a shortened version of the file containing only the first 50 lines (which I've copied to the bottom of this post)
+> >
+> > > myobj=methRead("Example.txt",
+> > +                sample.id <http://sample.id>="A1",
+> > +                assembly="hg19",
+> > +                treatment=c(1),
+> > +                context="CpG")
+> > Error in data.frame(chr = data[, 2], start = data[, 3], end = data[, 3],  :
+> >   arguments imply differing number of rows: 14, 49
+> >
+> >
+> > Below is the contents of the file, "Example.txt" (note that it is actually a tab-delimited file):
+> >
+> >
+> > chrBase chr     base    strand  coverage        freqC   freqT
+> >
+> > chr1.10497      chr1    10497   F       49      91.8367346938776        8.16326530612244
+> >
+> > chr1.10525      chr1    10525   F       49      100     0
+> >
+> > chr1.10526      chr1    10526   R       46      93.4782608695652        6.52173913043478
+> >
+> > chr1.10542      chr1    10542   F       49      95.9183673469388        4.08163265306123
+> >
+> > chr1.10543      chr1    10543   R       88      97.7272727272727        2.27272727272727
+> >
+> > chr1.10563      chr1    10563   F       51      90.1960784313726        9.80392156862744
+> >
+> > chr1.10564      chr1    10564   R       46      95.6521739130435        4.34782608695652
+> >
+> > chr1.10571      chr1    10571   F       51      100     0
+> >
+> > chr1.10572      chr1    10572   R       46      97.8260869565217        2.17391304347827
+> >
+> > chr1.10577      chr1    10577   F       50      88      12
+> >
+> > chr1.10578      chr1    10578   R       46      86.9565217391304        13.0434782608696
+> >
+> > chr1.10579      chr1    10579   F       50      90      10
+> >
+> > chr1.10580      chr1    10580   R       46      84.7826086956522        15.2173913043478
+> >
+> > chr1.10589      chr1    10589   F       1       100     0
+> >
+> > chr1.10590      chr1    10590   R       46      93.4782608695652        6.52173913043478
+> >
+> > chr1.10609      chr1    10609   F       2       100     0
+> >
+> > chr1.10617      chr1    10617   F       2       100     0
+> >
+> > chr1.10620      chr1    10620   F       2       100     0
+> >
+> > chr1.10631      chr1    10631   F       2       100     0
+> >
+> > chr1.10633      chr1    10633   F       2       100     0
+> >
+> > chr1.10636      chr1    10636   F       1       100     0
+> >
+> > chr1.10638      chr1    10638   F       1       100     0
+> >
+> > chr1.10934      chr1    10934   F       2       100     0
+> >
+> > chr1.10937      chr1    10937   F       2       100     0
+> >
+> > chr1.10943      chr1    10943   F       2       100     0
+> >
+> > chr1.10961      chr1    10961   F       2       100     0
+> >
+> > chr1.10963      chr1    10963   F       2       100     0
+> >
+> > chr1.10979      chr1    10979   F       2       100     0
+> >
+> > chr1.11012      chr1    11012   F       1       100     0
+> >
+> > chr1.11027      chr1    11027   F       2       100     0
+> >
+> > chr1.11048      chr1    11048   F       2       100     0
+> >
+> > chr1.11052      chr1    11052   F       2       100     0
+> >
+> > chr1.11055      chr1    11055   F       2       100     0
+> >
+> > chr1.11300      chr1    11300   F       1       0       100
+> >
+> > chr1.11343      chr1    11343   F       1       0       100
+> >
+> > chr1.11404      chr1    11404   F       1       0       100
+> >
+> > chr1.11842      chr1    11842   F       2       100     0
+> >
+> > chr1.11868      chr1    11868   F       2       100     0
+> >
+> > chr1.11869      chr1    11869   R       7       100     0
+> >
+> > chr1.11879      chr1    11879   F       2       100     0
+> >
+> > chr1.11880      chr1    11880   R       7       85.7142857142857        14.2857142857143
+> >
+> > chr1.11946      chr1    11946   F       2       100     0
+> >
+> > chr1.11947      chr1    11947   R       7       100     0
+> >
+> > chr1.11961      chr1    11961   R       7       85.7142857142857        14.2857142857143
+> >
+> > chr1.12586      chr1    12586   F       9       77.7777777777778        22.2222222222222
+> >
+> > chr1.12754      chr1    12754   F       9       100     0
+> >
+> > chr1.12757      chr1    12757   F       9       100     0
+> >
+> > chr1.12773      chr1    12773   F       9       100     0
+> >
+> > chr1.12807      chr1    12807   F       4       75      25
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From uc287d2faf82fa5fe at groups.google.com  Mon Jun 13 07:01:54 2016
+From: uc287d2faf82fa5fe at groups.google.com (foo...@gmail.com)
+Date: Mon, 13 Jun 2016 07:01:54 +0000
+Subject: edmr error using the default data
+Message-ID: <6nyuX7WRCdA.2JTWve9LBQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/6nyuX7WRCdA/m/2JTWve9LBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+> library(edmr)
+> library(GenomicRanges)
+> library(IRanges)
+> library(mixtools)
+> library(data.table)
+> data(edmr)
+> mydmr=edmr(myDiff, mode=1, ACF=TRUE)
+[1] "DMR analysis for all detected CpGs..."
+number of iterations= 107
+[1] 162.3313
+[1] "raw myDiff:"
+[1] 120192      7
+[1] "max cpgs dist for region definition: 162"
+Error in `[.data.frame`(peaks, overlap.idx@to, ) :
+  no slot of name "to" for this object of class "Hits"
+>
+edmr Version:0.6.4.1.
+R version：3.3.0.
+
+From uab8277113f65c05e at groups.google.com  Mon Jun 13 08:06:28 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Mon, 13 Jun 2016 08:06:28 +0000
+Subject: Re: [methylkit_discussion] edmr error using the default data
+Message-ID: <6nyuX7WRCdA.xvrI3HVPBQAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <6nyuX7WRCdA.2JTWve9LBQAJ@methylkit-discussion.groups.google.com>
+References: <6nyuX7WRCdA.2JTWve9LBQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/6nyuX7WRCdA/m/xvrI3HVPBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Please ask edmr related questions directly to Sheng Li, I don't think she is reading this forum
+
+On Mon, Jun 13, 2016 at 9:01 AM, <foo...@gmail.com> wrote:
+
+>
+> > library(edmr)
+> > library(GenomicRanges)
+> > library(IRanges)
+> > library(mixtools)
+> > library(data.table)
+> > data(edmr)
+> > mydmr=edmr(myDiff, mode=1, ACF=TRUE)
+> [1] "DMR analysis for all detected CpGs..."
+> number of iterations= 107
+> [1] 162.3313
+> [1] "raw myDiff:"
+> [1] 120192      7
+> [1] "max cpgs dist for region definition: 162"
+> Error in `[.data.frame`(peaks, overlap.idx@to, ) :
+>   no slot of name "to" for this object of class "Hits"
+> >
+> edmr Version:0.6.4.1.
+> R version：3.3.0.
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uc287d2faf82fa5fe at groups.google.com  Mon Jun 13 09:28:07 2016
+From: uc287d2faf82fa5fe at groups.google.com (foo...@gmail.com)
+Date: Mon, 13 Jun 2016 09:28:07 +0000
+Subject: Re: [methylkit_discussion] edmr error using the default data
+Message-ID: <6nyuX7WRCdA.2ZITdOpTBQAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <6nyuX7WRCdA.xvrI3HVPBQAJ@methylkit-discussion.groups.google.com>
+References: <6nyuX7WRCdA.2JTWve9LBQAJ@methylkit-discussion.groups.google.com> <6nyuX7WRCdA.xvrI3HVPBQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/6nyuX7WRCdA/m/2ZITdOpTBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+it is ok now. it's the update cause the problem.thank you all the same.
+
+在 2016年6月13日星期一 UTC+8下午4:06:28，Altuna Akalin写道：
+
+> Please ask edmr related questions directly to Sheng Li, I don't think she is reading this forum
+
+> On Mon, Jun 13, 2016 at 9:01 AM, <foo...@gmail.com> wrote:
+
+> >
+> > > library(edmr)
+> > > library(GenomicRanges)
+> > > library(IRanges)
+> > > library(mixtools)
+> > > library(data.table)
+> > > data(edmr)
+> > > mydmr=edmr(myDiff, mode=1, ACF=TRUE)
+> > [1] "DMR analysis for all detected CpGs..."
+> > number of iterations= 107
+> > [1] 162.3313
+> > [1] "raw myDiff:"
+> > [1] 120192      7
+> > [1] "max cpgs dist for region definition: 162"
+> > Error in `[.data.frame`(peaks, overlap.idx@to, ) :
+> >   no slot of name "to" for this object of class "Hits"
+> > >
+> > edmr Version:0.6.4.1.
+> > R version：3.3.0.
+> >
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discussion+unsub...@googlegroups.com.
+
+> >
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From ua83f11f829fdba64 at groups.google.com  Tue Jun 14 10:39:16 2016
+From: ua83f11f829fdba64 at groups.google.com (dude.d...@gmail.com)
+Date: Tue, 14 Jun 2016 10:39:16 +0000
+Subject: Difference between bismark2bedGraph and methylkit CpG calling
+Message-ID: <KsFYRpYn2a8.do095WCmBQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/KsFYRpYn2a8/m/do095WCmBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+  I am wondering why there is a difference in the number of CpG methylation calling when I used the build-in function of bismark-bismark2bedGraph and methylkit.
+
+Bismark2bedGraph
+treatment_rep1 treatment_rep2 Control
+10 read count filter(done by R) 5023385 4906324 4821601
+common position (done by R) 3663137 3663137 3663137
+
+Methykit
+treatment_rep1 treatment_rep2 Control
+10 read count filter 5468215 5402572 5327155
+common position 4369283 4369283 4369283
+
+Furthermore,
+I also used the calculateDiffMeth. Although the q-value of some sites are extremely low, when I convert it the biswig and visualize on UCSC, those sites are only be differentially methylated in one of the replicates, not the both. Is it due to small sample size? I appreciate any suggestions and I hope someone can help me.
+
+Thanks.
+
+From u379d88c8010d8526 at groups.google.com  Tue Jun 14 10:48:39 2016
+From: u379d88c8010d8526 at groups.google.com (Matt Burney)
+Date: Tue, 14 Jun 2016 10:48:39 +0000
+Subject: Install and CpG context
+Message-ID: <77M4vBEQ5DM.QNyaEeSmBQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/77M4vBEQ5DM/m/QNyaEeSmBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all
+
+Sorry for the stupid questions, but I'm struggling to get methylKit to install from Github. Here's the error I'm getting and a sessionInfo() below.
+
+I'm also struggling to work out if methylKit can analyse the CpG context file I have, that looks like it might have been made with an old version of Bismark. It has no strand info, only chromosome, position, methylatedCounts, unmethylatedCounts values. Which function will read this in correctly for me?
+
+Massive thanks for any help you can offer.
+
+Matt
+
+> library(devtools)
+> install_github("al2na/methylKit", build_vignettes=FALSE,
++   repos=BiocInstaller::biocinstallRepos(),
++   dependencies=TRUE,type="source")
+Downloading GitHub repo al2na/methylKit@master
+from URL https://api.github.com/repos/al2na/methylKit/zipball/master
+Error: Command failed (1)
+>
+>
+> sessionInfo()
+R version 3.2.3 (2015-12-10)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: Red Hat Enterprise Linux Server release 6.2 (Santiago)
+
+locale:
+ [1] LC_CTYPE=en_GB       LC_NUMERIC=C         LC_TIME=en_GB
+ [4] LC_COLLATE=en_GB     LC_MONETARY=en_GB    LC_MESSAGES=en_GB
+ [7] LC_PAPER=en_GB       LC_NAME=C            LC_ADDRESS=C
+[10] LC_TELEPHONE=C       LC_MEASUREMENT=en_GB LC_IDENTIFICATION=C
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base
+
+other attached packages:
+[1] devtools_1.11.1
+
+loaded via a namespace (and not attached):
+[1] httr_1.1.0    R6_2.1.2      withr_1.0.1   curl_0.9.7    memoise_1.0.0
+[6] git2r_0.14.0  digest_0.6.9
+
+From uab8277113f65c05e at groups.google.com  Tue Jun 14 10:49:50 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Tue, 14 Jun 2016 10:49:50 +0000
+Subject: Re: [methylkit_discussion] Difference between bismark2bedGraph and methylkit CpG calling
+Message-ID: <KsFYRpYn2a8.3VHTrfSmBQAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <KsFYRpYn2a8.do095WCmBQAJ@methylkit-discussion.groups.google.com>
+References: <KsFYRpYn2a8.do095WCmBQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/KsFYRpYn2a8/m/3VHTrfSmBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tue, Jun 14, 2016 at 12:39 PM, <dude.d...@gmail.com> wrote:
+> Hi,
+>   I am wondering why there is a difference in the number of CpG methylation calling when I used the build-in function of bismark-bismark2bedGraph and methylkit.
+>
+> Bismark2bedGraph
+> treatment_rep1 treatment_rep2 Control
+> 10 read count filter(done by R) 5023385 4906324 4821601
+> common position (done by R) 3663137 3663137 3663137
+
+> Methykit
+> treatment_rep1 treatment_rep2 Control
+> 10 read count filter 5468215 5402572 5327155
+> common position 4369283 4369283 4369283
+>
+
+I can't comment on what bismark2bedgraph is doing. You have to ask them or look at their code to see what kind of filtering they apply. We simply stack up the reads and use bismark methylation calls to call percent methylation on a base.
+We need have at least 10X coverage defaul and fastq quality score for a base should be >20 phred score default. Maybe they are doing extra filtering.
+
+> Furthermore,
+> I also used the calculateDiffMeth. Although the q-value of some sites are extremely low, when I convert it the biswig and visualize on UCSC, those sites are only be differentially methylated in one of the replicates, not the both. Is it due to small sample size? I appreciate any suggestions and I hope someone can help me.
+>
+
+I think there is no point to try to use logistic regression based test when you don't have replicates for control. i would use pool() to pool the tests or compare test1 vs control and test2 vs control and take the consensus.
+
+Best,
+Altuna
+
+> Thanks.
+>
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uab8277113f65c05e at groups.google.com  Tue Jun 14 11:07:03 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Tue, 14 Jun 2016 11:07:03 +0000
+Subject: Re: [methylkit_discussion] Install and CpG context
+Message-ID: <77M4vBEQ5DM.Rt60KuWnBQAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <77M4vBEQ5DM.QNyaEeSmBQAJ@methylkit-discussion.groups.google.com>
+References: <77M4vBEQ5DM.QNyaEeSmBQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/77M4vBEQ5DM/m/Rt60KuWnBQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+On Tue, Jun 14, 2016 at 12:45 PM, Matt Burney <8ur...@gmail.com> wrote:
+> Hi all
+>
+> Sorry for the stupid questions, but I'm struggling to get methylKit to install from Github. Here's the error I'm getting and a sessionInfo() below.
+>
+
+This could be a devtools error, I'm not sure. It works for me, but I'm using the latest R 3.3.0
+
+> I'm also struggling to work out if methylKit can analyse the CpG context file I have, that looks like it might have been made with an old version of Bismark. It has no strand info, only chromosome, position, methylatedCounts, unmethylatedCounts values. Which function will read this in correctly for me?
+>
+
+This may be a bismark coverage file. If so, you can use pipeline='bismarkCoverage' in methRead() function.
+
+> Massive thanks for any help you can offer.
+>
+> Matt
+>
+>
+>
+>
+> > library(devtools)
+> > install_github("al2na/methylKit", build_vignettes=FALSE,
+> +   repos=BiocInstaller::biocinstallRepos(),
+> +   dependencies=TRUE,type="source")
+> Downloading GitHub repo al2na/methylKit@master
+> from URL https://api.github.com/repos/al2na/methylKit/zipball/master
+> Error: Command failed (1)
+> >
+> >
+> > sessionInfo()
+> R version 3.2.3 (2015-12-10)
+> Platform: x86_64-pc-linux-gnu (64-bit)
+> Running under: Red Hat Enterprise Linux Server release 6.2 (Santiago)
+>
+> locale:
+>  [1] LC_CTYPE=en_GB       LC_NUMERIC=C         LC_TIME=en_GB
+>  [4] LC_COLLATE=en_GB     LC_MONETARY=en_GB    LC_MESSAGES=en_GB
+>  [7] LC_PAPER=en_GB       LC_NAME=C            LC_ADDRESS=C
+> [10] LC_TELEPHONE=C       LC_MEASUREMENT=en_GB LC_IDENTIFICATION=C
+>
+> attached base packages:
+> [1] stats     graphics  grDevices utils     datasets  methods   base
+>
+> other attached packages:
+> [1] devtools_1.11.1
+>
+> loaded via a namespace (and not attached):
+> [1] httr_1.1.0    R6_2.1.2      withr_1.0.1   curl_0.9.7    memoise_1.0.0
+> [6] git2r_0.14.0  digest_0.6.9
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u2f09c8867dacd3f6 at groups.google.com  Thu Jun 16 19:40:10 2016
+From: u2f09c8867dacd3f6 at groups.google.com (Bhattacharyya, Sudeepa)
+Date: Thu, 16 Jun 2016 19:40:10 +0000
+Subject: Need help with installing MethylKit
+Message-ID: <-OytQKF0_O8.7wCpWg5hBgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/-OytQKF0_O8/m/7wCpWg5hBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+            I am trying to install MethylKit Package and I am having errors as follows: The entire session code is attached.
+
+library(devtools)
+
+> install_github("al2na/methylKit", build_vignettes=FALSE,
+
++                repos=BiocInstaller::biocinstallRepos(),
+
++                dependencies=TRUE)
+
+-
+
+-
+
+-
+
+methCall.cpp: In function ‘int process_sam(std::istream*, std::string&, std::string&, std::string&, int&, int&, int&, int, int)’:
+
+methCall.cpp:666: error: call of overloaded ‘to_string(int)’ is ambiguous
+
+/usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2604: note: candidates are: std::string std::to_string(long long int)
+
+/usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2610: note:                 std::string std::to_string(long long unsigned int)
+
+/usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2616: note:                 std::string std::to_string(long double)
+
+.
+
+.
+
+.
+
+.
+
+methCall.cpp:1104: error: call of overloaded ‘to_string(int)’ is ambiguous
+
+/usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2604: note: candidates are: std::string std::to_string(long long int)
+
+/usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2610: note:                 std::string std::to_string(long long unsigned int)
+
+/usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2616: note:                 std::string std::to_string(long double)
+
+make: *** [methCall.o] Error 1
+
+ERROR: compilation failed for package ‘methylKit’
+
+* removing ‘/home/sudeepa/R/x86_64-pc-linux-gnu-library/3.3/methylKit’
+
+Error: Command failed (1)
+
+> sessionInfo()
+
+R version 3.3.0 (2016-05-03)
+
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+Running under: CentOS release 6.6 (Final)
+
+locale:
+
+[1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C               LC_TIME=en_US.UTF-8
+
+ [4] LC_COLLATE=en_US.UTF-8     LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8
+
+ [7] LC_PAPER=en_US.UTF-8       LC_NAME=C                  LC_ADDRESS=C
+
+[10] LC_TELEPHONE=C             LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C
+
+attached base packages:
+
+[1] parallel  stats4    stats     graphics  grDevices utils     datasets  methods   base
+
+other attached packages:
+
+[1] devtools_1.11.1            bsseq_1.8.2                limma_3.28.8
+
+ [4] BiocInstaller_1.22.2       BiSeq_1.12.0               Formula_1.2-1
+
+ [7] SummarizedExperiment_1.2.3 Biobase_2.32.0             GenomicRanges_1.24.2
+
+[10] GenomeInfoDb_1.8.1         IRanges_2.6.0              S4Vectors_0.10.1
+
+[13] BiocGenerics_0.18.0
+
+loaded via a namespace (and not attached):
+
+[1] gtools_3.5.0            zoo_1.7-13              modeltools_0.2-21       locfit_1.5-9.1
+
+ [5] splines_3.3.0           lattice_0.20-33         colorspace_1.2-6        rtracklayer_1.32.1
+
+ [9] chron_2.3-47            survival_2.39-4         XML_3.98-1.4            R.oo_1.20.0
+
+[13] withr_1.0.1             DBI_0.4-1               R.utils_2.3.0           BiocParallel_1.6.2
+
+[17] matrixStats_0.50.2      plyr_1.8.4              zlibbioc_1.18.0         Biostrings_2.40.2
+
+[21] munsell_0.4.3           R.methodsS3_1.7.1       globaltest_5.26.0       memoise_1.0.0
+
+[25] knitr_1.13              permute_0.9-0           lmtest_0.9-34           curl_0.9.7
+
+[29] flexmix_2.3-13          AnnotationDbi_1.34.3    Rcpp_0.12.5             xtable_1.8-2
+
+[33] scales_0.4.0            annotate_1.50.0         XVector_0.12.0          Rsamtools_1.24.0
+
+[37] digest_0.6.9            grid_3.3.0              tools_3.3.0             bitops_1.0-6
+
+[41] sandwich_2.3-4          RCurl_1.95-4.8          RSQLite_1.0.0           lokern_1.1-6
+
+[45] Matrix_1.2-6            data.table_1.9.6        httr_1.2.0              betareg_3.0-5
+
+[49] R6_2.1.2                git2r_0.15.0            GenomicAlignments_1.8.1 sfsmisc_1.1-0
+
+[53] nnet_7.3-12
+
+I am not sure what my problem is. Any help will be highly appreciated,
+
+Sudeepa Bhattacharyya
+Confidentiality Notice: This e-mail message, including any attachments, is for the sole use of the intended recipient(s) and may contain confidential and privileged information. Any unauthorized review, use, disclosure or distribution is prohibited. If you are not the intended recipient, please contact the sender by reply e-mail and destroy all copies of the original message.
+
+From uab8277113f65c05e at groups.google.com  Thu Jun 16 19:57:31 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Thu, 16 Jun 2016 19:57:31 +0000
+Subject: Re: [methylkit_discussion] Need help with installing MethylKit
+Message-ID: <-OytQKF0_O8.uxYXwwBiBgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <-OytQKF0_O8.7wCpWg5hBgAJ@methylkit-discussion.groups.google.com>
+References: <-OytQKF0_O8.7wCpWg5hBgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/-OytQKF0_O8/m/uxYXwwBiBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I think your compiler is old. can you try to update it? see here:
+https://github.com/al2na/methylKit/pull/43
+
+On Thu, Jun 16, 2016 at 9:40 PM, Bhattacharyya, Sudeepa <SBhatta...@uams.edu> wrote:
+
+> Hi,
+>
+>             I am trying to install MethylKit Package and I am having errors as follows: The entire session code is attached.
+>
+> library(devtools)
+>
+> > install_github("al2na/methylKit", build_vignettes=FALSE,
+>
+> +                repos=BiocInstaller::biocinstallRepos(),
+>
+> +                dependencies=TRUE)
+>
+>
+>
+> -
+>
+> -
+>
+> -
+>
+> methCall.cpp: In function ‘int process_sam(std::istream*, std::string&, std::string&, std::string&, int&, int&, int&, int, int)’:
+>
+> methCall.cpp:666: error: call of overloaded ‘to_string(int)’ is ambiguous
+>
+> /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2604: note: candidates are: std::string std::to_string(long long int)
+>
+> /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2610: note:                 std::string std::to_string(long long unsigned int)
+>
+> /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2616: note:                 std::string std::to_string(long double)
+>
+> .
+>
+> .
+>
+> .
+>
+> .
+>
+> methCall.cpp:1104: error: call of overloaded ‘to_string(int)’ is ambiguous
+>
+> /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2604: note: candidates are: std::string std::to_string(long long int)
+>
+> /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2610: note:                 std::string std::to_string(long long unsigned int)
+>
+> /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2616: note:                 std::string std::to_string(long double)
+>
+> make: *** [methCall.o] Error 1
+>
+> ERROR: compilation failed for package ‘methylKit’
+>
+> * removing ‘/home/sudeepa/R/x86_64-pc-linux-gnu-library/3.3/methylKit’
+>
+> Error: Command failed (1)
+>
+>
+>
+> > sessionInfo()
+>
+> R version 3.3.0 (2016-05-03)
+>
+> Platform: x86_64-pc-linux-gnu (64-bit)
+>
+> Running under: CentOS release 6.6 (Final)
+>
+>
+>
+> locale:
+>
+> [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C               LC_TIME=en_US.UTF-8
+>
+>  [4] LC_COLLATE=en_US.UTF-8     LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8
+>
+>  [7] LC_PAPER=en_US.UTF-8       LC_NAME=C                  LC_ADDRESS=C
+>
+> [10] LC_TELEPHONE=C             LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C
+>
+>
+>
+> attached base packages:
+>
+> [1] parallel  stats4    stats     graphics  grDevices utils     datasets  methods   base
+>
+>
+>
+> other attached packages:
+>
+> [1] devtools_1.11.1            bsseq_1.8.2                limma_3.28.8
+>
+>  [4] BiocInstaller_1.22.2       BiSeq_1.12.0               Formula_1.2-1
+>
+>  [7] SummarizedExperiment_1.2.3 Biobase_2.32.0             GenomicRanges_1.24.2
+>
+> [10] GenomeInfoDb_1.8.1         IRanges_2.6.0              S4Vectors_0.10.1
+>
+> [13] BiocGenerics_0.18.0
+>
+>
+>
+> loaded via a namespace (and not attached):
+>
+> [1] gtools_3.5.0            zoo_1.7-13              modeltools_0.2-21       locfit_1.5-9.1
+>
+>  [5] splines_3.3.0           lattice_0.20-33         colorspace_1.2-6        rtracklayer_1.32.1
+>
+>  [9] chron_2.3-47            survival_2.39-4         XML_3.98-1.4            R.oo_1.20.0
+>
+> [13] withr_1.0.1             DBI_0.4-1               R.utils_2.3.0           BiocParallel_1.6.2
+>
+> [17] matrixStats_0.50.2      plyr_1.8.4              zlibbioc_1.18.0         Biostrings_2.40.2
+>
+> [21] munsell_0.4.3           R.methodsS3_1.7.1       globaltest_5.26.0       memoise_1.0.0
+>
+> [25] knitr_1.13              permute_0.9-0           lmtest_0.9-34           curl_0.9.7
+>
+> [29] flexmix_2.3-13          AnnotationDbi_1.34.3    Rcpp_0.12.5             xtable_1.8-2
+>
+> [33] scales_0.4.0            annotate_1.50.0         XVector_0.12.0          Rsamtools_1.24.0
+>
+> [37] digest_0.6.9            grid_3.3.0              tools_3.3.0             bitops_1.0-6
+>
+> [41] sandwich_2.3-4          RCurl_1.95-4.8          RSQLite_1.0.0           lokern_1.1-6
+>
+> [45] Matrix_1.2-6            data.table_1.9.6        httr_1.2.0              betareg_3.0-5
+>
+> [49] R6_2.1.2                git2r_0.15.0            GenomicAlignments_1.8.1 sfsmisc_1.1-0
+>
+> [53] nnet_7.3-12
+>
+>
+>
+> I am not sure what my problem is. Any help will be highly appreciated,
+>
+>
+>
+> Sudeepa Bhattacharyya
+> Confidentiality Notice: This e-mail message, including any attachments, is for the sole use of the intended recipient(s) and may contain confidential and privileged information. Any unauthorized review, use, disclosure or distribution is prohibited. If you are not the intended recipient, please contact the sender by reply e-mail and destroy all copies of the original message.
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From uab8277113f65c05e at groups.google.com  Fri Jun 17 07:29:33 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Fri, 17 Jun 2016 07:29:33 +0000
+Subject: Re: [methylkit_discussion] Need help with installing MethylKit
+Message-ID: <-OytQKF0_O8.2ao7aMSHBgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <-OytQKF0_O8.uxYXwwBiBgAJ@methylkit-discussion.groups.google.com>
+References: <-OytQKF0_O8.7wCpWg5hBgAJ@methylkit-discussion.groups.google.com> <-OytQKF0_O8.uxYXwwBiBgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/-OytQKF0_O8/m/2ao7aMSHBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+if you install the "development" branch, it is fixed there
+
+On Thu, Jun 16, 2016 at 9:57 PM, Altuna Akalin <aak...@gmail.com> wrote:
+> I think your compiler is old. can you try to update it? see here:
+> https://github.com/al2na/methylKit/pull/43
+>
+> On Thu, Jun 16, 2016 at 9:40 PM, Bhattacharyya, Sudeepa <SBhatta...@uams.edu> wrote:
+> >
+> > Hi,
+> >
+> >             I am trying to install MethylKit Package and I am having errors as follows: The entire session code is attached.
+> >
+> > library(devtools)
+> >
+> > > install_github("al2na/methylKit", build_vignettes=FALSE,
+> >
+> > +                repos=BiocInstaller::biocinstallRepos(),
+> >
+> > +                dependencies=TRUE)
+> >
+> >
+> >
+> > -
+> >
+> > -
+> >
+> > -
+> >
+> > methCall.cpp: In function ‘int process_sam(std::istream*, std::string&, std::string&, std::string&, int&, int&, int&, int, int)’:
+> >
+> > methCall.cpp:666: error: call of overloaded ‘to_string(int)’ is ambiguous
+> >
+> > /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2604: note: candidates are: std::string std::to_string(long long int)
+> >
+> > /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2610: note:                 std::string std::to_string(long long unsigned int)
+> >
+> > /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2616: note:                 std::string std::to_string(long double)
+> >
+> > .
+> >
+> > .
+> >
+> > .
+> >
+> > .
+> >
+> > methCall.cpp:1104: error: call of overloaded ‘to_string(int)’ is ambiguous
+> >
+> > /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2604: note: candidates are: std::string std::to_string(long long int)
+> >
+> > /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2610: note:                 std::string std::to_string(long long unsigned int)
+> >
+> > /usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../include/c++/4.4.7/bits/basic_string.h:2616: note:                 std::string std::to_string(long double)
+> >
+> > make: *** [methCall.o] Error 1
+> >
+> > ERROR: compilation failed for package ‘methylKit’
+> >
+> > * removing ‘/home/sudeepa/R/x86_64-pc-linux-gnu-library/3.3/methylKit’
+> >
+> > Error: Command failed (1)
+> >
+> >
+> >
+> > > sessionInfo()
+> >
+> > R version 3.3.0 (2016-05-03)
+> >
+> > Platform: x86_64-pc-linux-gnu (64-bit)
+> >
+> > Running under: CentOS release 6.6 (Final)
+> >
+> >
+> >
+> > locale:
+> >
+> > [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C               LC_TIME=en_US.UTF-8
+> >
+> >  [4] LC_COLLATE=en_US.UTF-8     LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8
+> >
+> >  [7] LC_PAPER=en_US.UTF-8       LC_NAME=C                  LC_ADDRESS=C
+> >
+> > [10] LC_TELEPHONE=C             LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C
+> >
+> >
+> >
+> > attached base packages:
+> >
+> > [1] parallel  stats4    stats     graphics  grDevices utils     datasets  methods   base
+> >
+> >
+> >
+> > other attached packages:
+> >
+> > [1] devtools_1.11.1            bsseq_1.8.2                limma_3.28.8
+> >
+> >  [4] BiocInstaller_1.22.2       BiSeq_1.12.0               Formula_1.2-1
+> >
+> >  [7] SummarizedExperiment_1.2.3 Biobase_2.32.0             GenomicRanges_1.24.2
+> >
+> > [10] GenomeInfoDb_1.8.1         IRanges_2.6.0              S4Vectors_0.10.1
+> >
+> > [13] BiocGenerics_0.18.0
+> >
+> >
+> >
+> > loaded via a namespace (and not attached):
+> >
+> > [1] gtools_3.5.0            zoo_1.7-13              modeltools_0.2-21       locfit_1.5-9.1
+> >
+> >  [5] splines_3.3.0           lattice_0.20-33         colorspace_1.2-6        rtracklayer_1.32.1
+> >
+> >  [9] chron_2.3-47            survival_2.39-4         XML_3.98-1.4            R.oo_1.20.0
+> >
+> > [13] withr_1.0.1             DBI_0.4-1               R.utils_2.3.0           BiocParallel_1.6.2
+> >
+> > [17] matrixStats_0.50.2      plyr_1.8.4              zlibbioc_1.18.0         Biostrings_2.40.2
+> >
+> > [21] munsell_0.4.3           R.methodsS3_1.7.1       globaltest_5.26.0       memoise_1.0.0
+> >
+> > [25] knitr_1.13              permute_0.9-0           lmtest_0.9-34           curl_0.9.7
+> >
+> > [29] flexmix_2.3-13          AnnotationDbi_1.34.3    Rcpp_0.12.5             xtable_1.8-2
+> >
+> > [33] scales_0.4.0            annotate_1.50.0         XVector_0.12.0          Rsamtools_1.24.0
+> >
+> > [37] digest_0.6.9            grid_3.3.0              tools_3.3.0             bitops_1.0-6
+> >
+> > [41] sandwich_2.3-4          RCurl_1.95-4.8          RSQLite_1.0.0           lokern_1.1-6
+> >
+> > [45] Matrix_1.2-6            data.table_1.9.6        httr_1.2.0              betareg_3.0-5
+> >
+> > [49] R6_2.1.2                git2r_0.15.0            GenomicAlignments_1.8.1 sfsmisc_1.1-0
+> >
+> > [53] nnet_7.3-12
+> >
+> >
+> >
+> > I am not sure what my problem is. Any help will be highly appreciated,
+> >
+> >
+> >
+> > Sudeepa Bhattacharyya
+> > Confidentiality Notice: This e-mail message, including any attachments, is for the sole use of the intended recipient(s) and may contain confidential and privileged information. Any unauthorized review, use, disclosure or distribution is prohibited. If you are not the intended recipient, please contact the sender by reply e-mail and destroy all copies of the original message.
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+>
+
+From u46afe85c0f72fb5b at groups.google.com  Fri Jun 17 15:00:01 2016
+From: u46afe85c0f72fb5b at groups.google.com (nhadad)
+Date: Fri, 17 Jun 2016 15:00:01 +0000
+Subject: processBismarkAln crash
+Message-ID: <dXq9hbBeNEI.010YQ1mgBgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/dXq9hbBeNEI/m/010YQ1mgBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I downloaded the latest version of methylKit and I am trying to use the read.bismark function, but every time I run it my session crashes. In the older versions this never happened. I even tried using files that worked before and still, my session crash each time. Did anyone experience this/know a workaround?
+
+Thanks
+
+From uab8277113f65c05e at groups.google.com  Fri Jun 17 15:05:48 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Fri, 17 Jun 2016 15:05:48 +0000
+Subject: Re: [methylkit_discussion] processBismarkAln crash
+Message-ID: <dXq9hbBeNEI.UWMkH6qgBgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <dXq9hbBeNEI.010YQ1mgBgAJ@methylkit-discussion.groups.google.com>
+References: <dXq9hbBeNEI.010YQ1mgBgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/dXq9hbBeNEI/m/UWMkH6qgBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Could you send a reproducible example with a minimal dataset, we didn't encounter this during tests
+
+On Friday, 17 June 2016, nhadad <niran...@gmail.com> wrote:
+
+> I downloaded the latest version of methylKit and I am trying to use the read.bismark function, but every time I run it my session crashes. In the older versions this never happened. I even tried using files that worked before and still, my session crash each time. Did anyone experience this/know a workaround?
+>
+>
+> Thanks
+>
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+--
+Sent from mobile, excuse the brevity
+
+From u46afe85c0f72fb5b at groups.google.com  Fri Jun 17 18:00:37 2016
+From: u46afe85c0f72fb5b at groups.google.com (nhadad)
+Date: Fri, 17 Jun 2016 18:00:37 +0000
+Subject: Re: [methylkit_discussion] processBismarkAln crash
+Message-ID: <dXq9hbBeNEI.63ftXjSqBgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <dXq9hbBeNEI.UWMkH6qgBgAJ@methylkit-discussion.groups.google.com>
+References: <dXq9hbBeNEI.010YQ1mgBgAJ@methylkit-discussion.groups.google.com> <dXq9hbBeNEI.UWMkH6qgBgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/dXq9hbBeNEI/m/63ftXjSqBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+As I was preparing a smaller file things improved.
+I run library(Rcpp) before using processBismarkAln and it seemed to help.
+
+I will post again if I run into problems.
+
+Thanks
+
+On Friday, June 17, 2016 at 10:05:48 AM UTC-5, Altuna Akalin wrote:
+
+> Could you send a reproducible example with a minimal dataset, we didn't encounter this during tests
+>
+> On Friday, 17 June 2016, nhadad <niran...@gmail.com> wrote:
+
+> > I downloaded the latest version of methylKit and I am trying to use the read.bismark function, but every time I run it my session crashes. In the older versions this never happened. I even tried using files that worked before and still, my session crash each time. Did anyone experience this/know a workaround?
+> >
+> >
+> > Thanks
+> >
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discussion+unsub...@googlegroups.com.
+> > To post to this group, send email to methylkit_discussion@googlegroups.com.
+
+> >
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+
+>
+>
+> --
+> Sent from mobile, excuse the brevity
+
+From uab8277113f65c05e at groups.google.com  Fri Jun 17 18:02:29 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Fri, 17 Jun 2016 18:02:29 +0000
+Subject: Re: [methylkit_discussion] processBismarkAln crash
+Message-ID: <dXq9hbBeNEI.9GSfPk6qBgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <dXq9hbBeNEI.63ftXjSqBgAJ@methylkit-discussion.groups.google.com>
+References: <dXq9hbBeNEI.010YQ1mgBgAJ@methylkit-discussion.groups.google.com> <dXq9hbBeNEI.63ftXjSqBgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/dXq9hbBeNEI/m/9GSfPk6qBgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+please do with example data, if we can't replicate the problem we can't help
+
+On Fri, Jun 17, 2016 at 8:00 PM, nhadad <niran...@gmail.com> wrote:
+
+> As I was preparing a smaller file things improved.
+> I run library(Rcpp) before using processBismarkAln and it seemed to help.
+>
+> I will post again if I run into problems.
+>
+>
+> Thanks
+>
+>
+
+> On Friday, June 17, 2016 at 10:05:48 AM UTC-5, Altuna Akalin wrote:
+
+> > Could you send a reproducible example with a minimal dataset, we didn't encounter this during tests
+> >
+
+> > On Friday, 17 June 2016, nhadad <niran...@gmail.com> wrote:
+
+> > > I downloaded the latest version of methylKit and I am trying to use the read.bismark function, but every time I run it my session crashes. In the older versions this never happened. I even tried using files that worked before and still, my session crash each time. Did anyone experience this/know a workaround?
+> > >
+> > >
+> > > Thanks
+> > >
+> > > --
+> > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> > > To post to this group, send email to methylkit_...@googlegroups.com.
+
+> > >
+> > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > For more options, visit https://groups.google.com/d/optout.
+
+> >
+> >
+> > --
+> > Sent from mobile, excuse the brevity
+
+> --
+
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+
+>
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+
+From u46afe85c0f72fb5b at groups.google.com  Fri Jun 17 23:09:09 2016
+From: u46afe85c0f72fb5b at groups.google.com (nhadad)
+Date: Fri, 17 Jun 2016 23:09:09 +0000
+Subject: Re: [methylkit_discussion] processBismarkAln crash
+Message-ID: <dXq9hbBeNEI.aQHFhQq7BgAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <dXq9hbBeNEI.9GSfPk6qBgAJ@methylkit-discussion.groups.google.com>
+References: <dXq9hbBeNEI.010YQ1mgBgAJ@methylkit-discussion.groups.google.com> <dXq9hbBeNEI.9GSfPk6qBgAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/dXq9hbBeNEI/m/aQHFhQq7BgAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I will clarify what I meant. I couldn't replicate the problem myself. So that solves my issue. Thank you.
+
+On Friday, June 17, 2016 at 1:02:29 PM UTC-5, Altuna Akalin wrote:
+
+> please do with example data, if we can't replicate the problem we can't help
+
+> On Fri, Jun 17, 2016 at 8:00 PM, nhadad <niran...@gmail.com> wrote:
+
+> > As I was preparing a smaller file things improved.
+> > I run library(Rcpp) before using processBismarkAln and it seemed to help.
+> >
+> > I will post again if I run into problems.
+> >
+> >
+> > Thanks
+> >
+> >
+
+> > On Friday, June 17, 2016 at 10:05:48 AM UTC-5, Altuna Akalin wrote:
+
+> > > Could you send a reproducible example with a minimal dataset, we didn't encounter this during tests
+> > >
+
+> > > On Friday, 17 June 2016, nhadad <niran...@gmail.com> wrote:
+
+> > > > I downloaded the latest version of methylKit and I am trying to use the read.bismark function, but every time I run it my session crashes. In the older versions this never happened. I even tried using files that worked before and still, my session crash each time. Did anyone experience this/know a workaround?
+> > > >
+> > > >
+> > > > Thanks
+> > > >
+> > > > --
+> > > > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > > > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discussion+unsub...@googlegroups.com.
+> > > > To post to this group, send email to methylkit_discussion@googlegroups.com.
+
+> > > >
+> > > > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > > > For more options, visit https://groups.google.com/d/optout.
+
+> > >
+> > >
+> > > --
+> > > Sent from mobile, excuse the brevity
+
+> > --
+> > You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+
+> > To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discussion+unsub...@googlegroups.com.
+
+> >
+> > To post to this group, send email to methylkit_...@googlegroups.com.
+> > Visit this group at https://groups.google.com/group/methylkit_discussion.
+> > For more options, visit https://groups.google.com/d/optout.
+
+From u071f335069d94693 at groups.google.com  Mon Jun 20 15:48:21 2016
+From: u071f335069d94693 at groups.google.com (Leslie Oldfield)
+Date: Mon, 20 Jun 2016 15:48:21 +0000
+Subject: Low coverage and using readBismarkCoverage
+Message-ID: <CSxEEo3JtDc._aKBAP3jBwAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/CSxEEo3JtDc/m/_aKBAP3jBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+I'm reading in a promoter bed file that contains four genes but for some samples one gene is not read in and I think it is because there is low coverage in that region for a few of the samples. I know for read.bismark you can alter the mincov argument. I was wondering if there is a similar argument for readBismarkCoverage or if there is another method for lowering the minimum coverage. Below is my code, which runs through a data frame of tumour and normal pairs:
+
+for (i in 1:nrow(combined)){
+file.list=list(combined[i, 1], combined[i, 2])
+name.normal <- paste((strsplit(combined[i, 1], "_")[[1]][3]), "N", sep="_")
+name.tumour <- paste((strsplit(combined[i, 2], "_")[[1]][3]), "T", sep="_")
+meth.diff.prom <- paste(name.tumour, "promotermethdiff", sep="_")
+myobj = readBismarkCoverage(file.list,sample.id <http://sample.id>=list(name.normal, name.tumour),
+assembly="hg19",treatment=c(0,1))
+all.promoters = read.bed("MMR_promoters.final.bed")
+reads_in_allpromoters = regionCounts(myobj, all.promoters)
+all.prom.meth=unite(reads_in_allpromoters,destrand=F)
+myDiff.prom=calculateDiffMeth(all.prom.meth)
+write.table(myDiff.prom, meth.diff.prom, quote=FALSE)
+}
+
+The all.promoters shows all four rows but the actual all.prom.meth only shows 3.
+
+> all.promoters
+
+GRanges with 4 ranges and 2 metadata columns:
+
+      seqnames               ranges strand |       score      name
+
+         <Rle>            <IRanges>  <Rle> | <character> <integer>
+
+  [1]     chr3 [37034730, 37035356]      * |        MLH1         0
+
+  [2]     chr2 [47630069, 47630791]      * |        MSH2         0
+
+  [3]     chr2 [48010233, 48011443]      * |        MSH6         0
+
+  [4]     chr7 [ 6048398,  6048782]      * |        PMS2         0
+
+> all.prom.meth
+
+methylBase object with 3 rows
+
+--------------
+
+   chr    start      end strand coverage1 numCs1 numTs1 coverage2 numCs2 numTs2
+
+1 chr3 37034730 37035356      *     10132    161   9971      4380   1431   2949
+
+2 chr2 47630069 47630791      *      1957     25   1932      2022     24   1998
+
+3 chr2 48010233 48011443      *      9347     92   9255      3867     38   3829
+
+Thanks,
+
+Leslie
+
+From uab8277113f65c05e at groups.google.com  Mon Jun 20 18:21:24 2016
+From: uab8277113f65c05e at groups.google.com (Altuna Akalin)
+Date: Mon, 20 Jun 2016 18:21:24 +0000
+Subject: Re: [methylkit_discussion] Low coverage and using readBismarkCoverage
+Message-ID: <CSxEEo3JtDc.E-3MIFfsBwAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <CSxEEo3JtDc._aKBAP3jBwAJ@methylkit-discussion.groups.google.com>
+References: <CSxEEo3JtDc._aKBAP3jBwAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/CSxEEo3JtDc/m/E-3MIFfsBwAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi,
+newer versions (> 0.9.6) has the methRead() function (old name "read" ) which can read the the Bismark coverage file with mincov argument.
+
+Best,
+Altuna
+
+On Mon, Jun 20, 2016 at 5:48 PM, Leslie Oldfield <leslie....@gmail.com> wrote:
+
+> Hello,
+>
+> I'm reading in a promoter bed file that contains four genes but for some samples one gene is not read in and I think it is because there is low coverage in that region for a few of the samples. I know for read.bismark you can alter the mincov argument. I was wondering if there is a similar argument for readBismarkCoverage or if there is another method for lowering the minimum coverage. Below is my code, which runs through a data frame of tumour and normal pairs:
+>
+> for (i in 1:nrow(combined)){
+> file.list=list(combined[i, 1], combined[i, 2])
+> name.normal <- paste((strsplit(combined[i, 1], "_")[[1]][3]), "N", sep="_")
+> name.tumour <- paste((strsplit(combined[i, 2], "_")[[1]][3]), "T", sep="_")
+> meth.diff.prom <- paste(name.tumour, "promotermethdiff", sep="_")
+> myobj = readBismarkCoverage(file.list,sample.id <http://sample.id>=list(name.normal, name.tumour),
+> assembly="hg19",treatment=c(0,1))
+> all.promoters = read.bed("MMR_promoters.final.bed")
+> reads_in_allpromoters = regionCounts(myobj, all.promoters)
+> all.prom.meth=unite(reads_in_allpromoters,destrand=F)
+> myDiff.prom=calculateDiffMeth(all.prom.meth)
+> write.table(myDiff.prom, meth.diff.prom, quote=FALSE)
+> }
+>
+> The all.promoters shows all four rows but the actual all.prom.meth only shows 3.
+>
+> > all.promoters
+>
+> GRanges with 4 ranges and 2 metadata columns:
+>
+>       seqnames               ranges strand |       score      name
+>
+>          <Rle>            <IRanges>  <Rle> | <character> <integer>
+>
+>   [1]     chr3 [37034730, 37035356]      * |        MLH1         0
+>
+>   [2]     chr2 [47630069, 47630791]      * |        MSH2         0
+>
+>   [3]     chr2 [48010233, 48011443]      * |        MSH6         0
+>
+>   [4]     chr7 [ 6048398,  6048782]      * |        PMS2         0
+>
+>
+>
+> > all.prom.meth
+>
+> methylBase object with 3 rows
+>
+> --------------
+>
+>    chr    start      end strand coverage1 numCs1 numTs1 coverage2 numCs2 numTs2
+>
+> 1 chr3 37034730 37035356      *     10132    161   9971      4380   1431   2949
+>
+> 2 chr2 47630069 47630791      *      1957     25   1932      2022     24   1998
+>
+> 3 chr2 48010233 48011443      *      9347     92   9255      3867     38   3829
+>
+>
+>
+>
+> Thanks,
+>
+> Leslie
+
+> --
+> You received this message because you are subscribed to the Google Groups "methylkit_discussion" group.
+> To unsubscribe from this group and stop receiving emails from it, send an email to methylkit_discus...@googlegroups.com.
+> To post to this group, send email to methylkit_...@googlegroups.com.
+> Visit this group at https://groups.google.com/group/methylkit_discussion.
+> For more options, visit https://groups.google.com/d/optout.
+

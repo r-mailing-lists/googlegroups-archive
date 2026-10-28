@@ -1,0 +1,391 @@
+From uec335a81712c1b45 at groups.google.com  Mon Aug 11 10:53:05 2025
+From: uec335a81712c1b45 at groups.google.com (Lucy R Barnard)
+Date: Mon, 11 Aug 2025 10:53:05 +0000
+Subject: Very Large Data Unite()
+Message-ID: <iDw3Xb172hU.rq2VzBpPAQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/iDw3Xb172hU/m/rq2VzBpPAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi
+
+I am trying to use methylkit::unite() on a very large dataset (1000 WGBS samples) and running into various issues. I am running my code on an HPC and giving it 2TB of memory, 64 cores and 96h of time to run. I am running R version 4.4.1-foss-2022b.The current problem I am having is with the MethylKit::unite() function for which I am getting the error:
+
+methylationCpGs <- methylKit::unite(methylationDB,
+
+                                    destrand = TRUE,
+
+                                    mc.cores = 64,
+
+                                    save.db = TRUE,
+
+                                    chunk.size = 500000,
+
+                                    dbdir = "MethylKit_temp/FULL_DB",
+
+                                    suffix = "FullFilteredDB",
+
+                                    min.per.group = 500L)
+
+Error in paste(tabixRes[[1]], collapse = "\n") :
+
+  result would exceed 2^31-1 bytes
+
+Calls: <Anonymous> ... getTabixByChunk -> tabix2df -> fread -> paste0 -> paste
+
+In addition: Warning message:
+
+In mclapply(chrs, mergeTbxByChr, tabixList, dir, filename2, parallel = TRUE,  :
+
+  scheduled core 2 did not deliver a result, all values of the job will be affected
+
+Execution halted
+I believe this means that R is unable to deal with the list length produced by the filter mincov per group which is the point in which unite stops. I have tried reducing the chunk size to 500,000 and still get the same error.
+
+As a work around I am trying out the methylkit:::applyTbxByChr but seem to be stuck in the circular problem of needing to provide it with a tabix file which I am unable to provide without running the unite function. When providing the tabix file however, the enclosed unite function doesn’t work. I have recreated the problem with the internal package data:
+
+# for a filepath to a tbx file
+> byChr <- methylKit:::applyTbxByChr(tbxFile = filepath, # at tabix file object
+chrs = "chr21",#chromosome names
+return.type = "tabix",# return type for the function
+FUN = methylKit::unite, #function to apply to the chr
+... = list(myobjDB), # parameters to be passed to FUN
+dir = "TARGET/", # directory to create temporary files and resulting tabix
+filename = "TESTBYCHR", # just the file name for the resulting tabix
+mc.cores = 1, # number of cores to use in parallel
+tabixHead = "TESTBYCHR", # OPTIONAL header to add to the file
+)
+
+Error: unable to find an inherited method for function ‘unite’ for signature ‘object = "data.frame"’
+# for the original file.list created in the package
+byChr <- methylKit:::applyTbxByChr(tbxFile = file.list, # at tabix file object
+chrs = "chr21",#chromosome names
+return.type = "data.frame",# return type for the function
+FUN = methylKit::unite, #function to apply to the chr
+... = list(myobjDB), # parameters to be passed to FUN
+dir = "TARGET/", # directory to create temporary files and resulting tabix
+filename = "TESTBYCHR", # just the file name for the resulting tabix
+mc.cores = 1, # number of cores to use in parallel
+tabixHead = "TESTBYCHR", # OPTIONAL header to add to the file
+)
+Error: TabixFile: invalid 'file' argument
+
+Is there any alternative to either using MethylKit:::applyTbxByChr(), or to reduce the list length more in methylkit::unite() itself? Or another way to cope with large datasets?
+
+Thanks
+Lucy
+
+From ua413e6cf6c4ea2cc at groups.google.com  Tue Aug 12 18:57:48 2025
+From: ua413e6cf6c4ea2cc at groups.google.com (alex....@gmail.com)
+Date: Tue, 12 Aug 2025 18:57:48 +0000
+Subject: Re: Very Large Data Unite()
+Message-ID: <iDw3Xb172hU.xUOM5yK4AQAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <iDw3Xb172hU.rq2VzBpPAQAJ@methylkit-discussion.groups.google.com>
+References: <iDw3Xb172hU.rq2VzBpPAQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/iDw3Xb172hU/m/xUOM5yK4AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Lucy,
+
+Unfortunately, we already know the problem where fetching data from the tabix files triggers the error where “result would exceed 2^31-1 bytes”
+As you already mentioned, this is a limitation posed by R, which we currently worked around by using chunked and mostly per-chromosome processing. This worked fine so far, but since the number of samples per analysis keeps rising it was just a matter of time when this will not work anymore :D.
+
+There are multiple problems here: methylkit:::applyTbxByChr <https://github.com/al2na/methylKit/blob/ecf85842bdd5252161fa5bbe6aa0d285c87e1f77/R/tabix.functions.R#L765> operates only on a single tabix file, while methylKit::unite <https://github.com/al2na/methylKit/blob/ecf85842bdd5252161fa5bbe6aa0d285c87e1f77/R/methylDBFunctions.R#L670> will merge multiple Tabix files, so this will unfortunately not work. As a side note, the function called by methylkit:::applyTbxByChr should get and return a data.frame, this is why you got the Error: unable to find an inherited method for function ‘unite’ for signature ‘object = "data.frame"` . The second error occurs since methylkit:::applyTbxByChr expects a single tabix file.
+
+But now back to your original issue. You are right that error occurs at the filtering step, since the the call stack shows methylkit:::getTabixByChunk which is called by methylkit:::applyTbxByChunk <https://github.com/al2na/methylKit/blob/master/R/methylDBFunctions.R#L848>. I think your approach of reducing the chunk size is correct, but you have not been strict enough.
+
+You can use this code to check how much you need to reduce the chunk size:
+library(methylKit) test_overflow <- function(n_samples, chunk_size) { # simulate 10 samples res <- dataSim(replicates = 10, sites = 1e3, treatment = rep(1, 10)) |> makeMethylDB(dbdir = tempdir()) |> # convert to tabix getDBPath() |> TabixFile(yieldSize = 100) |> open() |> Rsamtools::scanTabix() |> paste(collapse = "\n") |> paste0(collapse = "\n") |> object.size() * (n_samples / 10) * (chunk_size / 100) > 2^31 - 1 ifelse(res, yes = "result would exceed 2^31-1 bytes", no = "result is fine") } test_overflow(n_samples = 1000, chunk_size = 500000) test_overflow(n_samples = 1000, chunk_size = 50000)
+
+I hope this helps.
+
+Best,
+Alex
+​
+
+lrbar...@sheffield.ac.uk schrieb am Montag, 11. August 2025 um 12:53:05 UTC+2:
+> Hi
+>
+> I am trying to use methylkit::unite() on a very large dataset (1000 WGBS samples) and running into various issues. I am running my code on an HPC and giving it 2TB of memory, 64 cores and 96h of time to run. I am running R version 4.4.1-foss-2022b.The current problem I am having is with the MethylKit::unite() function for which I am getting the error:
+>
+> methylationCpGs <- methylKit::unite(methylationDB,
+>
+>                                     destrand = TRUE,
+>
+>                                     mc.cores = 64,
+>
+>                                     save.db = TRUE,
+>
+>                                     chunk.size = 500000,
+>
+>                                     dbdir = "MethylKit_temp/FULL_DB",
+>
+>                                     suffix = "FullFilteredDB",
+>
+>                                     min.per.group = 500L)
+>
+>
+> Error in paste(tabixRes[[1]], collapse = "\n") :
+>
+>   result would exceed 2^31-1 bytes
+>
+> Calls: <Anonymous> ... getTabixByChunk -> tabix2df -> fread -> paste0 -> paste
+>
+> In addition: Warning message:
+>
+> In mclapply(chrs, mergeTbxByChr, tabixList, dir, filename2, parallel = TRUE,  :
+>
+>   scheduled core 2 did not deliver a result, all values of the job will be affected
+>
+> Execution halted
+> I believe this means that R is unable to deal with the list length produced by the filter mincov per group which is the point in which unite stops. I have tried reducing the chunk size to 500,000 and still get the same error.
+>
+> As a work around I am trying out the methylkit:::applyTbxByChr but seem to be stuck in the circular problem of needing to provide it with a tabix file which I am unable to provide without running the unite function. When providing the tabix file however, the enclosed unite function doesn’t work. I have recreated the problem with the internal package data:
+>
+> # for a filepath to a tbx file
+> > byChr <- methylKit:::applyTbxByChr(tbxFile = filepath, # at tabix file object
+> chrs = "chr21",#chromosome names
+> return.type = "tabix",# return type for the function
+> FUN = methylKit::unite, #function to apply to the chr
+> ... = list(myobjDB), # parameters to be passed to FUN
+> dir = "TARGET/", # directory to create temporary files and resulting tabix
+> filename = "TESTBYCHR", # just the file name for the resulting tabix
+> mc.cores = 1, # number of cores to use in parallel
+> tabixHead = "TESTBYCHR", # OPTIONAL header to add to the file
+> )
+>
+> Error: unable to find an inherited method for function ‘unite’ for signature ‘object = "data.frame"’
+> # for the original file.list created in the package
+> byChr <- methylKit:::applyTbxByChr(tbxFile = file.list, # at tabix file object
+> chrs = "chr21",#chromosome names
+> return.type = "data.frame",# return type for the function
+> FUN = methylKit::unite, #function to apply to the chr
+> ... = list(myobjDB), # parameters to be passed to FUN
+> dir = "TARGET/", # directory to create temporary files and resulting tabix
+> filename = "TESTBYCHR", # just the file name for the resulting tabix
+> mc.cores = 1, # number of cores to use in parallel
+> tabixHead = "TESTBYCHR", # OPTIONAL header to add to the file
+> )
+> Error: TabixFile: invalid 'file' argument
+>
+> Is there any alternative to either using MethylKit:::applyTbxByChr(), or to reduce the list length more in methylkit::unite() itself? Or another way to cope with large datasets?
+>
+> Thanks
+> Lucy
+
+From ua413e6cf6c4ea2cc at groups.google.com  Tue Aug 12 19:19:53 2025
+From: ua413e6cf6c4ea2cc at groups.google.com (alex....@gmail.com)
+Date: Tue, 12 Aug 2025 19:19:53 +0000
+Subject: Re: Very Large Data Unite()
+Message-ID: <iDw3Xb172hU.-TVRUle5AQAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <iDw3Xb172hU.xUOM5yK4AQAJ@methylkit-discussion.groups.google.com>
+References: <iDw3Xb172hU.rq2VzBpPAQAJ@methylkit-discussion.groups.google.com> <iDw3Xb172hU.xUOM5yK4AQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/iDw3Xb172hU/m/-TVRUle5AQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Updated version of the above code:  https://gist.github.com/alexg9010/a71269078b6613edaeab138db2b62945
+
+alex....@gmail.com schrieb am Dienstag, 12. August 2025 um 20:57:48 UTC+2:
+>
+> Hi Lucy,
+>
+> Unfortunately, we already know the problem where fetching data from the tabix files triggers the error where “result would exceed 2^31-1 bytes”
+> As you already mentioned, this is a limitation posed by R, which we currently worked around by using chunked and mostly per-chromosome processing. This worked fine so far, but since the number of samples per analysis keeps rising it was just a matter of time when this will not work anymore :D.
+>
+> There are multiple problems here: methylkit:::applyTbxByChr <https://github.com/al2na/methylKit/blob/ecf85842bdd5252161fa5bbe6aa0d285c87e1f77/R/tabix.functions.R#L765> operates only on a single tabix file, while methylKit::unite <https://github.com/al2na/methylKit/blob/ecf85842bdd5252161fa5bbe6aa0d285c87e1f77/R/methylDBFunctions.R#L670> will merge multiple Tabix files, so this will unfortunately not work. As a side note, the function called by methylkit:::applyTbxByChr should get and return a data.frame, this is why you got the Error: unable to find an inherited method for function ‘unite’ for signature ‘object = "data.frame"` . The second error occurs since methylkit:::applyTbxByChr expects a single tabix file.
+>
+> But now back to your original issue. You are right that error occurs at the filtering step, since the the call stack shows methylkit:::getTabixByChunk which is called by methylkit:::applyTbxByChunk <https://github.com/al2na/methylKit/blob/master/R/methylDBFunctions.R#L848>. I think your approach of reducing the chunk size is correct, but you have not been strict enough.
+>
+> You can use this code to check how much you need to reduce the chunk size:
+> library(methylKit) test_overflow <- function(n_samples, chunk_size) { # simulate 10 samples res <- dataSim(replicates = 10, sites = 1e3, treatment = rep(1, 10)) |> makeMethylDB(dbdir = tempdir()) |> # convert to tabix getDBPath() |> TabixFile(yieldSize = 100) |> open() |> Rsamtools::scanTabix() |> paste(collapse = "\n") |> paste0(collapse = "\n") |> object.size() * (n_samples / 10) * (chunk_size / 100) > 2^31 - 1 ifelse(res, yes = "result would exceed 2^31-1 bytes", no = "result is fine") } test_overflow(n_samples = 1000, chunk_size = 500000) test_overflow(n_samples = 1000, chunk_size = 50000)
+>
+> I hope this helps.
+>
+> Best,
+> Alex
+> ​
+> lrbar...@sheffield.ac.uk schrieb am Montag, 11. August 2025 um 12:53:05 UTC+2:
+> > Hi
+> >
+> > I am trying to use methylkit::unite() on a very large dataset (1000 WGBS samples) and running into various issues. I am running my code on an HPC and giving it 2TB of memory, 64 cores and 96h of time to run. I am running R version 4.4.1-foss-2022b.The current problem I am having is with the MethylKit::unite() function for which I am getting the error:
+> >
+> > methylationCpGs <- methylKit::unite(methylationDB,
+> >
+> >                                     destrand = TRUE,
+> >
+> >                                     mc.cores = 64,
+> >
+> >                                     save.db = TRUE,
+> >
+> >                                     chunk.size = 500000,
+> >
+> >                                     dbdir = "MethylKit_temp/FULL_DB",
+> >
+> >                                     suffix = "FullFilteredDB",
+> >
+> >                                     min.per.group = 500L)
+> >
+> >
+> > Error in paste(tabixRes[[1]], collapse = "\n") :
+> >
+> >   result would exceed 2^31-1 bytes
+> >
+> > Calls: <Anonymous> ... getTabixByChunk -> tabix2df -> fread -> paste0 -> paste
+> >
+> > In addition: Warning message:
+> >
+> > In mclapply(chrs, mergeTbxByChr, tabixList, dir, filename2, parallel = TRUE,  :
+> >
+> >   scheduled core 2 did not deliver a result, all values of the job will be affected
+> >
+> > Execution halted
+> > I believe this means that R is unable to deal with the list length produced by the filter mincov per group which is the point in which unite stops. I have tried reducing the chunk size to 500,000 and still get the same error.
+> >
+> > As a work around I am trying out the methylkit:::applyTbxByChr but seem to be stuck in the circular problem of needing to provide it with a tabix file which I am unable to provide without running the unite function. When providing the tabix file however, the enclosed unite function doesn’t work. I have recreated the problem with the internal package data:
+> >
+> > # for a filepath to a tbx file
+> > > byChr <- methylKit:::applyTbxByChr(tbxFile = filepath, # at tabix file object
+> > chrs = "chr21",#chromosome names
+> > return.type = "tabix",# return type for the function
+> > FUN = methylKit::unite, #function to apply to the chr
+> > ... = list(myobjDB), # parameters to be passed to FUN
+> > dir = "TARGET/", # directory to create temporary files and resulting tabix
+> > filename = "TESTBYCHR", # just the file name for the resulting tabix
+> > mc.cores = 1, # number of cores to use in parallel
+> > tabixHead = "TESTBYCHR", # OPTIONAL header to add to the file
+> > )
+> >
+> > Error: unable to find an inherited method for function ‘unite’ for signature ‘object = "data.frame"’
+> > # for the original file.list created in the package
+> > byChr <- methylKit:::applyTbxByChr(tbxFile = file.list, # at tabix file object
+> > chrs = "chr21",#chromosome names
+> > return.type = "data.frame",# return type for the function
+> > FUN = methylKit::unite, #function to apply to the chr
+> > ... = list(myobjDB), # parameters to be passed to FUN
+> > dir = "TARGET/", # directory to create temporary files and resulting tabix
+> > filename = "TESTBYCHR", # just the file name for the resulting tabix
+> > mc.cores = 1, # number of cores to use in parallel
+> > tabixHead = "TESTBYCHR", # OPTIONAL header to add to the file
+> > )
+> > Error: TabixFile: invalid 'file' argument
+> >
+> > Is there any alternative to either using MethylKit:::applyTbxByChr(), or to reduce the list length more in methylkit::unite() itself? Or another way to cope with large datasets?
+> >
+> > Thanks
+> > Lucy
+
+From uec335a81712c1b45 at groups.google.com  Wed Aug 13 07:25:03 2025
+From: uec335a81712c1b45 at groups.google.com (Lucy R Barnard)
+Date: Wed, 13 Aug 2025 07:25:03 +0000
+Subject: Re: Very Large Data Unite()
+Message-ID: <iDw3Xb172hU.rFtpzengAQAJ@methylkit-discussion.groups.google.com>
+In-Reply-To: <iDw3Xb172hU.-TVRUle5AQAJ@methylkit-discussion.groups.google.com>
+References: <iDw3Xb172hU.rq2VzBpPAQAJ@methylkit-discussion.groups.google.com> <iDw3Xb172hU.-TVRUle5AQAJ@methylkit-discussion.groups.google.com>
+Archived-At: <https://groups.google.com/g/methylkit_discussion/c/iDw3Xb172hU/m/rFtpzengAQAJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Alex,
+
+Thank you! Will test that out and fingers crossed!
+
+Lucy
+
+On Tuesday, 12 August 2025 at 20:19:53 UTC+1 alex....@gmail.com wrote:
+> Updated version of the above code:  https://gist.github.com/alexg9010/a71269078b6613edaeab138db2b62945
+>
+> alex....@gmail.com schrieb am Dienstag, 12. August 2025 um 20:57:48 UTC+2:
+> >
+> > Hi Lucy,
+> >
+> > Unfortunately, we already know the problem where fetching data from the tabix files triggers the error where “result would exceed 2^31-1 bytes”
+> > As you already mentioned, this is a limitation posed by R, which we currently worked around by using chunked and mostly per-chromosome processing. This worked fine so far, but since the number of samples per analysis keeps rising it was just a matter of time when this will not work anymore :D.
+> >
+> > There are multiple problems here: methylkit:::applyTbxByChr <https://github.com/al2na/methylKit/blob/ecf85842bdd5252161fa5bbe6aa0d285c87e1f77/R/tabix.functions.R#L765> operates only on a single tabix file, while methylKit::unite <https://github.com/al2na/methylKit/blob/ecf85842bdd5252161fa5bbe6aa0d285c87e1f77/R/methylDBFunctions.R#L670> will merge multiple Tabix files, so this will unfortunately not work. As a side note, the function called by methylkit:::applyTbxByChr should get and return a data.frame, this is why you got the Error: unable to find an inherited method for function ‘unite’ for signature ‘object = "data.frame"` . The second error occurs since methylkit:::applyTbxByChr expects a single tabix file.
+> >
+> > But now back to your original issue. You are right that error occurs at the filtering step, since the the call stack shows methylkit:::getTabixByChunk which is called by methylkit:::applyTbxByChunk <https://github.com/al2na/methylKit/blob/master/R/methylDBFunctions.R#L848>. I think your approach of reducing the chunk size is correct, but you have not been strict enough.
+> >
+> > You can use this code to check how much you need to reduce the chunk size:
+> > library(methylKit) test_overflow <- function(n_samples, chunk_size) { # simulate 10 samples res <- dataSim(replicates = 10, sites = 1e3, treatment = rep(1, 10)) |> makeMethylDB(dbdir = tempdir()) |> # convert to tabix getDBPath() |> TabixFile(yieldSize = 100) |> open() |> Rsamtools::scanTabix() |> paste(collapse = "\n") |> paste0(collapse = "\n") |> object.size() * (n_samples / 10) * (chunk_size / 100) > 2^31 - 1 ifelse(res, yes = "result would exceed 2^31-1 bytes", no = "result is fine") } test_overflow(n_samples = 1000, chunk_size = 500000) test_overflow(n_samples = 1000, chunk_size = 50000)
+> >
+> > I hope this helps.
+> >
+> > Best,
+> > Alex
+> > ​
+> > lrbar...@sheffield.ac.uk schrieb am Montag, 11. August 2025 um 12:53:05 UTC+2:
+> > > Hi
+> > >
+> > > I am trying to use methylkit::unite() on a very large dataset (1000 WGBS samples) and running into various issues. I am running my code on an HPC and giving it 2TB of memory, 64 cores and 96h of time to run. I am running R version 4.4.1-foss-2022b.The current problem I am having is with the MethylKit::unite() function for which I am getting the error:
+> > >
+> > > methylationCpGs <- methylKit::unite(methylationDB,
+> > >
+> > >                                     destrand = TRUE,
+> > >
+> > >                                     mc.cores = 64,
+> > >
+> > >                                     save.db = TRUE,
+> > >
+> > >                                     chunk.size = 500000,
+> > >
+> > >                                     dbdir = "MethylKit_temp/FULL_DB",
+> > >
+> > >                                     suffix = "FullFilteredDB",
+> > >
+> > >                                     min.per.group = 500L)
+> > >
+> > >
+> > > Error in paste(tabixRes[[1]], collapse = "\n") :
+> > >
+> > >   result would exceed 2^31-1 bytes
+> > >
+> > > Calls: <Anonymous> ... getTabixByChunk -> tabix2df -> fread -> paste0 -> paste
+> > >
+> > > In addition: Warning message:
+> > >
+> > > In mclapply(chrs, mergeTbxByChr, tabixList, dir, filename2, parallel = TRUE,  :
+> > >
+> > >   scheduled core 2 did not deliver a result, all values of the job will be affected
+> > >
+> > > Execution halted
+> > > I believe this means that R is unable to deal with the list length produced by the filter mincov per group which is the point in which unite stops. I have tried reducing the chunk size to 500,000 and still get the same error.
+> > >
+> > > As a work around I am trying out the methylkit:::applyTbxByChr but seem to be stuck in the circular problem of needing to provide it with a tabix file which I am unable to provide without running the unite function. When providing the tabix file however, the enclosed unite function doesn’t work. I have recreated the problem with the internal package data:
+> > >
+> > > # for a filepath to a tbx file
+> > > > byChr <- methylKit:::applyTbxByChr(tbxFile = filepath, # at tabix file object
+> > > chrs = "chr21",#chromosome names
+> > > return.type = "tabix",# return type for the function
+> > > FUN = methylKit::unite, #function to apply to the chr
+> > > ... = list(myobjDB), # parameters to be passed to FUN
+> > > dir = "TARGET/", # directory to create temporary files and resulting tabix
+> > > filename = "TESTBYCHR", # just the file name for the resulting tabix
+> > > mc.cores = 1, # number of cores to use in parallel
+> > > tabixHead = "TESTBYCHR", # OPTIONAL header to add to the file
+> > > )
+> > >
+> > > Error: unable to find an inherited method for function ‘unite’ for signature ‘object = "data.frame"’
+> > > # for the original file.list created in the package
+> > > byChr <- methylKit:::applyTbxByChr(tbxFile = file.list, # at tabix file object
+> > > chrs = "chr21",#chromosome names
+> > > return.type = "data.frame",# return type for the function
+> > > FUN = methylKit::unite, #function to apply to the chr
+> > > ... = list(myobjDB), # parameters to be passed to FUN
+> > > dir = "TARGET/", # directory to create temporary files and resulting tabix
+> > > filename = "TESTBYCHR", # just the file name for the resulting tabix
+> > > mc.cores = 1, # number of cores to use in parallel
+> > > tabixHead = "TESTBYCHR", # OPTIONAL header to add to the file
+> > > )
+> > > Error: TabixFile: invalid 'file' argument
+> > >
+> > > Is there any alternative to either using MethylKit:::applyTbxByChr(), or to reduce the list length more in methylkit::unite() itself? Or another way to cope with large datasets?
+> > >
+> > > Thanks
+> > > Lucy
+
