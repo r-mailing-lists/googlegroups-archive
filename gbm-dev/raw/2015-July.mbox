@@ -1,0 +1,180 @@
+From u990bd78abe1370d4 at groups.google.com  Wed Jul  8 14:20:23 2015
+From: u990bd78abe1370d4 at groups.google.com (Paul Metcalfe)
+Date: Wed, 08 Jul 2015 14:20:23 +0000
+Subject: astrazeneca / gbm
+Message-ID: <4tiBrg1ZHXc.PXG_w0FzxVUJ@gbm-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/gbm-dev/c/4tiBrg1ZHXc/m/PXG_w0FzxVUJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi!
+
+AstraZeneca, who have the misfortune to employ me, are looking to use gbm for routine data mining tasks in clinical data analysis.
+
+To that end, we'd like to get the code refactored, tidied, and documented, and we're planning on hiring a professional to do this.
+
+Can we have a discussion on the things that we'd like to do to gbm?  I know Stefan's had some ideas for refactoring, and we kicked around the distribution / family split a while back.
+
+But, collectively, what are our plans?
+
+--
+pdm
+
+From u7717ca2c00c5b536 at groups.google.com  Wed Jul  8 14:58:08 2015
+From: u7717ca2c00c5b536 at groups.google.com (Eric Graves)
+Date: Wed, 08 Jul 2015 14:58:08 +0000
+Subject: Re: astrazeneca / gbm
+Message-ID: <4tiBrg1ZHXc.GOAXIZqbmocJ@gbm-dev.groups.google.com>
+In-Reply-To: <4tiBrg1ZHXc.PXG_w0FzxVUJ@gbm-dev.groups.google.com>
+References: <4tiBrg1ZHXc.PXG_w0FzxVUJ@gbm-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/gbm-dev/c/4tiBrg1ZHXc/m/GOAXIZqbmocJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+As someone who uses GBM nearly every day at work here is my wishlist:
+Faster code through parallelization -- See XGBoost <https://github.com/dmlc/xgboost> for implementation details
+Influence trimming -- drop records with relatively large residuals in subsequent rounds.
+They are either outliers or the ensemble is already doing a good job of predicting them
+This speeds up the code as well as reduces overfitting
+See TreeNet's implementation for details: Item # 3 <http://www.salford-systems.com/blog/dan-steinberg/6-tips-to-optimize-treenet-models>
+Calculation of per variable contributions to the score
+Based on the difference between the parent node prediction and the child node predictions
+Useful for identifying score drivers on a per record basis
+var.monotone that allows square and cubic flips (distant 4th)
+var.monotone is what differentiates gbm from scikit-learn for my ever day use and allows me to use it for credit modeling
+Would be amazing to allow one or two flips in the variable relationship with the outcome
+
+On Wednesday, July 8, 2015 at 9:20:23 AM UTC-5, Paul Metcalfe wrote:
+> Hi!
+>
+> AstraZeneca, who have the misfortune to employ me, are looking to use gbm for routine data mining tasks in clinical data analysis.
+>
+> To that end, we'd like to get the code refactored, tidied, and documented, and we're planning on hiring a professional to do this.
+>
+> Can we have a discussion on the things that we'd like to do to gbm?  I know Stefan's had some ideas for refactoring, and we kicked around the distribution / family split a while back.
+>
+> But, collectively, what are our plans?
+>
+> --
+> pdm
+
+From uc0c02749ed1b1692 at groups.google.com  Thu Jul  9 06:31:26 2015
+From: uc0c02749ed1b1692 at groups.google.com (Stefan Schroedl)
+Date: Thu, 09 Jul 2015 06:31:26 +0000
+Subject: Re: astrazeneca / gbm
+Message-ID: <4tiBrg1ZHXc.1MniX_7jOdUJ@gbm-dev.groups.google.com>
+In-Reply-To: <4tiBrg1ZHXc.PXG_w0FzxVUJ@gbm-dev.groups.google.com>
+References: <4tiBrg1ZHXc.PXG_w0FzxVUJ@gbm-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/gbm-dev/c/4tiBrg1ZHXc/m/1MniX_7jOdUJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Paul,
+
+Thank you for asking. I filed a couple of issues as suggestions and discussion items, here is a summary.
+
+Code simplification, to improve readability and maintainability.
+Deprecate (remove) gbm.fit. Currently, the main training functionality is split between functions gbm and gbm.fit. This leads to some code bloat and duplication (passing and (re)checking the arguments, extracting dimensions etc). In order to simplify the code, should we get rid of gbm.fit? It is not really necessary for users; the documentation states saving the time to generate the model frame, however for non-trivial applications I would think this would be a marginal fraction of the overall run time … Thoughts?
+gbm.more.
+The option to run gbm.more for a model trained with keep.data=FALSE induces a lot of added complexity and code duplication. A significant portion of the code in gbm.more and gbm.fit is very similar, doing pre-training checks and data preparation. It might be better to e.g. pass the data and associated values (i.e., x, y, w, x.order, cRows, cCols, Misc, nTrain, etc) around in a common object, and have a single function to compute these values that is called both from gbm.fit and gbm.more.
+As a side remark to this: I don’t think the passed data should generally have to be identical to the original one, otherwise the option would not be necessary (we could just require the model always needs to be trained with keep.data=TRUE in order to be able to run gbm.more. Or maybe we should, as this would greatly simplify the code?) However, the parameter for number of training examples (nTrain) is copied from the model - this leads to a crash if the new data has less than nTrain rows. Possibly there might be other cases where passing a different second data set can lead to problems, I am not sure.
+Generalize distribution class API, and make FitBestConstant generic. The function APIs in the current distribution class have arguments for the instance vectors for target (adY), the current ensemble value (adF), the tree value (adFadj), the gradient (adZ), the weights (adW), and the offset (adOffset). First, ComputeWorkingResponse is called to calculate the gradient. Then, it is passed to FitBestConstant. Although FitBestConstant is implemented in every separate distribution, it is quite similar each time: A numerator array keeps track of the sum of gradients per terminal node, and a denominator array sums the diagonals of the Hessian (computed here). The final predicted value is the ratio of the two.
+Proposal: If we changed the interfaces of ComputeWorkingResponse and FitBestConstant to include the Hessian as well, it might be possible to reuse the same single implementation of FitBestConstant. Moreover, this would make it easier to allow options to use the Hessian differently, or not at all, see 2.1 below.
+     Short/medium term enhancements.
+ While the Newton algorithm helps find a good solution fast, sometimes the final model might be actually better using gradients alone (or, as a compromise, limit/cap the gradients). Low Hessians can easily lead to overfitting. Such a cap is implemented for the Bernoulli distribution, but we could make the procedure generally applicable for all distributions - give the user an option to use only gradients (for the initial trees) - use influence trimming etc ...
+grid values for gbm.plot: The parameter continuous.resolution allows to set equidistant spacing for 1-3 way interaction plots. However, especially for 1-D plots, it is often useful to see all steps (not necessarily equidistant) induced by any node split in any of the decision trees (more precisely, a grid of pairs of points at x-epsilon and x+epsilon for each threshold x in a continuous split; resp., all values for a categorical feature). This gives an idea of the split distribution, and more importantly, can visually indicate overfitting (these will show up as discontinuities or 'spikes'). There should be an option for grid spacing according to tree splits.
+Parallelization over multiple cores. With the latest GBM version, the option was introduced to parallelize cross validation by distribution to multiple cores. However, not every one uses cross validation all the time; it would be nice to parallelize the general algorithm as well. I am using GBM with large data files (millions of rows and hundreds of columns), and a single run requires many hours.
+
+90% of the GBM time is spent in the two nested loops (feature/split point) calculating possible losses. The most effective way to parallelize this would be to distribute different feature subsets to different cores (the Yahoo proprietary GBT code solved it like this).
+Long term ideas.
+Make the algorithm more flexible to allow for more recently proposed modifications, e.g.
+Inclusion of non-tree (e.g., linear) basis functions
+Rule ensemble induction through 2nd stage regularized linear models, (Predictive learning via rule ensemble, Friedman and Popescu)
+Drop-out (DART: Dropouts meet Multiple Additive Regression Trees, Rashmi and Gilad-Bachrach)
+
+Curious to hear thoughts and comments ...
+Thanks,
+  Stefan
+
+From u990bd78abe1370d4 at groups.google.com  Thu Jul  9 08:21:58 2015
+From: u990bd78abe1370d4 at groups.google.com (Paul Metcalfe)
+Date: Thu, 09 Jul 2015 08:21:58 +0000
+Subject: Re: astrazeneca / gbm
+Message-ID: <4tiBrg1ZHXc.jA8xcGYJBpwJ@gbm-dev.groups.google.com>
+In-Reply-To: <4tiBrg1ZHXc.PXG_w0FzxVUJ@gbm-dev.groups.google.com>
+References: <4tiBrg1ZHXc.PXG_w0FzxVUJ@gbm-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/gbm-dev/c/4tiBrg1ZHXc/m/jA8xcGYJBpwJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I like the idea of code simplification, tidying, testing and documentation, and I think that's where AZ is planning on spending its time.
+
+Bits I'd like to get done (kinda miscellaneous):
+
+much of the loss function code is essentially boilerplate and should be factored out
+I'd like to get the C++ much more RAII than it is
+[i'd almost like to see libgbm as a standalone C++ library.]
+
+Don't have concrete proposals yet.
+
+Given the unexplained segfaults that we've seen, I'm fairly sure that when it gets checked with UBSAN we'll find a bunch of interesting bugs. (http://dirk.eddelbuettel.com/blog/2015/01/18/ )
+
+And I'd like to get the R simpler too: all of the functions with very long argument lists could do with refactoring.  Again, don't have concrete proposals.
+
+There are actually people who use gbm.fit (whether for good reasons or not is unclear).  Dunno about gbm.more.
+
+The way I see what we're planning on doing is getting the code into a state where it's clear what it's doing, is fully documented, has a comprehensive test suite, and can then be further extended and developed.
+
+I do like the idea of parallelizing the core algorithm, and then going on to add in additional stuff.  But I'm a bit reluctant to take a patch that big now, so I'd really like to leave that for version N+1?
+
+--
+pdm
+
+From uc0c02749ed1b1692 at groups.google.com  Thu Jul  9 21:16:21 2015
+From: uc0c02749ed1b1692 at groups.google.com (Stefan Schroedl)
+Date: Thu, 09 Jul 2015 21:16:21 +0000
+Subject: Re: astrazeneca / gbm
+Message-ID: <4tiBrg1ZHXc.QvejX59q2HYJ@gbm-dev.groups.google.com>
+In-Reply-To: <4tiBrg1ZHXc.jA8xcGYJBpwJ@gbm-dev.groups.google.com>
+References: <4tiBrg1ZHXc.PXG_w0FzxVUJ@gbm-dev.groups.google.com> <4tiBrg1ZHXc.jA8xcGYJBpwJ@gbm-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/gbm-dev/c/4tiBrg1ZHXc/m/QvejX59q2HYJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+That sounds a good approach to me.
+I understand some people are using these functions, but if the same task can be accomplished using other functions with minor changes, and it helps significantly with code simplification, breaking backward compatibility shouldn't be completely ruled out ... My 2c.
+I was torn between putting the parallelization in the mid term or long term bucket ... We should at least investigate to get an estimate, it might be less change than we think.
+Could you please add me to the github developer list as well? I can help with some implementation (I have to do it in my spare time, though :-) )
+
+Thank you,
+  Stefan
+
+On Thursday, July 9, 2015 at 1:21:58 AM UTC-7, Paul Metcalfe wrote:
+> I like the idea of code simplification, tidying, testing and documentation, and I think that's where AZ is planning on spending its time.
+>
+> Bits I'd like to get done (kinda miscellaneous):
+>
+> much of the loss function code is essentially boilerplate and should be factored out
+> I'd like to get the C++ much more RAII than it is
+> [i'd almost like to see libgbm as a standalone C++ library.]
+>
+> Don't have concrete proposals yet.
+>
+> Given the unexplained segfaults that we've seen, I'm fairly sure that when it gets checked with UBSAN we'll find a bunch of interesting bugs. (http://dirk.eddelbuettel.com/blog/2015/01/18/ )
+>
+> And I'd like to get the R simpler too: all of the functions with very long argument lists could do with refactoring.  Again, don't have concrete proposals.
+>
+> There are actually people who use gbm.fit (whether for good reasons or not is unclear).  Dunno about gbm.more.
+>
+> The way I see what we're planning on doing is getting the code into a state where it's clear what it's doing, is fully documented, has a comprehensive test suite, and can then be further extended and developed.
+>
+> I do like the idea of parallelizing the core algorithm, and then going on to add in additional stuff.  But I'm a bit reluctant to take a patch that big now, so I'd really like to leave that for version N+1?
+>
+> --
+> pdm
+
