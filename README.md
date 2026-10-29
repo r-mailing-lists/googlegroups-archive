@@ -100,8 +100,10 @@ Some of R's busiest help forums of the 2010s were Google Groups rather than R's 
 | `rcytoscape` | The RCytoscape Bioconductor package, linking R and Cytoscape | last post March 2019 |
 | `rdevtools` | devtools, testthat, roxygen2 and profr | last post January 2023 |
 | `red-r` | Red-R, visual programming for R | last post December 2010 |
+| `renjin-dev` | Renjin, an interpreter for R on the Java Virtual Machine | last post December 2023 |
 | `rhadoop` | RHadoop, Hadoop with R | last post May 2016 |
 | `rhipe` | RHIPE, the R and Hadoop Processing Environment | last post May 2016 |
+| `rho-devel` | Rho, a virtual machine for R (previously CXXR) | last post May 2016 |
 | `right-user` | RIGHT, interactive graphics via HTML | last post February 2015 |
 | `rkoholiki` | Anonimni Rkoholiki, the Slovenian R users' group, in Slovenian and English | active, updated daily |
 | `ropengov-forum` | The rOpenGov project | last post March 2019 |
@@ -126,6 +128,7 @@ Some of R's busiest help forums of the 2010s were Google Groups rather than R's 
 | `sparkr-dev` | Development of SparkR, the R front end to Apache Spark | last post September 2019 |
 | `spocc-spabund-users` | The spOccupancy and spAbundance packages | active, updated daily |
 | `sqldf` | The sqldf package | last post February 2021 |
+| `stan-announce` | Announcements about Stan | last post May 2017 |
 | `stan-dev` | Development of Stan | moved to the Stan Forums |
 | `stan-users` | Help with Stan | moved to the Stan Forums in 2017 |
 | `statforling-with-r` | Statistics for linguistics with R | last post August 2024 |
