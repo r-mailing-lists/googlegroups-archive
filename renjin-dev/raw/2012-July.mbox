@@ -1,0 +1,140 @@
+From u21a7c1b5edb3112d at groups.google.com  Tue Jul 10 21:18:00 2012
+From: u21a7c1b5edb3112d at groups.google.com (Greg Bowyer)
+Date: Tue, 10 Jul 2012 21:18:00 +0000
+Subject: Possible gotchas in java interop ?
+Message-ID: <0TOZP1lJ9ow.3U71N2LsReQJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/0TOZP1lJ9ow/m/3U71N2LsReQJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi all,
+
+First up may I say that this is an excellent project its quite exciting to be able to get R used in strange situations. One of these is I am working on a project for embedding R into a solr search engine.
+
+I have come up against issues that stem from the interop between R and java with regard to floating point values and methods, whilst working on the unit test to attempt to resolve these issues I have noticed that the original test does not actually appear to be valid, I think it might actually be working more by luck than judgement
+
+The code that is called to resolve constructors does this job with the return of class.getConstructors() this seems from my testing to not have a well defined order, and as a result can come up in any order. For example
+
+---- %< -----
+Class as it stands right now -->
+    public org.renjin.jvminterop.CallJavaFromRTest(org.renjin.jvminterop.MyCakeTest)
+    public org.renjin.jvminterop.CallJavaFromRTest(int)
+    public org.renjin.jvminterop.CallJavaFromRTest(boolean)
+    public org.renjin.jvminterop.CallJavaFromRTest(double)
+    public org.renjin.jvminterop.CallJavaFromRTest(java.lang.String)
+
+Adding in a weird constructor (I picked IOException just to have an arbitarry object) -->
+    public org.renjin.jvminterop.CallJavaFromRTest(int)
+    public org.renjin.jvminterop.CallJavaFromRTest(org.renjin.jvminterop.MyCakeTest)
+    public org.renjin.jvminterop.CallJavaFromRTest(double)
+    public org.renjin.jvminterop.CallJavaFromRTest(java.io.IOException)
+    public org.renjin.jvminterop.CallJavaFromRTest(boolean)
+    public org.renjin.jvminterop.CallJavaFromRTest(java.lang.String)
+
+Removing the boolean constructor -->
+    public org.renjin.jvminterop.CallJavaFromRTest(double)
+    public org.renjin.jvminterop.CallJavaFromRTest(int)
+    public org.renjin.jvminterop.CallJavaFromRTest(org.renjin.jvminterop.MyCakeTest)
+    public org.renjin.jvminterop.CallJavaFromRTest(java.lang.String)
+
+Adding in a new public method -->
+    public org.renjin.jvminterop.CallJavaFromRTest(org.renjin.jvminterop.MyCakeTest)
+    public org.renjin.jvminterop.CallJavaFromRTest(boolean)
+    public org.renjin.jvminterop.CallJavaFromRTest(double)
+    public org.renjin.jvminterop.CallJavaFromRTest(int)
+    public org.renjin.jvminterop.CallJavaFromRTest(java.lang.String)
+---- >% ----
+
+As can be seen the constructors that are found are dependent on the way the JVM loaded and verified the class, it does not as far as I am aware make any ordering guarantees about constructors found through reflection.
+
+This naturally causes issues when interop tries to find the most suitable method or constructor to use.
+
+I am looking into how to easily fix this, I guess my proposal would be to allow the various converters to specify a precedence such that when methods and constructors are found, the code first gathers all the converters that can be used for interop with that method, and then picks the most suitable one. For example if the argument of the method is a double, but we have a boolean in hand then for that dispatch arguably it must be the most suitable dispatch, however if the target callee say has a boolean method then perhaps that should be favoured over a double method.
+
+Any thoughts or ideas, picking at this bug I thought it would be simple to make the double converter handle floats as the target of the call, but it transpires I might have opened a bigger can of worms.
+
+Or am I completely insane :D
+
+-- Greg
+
+From uf06db63329fab1f9 at groups.google.com  Wed Jul 11 07:54:09 2012
+From: uf06db63329fab1f9 at groups.google.com (Bertram, Alexander)
+Date: Wed, 11 Jul 2012 07:54:09 +0000
+Subject: Re: Possible gotchas in java interop ?
+Message-ID: <0TOZP1lJ9ow.Dlhf7UH_5mcJ@renjin-dev.groups.google.com>
+In-Reply-To: <0TOZP1lJ9ow.3U71N2LsReQJ@renjin-dev.groups.google.com>
+References: <0TOZP1lJ9ow.3U71N2LsReQJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/0TOZP1lJ9ow/m/Dlhf7UH_5mcJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Greg,
+You're totally right; the interaction between overloading in Java and R-style implicit conversion needs to be handled with care.
+
+And indeed, the ConstructorBinding currently does not at all handle this, which will lead to totally arbitrary behavior.
+
+I think this has been dealt with ok for calls to JVM methods -- the idea is to sort by the overloads by the "specificity" of their arguments (see http://code.google.com/p/renjin/source/browse/trunk/core/src/main/java/org/renjin/jvminterop/AbstractOverload.java#130) but for reasons that escape me I failed to do the same for constructors.
+
+I've tabled the issue and added what I think will fix this but I haven't had time to write the tests; can you test it against your tests and then submit it all together as a patch?
+
+http://code.google.com/p/renjin/issues/detail?id=18
+
+Thanks for finding this and very curious to hear how you're using Renjin in Solr !
+
+Best,
+
+Alex
+
+On Jul 10, 2012 11:18 PM, "Greg Bowyer" <gbo...@fastmail.co.uk> wrote:
+> Hi all,
+>
+> First up may I say that this is an excellent project its quite exciting to be able to get R used in strange situations. One of these is I am working on a project for embedding R into a solr search engine.
+>
+> I have come up against issues that stem from the interop between R and java with regard to floating point values and methods, whilst working on the unit test to attempt to resolve these issues I have noticed that the original test does not actually appear to be valid, I think it might actually be working more by luck than judgement
+>
+> The code that is called to resolve constructors does this job with the return of class.getConstructors() this seems from my testing to not have a well defined order, and as a result can come up in any order. For example
+>
+> ---- %< -----
+> Class as it stands right now -->
+>     public org.renjin.jvminterop.CallJavaFromRTest(org.renjin.jvminterop.MyCakeTest)
+>     public org.renjin.jvminterop.CallJavaFromRTest(int)
+>     public org.renjin.jvminterop.CallJavaFromRTest(boolean)
+>     public org.renjin.jvminterop.CallJavaFromRTest(double)
+>     public org.renjin.jvminterop.CallJavaFromRTest(java.lang.String)
+>
+> Adding in a weird constructor (I picked IOException just to have an arbitarry object) -->
+>     public org.renjin.jvminterop.CallJavaFromRTest(int)
+>     public org.renjin.jvminterop.CallJavaFromRTest(org.renjin.jvminterop.MyCakeTest)
+>     public org.renjin.jvminterop.CallJavaFromRTest(double)
+>     public org.renjin.jvminterop.CallJavaFromRTest(java.io.IOException)
+>     public org.renjin.jvminterop.CallJavaFromRTest(boolean)
+>     public org.renjin.jvminterop.CallJavaFromRTest(java.lang.String)
+>
+> Removing the boolean constructor -->
+>     public org.renjin.jvminterop.CallJavaFromRTest(double)
+>     public org.renjin.jvminterop.CallJavaFromRTest(int)
+>     public org.renjin.jvminterop.CallJavaFromRTest(org.renjin.jvminterop.MyCakeTest)
+>     public org.renjin.jvminterop.CallJavaFromRTest(java.lang.String)
+>
+> Adding in a new public method -->
+>     public org.renjin.jvminterop.CallJavaFromRTest(org.renjin.jvminterop.MyCakeTest)
+>     public org.renjin.jvminterop.CallJavaFromRTest(boolean)
+>     public org.renjin.jvminterop.CallJavaFromRTest(double)
+>     public org.renjin.jvminterop.CallJavaFromRTest(int)
+>     public org.renjin.jvminterop.CallJavaFromRTest(java.lang.String)
+> ---- >% ----
+>
+> As can be seen the constructors that are found are dependent on the way the JVM loaded and verified the class, it does not as far as I am aware make any ordering guarantees about constructors found through reflection.
+>
+> This naturally causes issues when interop tries to find the most suitable method or constructor to use.
+>
+> I am looking into how to easily fix this, I guess my proposal would be to allow the various converters to specify a precedence such that when methods and constructors are found, the code first gathers all the converters that can be used for interop with that method, and then picks the most suitable one. For example if the argument of the method is a double, but we have a boolean in hand then for that dispatch arguably it must be the most suitable dispatch, however if the target callee say has a boolean method then perhaps that should be favoured over a double method.
+>
+> Any thoughts or ideas, picking at this bug I thought it would be simple to make the double converter handle floats as the target of the call, but it transpires I might have opened a bigger can of worms.
+>
+> Or am I completely insane :D
+>
+> -- Greg
+

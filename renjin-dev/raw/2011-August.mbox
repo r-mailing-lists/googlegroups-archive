@@ -1,0 +1,1524 @@
+From uf06db63329fab1f9 at groups.google.com  Sat Aug 27 07:15:52 2011
+From: uf06db63329fab1f9 at groups.google.com (Bertram, Alexander)
+Date: Sat, 27 Aug 2011 07:15:52 +0000
+Subject: Re: about Renjin on the google project hosting...
+Message-ID: <OwsOpMVPbHA.zmyXTcJ5FnkJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/OwsOpMVPbHA/m/zmyXTcJ5FnkJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Yes! That's it exactly.
+
+If you want to call the mean() closure from test code you will need to call topLevelContext.init() which will load the base package that contains mean() closure. This is not done by default because it still takes quite a bit of time to load the base package.
+
+On Sat, Aug 27, 2011 at 8:50 AM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> when i test
+>
+> (1) assertThat( eval("mean(c(1,2,3,4))"), equalTo(c(2.5)));
+>
+> renjin will call the R-level mean function, if i test
+>
+> (2) assertThat( eval(".Internal(mean(c(1,2,3,4)))"), equalTo(c(2.5)));
+>
+> renjin will call the Java level mean function. is that right?
+>
+> if yes, (1) throws exception and says no function found with name 'mean'.
+>
+> And maybe i can ask those question in a relay chat when you get online in some platforms.
+>
+> On Sat, Aug 27, 2011 at 9:36 AM, Bertram, Alexander <al...@bedatadriven.com> wrote:
+> > Hi Mehmet,
+> >
+> > I'm not sure why your second test doesn't run (do you get a stack trace?) but more generally you have to be careful with the signatures because often the internal primitives don't match what you're used to calling from R because the R base library includes an outer function that does argument processing.
+> >
+> > So for example, if you open an R-2.x repl and type 'mean', you'll see that it's actually an R-language closure:
+> >
+> > > mean
+> > function (x, ...)
+> > UseMethod("mean")
+> > <environment: namespace:base>
+> >
+> > This closure dispatches based on the class of x, either to mean.default or mean.data.frame, etc.
+> >
+> > If you look at mean.default you'll see that the na.rm argument is handled at the R-language level:
+> >
+> > > mean.default
+> > function (x, trim = 0, na.rm = FALSE, ...)
+> > {
+> >     if (!is.numeric(x) && !is.complex(x) && !is.logical(x)) {
+> >         warning("argument is not numeric or logical: returning NA")
+> >         return(NA_real_)
+> >     }
+> >     if (na.rm)
+> >         x <- x[!is.na <http://is.na>(x)]
+> >     if (!is.numeric(trim) || length(trim) != 1L)
+> >         stop("'trim' must be numeric of length one")
+> >     n <- length(x)
+> >     if (trim > 0 && n) {
+> >         if (is.complex(x))
+> >             stop("trimmed means are not defined for complex data")
+> >         if (any(is.na <http://is.na>(x)))
+> >             return(NA_real_)
+> >         if (trim >= 0.5)
+> >             return(stats::median(x, na.rm = FALSE))
+> >         lo <- floor(n * trim) + 1
+> >         hi <- n + 1 - lo
+> >         x <- sort.int <http://sort.int>(x, partial = unique(c(lo, hi)))[lo:hi]
+> >     }
+> >     .Internal(mean(x))
+> > }
+> > <environment: namespace:base>
+> >
+> > The closure applies the na.rm and the trim functions and then calls the "internal" function which takes a single argument.
+> >
+> > Renjin reuses whole the R-language base package from R-2.10, so we just have to replace the internal functions that are written in C in the original interpreter.
+> >
+> > Another point is that currently you can only use the @NamedFlag annotation in combination with an @ArgumentList annotation (see the implementation of c() or the [ ] operators)
+> >
+> > This is because in general, R primitives use only positional argument matching and ignore argument names. (This is why many R primitives are wrapped in closures-- the closures handle arg matching, default values, etc, and then pass the processed args to the primitive:
+> >
+> > > grep
+> > function (pattern, x, ignore.case = FALSE, perl = FALSE, value = FALSE,
+> >     fixed = FALSE, useBytes = FALSE, invert = FALSE)
+> > {
+> >     if (!is.character(x))
+> >         x <- structure(as.character(x), names = names(x))
+> >     .Internal(grep(as.character(pattern), x, ignore.case, value,
+> >         perl, fixed, useBytes, invert))
+> > }
+> > <environment: namespace:base>
+> >
+> > However, in the C implementation, each function handles argument processing independently and so is not always consistent.
+> >
+> > the @ArgumentList and @NamedFlag are meant to support the family of primitive functions that use a variable number of arguments and some named flags.
+> >
+> > HTH,
+> >
+> > Alex
+> >
+> >
+> > On Fri, Aug 26, 2011 at 9:06 PM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> > > Hi Alex,
+> > >
+> > > there is some problems on my mind.  Suppose the code is
+> > >
+> > > @Primitive("mean")
+> > >   public static SEXP mean(Vector x, @NamedFlag("na.rm") boolean removeNA) {
+> > >     double mean = 0.0;
+> > >     int len = 0;
+> > >     for (int i=0;i<x.length();i++){
+> > >       if(removeNA && !x.isElementNA(i)){
+> > >         len++;
+> > >         mean+=x.getElementAsDouble(i);
+> > >       }
+> > >     }
+> > >     return(new DoubleVector(new double[]{mean / len}));
+> > >   }
+> > >
+> > >   public static SEXP mean(Vector x) {
+> > >     return(mean(x,false));
+> > >   }
+> > >
+> > > which stands for simple arithmetic mean. In a test file, i have 2 assertations like that:
+> > >
+> > >
+> > > @Test
+> > >   public void testMean() {
+> > >     assertThat( eval(".Internal(mean(c(1,2,3,4,NA,NA), na.rm=TRUE))"), equalTo(c(2.5)));
+> > >     //This fails!
+> > >     //assertThat( eval(".Internal(mean(c(1,2,3,4,NA,NA)))"), equalTo(c(2.5)));
+> > >   }
+> > >
+> > >
+> > > first assertation works well, because it fits the number of parameters. Second one does not runs.  What to do?
+> > >
+> > >
+> > >
+> > > On Fri, Aug 26, 2011 at 4:24 PM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> > > > Sounds good!
+> > > >
+> > > > Very nice. I am browsing the code. Lots of work is waiting. It is pretty fun!.
+> > > >
+> > > > thank you
+> > > >
+> > > >
+> > > >
+> > > > On Fri, Aug 26, 2011 at 4:18 PM, Bertram, Alexander <al...@bedatadriven.com> wrote:
+> > > > > Sorry sent by accident! more below
+> > > > >
+> > > > > On Fri, Aug 26, 2011 at 3:11 PM, Bertram, Alexander <al...@bedatadriven.com> wrote:
+> > > > > > Hi Mehmet,
+> > > > > >
+> > > > > > Regarding the arguments, I've tried to abstract away the argument checking and conversion away from the actual methods so that implementation is a bit cleaner. There is a class called RuntimeInvoker that does this at runtime using reflection (slow) and a class called WrapperGenerator that actaully generates the code at compile time (faster). The WrapperGenerator is still a work in progress and can't generate wrappers yet for all methods, but you can see the generated sources in core/target/generated-sources/r-wrappers
+> > > > > >
+> > > > > > So to implement sort() for other vector types, you can either create an overload for the numeric vectors, like:
+> > > > >
+> > > > >  public static Vector sort(DoubleVector x, boolean decreasing)  {
+> > > > >  }
+> > > > >
+> > > > >  and renjin will choose this at runtime based on the arguments (vectors are widened implicitly, so the method above would catch IntVector and LogicalVector as well) or you could widen the argument type of the existing method:
+> > > > >
+> > > > >     public static Vector sort(AtomicVector x, boolean decreasing)
+> > > > >
+> > > > >    and implement the algorithm generically (you may want to add a compareElement function to the AtomicVector interface then)
+> > > > >
+> > > > >    Regarding the raw types, I haven't touched them at all, so yes if you wanted to implement the raw functions you could create a new AtomicVector subclass and a corresponding VectorType.
+> > > > >
+> > > > >   Great that you're digging into the code!  Keep the questions comming!
+> > > > >
+> > > > >   Alex
+> > > > >
+> > > > > > On Fri, Aug 26, 2011 at 2:52 PM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> > > > > > > Hi Alex,
+> > > > > > >
+> > > > > > > question:
+> > > > > > >
+> > > > > > > public static Vector sort(StringVector x, boolean decreasing)
+> > > > > > > takes the vector parameter as strings. What passes those parameters to functions? What will be due for generic functions? for example sort function can take several types of variables: doubles, ints etc. Must we use Vector instead?
+> > > > > > >
+> > > > > > > Second, if we want to rawToX, as.raw functions, must we define RawVector, RawType classes?
+> > > > > > >
+> > > > > > > Sorry about those question, it takes time to take habits of already written code.
+> > > > > > >
+> > > > > > > Best.
+> > > > > > >
+> > > > > > >
+> > > > > > >
+> > > > > > > On Fri, Aug 26, 2011 at 12:37 PM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> > > > > > > > Hi Alex,
+> > > > > > > >
+> > > > > > > > I totally understood your point of view and  you are almost right with your thought.
+> > > > > > > >
+> > > > > > > > It is good idea to make a package run, so at the end, we will have got all the functions included in this package run. It is also true that %100 compatible renjin will follow the code optimization after all. Finally, i am sure that people will use it. Unfortunately source code of R is a bit complicated, it is difficult to follow the code but i will choose the way of porting them rather than to find short-cut temporary solutions. It is also valid for the RNG implementation. I think my priority is not defined yet but making this project my primary hobby will let me something valuable.
+> > > > > > > >
+> > > > > > > >
+> > > > > > > > Best.
+> > > > > > > >
+> > > > > > > >
+> > > > > > > >
+> > > > > > > > On Fri, Aug 26, 2011 at 11:46 AM, Bertram, Alexander <al...@bedatadriven.com> wrote:
+> > > > > > > > > Hi Mehmet,
+> > > > > > > > >
+> > > > > > > > > Great! Yes a small first patch but a very useful first patch!
+> > > > > > > > >
+> > > > > > > > > I think the question about random numbers is a good one. My own feeling is that an R program that runs "correctly" on R-2.x should also run "correctly" on renjin. So I think as long as most R programs don't make too strong of an assumption about what they're getting from the RNG, an alternate implementation from commons math should be sufficient. But I also haven't looked closely at this issue and there may be some specific types of RNGs that are not implemented by commons math and may need to be ported from the C implementations.
+> > > > > > > > >
+> > > > > > > > > It is also a question of priority... My own perfernce is to have first a broad coverage of R functionality implemented, and then to narrow the focus to specific issues of performance or ultra-correctness. The rationale being that a slow renjin that can run 90% of R programs is more useful than a very fast renjin that can only run 30% of R programs.
+> > > > > > > > >
+> > > > > > > > > But the ultimate success of this project is highly dependent on having a strong team of active committers so I am very open to your ideas and priorities!
+> > > > > > > > >
+> > > > > > > > > Best,
+> > > > > > > > >
+> > > > > > > > > Alex
+> > > > > > > > >
+> > > > > > > > > On Fri, Aug 26, 2011 at 10:27 AM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> > > > > > > > > > Hi Alex,
+> > > > > > > > > >
+> > > > > > > > > > All the feeling you have is the same for me. I am very excited in this project, i am interested in both Java, R and interpreters. This is the best fit project for me, i hope, we will do something valuable for this project. Finally, i submitted my first patch... It was funny, a single byrow=TRUE parameter implementation does not mean whole the R but i think it is just a starting point.
+> > > > > > > > > >
+> > > > > > > > > > By the way, i plan to make this project my primary hobby, that means whenever i win a empty space of time, i will spend it with this.
+> > > > > > > > > >
+> > > > > > > > > > A special issue, i am reading the R source code and its random number generators. R uses too many algorithms for generating number numbers and also apache.commons.math library has its own RNG functionality. What is the 'key point' of this project? For example is it a rule that 'we must generate same random numbers with original R using a same seed?'.
+> > > > > > > > > >
+> > > > > > > > > > Thank you for starting this project.
+> > > > > > > > > >
+> > > > > > > > > > All the best
+> > > > > > > > > >
+> > > > > > > > > > Hakan.
+> > > > > > > > > >
+> > > > > > > > > >
+> > > > > > > > > > On Fri, Aug 26, 2011 at 11:19 AM, Bertram, Alexander <al...@bedatadriven.com> wrote:
+> > > > > > > > > > > Hi Mehmet,
+> > > > > > > > > > > This is great! I've added you as a committer to the project so you should be able to commit this right away.
+> > > > > > > > > > >
+> > > > > > > > > > > We have a build server set up that will run tests and verify everything after each commit. (http://build.bedatadriven.com/job/Renjin)
+> > > > > > > > > > >
+> > > > > > > > > > > I think there are quite a few partially implemented functions; my own immediate goal is to get the survey package running in renjin so I've just been progressively implementing only what's needed by that package.
+> > > > > > > > > > >
+> > > > > > > > > > > I'm super excited that you're interested in the project-- it's unfortunately been rare to find java developers who also know R well.
+> > > > > > > > > > >
+> > > > > > > > > > > Looking forward to a fruitful cooperation!
+> > > > > > > > > > >
+> > > > > > > > > > > Best,
+> > > > > > > > > > >
+> > > > > > > > > > > Alex
+> > > > > > > > > > >
+> > > > > > > > > > > On Thu, Aug 25, 2011 at 9:46 PM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> > > > > > > > > > > > Hi Alex,
+> > > > > > > > > > > >
+> > > > > > > > > > > > Here comes some patch by me:
+> > > > > > > > > > > >
+> > > > > > > > > > > > file: CombineTest.java
+> > > > > > > > > > > > ____________________________
+> > > > > > > > > > > >     @Test
+> > > > > > > > > > > >     public void matrixByRow() {
+> > > > > > > > > > > >         assertThat(eval(".Internal(matrix(c(1,2,3,4),2,2,TRUE,NULL))"), equalTo(c(1, 3, 2, 4)));
+> > > > > > > > > > > >         assertThat(eval(".Internal(matrix(c(1,2,3,4),2,4,TRUE,NULL))"), equalTo(c(1, 1, 2, 2, 3, 3, 4, 4)));
+> > > > > > > > > > > >     }
+> > > > > > > > > > > >
+> > > > > > > > > > > >
+> > > > > > > > > > > > added for matrix primitive's byrow= parameter. It seems it is not implemented, i think for the performance issues. I changed Combine.java as:
+> > > > > > > > > > > >
+> > > > > > > > > > > > file: Combine.java
+> > > > > > > > > > > > ______________________________
+> > > > > > > > > > > > public static SEXP matrix(Vector data, int nrow, int ncol, boolean byRow, Vector dimnames) {
+> > > > > > > > > > > >         Vector.Builder result = data.newBuilder(0);
+> > > > > > > > > > > >         int i = 0;
+> > > > > > > > > > > >
+> > > > > > > > > > > >         if (!byRow) {
+> > > > > > > > > > > >             for (int col = 0; col < ncol; ++col) {
+> > > > > > > > > > > >                 for (int row = 0; row < nrow; ++row) {
+> > > > > > > > > > > >                     int sourceIndex = Indexes.matrixIndexToVectorIndex(row, col, nrow, ncol) % data.length();
+> > > > > > > > > > > >                     result.setFrom(i++, data, sourceIndex);
+> > > > > > > > > > > >                 }
+> > > > > > > > > > > >             }
+> > > > > > > > > > > >         } else {
+> > > > > > > > > > > >             for (int row = 0; row < nrow; ++row) {
+> > > > > > > > > > > >                 for (int col = 0; col < ncol; ++col) {
+> > > > > > > > > > > >                     result.setFrom(row + (col * nrow), data, i % data.length());
+> > > > > > > > > > > >                     i++;
+> > > > > > > > > > > >                 }
+> > > > > > > > > > > >             }
+> > > > > > > > > > > >         }
+> > > > > > > > > > > >         result.setAttribute(Symbol.DIM, new IntVector(nrow, ncol));
+> > > > > > > > > > > >         return result.build();
+> > > > > > > > > > > >     }
+> > > > > > > > > > > >
+> > > > > > > > > > > >
+> > > > > > > > > > > > Yes, it is only a start for me. But i believe i can do more.
+> > > > > > > > > > > >
+> > > > > > > > > > > > All the best.
+> > > > > > > > > > > >
+> > > > > > > > > > > >
+> > > > > > > > > > > >
+> > > > > > > > > > > >
+> > > > > > > > > > > > On Thu, Aug 25, 2011 at 9:19 PM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> > > > > > > > > > > > > Hi Alex,
+> > > > > > > > > > > > >
+> > > > > > > > > > > > > Very good news. I used to contribute GNU PSPP, because i like to write statistical programmes but the main difficulty was that my main language is Java rather than C. I will feel as i am at home when i write something in the Java.
+> > > > > > > > > > > > > Finally i am downloading the source code of renjin and i will browse the code from start to end. As well as i finished something useful, i will send to you in order to be a contributer of this. I believe that people will use it because i saw that integrating R with Java is not a trivial work for lots of programmers.
+> > > > > > > > > > > > > Wait mails from me
+> > > > > > > > > > > > >
+> > > > > > > > > > > > > All the Best
+> > > > > > > > > > > > >
+> > > > > > > > > > > > > Hakan.
+> > > > > > > > > > > > >
+> > > > > > > > > > > > >
+> > > > > > > > > > > > >
+> > > > > > > > > > > > >
+> > > > > > > > > > > > >
+> > > > > > > > > > > > > On Thu, Aug 25, 2011 at 3:00 PM, Bertram, Alexander <al...@bedatadriven.com> wrote:
+> > > > > > > > > > > > > > Hey Mehmet,
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > > > Great! I've used your RCaller library, by the way, very useful!
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > > > I would love to have you involved in the project, there is still alot to do and I'm not able to work on it as much as I would like until December or so. The best way to get started is probably writing/porting implementations of the R primitive functions from their original C forms.
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > > > I've just updated the Contributor Guide here : http://code.google.com/p/renjin/wiki/ContributingPrimitives?ts=1314273393&updated=ContributingPrimitives
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > > > Just send me your first contribution as a patch and then I will add you as a contributor to the project.
+> > > > > > > > > > > > > > Don't hesitate to give me a shout if you have any problems building, or finding your way around the code, or implementation.
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > > > Thanks !!
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > > > Best,
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > > > Alex
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > > > On Thu, Aug 25, 2011 at 12:41 PM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> > > > > > > > > > > > > > > Hey friend,
+> > > > > > > > > > > > > > >
+> > > > > > > > > > > > > > > That is great!  I am interested in both Java and R and i stumbled upon your project on the google code.
+> > > > > > > > > > > > > > > I have got a library called RCaller (http://www.mhsatman.com/rcaller.php) and i have got several R packages in the cran repository (SSSR, Runiversal, galts, mcga) .
+> > > > > > > > > > > > > > > I want to get involved this project...
+> > > > > > > > > > > > > > >
+> > > > > > > > > > > > > > > Tell me if you want me to involve and the procedures...
+> > > > > > > > > > > > > > >
+> > > > > > > > > > > > > > > All the best.
+> > > > > > > > > > > > > > >
+> > > > > > > > > > > > > > > Dr.Mehmet Hakan Satman
+> > > > > > > > > > > > > > >
+> > > > > > > > > > > > > > >
+> > > > > > > > > > > > > > >
+> > > > > > > > > > > > > > >
+> > > > > > > > > > > > > >
+> > > > > > > > > > > > >
+> > > > > > > > > > > >
+> > > > > > > > > > >
+> > > > > > > > > >
+> > > > > > > > >
+> > > > > > > >
+> > > > > > >
+> > > > > >
+> > > > >
+> > > >
+> > >
+> >
+>
+
+From u6f972a2ec0d43d01 at groups.google.com  Sat Aug 27 07:35:19 2011
+From: u6f972a2ec0d43d01 at groups.google.com (Mehmet Hakan Satman)
+Date: Sat, 27 Aug 2011 07:35:19 +0000
+Subject: Re: about Renjin on the google project hosting...
+Message-ID: <OwsOpMVPbHA.qptwmOIvE_0J@renjin-dev.groups.google.com>
+In-Reply-To: <OwsOpMVPbHA.zmyXTcJ5FnkJ@renjin-dev.groups.google.com>
+References: <OwsOpMVPbHA.zmyXTcJ5FnkJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/OwsOpMVPbHA/m/qptwmOIvE_0J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+A good history for starters
+
+On Aug 27, 10:15 am, "Bertram, Alexander" <a...@bedatadriven.com>
+wrote:
+
+> Yes! That's it exactly.
+>
+> If you want to call the mean() closure from test code you will need to call
+> topLevelContext.init() which will load the base package that contains mean()
+> closure. This is not done by default because it still takes quite a bit of
+> time to load the base package.
+>
+
+> On Sat, Aug 27, 2011 at 8:50 AM, Mehmet Hakan Satman <mhsat...@gmail.com>wrote:
+>
+>
+>
+>
+>
+>
+>
+> > when i test
+>
+> > (1) assertThat( eval("mean(c(1,2,3,4))"), equalTo(c(2.5)));
+>
+> > renjin will call the R-level mean function, if i test
+>
+> > (2) assertThat( eval(".Internal(mean(c(1,2,3,4)))"), equalTo(c(2.5)));
+>
+> > renjin will call the Java level mean function. is that right?
+>
+> > if yes, (1) throws exception and says no function found with name 'mean'.
+>
+> > And maybe i can ask those question in a relay chat when you get online in
+> > some platforms.
+>
+
+> > On Sat, Aug 27, 2011 at 9:36 AM, Bertram, Alexander <a...@bedatadriven.com
+
+> > > wrote:
+>
+> >> Hi Mehmet,
+>
+> >> I'm not sure why your second test doesn't run (do you get a stack trace?)
+> >> but more generally you have to be careful with the signatures because often
+> >> the internal primitives don't match what you're used to calling from R
+> >> because the R base library includes an outer function that does argument
+> >> processing.
+>
+> >> So for example, if you open an R-2.x repl and type 'mean', you'll see that
+> >> it's actually an R-language closure:
+>
+> >> > mean
+> >> function (x, ...)
+> >> UseMethod("mean")
+> >> <environment: namespace:base>
+>
+> >> This closure dispatches based on the class of x, either to mean.default or
+> >> mean.data.frame, etc.
+>
+> >> If you look at mean.default you'll see that the na.rm argument is handled
+> >> at the R-language level:
+>
+> >> > mean.default
+> >> function (x, trim = 0, na.rm = FALSE, ...)
+> >> {
+> >>     if (!is.numeric(x) && !is.complex(x) && !is.logical(x)) {
+> >>         warning("argument is not numeric or logical: returning NA")
+> >>         return(NA_real_)
+> >>     }
+> >>     if (na.rm)
+> >>         x <- x[!is.na <http://is.na>(x)]
+> >>     if (!is.numeric(trim) || length(trim) != 1L)
+> >>         stop("'trim' must be numeric of length one")
+> >>     n <- length(x)
+> >>     if (trim > 0 && n) {
+> >>         if (is.complex(x))
+> >>             stop("trimmed means are not defined for complex data")
+> >>         if (any(is.na <http://is.na>(x)))
+> >>             return(NA_real_)
+> >>         if (trim >= 0.5)
+> >>             return(stats::median(x, na.rm = FALSE))
+> >>         lo <- floor(n * trim) + 1
+> >>         hi <- n + 1 - lo
+> >>         x <- sort.int <http://sort.int>(x, partial = unique(c(lo, hi)))[lo:hi]
+> >>     }
+> >>     .Internal(mean(x))
+> >> }
+> >> <environment: namespace:base>
+>
+> >> The closure applies the na.rm and the trim functions and then calls the
+> >> "internal" function which takes a single argument.
+>
+> >> Renjin reuses whole the R-language base package from R-2.10, so we just
+> >> have to replace the internal functions that are written in C in the original
+> >> interpreter.
+>
+> >> Another point is that currently you can only use the @NamedFlag annotation
+> >> in combination with an @ArgumentList annotation (see the implementation of
+> >> c() or the [ ] operators)
+>
+> >> This is because in general, R primitives use only positional argument
+> >> matching and ignore argument names. (This is why many R primitives are
+> >> wrapped in closures-- the closures handle arg matching, default values, etc,
+> >> and then pass the processed args to the primitive:
+>
+> >> > grep
+> >> function (pattern, x, ignore.case = FALSE, perl = FALSE, value = FALSE,
+> >>     fixed = FALSE, useBytes = FALSE, invert = FALSE)
+> >> {
+> >>     if (!is.character(x))
+> >>         x <- structure(as.character(x), names = names(x))
+> >>     .Internal(grep(as.character(pattern), x, ignore.case, value,
+> >>         perl, fixed, useBytes, invert))
+> >> }
+> >> <environment: namespace:base>
+>
+> >> However, in the C implementation, each function handles argument
+> >> processing independently and so is not always consistent.
+>
+> >> the @ArgumentList and @NamedFlag are meant to support the family of
+> >> primitive functions that use a variable number of arguments and some named
+> >> flags.
+>
+> >> HTH,
+>
+> >> Alex
+>
+
+> >> On Fri, Aug 26, 2011 at 9:06 PM, Mehmet Hakan Satman <mhsat...@gmail.com>wrote:
+>
+> >>> Hi Alex,
+>
+> >>> there is some problems on my mind.  Suppose the code is
+>
+> >>> @Primitive("mean")
+> >>>   public static SEXP mean(Vector x, @NamedFlag("na.rm") boolean removeNA)
+> >>> {
+> >>>     double mean = 0.0;
+> >>>     int len = 0;
+> >>>     for (int i=0;i<x.length();i++){
+> >>>       if(removeNA && !x.isElementNA(i)){
+> >>>         len++;
+> >>>         mean+=x.getElementAsDouble(i);
+> >>>       }
+> >>>     }
+> >>>     return(new DoubleVector(new double[]{mean / len}));
+> >>>   }
+>
+> >>>   public static SEXP mean(Vector x) {
+> >>>     return(mean(x,false));
+> >>>   }
+>
+> >>> which stands for simple arithmetic mean. In a test file, i have 2
+> >>> assertations like that:
+>
+> >>> @Test
+> >>>   public void testMean() {
+> >>>     assertThat( eval(".Internal(mean(c(1,2,3,4,NA,NA), na.rm=TRUE))"),
+> >>> equalTo(c(2.5)));
+> >>>     //This fails!
+> >>>     //assertThat( eval(".Internal(mean(c(1,2,3,4,NA,NA)))"),
+> >>> equalTo(c(2.5)));
+> >>>   }
+>
+> >>> first assertation works well, because it fits the number of parameters.
+> >>> Second one does not runs.  What to do?
+>
+
+> >>> On Fri, Aug 26, 2011 at 4:24 PM, Mehmet Hakan Satman <mhsat...@gmail.com
+
+> >>> > wrote:
+>
+> >>>> Sounds good!
+>
+> >>>> Very nice. I am browsing the code. Lots of work is waiting. It is pretty
+> >>>> fun!.
+>
+> >>>> thank you
+>
+> >>>> On Fri, Aug 26, 2011 at 4:18 PM, Bertram, Alexander <
+> >>>> a...@bedatadriven.com> wrote:
+>
+> >>>>> Sorry sent by accident! more below
+>
+> >>>>> On Fri, Aug 26, 2011 at 3:11 PM, Bertram, Alexander <
+> >>>>> a...@bedatadriven.com> wrote:
+>
+> >>>>>> Hi Mehmet,
+>
+> >>>>>> Regarding the arguments, I've tried to abstract away the argument
+> >>>>>> checking and conversion away from the actual methods so that implementation
+> >>>>>> is a bit cleaner. There is a class called RuntimeInvoker that does this at
+> >>>>>> runtime using reflection (slow) and a class called WrapperGenerator that
+> >>>>>> actaully generates the code at compile time (faster). The WrapperGenerator
+> >>>>>> is still a work in progress and can't generate wrappers yet for all methods,
+> >>>>>> but you can see the generated sources in
+> >>>>>> core/target/generated-sources/r-wrappers
+>
+> >>>>>> So to implement sort() for other vector types, you can either create
+> >>>>>> an overload for the numeric vectors, like:
+>
+> >>>>>  public static Vector sort(DoubleVector x, boolean decreasing)  {
+> >>>>>  }
+>
+> >>>>>  and renjin will choose this at runtime based on the arguments (vectors
+> >>>>> are widened implicitly, so the method above would catch IntVector and
+> >>>>> LogicalVector as well) or you could widen the argument type of the existing
+> >>>>> method:
+>
+> >>>>>     public static Vector sort(AtomicVector x, boolean decreasing)
+>
+> >>>>>    and implement the algorithm generically (you may want to add a
+> >>>>> compareElement function to the AtomicVector interface then)
+>
+> >>>>>    Regarding the raw types, I haven't touched them at all, so yes if
+> >>>>> you wanted to implement the raw functions you could create a new
+> >>>>> AtomicVector subclass and a corresponding VectorType.
+>
+> >>>>>   Great that you're digging into the code!  Keep the questions comming!
+>
+> >>>>>   Alex
+>
+> >>>>>> On Fri, Aug 26, 2011 at 2:52 PM, Mehmet Hakan Satman <
+
+> >>>>>> mhsat...@gmail.com> wrote:
+>
+> >>>>>>> Hi Alex,
+>
+> >>>>>>> question:
+>
+> >>>>>>> *public static Vector sort(StringVector x, boolean decreasing) *
+
+>
+> >>>>>>> takes the vector parameter as strings. What passes those parameters
+> >>>>>>> to functions? What will be due for generic functions? for example sort
+> >>>>>>> function can take several types of variables: doubles, ints etc. Must we use
+> >>>>>>> Vector instead?
+>
+> >>>>>>> Second, if we want to rawToX, as.raw functions, must we define
+> >>>>>>> RawVector, RawType classes?
+>
+> >>>>>>> Sorry about those question, it takes time to take habits of already
+> >>>>>>> written code.
+>
+> >>>>>>> Best.
+>
+> >>>>>>> On Fri, Aug 26, 2011 at 12:37 PM, Mehmet Hakan Satman <
+> >>>>>>> mhsat...@gmail.com> wrote:
+>
+> >>>>>>>> Hi Alex,
+>
+> >>>>>>>> I totally understood your point of view and  you are almost right
+> >>>>>>>> with your thought.
+>
+> >>>>>>>> It is good idea to make a package run, so at the end, we will have
+> >>>>>>>> got all the functions included in this package run. It is also true that
+> >>>>>>>> %100 compatible renjin will follow the code optimization after all. Finally,
+> >>>>>>>> i am sure that people will use it. Unfortunately source code of R is a bit
+> >>>>>>>> complicated, it is difficult to follow the code but i will choose the way of
+> >>>>>>>> porting them rather than to find short-cut temporary solutions. It is also
+> >>>>>>>> valid for the RNG implementation. I think my priority is not defined yet but
+> >>>>>>>> making this project my primary hobby will let me something valuable.
+>
+> >>>>>>>> Best.
+>
+> >>>>>>>> On Fri, Aug 26, 2011 at 11:46 AM, Bertram, Alexander <
+> >>>>>>>> a...@bedatadriven.com> wrote:
+>
+> >>>>>>>>> Hi Mehmet,
+>
+> >>>>>>>>> Great! Yes a small first patch but a very useful first patch!
+>
+> >>>>>>>>> I think the question about random numbers is a good one. My own
+> >>>>>>>>> feeling is that an R program that runs "correctly" on R-2.x should also run
+> >>>>>>>>> "correctly" on renjin. So I think as long as most R programs don't make too
+> >>>>>>>>> strong of an assumption about what they're getting from the RNG, an
+> >>>>>>>>> alternate implementation from commons math should be sufficient. But I also
+> >>>>>>>>> haven't looked closely at this issue and there may be some specific types of
+> >>>>>>>>> RNGs that are not implemented by commons math and may need to be ported from
+> >>>>>>>>> the C implementations.
+>
+> >>>>>>>>> It is also a question of priority... My own perfernce is to have
+> >>>>>>>>> first a broad coverage of R functionality implemented, and then to narrow
+> >>>>>>>>> the focus to specific issues of performance or ultra-correctness. The
+> >>>>>>>>> rationale being that a slow renjin that can run 90% of R programs is more
+> >>>>>>>>> useful than a very fast renjin that can only run 30% of R programs.
+>
+> >>>>>>>>> But the ultimate success of this project is highly dependent on
+> >>>>>>>>> having a strong team of active committers so I am very open to your ideas
+> >>>>>>>>> and priorities!
+>
+> >>>>>>>>> Best,
+>
+> >>>>>>>>> Alex
+>
+> >>>>>>>>> On Fri, Aug 26, 2011 at 10:27 AM, Mehmet Hakan Satman <
+> >>>>>>>>> mhsat...@gmail.com> wrote:
+>
+> >>>>>>>>>> Hi Alex,
+>
+> >>>>>>>>>> All the feeling you have is the same for me. I am very excited in
+> >>>>>>>>>> this project, i am interested in both Java, R and interpreters. This is the
+> >>>>>>>>>> best fit project for me, i hope, we will do something valuable for this
+> >>>>>>>>>> project. Finally, i submitted my first patch... It was funny, a single
+> >>>>>>>>>> byrow=TRUE parameter implementation does not mean whole the R but i think it
+> >>>>>>>>>> is just a starting point.
+>
+> >>>>>>>>>> By the way, i plan to make this project my primary hobby, that
+> >>>>>>>>>> means whenever i win a empty space of time, i will spend it with this.
+>
+> >>>>>>>>>> A special issue, i am reading the R source code and its random
+> >>>>>>>>>> number generators. R uses too many algorithms for generating number numbers
+> >>>>>>>>>> and also apache.commons.math library has its own RNG functionality. What is
+> >>>>>>>>>> the 'key point' of this project? For example is it a rule that 'we must
+> >>>>>>>>>> generate same random numbers with original R using a same seed?'.
+>
+> >>>>>>>>>> Thank you for starting this project.
+>
+> >>>>>>>>>> All the best
+>
+> >>>>>>>>>> Hakan.
+>
+> >>>>>>>>>> On Fri, Aug 26, 2011 at 11:19 AM, Bertram, Alexander <
+> >>>>>>>>>> a...@bedatadriven.com> wrote:
+>
+> >>>>>>>>>>> Hi Mehmet,
+> >>>>>>>>>>> This is great! I've added you as a committer to the project so
+> >>>>>>>>>>> you should be able to commit this right away.
+>
+> >>>>>>>>>>> We have a build server set up that will run tests and verify
+> >>>>>>>>>>> everything after each commit. (
+> >>>>>>>>>>>http://build.bedatadriven.com/job/Renjin)
+>
+> >>>>>>>>>>> I think there are quite a few partially implemented functions; my
+> >>>>>>>>>>> own immediate goal is to get the survey package running in renjin so I've
+> >>>>>>>>>>> just been progressively implementing only what's needed by that package.
+>
+> >>>>>>>>>>> I'm super excited that you're interested in the project-- it's
+> >>>>>>>>>>> unfortunately been rare to find java developers who also know R well.
+>
+> >>>>>>>>>>> Looking forward to a fruitful cooperation!
+>
+> >>>>>>>>>>> Best,
+>
+> >>>>>>>>>>> Alex
+>
+> >>>>>>>>>>> On Thu, Aug 25, 2011 at 9:46 PM, Mehmet Hakan Satman <
+> >>>>>>>>>>> mhsat...@gmail.com> wrote:
+>
+> >>>>>>>>>>>> Hi Alex,
+>
+> >>>>>>>>>>>> Here comes some patch by me:
+>
+> >>>>>>>>>>>> file: CombineTest.java
+> >>>>>>>>>>>> ____________________________
+> >>>>>>>>>>>>     @Test
+> >>>>>>>>>>>>     public void matrixByRow() {
+>
+> >>>>>>>>>>>> assertThat(eval(".Internal(matrix(c(1,2,3,4),2,2,TRUE,NULL))"), equalTo(c(1,
+> >>>>>>>>>>>> 3, 2, 4)));
+>
+> >>>>>>>>>>>> assertThat(eval(".Internal(matrix(c(1,2,3,4),2,4,TRUE,NULL))"), equalTo(c(1,
+> >>>>>>>>>>>> 1, 2, 2, 3, 3, 4, 4)));
+> >>>>>>>>>>>>     }
+>
+> >>>>>>>>>>>> added for matrix primitive's byrow= parameter. It seems it is
+> >>>>>>>>>>>> not implemented, i think for the performance issues. I changed Combine.java
+> >>>>>>>>>>>> as:
+>
+> >>>>>>>>>>>> file: Combine.java
+> >>>>>>>>>>>> ______________________________
+> >>>>>>>>>>>> public static SEXP matrix(Vector data, int nrow, int ncol,
+> >>>>>>>>>>>> boolean byRow, Vector dimnames) {
+> >>>>>>>>>>>>         Vector.Builder result = data.newBuilder(0);
+> >>>>>>>>>>>>         int i = 0;
+>
+> >>>>>>>>>>>>         if (!byRow) {
+> >>>>>>>>>>>>             for (int col = 0; col < ncol; ++col) {
+> >>>>>>>>>>>>                 for (int row = 0; row < nrow; ++row) {
+> >>>>>>>>>>>>                     int sourceIndex =
+> >>>>>>>>>>>> Indexes.matrixIndexToVectorIndex(row, col, nrow, ncol) % data.length();
+> >>>>>>>>>>>>                     result.setFrom(i++, data, sourceIndex);
+> >>>>>>>>>>>>                 }
+> >>>>>>>>>>>>             }
+> >>>>>>>>>>>>         } else {
+> >>>>>>>>>>>>             for (int row = 0; row < nrow; ++row) {
+> >>>>>>>>>>>>                 for (int col = 0; col < ncol; ++col) {
+> >>>>>>>>>>>>                     result.setFrom(row + (col * nrow), data, i %
+> >>>>>>>>>>>> data.length());
+> >>>>>>>>>>>>                     i++;
+> >>>>>>>>>>>>                 }
+> >>>>>>>>>>>>             }
+> >>>>>>>>>>>>         }
+> >>>>>>>>>>>>         result.setAttribute(Symbol.DIM, new IntVector(nrow,
+> >>>>>>>>>>>> ncol));
+> >>>>>>>>>>>>         return result.build();
+> >>>>>>>>>>>>     }
+>
+> >>>>>>>>>>>> Yes, it is only a start for me. But i believe i can do more.
+>
+> >>>>>>>>>>>> All the best.
+>
+> >>>>>>>>>>>> On Thu, Aug 25, 2011 at 9:19 PM, Mehmet Hakan Satman <
+> >>>>>>>>>>>> mhsat...@gmail.com> wrote:
+>
+> >>>>>>>>>>>>> Hi Alex,
+>
+> >>>>>>>>>>>>> Very good news. I used to contribute GNU PSPP, because i like
+> >>>>>>>>>>>>> to write statistical programmes but the main difficulty was that my main
+> >>>>>>>>>>>>> language is Java rather than C. I will feel as i am at home when i write
+> >>>>>>>>>>>>> something in the Java.
+> >>>>>>>>>>>>> Finally i am downloading the source code of renjin and i will
+> >>>>>>>>>>>>> browse the code from start to end. As well as i finished something useful, i
+> >>>>>>>>>>>>> will send to you in order to be a contributer of this. I believe that people
+> >>>>>>>>>>>>> will use it because i saw that integrating R with Java is not a trivial work
+> >>>>>>>>>>>>> for lots of programmers.
+> >>>>>>>>>>>>> Wait mails from me
+>
+> >>>>>>>>>>>>> All the Best
+>
+> >>>>>>>>>>>>> Hakan.
+>
+> >>>>>>>>>>>>> On Thu, Aug 25, 2011 at 3:00 PM, Bertram, Alexander <
+> >>>>>>>>>>>>> a...@bedatadriven.com> wrote:
+>
+> >>>>>>>>>>>>>> Hey Mehmet,
+>
+> >>>>>>>>>>>>>> Great! I've used your RCaller library, by the way, very
+> >>>>>>>>>>>>>> useful!
+>
+> >>>>>>>>>>>>>> I would love to have you involved in the project, there is
+> >>>>>>>>>>>>>> still alot to do and I'm not able to work on it as much as I would like
+> >>>>>>>>>>>>>> until December or so. The best way to get started is probably
+> >>>>>>>>>>>>>> writing/porting implementations of the R primitive functions from their
+> >>>>>>>>>>>>>> original C forms.
+>
+> >>>>>>>>>>>>>> I've just updated the Contributor Guide here :
+
+> >>>>>>>>>>>>>>http://code.google.com/p/renjin/wiki/ContributingPrimitives?ts=131427...
+
+>
+> >>>>>>>>>>>>>> Just send me your first contribution as a patch and then I
+> >>>>>>>>>>>>>> will add you as a contributor to the project.
+> >>>>>>>>>>>>>> Don't hesitate to give me a shout if you have any problems
+> >>>>>>>>>>>>>> building, or finding your way around the code, or implementation.
+>
+> >>>>>>>>>>>>>> Thanks !!
+>
+> >>>>>>>>>>>>>> Best,
+>
+> >>>>>>>>>>>>>> Alex
+>
+> >>>>>>>>>>>>>> On Thu, Aug 25, 2011 at 12:41 PM, Mehmet Hakan Satman <
+> >>>>>>>>>>>>>> mhsat...@gmail.com> wrote:
+>
+> >>>>>>>>>>>>>>> Hey friend,
+>
+> >>>>>>>>>>>>>>> That is great!  I am interested in both Java and R and i
+> >>>>>>>>>>>>>>> stumbled upon your project on the google code.
+> >>>>>>>>>>>>>>> I have got a library called RCaller (
+> >>>>>>>>>>>>>>>http://www.mhsatman.com/rcaller.php) and i have got several
+> >>>>>>>>>>>>>>> R packages in the cran repository (SSSR, Runiversal, galts, mcga) .
+> >>>>>>>>>>>>>>> I want to get involved this project...
+>
+> >>>>>>>>>>>>>>> Tell me if you want me to involve and the procedures...
+>
+> >>>>>>>>>>>>>>> All the best.
+>
+> >>>>>>>>>>>>>>> Dr.Mehmet Hakan Satman
+
+From u6f972a2ec0d43d01 at groups.google.com  Sat Aug 27 08:56:56 2011
+From: u6f972a2ec0d43d01 at groups.google.com (Mehmet Hakan Satman)
+Date: Sat, 27 Aug 2011 08:56:56 +0000
+Subject: Jenkins builds
+Message-ID: <T-fQ7h5Ct7s.JIv3XXOBuCYJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/T-fQ7h5Ct7s/m/JIv3XXOBuCYJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Jenkin builds reports our last commits as failed. any problem?
+
+From uf06db63329fab1f9 at groups.google.com  Sat Aug 27 09:10:09 2011
+From: uf06db63329fab1f9 at groups.google.com (Alexander Bertram)
+Date: Sat, 27 Aug 2011 09:10:09 +0000
+Subject: Re: Jenkins builds
+Message-ID: <T-fQ7h5Ct7s.TB44XwDyZREJ@renjin-dev.groups.google.com>
+In-Reply-To: <T-fQ7h5Ct7s.JIv3XXOBuCYJ@renjin-dev.groups.google.com>
+References: <T-fQ7h5Ct7s.JIv3XXOBuCYJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/T-fQ7h5Ct7s/m/TB44XwDyZREJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It was my commit -- the auto deploy to appengine is not quite working
+yet...
+should have resolved in a bit!
+
+On Aug 27, 10:56 am, Mehmet Hakan Satman <mhsat...@gmail.com> wrote:
+> Jenkin builds reports our last commits as failed. any problem?
+
+From u6f972a2ec0d43d01 at groups.google.com  Sat Aug 27 10:10:06 2011
+From: u6f972a2ec0d43d01 at groups.google.com (Mehmet Hakan Satman)
+Date: Sat, 27 Aug 2011 10:10:06 +0000
+Subject: Re: about Renjin on the google project hosting...
+Message-ID: <OwsOpMVPbHA.o3_7tTlZ9dIJ@renjin-dev.groups.google.com>
+In-Reply-To: <OwsOpMVPbHA.qptwmOIvE_0J@renjin-dev.groups.google.com>
+References: <OwsOpMVPbHA.zmyXTcJ5FnkJ@renjin-dev.groups.google.com> <OwsOpMVPbHA.qptwmOIvE_0J@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/OwsOpMVPbHA/m/o3_7tTlZ9dIJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I thinks it is hard to develop match.call()..
+
+function (definition = NULL, call = sys.call(sys.parent()), expand.dots = TRUE)
+.Internal(match.call(definition, call, expand.dots))
+<environment: namespace:base>
+
+:) that is rock for now on
+
+On Sat, Aug 27, 2011 at 10:35 AM, Mehmet Hakan Satman <mhsa...@gmail.com> wrote:
+> A good history for starters
+>
+> On Aug 27, 10:15 am, "Bertram, Alexander" <a...@bedatadriven.com>
+> wrote:
+> > Yes! That's it exactly.
+> >
+> > If you want to call the mean() closure from test code you will need to call
+> > topLevelContext.init() which will load the base package that contains mean()
+> > closure. This is not done by default because it still takes quite a bit of
+> > time to load the base package.
+> >
+> > On Sat, Aug 27, 2011 at 8:50 AM, Mehmet Hakan Satman <mhsat...@gmail.com>wrote:
+> >
+> >
+> >
+> >
+> >
+> >
+> >
+> > > when i test
+> >
+> > > (1) assertThat( eval("mean(c(1,2,3,4))"), equalTo(c(2.5)));
+> >
+> > > renjin will call the R-level mean function, if i test
+> >
+> > > (2) assertThat( eval(".Internal(mean(c(1,2,3,4)))"), equalTo(c(2.5)));
+> >
+> > > renjin will call the Java level mean function. is that right?
+> >
+> > > if yes, (1) throws exception and says no function found with name 'mean'.
+> >
+> > > And maybe i can ask those question in a relay chat when you get online in
+> > > some platforms.
+> >
+> > > On Sat, Aug 27, 2011 at 9:36 AM, Bertram, Alexander <a...@bedatadriven.com
+> > > > wrote:
+> >
+> > >> Hi Mehmet,
+> >
+> > >> I'm not sure why your second test doesn't run (do you get a stack trace?)
+> > >> but more generally you have to be careful with the signatures because often
+> > >> the internal primitives don't match what you're used to calling from R
+> > >> because the R base library includes an outer function that does argument
+> > >> processing.
+> >
+> > >> So for example, if you open an R-2.x repl and type 'mean', you'll see that
+> > >> it's actually an R-language closure:
+> >
+> > >> > mean
+> > >> function (x, ...)
+> > >> UseMethod("mean")
+> > >> <environment: namespace:base>
+> >
+> > >> This closure dispatches based on the class of x, either to mean.default or
+> > >> mean.data.frame, etc.
+> >
+> > >> If you look at mean.default you'll see that the na.rm argument is handled
+> > >> at the R-language level:
+> >
+> > >> > mean.default
+> > >> function (x, trim = 0, na.rm = FALSE, ...)
+> > >> {
+> > >>     if (!is.numeric(x) && !is.complex(x) && !is.logical(x)) {
+> > >>         warning("argument is not numeric or logical: returning NA")
+> > >>         return(NA_real_)
+> > >>     }
+> > >>     if (na.rm)
+> > >>         x <- x[!is.na <http://is.na>(x)]
+> > >>     if (!is.numeric(trim) || length(trim) != 1L)
+> > >>         stop("'trim' must be numeric of length one")
+> > >>     n <- length(x)
+> > >>     if (trim > 0 && n) {
+> > >>         if (is.complex(x))
+> > >>             stop("trimmed means are not defined for complex data")
+> > >>         if (any(is.na <http://is.na>(x)))
+> > >>             return(NA_real_)
+> > >>         if (trim >= 0.5)
+> > >>             return(stats::median(x, na.rm = FALSE))
+> > >>         lo <- floor(n * trim) + 1
+> > >>         hi <- n + 1 - lo
+> > >>         x <- sort.int <http://sort.int>(x, partial = unique(c(lo, hi)))[lo:hi]
+> > >>     }
+> > >>     .Internal(mean(x))
+> > >> }
+> > >> <environment: namespace:base>
+> >
+> > >> The closure applies the na.rm and the trim functions and then calls the
+> > >> "internal" function which takes a single argument.
+> >
+> > >> Renjin reuses whole the R-language base package from R-2.10, so we just
+> > >> have to replace the internal functions that are written in C in the original
+> > >> interpreter.
+> >
+> > >> Another point is that currently you can only use the @NamedFlag annotation
+> > >> in combination with an @ArgumentList annotation (see the implementation of
+> > >> c() or the [ ] operators)
+> >
+> > >> This is because in general, R primitives use only positional argument
+> > >> matching and ignore argument names. (This is why many R primitives are
+> > >> wrapped in closures-- the closures handle arg matching, default values, etc,
+> > >> and then pass the processed args to the primitive:
+> >
+> > >> > grep
+> > >> function (pattern, x, ignore.case = FALSE, perl = FALSE, value = FALSE,
+> > >>     fixed = FALSE, useBytes = FALSE, invert = FALSE)
+> > >> {
+> > >>     if (!is.character(x))
+> > >>         x <- structure(as.character(x), names = names(x))
+> > >>     .Internal(grep(as.character(pattern), x, ignore.case, value,
+> > >>         perl, fixed, useBytes, invert))
+> > >> }
+> > >> <environment: namespace:base>
+> >
+> > >> However, in the C implementation, each function handles argument
+> > >> processing independently and so is not always consistent.
+> >
+> > >> the @ArgumentList and @NamedFlag are meant to support the family of
+> > >> primitive functions that use a variable number of arguments and some named
+> > >> flags.
+> >
+> > >> HTH,
+> >
+> > >> Alex
+> >
+> > >> On Fri, Aug 26, 2011 at 9:06 PM, Mehmet Hakan Satman <mhsat...@gmail.com>wrote:
+> >
+> > >>> Hi Alex,
+> >
+> > >>> there is some problems on my mind.  Suppose the code is
+> >
+> > >>> @Primitive("mean")
+> > >>>   public static SEXP mean(Vector x, @NamedFlag("na.rm") boolean removeNA)
+> > >>> {
+> > >>>     double mean = 0.0;
+> > >>>     int len = 0;
+> > >>>     for (int i=0;i<x.length();i++){
+> > >>>       if(removeNA && !x.isElementNA(i)){
+> > >>>         len++;
+> > >>>         mean+=x.getElementAsDouble(i);
+> > >>>       }
+> > >>>     }
+> > >>>     return(new DoubleVector(new double[]{mean / len}));
+> > >>>   }
+> >
+> > >>>   public static SEXP mean(Vector x) {
+> > >>>     return(mean(x,false));
+> > >>>   }
+> >
+> > >>> which stands for simple arithmetic mean. In a test file, i have 2
+> > >>> assertations like that:
+> >
+> > >>> @Test
+> > >>>   public void testMean() {
+> > >>>     assertThat( eval(".Internal(mean(c(1,2,3,4,NA,NA), na.rm=TRUE))"),
+> > >>> equalTo(c(2.5)));
+> > >>>     //This fails!
+> > >>>     //assertThat( eval(".Internal(mean(c(1,2,3,4,NA,NA)))"),
+> > >>> equalTo(c(2.5)));
+> > >>>   }
+> >
+> > >>> first assertation works well, because it fits the number of parameters.
+> > >>> Second one does not runs.  What to do?
+> >
+> > >>> On Fri, Aug 26, 2011 at 4:24 PM, Mehmet Hakan Satman <mhsat...@gmail.com
+> > >>> > wrote:
+> >
+> > >>>> Sounds good!
+> >
+> > >>>> Very nice. I am browsing the code. Lots of work is waiting. It is pretty
+> > >>>> fun!.
+> >
+> > >>>> thank you
+> >
+> > >>>> On Fri, Aug 26, 2011 at 4:18 PM, Bertram, Alexander <
+> > >>>> a...@bedatadriven.com> wrote:
+> >
+> > >>>>> Sorry sent by accident! more below
+> >
+> > >>>>> On Fri, Aug 26, 2011 at 3:11 PM, Bertram, Alexander <
+> > >>>>> a...@bedatadriven.com> wrote:
+> >
+> > >>>>>> Hi Mehmet,
+> >
+> > >>>>>> Regarding the arguments, I've tried to abstract away the argument
+> > >>>>>> checking and conversion away from the actual methods so that implementation
+> > >>>>>> is a bit cleaner. There is a class called RuntimeInvoker that does this at
+> > >>>>>> runtime using reflection (slow) and a class called WrapperGenerator that
+> > >>>>>> actaully generates the code at compile time (faster). The WrapperGenerator
+> > >>>>>> is still a work in progress and can't generate wrappers yet for all methods,
+> > >>>>>> but you can see the generated sources in
+> > >>>>>> core/target/generated-sources/r-wrappers
+> >
+> > >>>>>> So to implement sort() for other vector types, you can either create
+> > >>>>>> an overload for the numeric vectors, like:
+> >
+> > >>>>>  public static Vector sort(DoubleVector x, boolean decreasing)  {
+> > >>>>>  }
+> >
+> > >>>>>  and renjin will choose this at runtime based on the arguments (vectors
+> > >>>>> are widened implicitly, so the method above would catch IntVector and
+> > >>>>> LogicalVector as well) or you could widen the argument type of the existing
+> > >>>>> method:
+> >
+> > >>>>>     public static Vector sort(AtomicVector x, boolean decreasing)
+> >
+> > >>>>>    and implement the algorithm generically (you may want to add a
+> > >>>>> compareElement function to the AtomicVector interface then)
+> >
+> > >>>>>    Regarding the raw types, I haven't touched them at all, so yes if
+> > >>>>> you wanted to implement the raw functions you could create a new
+> > >>>>> AtomicVector subclass and a corresponding VectorType.
+> >
+> > >>>>>   Great that you're digging into the code!  Keep the questions comming!
+> >
+> > >>>>>   Alex
+> >
+> > >>>>>> On Fri, Aug 26, 2011 at 2:52 PM, Mehmet Hakan Satman <
+> > >>>>>> mhsat...@gmail.com> wrote:
+> >
+> > >>>>>>> Hi Alex,
+> >
+> > >>>>>>> question:
+> >
+> > >>>>>>> *public static Vector sort(StringVector x, boolean decreasing) *
+> >
+> > >>>>>>> takes the vector parameter as strings. What passes those parameters
+> > >>>>>>> to functions? What will be due for generic functions? for example sort
+> > >>>>>>> function can take several types of variables: doubles, ints etc. Must we use
+> > >>>>>>> Vector instead?
+> >
+> > >>>>>>> Second, if we want to rawToX, as.raw functions, must we define
+> > >>>>>>> RawVector, RawType classes?
+> >
+> > >>>>>>> Sorry about those question, it takes time to take habits of already
+> > >>>>>>> written code.
+> >
+> > >>>>>>> Best.
+> >
+> > >>>>>>> On Fri, Aug 26, 2011 at 12:37 PM, Mehmet Hakan Satman <
+> > >>>>>>> mhsat...@gmail.com> wrote:
+> >
+> > >>>>>>>> Hi Alex,
+> >
+> > >>>>>>>> I totally understood your point of view and  you are almost right
+> > >>>>>>>> with your thought.
+> >
+> > >>>>>>>> It is good idea to make a package run, so at the end, we will have
+> > >>>>>>>> got all the functions included in this package run. It is also true that
+> > >>>>>>>> %100 compatible renjin will follow the code optimization after all. Finally,
+> > >>>>>>>> i am sure that people will use it. Unfortunately source code of R is a bit
+> > >>>>>>>> complicated, it is difficult to follow the code but i will choose the way of
+> > >>>>>>>> porting them rather than to find short-cut temporary solutions. It is also
+> > >>>>>>>> valid for the RNG implementation. I think my priority is not defined yet but
+> > >>>>>>>> making this project my primary hobby will let me something valuable.
+> >
+> > >>>>>>>> Best.
+> >
+> > >>>>>>>> On Fri, Aug 26, 2011 at 11:46 AM, Bertram, Alexander <
+> > >>>>>>>> a...@bedatadriven.com> wrote:
+> >
+> > >>>>>>>>> Hi Mehmet,
+> >
+> > >>>>>>>>> Great! Yes a small first patch but a very useful first patch!
+> >
+> > >>>>>>>>> I think the question about random numbers is a good one. My own
+> > >>>>>>>>> feeling is that an R program that runs "correctly" on R-2.x should also run
+> > >>>>>>>>> "correctly" on renjin. So I think as long as most R programs don't make too
+> > >>>>>>>>> strong of an assumption about what they're getting from the RNG, an
+> > >>>>>>>>> alternate implementation from commons math should be sufficient. But I also
+> > >>>>>>>>> haven't looked closely at this issue and there may be some specific types of
+> > >>>>>>>>> RNGs that are not implemented by commons math and may need to be ported from
+> > >>>>>>>>> the C implementations.
+> >
+> > >>>>>>>>> It is also a question of priority... My own perfernce is to have
+> > >>>>>>>>> first a broad coverage of R functionality implemented, and then to narrow
+> > >>>>>>>>> the focus to specific issues of performance or ultra-correctness. The
+> > >>>>>>>>> rationale being that a slow renjin that can run 90% of R programs is more
+> > >>>>>>>>> useful than a very fast renjin that can only run 30% of R programs.
+> >
+> > >>>>>>>>> But the ultimate success of this project is highly dependent on
+> > >>>>>>>>> having a strong team of active committers so I am very open to your ideas
+> > >>>>>>>>> and priorities!
+> >
+> > >>>>>>>>> Best,
+> >
+> > >>>>>>>>> Alex
+> >
+> > >>>>>>>>> On Fri, Aug 26, 2011 at 10:27 AM, Mehmet Hakan Satman <
+> > >>>>>>>>> mhsat...@gmail.com> wrote:
+> >
+> > >>>>>>>>>> Hi Alex,
+> >
+> > >>>>>>>>>> All the feeling you have is the same for me. I am very excited in
+> > >>>>>>>>>> this project, i am interested in both Java, R and interpreters. This is the
+> > >>>>>>>>>> best fit project for me, i hope, we will do something valuable for this
+> > >>>>>>>>>> project. Finally, i submitted my first patch... It was funny, a single
+> > >>>>>>>>>> byrow=TRUE parameter implementation does not mean whole the R but i think it
+> > >>>>>>>>>> is just a starting point.
+> >
+> > >>>>>>>>>> By the way, i plan to make this project my primary hobby, that
+> > >>>>>>>>>> means whenever i win a empty space of time, i will spend it with this.
+> >
+> > >>>>>>>>>> A special issue, i am reading the R source code and its random
+> > >>>>>>>>>> number generators. R uses too many algorithms for generating number numbers
+> > >>>>>>>>>> and also apache.commons.math library has its own RNG functionality. What is
+> > >>>>>>>>>> the 'key point' of this project? For example is it a rule that 'we must
+> > >>>>>>>>>> generate same random numbers with original R using a same seed?'.
+> >
+> > >>>>>>>>>> Thank you for starting this project.
+> >
+> > >>>>>>>>>> All the best
+> >
+> > >>>>>>>>>> Hakan.
+> >
+> > >>>>>>>>>> On Fri, Aug 26, 2011 at 11:19 AM, Bertram, Alexander <
+> > >>>>>>>>>> a...@bedatadriven.com> wrote:
+> >
+> > >>>>>>>>>>> Hi Mehmet,
+> > >>>>>>>>>>> This is great! I've added you as a committer to the project so
+> > >>>>>>>>>>> you should be able to commit this right away.
+> >
+> > >>>>>>>>>>> We have a build server set up that will run tests and verify
+> > >>>>>>>>>>> everything after each commit. (
+> > >>>>>>>>>>>http://build.bedatadriven.com/job/Renjin)
+> >
+> > >>>>>>>>>>> I think there are quite a few partially implemented functions; my
+> > >>>>>>>>>>> own immediate goal is to get the survey package running in renjin so I've
+> > >>>>>>>>>>> just been progressively implementing only what's needed by that package.
+> >
+> > >>>>>>>>>>> I'm super excited that you're interested in the project-- it's
+> > >>>>>>>>>>> unfortunately been rare to find java developers who also know R well.
+> >
+> > >>>>>>>>>>> Looking forward to a fruitful cooperation!
+> >
+> > >>>>>>>>>>> Best,
+> >
+> > >>>>>>>>>>> Alex
+> >
+> > >>>>>>>>>>> On Thu, Aug 25, 2011 at 9:46 PM, Mehmet Hakan Satman <
+> > >>>>>>>>>>> mhsat...@gmail.com> wrote:
+> >
+> > >>>>>>>>>>>> Hi Alex,
+> >
+> > >>>>>>>>>>>> Here comes some patch by me:
+> >
+> > >>>>>>>>>>>> file: CombineTest.java
+> > >>>>>>>>>>>> ____________________________
+> > >>>>>>>>>>>>     @Test
+> > >>>>>>>>>>>>     public void matrixByRow() {
+> >
+> > >>>>>>>>>>>> assertThat(eval(".Internal(matrix(c(1,2,3,4),2,2,TRUE,NULL))"), equalTo(c(1,
+> > >>>>>>>>>>>> 3, 2, 4)));
+> >
+> > >>>>>>>>>>>> assertThat(eval(".Internal(matrix(c(1,2,3,4),2,4,TRUE,NULL))"), equalTo(c(1,
+> > >>>>>>>>>>>> 1, 2, 2, 3, 3, 4, 4)));
+> > >>>>>>>>>>>>     }
+> >
+> > >>>>>>>>>>>> added for matrix primitive's byrow= parameter. It seems it is
+> > >>>>>>>>>>>> not implemented, i think for the performance issues. I changed Combine.java
+> > >>>>>>>>>>>> as:
+> >
+> > >>>>>>>>>>>> file: Combine.java
+> > >>>>>>>>>>>> ______________________________
+> > >>>>>>>>>>>> public static SEXP matrix(Vector data, int nrow, int ncol,
+> > >>>>>>>>>>>> boolean byRow, Vector dimnames) {
+> > >>>>>>>>>>>>         Vector.Builder result = data.newBuilder(0);
+> > >>>>>>>>>>>>         int i = 0;
+> >
+> > >>>>>>>>>>>>         if (!byRow) {
+> > >>>>>>>>>>>>             for (int col = 0; col < ncol; ++col) {
+> > >>>>>>>>>>>>                 for (int row = 0; row < nrow; ++row) {
+> > >>>>>>>>>>>>                     int sourceIndex =
+> > >>>>>>>>>>>> Indexes.matrixIndexToVectorIndex(row, col, nrow, ncol) % data.length();
+> > >>>>>>>>>>>>                     result.setFrom(i++, data, sourceIndex);
+> > >>>>>>>>>>>>                 }
+> > >>>>>>>>>>>>             }
+> > >>>>>>>>>>>>         } else {
+> > >>>>>>>>>>>>             for (int row = 0; row < nrow; ++row) {
+> > >>>>>>>>>>>>                 for (int col = 0; col < ncol; ++col) {
+> > >>>>>>>>>>>>                     result.setFrom(row + (col * nrow), data, i %
+> > >>>>>>>>>>>> data.length());
+> > >>>>>>>>>>>>                     i++;
+> > >>>>>>>>>>>>                 }
+> > >>>>>>>>>>>>             }
+> > >>>>>>>>>>>>         }
+> > >>>>>>>>>>>>         result.setAttribute(Symbol.DIM, new IntVector(nrow,
+> > >>>>>>>>>>>> ncol));
+> > >>>>>>>>>>>>         return result.build();
+> > >>>>>>>>>>>>     }
+> >
+> > >>>>>>>>>>>> Yes, it is only a start for me. But i believe i can do more.
+> >
+> > >>>>>>>>>>>> All the best.
+> >
+> > >>>>>>>>>>>> On Thu, Aug 25, 2011 at 9:19 PM, Mehmet Hakan Satman <
+> > >>>>>>>>>>>> mhsat...@gmail.com> wrote:
+> >
+> > >>>>>>>>>>>>> Hi Alex,
+> >
+> > >>>>>>>>>>>>> Very good news. I used to contribute GNU PSPP, because i like
+> > >>>>>>>>>>>>> to write statistical programmes but the main difficulty was that my main
+> > >>>>>>>>>>>>> language is Java rather than C. I will feel as i am at home when i write
+> > >>>>>>>>>>>>> something in the Java.
+> > >>>>>>>>>>>>> Finally i am downloading the source code of renjin and i will
+> > >>>>>>>>>>>>> browse the code from start to end. As well as i finished something useful, i
+> > >>>>>>>>>>>>> will send to you in order to be a contributer of this. I believe that people
+> > >>>>>>>>>>>>> will use it because i saw that integrating R with Java is not a trivial work
+> > >>>>>>>>>>>>> for lots of programmers.
+> > >>>>>>>>>>>>> Wait mails from me
+> >
+> > >>>>>>>>>>>>> All the Best
+> >
+> > >>>>>>>>>>>>> Hakan.
+> >
+> > >>>>>>>>>>>>> On Thu, Aug 25, 2011 at 3:00 PM, Bertram, Alexander <
+> > >>>>>>>>>>>>> a...@bedatadriven.com> wrote:
+> >
+> > >>>>>>>>>>>>>> Hey Mehmet,
+> >
+> > >>>>>>>>>>>>>> Great! I've used your RCaller library, by the way, very
+> > >>>>>>>>>>>>>> useful!
+> >
+> > >>>>>>>>>>>>>> I would love to have you involved in the project, there is
+> > >>>>>>>>>>>>>> still alot to do and I'm not able to work on it as much as I would like
+> > >>>>>>>>>>>>>> until December or so. The best way to get started is probably
+> > >>>>>>>>>>>>>> writing/porting implementations of the R primitive functions from their
+> > >>>>>>>>>>>>>> original C forms.
+> >
+> > >>>>>>>>>>>>>> I've just updated the Contributor Guide here :
+> > >>>>>>>>>>>>>>http://code.google.com/p/renjin/wiki/ContributingPrimitives?ts=131427...
+> >
+> > >>>>>>>>>>>>>> Just send me your first contribution as a patch and then I
+> > >>>>>>>>>>>>>> will add you as a contributor to the project.
+> > >>>>>>>>>>>>>> Don't hesitate to give me a shout if you have any problems
+> > >>>>>>>>>>>>>> building, or finding your way around the code, or implementation.
+> >
+> > >>>>>>>>>>>>>> Thanks !!
+> >
+> > >>>>>>>>>>>>>> Best,
+> >
+> > >>>>>>>>>>>>>> Alex
+> >
+> > >>>>>>>>>>>>>> On Thu, Aug 25, 2011 at 12:41 PM, Mehmet Hakan Satman <
+> > >>>>>>>>>>>>>> mhsat...@gmail.com> wrote:
+> >
+> > >>>>>>>>>>>>>>> Hey friend,
+> >
+> > >>>>>>>>>>>>>>> That is great!  I am interested in both Java and R and i
+> > >>>>>>>>>>>>>>> stumbled upon your project on the google code.
+> > >>>>>>>>>>>>>>> I have got a library called RCaller (
+> > >>>>>>>>>>>>>>>http://www.mhsatman.com/rcaller.php) and i have got several
+> > >>>>>>>>>>>>>>> R packages in the cran repository (SSSR, Runiversal, galts, mcga) .
+> > >>>>>>>>>>>>>>> I want to get involved this project...
+> >
+> > >>>>>>>>>>>>>>> Tell me if you want me to involve and the procedures...
+> >
+> > >>>>>>>>>>>>>>> All the best.
+> >
+> > >>>>>>>>>>>>>>> Dr.Mehmet Hakan Satman
+
+From u6f972a2ec0d43d01 at groups.google.com  Sat Aug 27 11:03:12 2011
+From: u6f972a2ec0d43d01 at groups.google.com (Mehmet Hakan Satman)
+Date: Sat, 27 Aug 2011 11:03:12 +0000
+Subject: match.call() hack for var(), cov() and sd()
+Message-ID: <s9-SH5n16s8.gZV3KkQkjuEJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/s9-SH5n16s8/m/gZV3KkQkjuEJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Alex,
+
+What to do for the match.call() primitive? It returns the function
+call with parameters in a function.
+
+From u6f972a2ec0d43d01 at groups.google.com  Sat Aug 27 14:49:58 2011
+From: u6f972a2ec0d43d01 at groups.google.com (Mehmet Hakan Satman)
+Date: Sat, 27 Aug 2011 14:49:58 +0000
+Subject: Help for copying colnames and rownames in MathExt.transpose()
+Message-ID: <b_AxHhhfFTQ.XOBT5094r24J@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/b_AxHhhfFTQ/m/XOBT5094r24J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I have a small problem in my last commit, i failed to copy column and
+row names to newly created matrix.
+I commented the code for later corrections.
+thanks.
+
+From uf06db63329fab1f9 at groups.google.com  Sat Aug 27 18:04:39 2011
+From: uf06db63329fab1f9 at groups.google.com (Alexander Bertram)
+Date: Sat, 27 Aug 2011 18:04:39 +0000
+Subject: Re: Help for copying colnames and rownames in MathExt.transpose()
+Message-ID: <b_AxHhhfFTQ.Qr_XyY42vGMJ@renjin-dev.groups.google.com>
+In-Reply-To: <b_AxHhhfFTQ.XOBT5094r24J@renjin-dev.groups.google.com>
+References: <b_AxHhhfFTQ.XOBT5094r24J@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/b_AxHhhfFTQ/m/Qr_XyY42vGMJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+See my comment on your commit...
+The dimnames attributes takes the form list( c("row1", "row2"),
+c("col1", "col2", "col3") )
+
+Try this:
+
+> m <- rbind(a=c(x=1,y=2,z=3),b=c(1,2,3))
+> m
+  x y z
+a 1 2 3
+b 1 2 3
+> dimnames(m)
+[[1]]
+[1] "a" "b"
+
+[[2]]
+[1] "x" "y" "z"
+
+On Aug 27, 4:49 pm, Mehmet Hakan Satman <mhsat...@gmail.com> wrote:
+> I have a small problem in my last commit, i failed to copy column and
+> row names to newly created matrix.
+> I commented the code for later corrections.
+> thanks.
+
+From uf06db63329fab1f9 at groups.google.com  Sat Aug 27 19:24:19 2011
+From: uf06db63329fab1f9 at groups.google.com (Alexander Bertram)
+Date: Sat, 27 Aug 2011 19:24:19 +0000
+Subject: Re: match.call() hack for var(), cov() and sd()
+Message-ID: <s9-SH5n16s8.F3Uewg1odEIJ@renjin-dev.groups.google.com>
+In-Reply-To: <s9-SH5n16s8.gZV3KkQkjuEJ@renjin-dev.groups.google.com>
+References: <s9-SH5n16s8.gZV3KkQkjuEJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/s9-SH5n16s8/m/F3Uewg1odEIJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+This is the tricky stuff!
+
+match.call should return a FunctionCall  ("lang" in R-speak)
+
+1. find the Function indicated by the definition argument (or
+call.getFunction() if definition is NULL)
+    -- see FunctionCall.findFunction -- it may need to be moved
+somewhere else
+2. call ClosureDispatcher.matchArguments to match call.getArguments()
+to function.getFormals()
+3. return FunctionCall.newCall( calll.getFunctions(),
+matchedArguments )
+
+I'm not sure about the exact semantics.. i'm not sure what expand dots
+does or does not do...
+Also, I've struggled to organize the code in ClosureDispatcher so if
+you have any ideas on how to better refactor it, have at it!
+
+Alex
+
+FunctionCalls are a strange beast...
+They have the storage structure of a PairList and
+they are implemented in R-2.x as a PairList where the first element in
+the linked list is the function (usually a Symbol which will evaluate
+to a Function when the FunctionCall is evaluated)
+and the subsequent elements are the arguments to be passed to the
+function.
+
+On Aug 27, 1:03 pm, Mehmet Hakan Satman <mhsat...@gmail.com> wrote:
+> Alex,
+>
+> What to do for the match.call() primitive? It returns the function
+> call with parameters in a function.
+
+From u6f972a2ec0d43d01 at groups.google.com  Sat Aug 27 20:35:58 2011
+From: u6f972a2ec0d43d01 at groups.google.com (Mehmet Hakan Satman)
+Date: Sat, 27 Aug 2011 20:35:58 +0000
+Subject: Re: Help for copying colnames and rownames in MathExt.transpose()
+Message-ID: <b_AxHhhfFTQ.P1tR6eKNpNIJ@renjin-dev.groups.google.com>
+In-Reply-To: <b_AxHhhfFTQ.Qr_XyY42vGMJ@renjin-dev.groups.google.com>
+References: <b_AxHhhfFTQ.XOBT5094r24J@renjin-dev.groups.google.com> <b_AxHhhfFTQ.Qr_XyY42vGMJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/b_AxHhhfFTQ/m/P1tR6eKNpNIJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I got this. Thank you.
+
+On Aug 27, 9:04 pm, Alexander Bertram <a...@bedatadriven.com> wrote:
+> See my comment on your commit...
+> The dimnames attributes takes the form list( c("row1", "row2"),
+> c("col1", "col2", "col3") )
+>
+> Try this:
+>
+> > m <- rbind(a=c(x=1,y=2,z=3),b=c(1,2,3))
+> > m
+>
+>   x y z
+> a 1 2 3
+> b 1 2 3> dimnames(m)
+>
+> [[1]]
+> [1] "a" "b"
+>
+> [[2]]
+> [1] "x" "y" "z"
+>
+> On Aug 27, 4:49 pm, Mehmet Hakan Satman <mhsat...@gmail.com> wrote:
+>
+>
+>
+> > I have a small problem in my last commit, i failed to copy column and
+> > row names to newly created matrix.
+> > I commented the code for later corrections.
+> > thanks.
+
+From u6f972a2ec0d43d01 at groups.google.com  Wed Aug 31 21:51:56 2011
+From: u6f972a2ec0d43d01 at groups.google.com (Mehmet Hakan Satman)
+Date: Wed, 31 Aug 2011 21:51:56 +0000
+Subject: Code formattings
+Message-ID: <KslGzd3-XlU.m9x6DJHyACwJ@renjin-dev.groups.google.com>
+Archived-At: <https://groups.google.com/g/renjin-dev/c/KslGzd3-XlU/m/m9x6DJHyACwJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Sorry for my code formattings, it is not compatible with the old code.
+I will no longer apply this formatting on old code.
+
+Best.
+
