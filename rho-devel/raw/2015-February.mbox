@@ -1,0 +1,383 @@
+From uc0f3a574a1033b64 at groups.google.com  Mon Feb  9 21:09:01 2015
+From: uc0f3a574a1033b64 at groups.google.com (Karl Millar)
+Date: Mon, 09 Feb 2015 21:09:01 +0000
+Subject: CXXR Performance Tiers
+Message-ID: <N4HA9kT7_-w.cVoeSA0MfXkJ@rho-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/rho-devel/c/N4HA9kT7_-w/m/cVoeSA0MfXkJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I'm trying to work out how the different performance tiers for handling scalar code ought to work in CXXR.
+
+IMHO, it makes sense for the lowest performance tier to be based on the existing AST interpreter.  That makes it easy to support any existing code with excellent compatibility and there's quite a bit of room to improve performance in the interpreter by improving the code.
+
+The high performance tier is pretty clear -- a lot of the techniques used for other dynamic languages (and probably some R specific ones) and using LLVM to generate efficient native code.
+
+The mid tier is less clear to me.  As we've seen from fastR (the first version, not the truffle/graal one) and ORBIT, it's possible to make a lot of useful transformations and specializations to get significant speedup while still using an interpreter framework.  Given that LLVM's code generation stage is generally slow, this seems to make sense for a mid-tier.
+
+Now in my mind, there are at least three ways to do this, with different advantages and disadvantages:
+   1. Continue using the AST interpreter but modify the AST to improve performance.  fastR works that way.
+   2. Use a bytecode interpreter and optimize the bytecode.  The compiler package and ORBIT do this.
+   3. Generate LLVM IR where the IR is mostly just calls to the runtime, do high-level optimizations on that and use the LLVM IR interpreter to execute it.
+
+To my mind, the important factors are:
+   - Difficulty of implementation and maintenance
+   - Suitability of representation for analysis and optimization
+   - Ability to tier up and down to the high performance tier, handle guard failures etc
+   - Performance
+
+In my mind the bytecode interpreter has the highest implementation / maintenance overhead, since it's a significant component that isn't required in the other two approaches.  On the other hand, it's probably the highest performing option and could be designed to make the other factors work out.
+
+IIUC using the LLVM IR, you can consider calls to runtime functions roughly equivalent to bytecodes in the bytecode interpreter.  I'd expect it to take longer to decode the IR for a function call than a specialized bytecode, so it's probably somewhat slower.  On the other hand, LLVM provides tools to make it simple to do analysis and optimization, the interpreter already exists and the mid and high-performance tiers would share a lot of code.
+It would also be possible to dynamically generate type and length specialized pseudo-bytecodes, saving the need for manually generating them ahead of time.
+
+I'm probably the least qualified of any of us to work this out.
+
+In your opinion, which approach makes best sense and why?  Or is there something else that would be better?
+
+Thanks,
+
+Karl
+
+From uccdb28271f2120b6 at groups.google.com  Mon Feb  9 22:01:10 2015
+From: uccdb28271f2120b6 at groups.google.com (Arun Chauhan)
+Date: Mon, 09 Feb 2015 22:01:10 +0000
+Subject: Re: CXXR Performance Tiers
+Message-ID: <N4HA9kT7_-w.0PTzBNIEfYUJ@rho-devel.groups.google.com>
+In-Reply-To: <N4HA9kT7_-w.cVoeSA0MfXkJ@rho-devel.groups.google.com>
+References: <N4HA9kT7_-w.cVoeSA0MfXkJ@rho-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/rho-devel/c/N4HA9kT7_-w/m/0PTzBNIEfYUJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hi Karl,
+
+I am still thinking about it.  But, a few interrelated questions come to my mind immediately.
+
+How do we decide these performance tiers?  Are these decided by the programmer or automatically by the interpreter?  What are the boundaries?  Shouldn't the goal always be to run a given script in the shortest possible time irrespective of the internal technique we use for its execution?
+
+A related question is, why do we need to maintain multiple ways to interpret scripts?  If LLVM makes sense (I am tempted to use it to get all its benefits) then the "slow" tier could be implemented simply as LLVM bitcode interpretation without any JIT compilation, couldn't it?  Or, may be, that would be the fastest way to handle really short scripts :).
+
+Arun
+
+On Mon, Feb 9, 2015 at 1:08 PM, Karl Millar <kmi...@google.com> wrote:
+> I'm trying to work out how the different performance tiers for handling scalar code ought to work in CXXR.
+>
+>
+> IMHO, it makes sense for the lowest performance tier to be based on the existing AST interpreter.  That makes it easy to support any existing code with excellent compatibility and there's quite a bit of room to improve performance in the interpreter by improving the code.
+>
+> The high performance tier is pretty clear -- a lot of the techniques used for other dynamic languages (and probably some R specific ones) and using LLVM to generate efficient native code.
+>
+>
+> The mid tier is less clear to me.  As we've seen from fastR (the first version, not the truffle/graal one) and ORBIT, it's possible to make a lot of useful transformations and specializations to get significant speedup while still using an interpreter framework.  Given that LLVM's code generation stage is generally slow, this seems to make sense for a mid-tier.
+>
+> Now in my mind, there are at least three ways to do this, with different advantages and disadvantages:
+>    1. Continue using the AST interpreter but modify the AST to improve performance.  fastR works that way.
+>    2. Use a bytecode interpreter and optimize the bytecode.  The compiler package and ORBIT do this.
+>    3. Generate LLVM IR where the IR is mostly just calls to the runtime, do high-level optimizations on that and use the LLVM IR interpreter to execute it.
+>
+>
+> To my mind, the important factors are:
+>    - Difficulty of implementation and maintenance
+>    - Suitability of representation for analysis and optimization
+>    - Ability to tier up and down to the high performance tier, handle guard failures etc
+>    - Performance
+>
+> In my mind the bytecode interpreter has the highest implementation / maintenance overhead, since it's a significant component that isn't required in the other two approaches.  On the other hand, it's probably the highest performing option and could be designed to make the other factors work out.
+>
+> IIUC using the LLVM IR, you can consider calls to runtime functions roughly equivalent to bytecodes in the bytecode interpreter.  I'd expect it to take longer to decode the IR for a function call than a specialized bytecode, so it's probably somewhat slower.  On the other hand, LLVM provides tools to make it simple to do analysis and optimization, the interpreter already exists and the mid and high-performance tiers would share a lot of code.
+> It would also be possible to dynamically generate type and length specialized pseudo-bytecodes, saving the need for manually generating them ahead of time.
+>
+>
+> I'm probably the least qualified of any of us to work this out.
+>
+>
+> In your opinion, which approach makes best sense and why?  Or is there something else that would be better?
+>
+> Thanks,
+>
+> Karl
+
+From u47f6619fc0d4ab33 at groups.google.com  Mon Feb  9 22:22:39 2015
+From: u47f6619fc0d4ab33 at groups.google.com (Jan Vitek)
+Date: Mon, 09 Feb 2015 22:22:39 +0000
+Subject: Re: CXXR Performance Tiers
+Message-ID: <N4HA9kT7_-w.iVRf8JgvFRoJ@rho-devel.groups.google.com>
+In-Reply-To: <N4HA9kT7_-w.0PTzBNIEfYUJ@rho-devel.groups.google.com>
+References: <N4HA9kT7_-w.cVoeSA0MfXkJ@rho-devel.groups.google.com> <N4HA9kT7_-w.0PTzBNIEfYUJ@rho-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/rho-devel/c/N4HA9kT7_-w/m/iVRf8JgvFRoJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+There is a lot of experience in the Java world with interpretation and compilation. (JavaScript has some lessons too)
+
+Two important differences:
+
+  - For JavaScript, it is crucial to run small scripts really fast. Many webpages do very little computation, so anything that gets in the way (i.e. compilation/static analysis) is likely to slow you down.   R does not have that problem.
+
+  - For Java, the code bases are much much larger than your typical R program.  I don’t think we will encounter many programs that are > 100 KLOC of R, while in Java that’s the starting point of your standard libraries.
+
+Past experience suggest that you need one fast execution mode for code that runs once and many systems seem to have settled on two additional compilers. One that generates instrumented code fast, and the other that generates optimized code slowly.  The right mix between compile time and runtime really depends on the kinds of workloads you are optimizing for.  In Java, the workloads were about a minute or two. I think that we are interested in much longer running programs.
+
+Right now at Northeastern we are thinking about optimizing the bytecode generated by Luke’s compiler.  We hope to connect with LLVM in the medium term.
+
+Jan Vitek, Professor
+Computer Science,
+Northeastern University
+
+> On Feb 9, 2015, at 5:01 PM, Arun Chauhan <arunc...@google.com> wrote:
+>
+> Hi Karl,
+>
+> I am still thinking about it.  But, a few interrelated questions come to my mind immediately.
+>
+> How do we decide these performance tiers?  Are these decided by the programmer or automatically by the interpreter?  What are the boundaries?  Shouldn't the goal always be to run a given script in the shortest possible time irrespective of the internal technique we use for its execution?
+>
+> A related question is, why do we need to maintain multiple ways to interpret scripts?  If LLVM makes sense (I am tempted to use it to get all its benefits) then the "slow" tier could be implemented simply as LLVM bitcode interpretation without any JIT compilation, couldn't it?  Or, may be, that would be the fastest way to handle really short scripts :).
+>
+> Arun
+>
+>
+> On Mon, Feb 9, 2015 at 1:08 PM, Karl Millar <kmi...@google.com> wrote:
+> > I'm trying to work out how the different performance tiers for handling scalar code ought to work in CXXR.
+> >
+> >
+> > IMHO, it makes sense for the lowest performance tier to be based on the existing AST interpreter.  That makes it easy to support any existing code with excellent compatibility and there's quite a bit of room to improve performance in the interpreter by improving the code.
+> >
+> > The high performance tier is pretty clear -- a lot of the techniques used for other dynamic languages (and probably some R specific ones) and using LLVM to generate efficient native code.
+> >
+> >
+> > The mid tier is less clear to me.  As we've seen from fastR (the first version, not the truffle/graal one) and ORBIT, it's possible to make a lot of useful transformations and specializations to get significant speedup while still using an interpreter framework.  Given that LLVM's code generation stage is generally slow, this seems to make sense for a mid-tier.
+> >
+> > Now in my mind, there are at least three ways to do this, with different advantages and disadvantages:
+> >    1. Continue using the AST interpreter but modify the AST to improve performance.  fastR works that way.
+> >    2. Use a bytecode interpreter and optimize the bytecode.  The compiler package and ORBIT do this.
+> >    3. Generate LLVM IR where the IR is mostly just calls to the runtime, do high-level optimizations on that and use the LLVM IR interpreter to execute it.
+> >
+> >
+> > To my mind, the important factors are:
+> >    - Difficulty of implementation and maintenance
+> >    - Suitability of representation for analysis and optimization
+> >    - Ability to tier up and down to the high performance tier, handle guard failures etc
+> >    - Performance
+> >
+> > In my mind the bytecode interpreter has the highest implementation / maintenance overhead, since it's a significant component that isn't required in the other two approaches.  On the other hand, it's probably the highest performing option and could be designed to make the other factors work out.
+> >
+> > IIUC using the LLVM IR, you can consider calls to runtime functions roughly equivalent to bytecodes in the bytecode interpreter.  I'd expect it to take longer to decode the IR for a function call than a specialized bytecode, so it's probably somewhat slower.  On the other hand, LLVM provides tools to make it simple to do analysis and optimization, the interpreter already exists and the mid and high-performance tiers would share a lot of code.
+> > It would also be possible to dynamically generate type and length specialized pseudo-bytecodes, saving the need for manually generating them ahead of time.
+> >
+> >
+> > I'm probably the least qualified of any of us to work this out.
+> >
+> >
+> > In your opinion, which approach makes best sense and why?  Or is there something else that would be better?
+> >
+> > Thanks,
+> >
+> > Karl
+>
+
+From u7c7eba1cdaa3eb39 at groups.google.com  Tue Feb 10 04:47:15 2015
+From: u7c7eba1cdaa3eb39 at groups.google.com (Wang, Haichuan)
+Date: Tue, 10 Feb 2015 04:47:15 +0000
+Subject: Re: CXXR Performance Tiers
+Message-ID: <N4HA9kT7_-w.2sw1vp3vI_0J@rho-devel.groups.google.com>
+In-Reply-To: <N4HA9kT7_-w.iVRf8JgvFRoJ@rho-devel.groups.google.com>
+References: <N4HA9kT7_-w.cVoeSA0MfXkJ@rho-devel.groups.google.com> <N4HA9kT7_-w.iVRf8JgvFRoJ@rho-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/rho-devel/c/N4HA9kT7_-w/m/2sw1vp3vI_0J>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+I agree the point that there should be different execution modes with different focuses. It’s interesting to know the latest Safari’s JS engine has four. https://www.webkit.org/blog/3362/introducing-the-webkit-ftl-jit/. For R, I don’t think it needs so many, but at least two for fast startup and optimized performance. The boundary is then tuned by the workload.
+
+One additional point is although we can let LLVM IR directly call R’s runtime function. But according to our previous experience, without the runtime service optimization or runtime simplification, it’s hard to get a lot of gain from it. In our previous work, the specialized byte code is backboned by many simplified and optimized runtime services. If I understand correctly, the FastR also spent a lot of efforts on the new optimized runtime.
+
+These runtime services should be used by different performance tiers.
+
+- Haichuan
+
+On Feb 9, 2015, at 16:21, Jan Vitek <jan_...@icloud.com> wrote:
+
+> There is a lot of experience in the Java world with interpretation and compilation. (JavaScript has some lessons too)
+>
+> Two important differences:
+>
+>   - For JavaScript, it is crucial to run small scripts really fast. Many webpages do very little computation, so anything that gets in the way (i.e. compilation/static analysis) is likely to slow you down.   R does not have that problem.
+>
+>   - For Java, the code bases are much much larger than your typical R program.  I don’t think we will encounter many programs that are > 100 KLOC of R, while in Java that’s the starting point of your standard libraries.
+>
+> Past experience suggest that you need one fast execution mode for code that runs once and many systems seem to have settled on two additional compilers. One that generates instrumented code fast, and the other that generates optimized code slowly.  The right mix between compile time and runtime really depends on the kinds of workloads you are optimizing for.  In Java, the workloads were about a minute or two. I think that we are interested in much longer running programs.
+>
+> Right now at Northeastern we are thinking about optimizing the bytecode generated by Luke’s compiler.  We hope to connect with LLVM in the medium term.
+>
+>
+>
+>
+>
+> Jan Vitek, Professor
+> Computer Science,
+> Northeastern University
+>
+> > On Feb 9, 2015, at 5:01 PM, Arun Chauhan <arunc...@google.com> wrote:
+> >
+> > Hi Karl,
+> >
+> > I am still thinking about it.  But, a few interrelated questions come to my mind immediately.
+> >
+> > How do we decide these performance tiers?  Are these decided by the programmer or automatically by the interpreter?  What are the boundaries?  Shouldn't the goal always be to run a given script in the shortest possible time irrespective of the internal technique we use for its execution?
+> >
+> > A related question is, why do we need to maintain multiple ways to interpret scripts?  If LLVM makes sense (I am tempted to use it to get all its benefits) then the "slow" tier could be implemented simply as LLVM bitcode interpretation without any JIT compilation, couldn't it?  Or, may be, that would be the fastest way to handle really short scripts :).
+> >
+> > Arun
+> >
+> >
+> > On Mon, Feb 9, 2015 at 1:08 PM, Karl Millar  <kmi...@google.com> wrote:
+> > > I'm trying to work out how the different performance tiers for handling scalar code ought to work in CXXR.
+> > >
+> > >
+> > > IMHO, it makes sense for the lowest performance tier to be based on the existing AST interpreter.  That makes it easy to support any existing code with excellent compatibility and there's quite a bit of room to improve performance in the interpreter by improving the code.
+> > >
+> > > The high performance tier is pretty clear -- a lot of the techniques used for other dynamic languages (and probably some R specific ones) and using LLVM to generate efficient native code.
+> > >
+> > >
+> > > The mid tier is less clear to me.  As we've seen from fastR (the first version, not the truffle/graal one) and ORBIT, it's possible to make a lot of useful transformations and specializations to get significant speedup while still using an interpreter framework.  Given that LLVM's code generation stage is generally slow, this seems to make sense for a mid-tier.
+> > >
+> > > Now in my mind, there are at least three ways to do this, with different advantages and disadvantages:
+> > >    1. Continue using the AST interpreter but modify the AST to improve performance.  fastR works that way.
+> > >    2. Use a bytecode interpreter and optimize the bytecode.  The compiler package and ORBIT do this.
+> > >    3. Generate LLVM IR where the IR is mostly just calls to the runtime, do high-level optimizations on that and use the LLVM IR interpreter to execute it.
+> > >
+> > >
+> > > To my mind, the important factors are:
+> > >    - Difficulty of implementation and maintenance
+> > >    - Suitability of representation for analysis and optimization
+> > >    - Ability to tier up and down to the high performance tier, handle guard failures etc
+> > >    - Performance
+> > >
+> > > In my mind the bytecode interpreter has the highest implementation / maintenance overhead, since it's a significant component that isn't required in the other two approaches.  On the other hand, it's probably the highest performing option and could be designed to make the other factors work out.
+> > >
+> > > IIUC using the LLVM IR, you can consider calls to runtime functions roughly equivalent to bytecodes in the bytecode interpreter.  I'd expect it to take longer to decode the IR for a function call than a specialized bytecode, so it's probably somewhat slower.  On the other hand, LLVM provides tools to make it simple to do analysis and optimization, the interpreter already exists and the mid and high-performance tiers would share a lot of code.
+> > > It would also be possible to dynamically generate type and length specialized pseudo-bytecodes, saving the need for manually generating them ahead of time.
+> > >
+> > >
+> > > I'm probably the least qualified of any of us to work this out.
+> > >
+> > >
+> > > In your opinion, which approach makes best sense and why?  Or is there something else that would be better?
+> > >
+> > > Thanks,
+> > >
+> > > Karl
+> >
+>
+
+From u83f22aa26bd437b0 at groups.google.com  Tue Feb 10 09:50:21 2015
+From: u83f22aa26bd437b0 at groups.google.com (Tomas Kalibera)
+Date: Tue, 10 Feb 2015 09:50:21 +0000
+Subject: Re: CXXR Performance Tiers
+Message-ID: <N4HA9kT7_-w.peC3Su0q_KIJ@rho-devel.groups.google.com>
+In-Reply-To: <N4HA9kT7_-w.2sw1vp3vI_0J@rho-devel.groups.google.com>
+References: <N4HA9kT7_-w.cVoeSA0MfXkJ@rho-devel.groups.google.com> <N4HA9kT7_-w.2sw1vp3vI_0J@rho-devel.groups.google.com>
+Archived-At: <https://groups.google.com/g/rho-devel/c/N4HA9kT7_-w/m/peC3Su0q_KIJ>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+With R, a lot of execution time is spent within the runtime, not in the interpreter loop (e.g. of a bytecode interpreter, but it could be AST eval too). To execute the code faster, one has to take into account what is going on in that runtime, one has to optimize/specialize/extend that runtime and, in practice, one has to change the semantics of the runtime, both intentionally and unintentionally --- yet indeed only to an extent that does break existing code, does not break packages, makes "sense" for the language.
+
+I think with the current scope of runtime optimization as in GNU-R AST interpreter (or possibly even byte-code interpreter), the difference between performance of generated native code vs. byte-code will not be practically relevant. I think that a number of useful performance optimizations and/or simplifications of the runtime could be done with the current AST and byte-code interpreters, which also allows to readily test the impact on the existing applications - and I've been doing some of that recently.
+
+If I still were to choose how many performance layers, I would say start with as few as possible and always keep at least the current AST interpreter. So perhaps no "middle tier" for the start.
+
+Tomas
+
+On 02/10/2015 05:47 AM, Wang, Haichuan wrote:
+
+> I agree the point that there should be different execution modes with different focuses. It’s interesting to know the latest Safari’s JS engine has four. https://www.webkit.org/blog/3362/introducing-the-webkit-ftl-jit/. For R, I don’t think it needs so many, but at least two for fast startup and optimized performance. The boundary is then tuned by the workload.
+>
+> One additional point is although we can let LLVM IR directly call R’s runtime function. But according to our previous experience, without the runtime service optimization or runtime simplification, it’s hard to get a lot of gain from it. In our previous work, the specialized byte code is backboned by many simplified and optimized runtime services. If I understand correctly, the FastR also spent a lot of efforts on the new optimized runtime.
+>
+> These runtime services should be used by different performance tiers.
+>
+> - Haichuan
+>
+> On Feb 9, 2015, at 16:21, Jan Vitek <jan_...@icloud.com> wrote:
+>
+> > There is a lot of experience in the Java world with interpretation and compilation. (JavaScript has some lessons too)
+> >
+> > Two important differences:
+> >
+> >   - For JavaScript, it is crucial to run small scripts really fast. Many webpages do very little computation, so anything that gets in the way (i.e. compilation/static analysis) is likely to slow you down.   R does not have that problem.
+> >
+> >   - For Java, the code bases are much much larger than your typical R program.  I don’t think we will encounter many programs that are > 100 KLOC of R, while in Java that’s the starting point of your standard libraries.
+> >
+> > Past experience suggest that you need one fast execution mode for code that runs once and many systems seem to have settled on two additional compilers. One that generates instrumented code fast, and the other that generates optimized code slowly.  The right mix between compile time and runtime really depends on the kinds of workloads you are optimizing for.  In Java, the workloads were about a minute or two. I think that we are interested in much longer running programs.
+> >
+> > Right now at Northeastern we are thinking about optimizing the bytecode generated by Luke’s compiler.  We hope to connect with LLVM in the medium term.
+> >
+> >
+> >
+> >
+> >
+> > Jan Vitek, Professor
+> > Computer Science,
+> > Northeastern University
+> >
+> > > On Feb 9, 2015, at 5:01 PM, Arun Chauhan <arunc...@google.com> wrote:
+> > >
+> > > Hi Karl,
+> > >
+> > > I am still thinking about it.  But, a few interrelated questions come to my mind immediately.
+> > >
+> > > How do we decide these performance tiers?  Are these decided by the programmer or automatically by the interpreter?  What are the boundaries?  Shouldn't the goal always be to run a given script in the shortest possible time irrespective of the internal technique we use for its execution?
+> > >
+> > > A related question is, why do we need to maintain multiple ways to interpret scripts?  If LLVM makes sense (I am tempted to use it to get all its benefits) then the "slow" tier could be implemented simply as LLVM bitcode interpretation without any JIT compilation, couldn't it?  Or, may be, that would be the fastest way to handle really short scripts :).
+> > >
+> > > Arun
+> > >
+> > >
+> > > On Mon, Feb 9, 2015 at 1:08 PM, Karl Millar  <kmi...@google.com> wrote:
+> > > > I'm trying to work out how the different performance tiers for handling scalar code ought to work in CXXR.
+> > > >
+> > > >
+> > > > IMHO, it makes sense for the lowest performance tier to be based on the existing AST interpreter.  That makes it easy to support any existing code with excellent compatibility and there's quite a bit of room to improve performance in the interpreter by improving the code.
+> > > >
+> > > > The high performance tier is pretty clear -- a lot of the techniques used for other dynamic languages (and probably some R specific ones) and using LLVM to generate efficient native code.
+> > > >
+> > > >
+> > > > The mid tier is less clear to me.  As we've seen from fastR (the first version, not the truffle/graal one) and ORBIT, it's possible to make a lot of useful transformations and specializations to get significant speedup while still using an interpreter framework.  Given that LLVM's code generation stage is generally slow, this seems to make sense for a mid-tier.
+> > > >
+> > > > Now in my mind, there are at least three ways to do this, with different advantages and disadvantages:
+> > > >    1. Continue using the AST interpreter but modify the AST to improve performance.  fastR works that way.
+> > > >    2. Use a bytecode interpreter and optimize the bytecode.  The compiler package and ORBIT do this.
+> > > >    3. Generate LLVM IR where the IR is mostly just calls to the runtime, do high-level optimizations on that and use the LLVM IR interpreter to execute it.
+> > > >
+> > > >
+> > > > To my mind, the important factors are:
+> > > >    - Difficulty of implementation and maintenance
+> > > >    - Suitability of representation for analysis and optimization
+> > > >    - Ability to tier up and down to the high performance tier, handle guard failures etc
+> > > >    - Performance
+> > > >
+> > > > In my mind the bytecode interpreter has the highest implementation / maintenance overhead, since it's a significant component that isn't required in the other two approaches.  On the other hand, it's probably the highest performing option and could be designed to make the other factors work out.
+> > > >
+> > > > IIUC using the LLVM IR, you can consider calls to runtime functions roughly equivalent to bytecodes in the bytecode interpreter.  I'd expect it to take longer to decode the IR for a function call than a specialized bytecode, so it's probably somewhat slower.  On the other hand, LLVM provides tools to make it simple to do analysis and optimization, the interpreter already exists and the mid and high-performance tiers would share a lot of code.
+> > > > It would also be possible to dynamically generate type and length specialized pseudo-bytecodes, saving the need for manually generating them ahead of time.
+> > > >
+> > > >
+> > > > I'm probably the least qualified of any of us to work this out.
+> > > >
+> > > >
+> > > > In your opinion, which approach makes best sense and why?  Or is there something else that would be better?
+> > > >
+> > > > Thanks,
+> > > >
+> > > > Karl
+> > >
+> >
+>
+
