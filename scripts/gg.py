@@ -31,6 +31,10 @@ Commands:
   urls GROUP     give each message in GROUP/processed/ its page at Google
   check GROUP    stop if any of GROUP's files holds a whole address
                  (GROUP "all": every group, and lists.tsv)
+  remove GROUP -- CONVERSATION...
+                 leave conversations out for good: list them in
+                 GROUP/removed.txt, delete their pages, never fetch them again
+                 (an ID can start with "-", hence the "--")
 """
 
 import argparse
@@ -167,16 +171,28 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
+def removed_threads(group):
+    """The conversations left out of the archive on purpose, listed in
+    GROUP/removed.txt: spam that must not be republished."""
+    path = os.path.join(group, "removed.txt")
+    if not os.path.exists(path):
+        return set()
+    with open(path, encoding="utf-8") as f:
+        return {line.strip() for line in f if line.strip() and not line.startswith("#")}
+
+
 def read_threads(group):
     path = os.path.join(group, "threads.txt")
     if not os.path.exists(path):
         return []
+    removed = removed_threads(group)
     with open(path, encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
+        return [line.strip() for line in f if line.strip() and line.strip() not in removed]
 
 
 def write_threads(group, ids):
-    write_atomic(os.path.join(group, "threads.txt"), "".join(i + "\n" for i in ids))
+    removed = removed_threads(group)
+    write_atomic(os.path.join(group, "threads.txt"), "".join(i + "\n" for i in ids if i not in removed))
 
 
 def google_name(group):
@@ -317,6 +333,8 @@ def cmd_recent(group):
     total, listed = parse_listing(page)
     if total is None:
         sys.exit(f"{group}: no conversations on the group's page")
+    removed = removed_threads(group)
+    listed = [row for row in listed if row[0] not in removed]
     ids = read_threads(group)
     changed = []
     for thread, count, last in listed:
@@ -688,9 +706,10 @@ def encode_header(value):
 def cmd_mbox(group):
     src = os.path.join(group, "source")
     links = mail_links(group)
+    removed = removed_threads(group)
     periods = {}
     for name in sorted(os.listdir(src)) if os.path.isdir(src) else []:
-        if not name.endswith(".json"):
+        if not name.endswith(".json") or name[:-len(".json")] in removed:
             continue
         with open(os.path.join(src, name), encoding="utf-8") as f:
             record = json.load(f)
@@ -713,6 +732,30 @@ def cmd_mbox(group):
         total += len(entries)
         write_atomic(os.path.join(raw, key + ".mbox"), "".join(e[3] for e in entries))
     print(f"{group}: {total} messages in {len(periods)} monthly files")
+
+
+REMOVED_HEADER = ("# Conversations left out of this archive on purpose: spam that must not be\n"
+                  "# republished. gg.py never fetches them again.\n")
+
+
+def cmd_remove(group, threads):
+    """Leave conversations out of the archive for good. mbox and the parser
+    then write the group without them."""
+    for t in threads:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", t):
+            sys.exit(f"not a conversation: {t}")
+    removed = removed_threads(group)
+    new = [t for t in dict.fromkeys(threads) if t not in removed]
+    path = os.path.join(group, "removed.txt")
+    head = "" if os.path.exists(path) else REMOVED_HEADER
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(head + "".join(t + "\n" for t in new))
+    for t in threads:
+        if os.path.exists(source_path(group, t)):
+            os.remove(source_path(group, t))
+    if os.path.exists(os.path.join(group, "threads.txt")):
+        write_threads(group, read_threads(group))
+    print(f"{group}: {len(new)} conversations removed, {len(removed) + len(new)} in removed.txt")
 
 
 # -- mail -------------------------------------------------------------------
@@ -890,14 +933,17 @@ def cmd_describe(group):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["describe", "list", "fetch", "recent", "mail", "scrub", "mbox", "urls",
-                                        "check"])
+                                        "check", "remove"])
     ap.add_argument("group")
+    ap.add_argument("conversations", nargs="*", help="remove: the conversations to leave out")
     ap.add_argument("--all", action="store_true", help="fetch: every conversation, not just new ones")
     a = ap.parse_args(argv)
     # The crawl checks a group's source/ by itself when the rest failed.
     name = a.group[:-len("/source")] if a.command == "check" and a.group.endswith("/source") else a.group
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
         sys.exit(f"not a group name: {a.group}")
+    if bool(a.conversations) != (a.command == "remove"):
+        ap.error("only remove takes conversations, and it needs at least one")
     {"describe": lambda: cmd_describe(a.group),
      "list": lambda: cmd_list(a.group),
      "fetch": lambda: cmd_fetch(a.group, a.all),
@@ -906,7 +952,8 @@ def main(argv=None):
      "scrub": lambda: cmd_scrub(a.group),
      "mbox": lambda: cmd_mbox(a.group),
      "urls": lambda: cmd_urls(a.group),
-     "check": lambda: cmd_check(a.group)}[a.command]()
+     "check": lambda: cmd_check(a.group),
+     "remove": lambda: cmd_remove(a.group, a.conversations)}[a.command]()
 
 
 if __name__ == "__main__":

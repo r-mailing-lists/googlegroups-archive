@@ -445,6 +445,87 @@ class Addresses(unittest.TestCase):
             gg.get, gg.time.sleep = get, sleep
 
 
+class Remove(unittest.TestCase):
+    def listing(self, *threads):
+        rows = [[[GROUP_ID, t, "Subj", "snip", [1600000000, 5], [1600000000], 1, 0, 0], [GROUP_ID, t, 0, 0, 0]]
+                for t in threads]
+        return page([[GROUP_ID, "group"], len(threads), rows])
+
+    def test_a_removed_conversation_is_deleted_and_never_fetched_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            get, fetch = gg.get, gg.fetch_thread
+            fetched = []
+            out, sys.stdout = sys.stdout, __import__("io").StringIO()
+            err, sys.stderr = sys.stderr, __import__("io").StringIO()
+            try:
+                os.makedirs("grp/source")
+                msg = {"id": "M1", "from": "Al", "author": "a", "date": "2020-09-13T12:00:00Z", "subject": "Hi",
+                       "parts": [[1, "<div>x</div>"]]}
+                for t in ("T1", "T2"):
+                    with open(f"grp/source/{t}.json", "w") as f:
+                        json.dump({"thread": t, "messages": [msg], "messages_listed": 1,
+                                   "last_activity": "2020-09-13T12:26:40Z"}, f)
+                with open("grp/threads.txt", "w") as f:
+                    f.write("T1\nT2\nT3\n")
+                gg.cmd_remove("grp", ["T2", "T3"])
+                gg.cmd_remove("grp", ["T3"])
+                self.assertEqual(os.listdir("grp/source"), ["T1.json"])
+                self.assertEqual(gg.read_threads("grp"), ["T1"])
+                with open("grp/removed.txt") as f:
+                    self.assertEqual([l for l in f.read().splitlines() if not l.startswith("#")], ["T2", "T3"])
+
+                # The group's first page still shows them: neither is fetched
+                # or listed again.
+                gg.get = lambda url, tries=4: self.listing("T4", "T2", "T3")
+                gg.fetch_thread = lambda group, thread, tries=2: fetched.append(thread)
+                gg.cmd_recent("grp")
+                self.assertEqual(fetched, ["T4"])
+                self.assertEqual(gg.read_threads("grp"), ["T1", "T4"])
+                with open("grp/threads.txt") as f:
+                    self.assertEqual(f.read(), "T1\nT4\n")
+
+                # A page stored again by hand is still left out of the mbox.
+                with open("grp/source/T2.json", "w") as f:
+                    json.dump({"thread": "T2", "messages": [dict(msg, id="M9")]}, f)
+                gg.cmd_mbox("grp")
+                with open("grp/raw/2020-September.mbox") as f:
+                    text = f.read()
+                self.assertIn("T1.M1@", text)
+                self.assertNotIn("T2.", text)
+            finally:
+                sys.stdout, sys.stderr = out, err
+                gg.get, gg.fetch_thread = get, fetch
+                os.chdir(cwd)
+
+    def test_remove_takes_only_conversation_ids(self):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            try:
+                os.makedirs("grp/source")
+                with self.assertRaises(SystemExit):
+                    gg.cmd_remove("grp", ["../T1"])
+                self.assertFalse(os.path.exists("grp/removed.txt"))
+                err, sys.stderr = sys.stderr, __import__("io").StringIO()
+                try:
+                    with self.assertRaises(SystemExit):
+                        gg.main(["remove", "grp"])
+                    with self.assertRaises(SystemExit):
+                        gg.main(["mbox", "grp", "T1"])
+                finally:
+                    sys.stderr = err
+                out, sys.stdout = sys.stdout, __import__("io").StringIO()
+                try:
+                    gg.main(["remove", "grp", "--", "-T5", "T6"])
+                finally:
+                    sys.stdout = out
+                self.assertEqual(gg.removed_threads("grp"), {"-T5", "T6"})
+            finally:
+                os.chdir(cwd)
+
+
 HEADERS = (
     "Delivered-To: member@example.com\r\n"
     "From: 'Al Smith' via grp <grp@googlegroups.com>\r\n"

@@ -92,6 +92,7 @@ Some of R's busiest help forums of the 2010s were Google Groups rather than R's 
 | `r-hiphop` | The hiphop package | last post October 2023 |
 | `r-inla-discussion-group` | R-INLA, Bayesian inference with integrated nested Laplace approximations | active, updated daily |
 | `r-package-xlsx` | Development of the xlsx package | last post November 2021 |
+| `r-pt` | R users in Portugal, in Portuguese | last post November 2021 |
 | `r-study-tokyo` | Tokyo.R, the Tokyo R study group, in Japanese | active, updated daily |
 | `r-swat` | R-SWAT, an R and Shiny tool for calibrating SWAT models | active, updated daily |
 | `rapache` | rApache, R embedded in the Apache web server | last post August 2019 |
@@ -100,7 +101,7 @@ Some of R's busiest help forums of the 2010s were Google Groups rather than R's 
 | `rcytoscape` | The RCytoscape Bioconductor package, linking R and Cytoscape | last post March 2019 |
 | `rdevtools` | devtools, testthat, roxygen2 and profr | last post January 2023 |
 | `red-r` | Red-R, visual programming for R | last post December 2010 |
-| `renjin-dev` | Renjin, an interpreter for R on the Java Virtual Machine | last post December 2023 |
+| `renjin-dev` | Renjin, an interpreter for R on the Java Virtual Machine | last post March 2023 |
 | `rhadoop` | RHadoop, Hadoop with R | last post May 2016 |
 | `rhipe` | RHIPE, the R and Hadoop Processing Environment | last post May 2016 |
 | `rho-devel` | Rho, a virtual machine for R (previously CXXR) | last post May 2016 |
@@ -115,7 +116,7 @@ Some of R's busiest help forums of the 2010s were Google Groups rather than R's 
 | `rropen` | Revolution R Open and Microsoft R Open, the enhanced R distribution | last post May 2016 |
 | `rsnns` | RSNNS, neural networks | active, updated daily |
 | `rugbcn` | R User Group Barcelona, in Catalan, Spanish and English | last post July 2020 |
-| `rworldmap` | The rworldmap package | last post December 2023 |
+| `rworldmap` | The rworldmap package | last post October 2021 |
 | `secrgroup` | secr, spatially explicit capture-recapture | active, updated daily |
 | `seewave` | seewave, sound analysis | active, updated daily |
 | `segoptim-user-group` | The SegOptim package for image segmentation and classification | last post January 2025 |
@@ -138,6 +139,7 @@ Some of R's busiest help forums of the 2010s were Google Groups rather than R's 
 | `taiwanruser` | Taiwan R users' forum, in Chinese | active, updated daily |
 | `tessera-users` | Tessera, the datadr and trelliscope packages for large data | last post June 2016 |
 | `tidylpa` | The tidyLPA package | active, updated daily |
+| `tikzdevice` | tikzDevice, the R graphics device that writes LaTeX | last post November 2022 |
 | `tinn-r` | Tinn-R, an editor for R on Windows | last post October 2021 |
 | `titancna` | Questions, answers and bug reports from users of the TitanCNA package | last post November 2023 |
 | `tmb-users` | TMB, Template Model Builder | active, updated daily |
@@ -171,6 +173,7 @@ Each group has its own directory:
 
 - `<group>/config.json` - group name, description, source URL, and whether it is still active
 - `<group>/threads.txt` - every conversation's ID, as the group's own list gives them
+- `<group>/removed.txt` - conversations left out on purpose, spam that must not be republished; nothing fetches them again
 - `<group>/source/` - one JSON file per conversation, as Google serves it to a signed-out reader, with addresses cut
 - `<group>/mail/` - one JSON file per message that reached the member account by email
 - `<group>/raw/` - one Mailman-style .mbox file per month, written from `source/` and `mail/`
@@ -194,5 +197,7 @@ python3 scripts/gg.py list <group>
 python3 scripts/gg.py fetch <group>
 scripts/update.sh --no-fetch <group>
 ```
+
+To leave spam out for good, `python3 scripts/gg.py remove <group> -- <conversation>...` lists the conversations in `removed.txt` and deletes their pages; run `scripts/update.sh --no-fetch <group>` after it.
 
 `python3 scripts/gg_test.py` runs the tests, and `python3 scripts/gg.py check all` looks for whole addresses in every file, saying where but not what.
